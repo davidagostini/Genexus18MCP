@@ -32,7 +32,7 @@ export class HistoryView {
       "gxHistory",
       `Historico: ${objName}`,
       vscode.ViewColumn.Beside,
-      { enableScripts: true },
+      { enableScripts: true, localResourceRoots: [] },
     );
 
     this.panels.set(uriKey, panel);
@@ -70,7 +70,7 @@ export class HistoryView {
             .join("");
         }
 
-        panel.webview.html = this.getHtml(objName, rows);
+        panel.webview.html = this.getHtml(objName, rows, panel.webview.cspSource);
 
         panel.webview.onDidReceiveMessage(async (message) => {
           if (message.command === "viewDiff") {
@@ -125,11 +125,12 @@ export class HistoryView {
     }
   }
 
-  private static getHtml(objName: string, rows: string): string {
+  private static getHtml(objName: string, rows: string, cspSource: string): string {
     return `
       <!DOCTYPE html>
       <html>
       <head>
+          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'unsafe-inline';">
           <style>
               body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 20px; background-color: #1e1e1e; color: #ccc; }
               table { width: 100%; border-collapse: collapse; margin-top: 20px; background: #252526; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border-radius: 4px; overflow: hidden; }

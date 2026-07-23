@@ -18,11 +18,17 @@ export class LayoutView {
       return;
     }
 
+    // NOTE (plan 056): unlike the other webviews, `panel.webview.html` here is set
+    // directly to `result.source` — a full HTML document rendered by the GeneXus SDK's
+    // Layout part, not authored by this extension. We don't control its <head>/<script>
+    // structure, so injecting a strict nonce-based CSP risks breaking whatever inline
+    // styles/scripts the SDK emits. Left un-CSP'd per plan 056 STOP condition; scoped
+    // follow-up: harden once the Layout HTML shape is confirmed safe to wrap.
     const panel = vscode.window.createWebviewPanel(
       "gxLayout",
       `${objName} Layout`,
       vscode.ViewColumn.Beside,
-      { enableScripts: true, enableCommandUris: true }
+      { enableScripts: true, enableCommandUris: true, localResourceRoots: [] }
     );
 
     this.panels.set(uriKey, panel);

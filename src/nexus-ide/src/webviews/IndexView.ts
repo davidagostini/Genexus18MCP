@@ -22,13 +22,13 @@ export class IndexView {
       "gxVisualIndexes",
       `${objName} - Indexes`,
       vscode.ViewColumn.Beside,
-      { enableScripts: true }
+      { enableScripts: true, localResourceRoots: [] }
     );
 
     this.panels.set(uriKey, panel);
     panel.onDidDispose(() => this.panels.delete(uriKey));
 
-    panel.webview.html = this.getHtml(objName);
+    panel.webview.html = this.getHtml(objName, panel.webview.cspSource);
 
     try {
       const result = await provider.callMcpTool("genexus_structure", {
@@ -48,11 +48,12 @@ export class IndexView {
     }
   }
 
-  private static getHtml(objName: string): string {
+  private static getHtml(objName: string, cspSource: string): string {
     return `
       <!DOCTYPE html>
       <html>
       <head>
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'unsafe-inline';">
         <style>
           :root {
             --bg: var(--vscode-editor-background);

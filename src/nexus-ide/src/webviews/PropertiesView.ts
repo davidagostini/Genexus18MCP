@@ -15,12 +15,16 @@ export class PropertiesView {
         "gxProperties",
         "GX Properties",
         vscode.ViewColumn.Three,
-        { enableScripts: true }
+        { enableScripts: true, localResourceRoots: [] }
       );
       this.currentPanel.onDidDispose(() => (this.currentPanel = undefined));
     }
 
-    this.currentPanel.webview.html = this.getHtml(target, controlName);
+    this.currentPanel.webview.html = this.getHtml(
+      target,
+      controlName,
+      this.currentPanel.webview.cspSource,
+    );
 
     try {
       const result = await provider.callMcpTool("genexus_properties", {
@@ -57,11 +61,12 @@ export class PropertiesView {
     }
   }
 
-  private static getHtml(target: string, controlName: string | null): string {
+  private static getHtml(target: string, controlName: string | null, cspSource: string): string {
     return `
       <!DOCTYPE html>
       <html>
       <head>
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'unsafe-inline';">
         <style>
           body { font-family: sans-serif; padding: 10px; background-color: var(--vscode-editor-background); color: var(--vscode-editor-foreground); }
           .prop-row { display: flex; padding: 4px 0; border-bottom: 1px solid #333; align-items: center; }

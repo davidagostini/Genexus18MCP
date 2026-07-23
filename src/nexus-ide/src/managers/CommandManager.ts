@@ -766,7 +766,7 @@ export class CommandManager {
         HistoryView.show(u, this.provider, this.historyProvider),
       ),
       vscode.commands.registerCommand("nexus-ide.generateDiagram", (u) =>
-        DiagramView.show(u, this.provider),
+        DiagramView.show(u, this.provider, this.context.extensionUri),
       ),
       vscode.commands.registerCommand(
         "nexus-ide.showProperties",

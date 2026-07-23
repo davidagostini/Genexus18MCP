@@ -25,13 +25,13 @@ export class StructureView {
       "gxVisualStructure",
       `${objName} - Structure`,
       vscode.ViewColumn.Beside,
-      { enableScripts: true }
+      { enableScripts: true, localResourceRoots: [] }
     );
 
     this.panels.set(uriKey, panel);
     panel.onDidDispose(() => this.panels.delete(uriKey));
 
-    panel.webview.html = this.getHtml(objName, isReadOnly);
+    panel.webview.html = this.getHtml(objName, isReadOnly, panel.webview.cspSource);
 
     try {
       const result = await provider.callMcpTool("genexus_structure", {
@@ -75,11 +75,12 @@ export class StructureView {
     }
   }
 
-  private static getHtml(objName: string, isReadOnly: boolean): string {
+  private static getHtml(objName: string, isReadOnly: boolean, cspSource: string): string {
     return `
       <!DOCTYPE html>
       <html>
       <head>
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src ${cspSource} 'unsafe-inline';">
         <style>
           :root {
             --bg: var(--vscode-editor-background);
