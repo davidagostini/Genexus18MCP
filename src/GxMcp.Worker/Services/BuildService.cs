@@ -1799,6 +1799,9 @@ namespace GxMcp.Worker.Services
             if (calleesExcluded && _callerGraphService != null && targets != null && targets.Count > 0)
             {
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var checkSet = new HashSet<string>(
+                    checkList.Select(x => x.Contains(":") ? x.Substring(x.LastIndexOf(':') + 1).Trim() : x),
+                    StringComparer.OrdinalIgnoreCase);
                 foreach (var t in checkList)
                 {
                     string bare = t.Contains(":") ? t.Substring(t.LastIndexOf(':') + 1).Trim() : t;
@@ -1809,9 +1812,7 @@ namespace GxMcp.Worker.Services
                     {
                         string cbare = c.Contains(":") ? c.Substring(c.LastIndexOf(':') + 1).Trim() : c;
                         if (string.IsNullOrEmpty(cbare) || !seen.Add(cbare)) continue;
-                        if (checkList.Any(x => string.Equals(
-                                x.Contains(":") ? x.Substring(x.LastIndexOf(':') + 1).Trim() : x,
-                                cbare, StringComparison.OrdinalIgnoreCase))) continue; // already built
+                        if (checkSet.Contains(cbare)) continue; // already built
                         bool hasCs;
                         try { hasCs = GeneratedDiffService.FindGeneratedFiles(kbPath, cbare, allRoots: true).Count > 0; }
                         catch { hasCs = true; }

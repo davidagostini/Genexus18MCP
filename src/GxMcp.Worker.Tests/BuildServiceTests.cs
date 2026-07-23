@@ -801,6 +801,60 @@ namespace GxMcp.Worker.Tests
                 });
         }
 
+        // ── plan 045: referencedButNotBuilt "already built?" is O(1) set lookup ─
+
+        [Fact]
+        public void GenerateEvidence_ReferencedButNotBuilt_SkipsCalleeAlreadyInTargetSet()
+        {
+            // Batch build of A and B (chain A -> B -> C, includeCallees=none): B is a
+            // callee of A but is ALSO an explicit build target, so it must NOT be
+            // reported as referencedButNotBuilt (the checkSet.Contains "already built"
+            // branch this plan swapped in for the old checkList.Any scan). C is a
+            // callee of B, not built and has no generated .cs, so it SHOULD be reported.
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            // A and B both got fresh .cs from this "build"; C never did.
+            File.WriteAllText(Path.Combine(web, "A.cs"), "class A {}");
+            File.WriteAllText(Path.Combine(web, "B.cs"), "class B {}");
+
+            var prevKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
+            try
+            {
+                var fx = TestFixtures.SmallCallGraph(); // A -> B -> C
+                var graph = new CallerGraphService(fx.Index);
+                var svc = new BuildService();
+                svc.SetCallerGraphService(graph);
+
+                var status = new BuildService.BuildTaskStatus
+                {
+                    TaskId = Guid.NewGuid().ToString("N").Substring(0, 8),
+                    Action = "Build",
+                    Target = "A,B",
+                    Status = "Succeeded",
+                    Phase = "Done",
+                    StartedAt = DateTime.UtcNow.AddMinutes(-1),
+                    BuildPlan = new BuildService.BuildPlan { IncludeCallees = "none", NodeCap = 200 },
+                    DirtyAtStart = new List<string> { "a", "b" }
+                };
+                var mi = typeof(BuildService).GetMethod("AttachGenerateEvidence", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(mi);
+                mi!.Invoke(svc, new object[] { status, "Build", new List<string> { "A", "B" } });
+
+                Assert.NotNull(status.GenerateEvidence);
+                var ev = (JObject)status.GenerateEvidence!;
+                var referencedButNotBuilt = (JArray)ev["referencedButNotBuilt"]!;
+                Assert.DoesNotContain(referencedButNotBuilt, t => string.Equals((string)t, "B", StringComparison.OrdinalIgnoreCase));
+                Assert.Contains(referencedButNotBuilt, t => string.Equals((string)t, "C", StringComparison.OrdinalIgnoreCase));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_KB_PATH", prevKb);
+                try { Directory.Delete(tempKb, true); } catch { }
+            }
+        }
+
         // Set up a temp KB, optionally write a generated .cs at a chosen mtime, run
         // AttachGenerateEvidence for a successful Build of <objectName>, and assert on
         // the resulting GenerateEvidence JObject.
