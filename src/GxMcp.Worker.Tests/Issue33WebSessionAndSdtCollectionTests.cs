@@ -1,4 +1,5 @@
 using GxMcp.Worker.Helpers;
+using GxMcp.Worker.Services;
 using Xunit;
 
 namespace GxMcp.Worker.Tests
@@ -120,6 +121,50 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("&s", masked);
             Assert.Contains("&after", masked);
             Assert.DoesNotContain("inside", masked);
+        }
+
+        // ── issue #47: modify-rollback's non-primitive-binding capture (pure, KB-independent) ──
+        // WriteService.ExtractOriginalTypeNameFromDump parses the "&Name : TypeRepr [Collection]"
+        // text VariableInjector.GetVariablesAsText emits, to recover the original SDT/BC/built-in
+        // type name a failed retype should restore. The full rollback (Variable/VariablesPart/
+        // KBObject binding) needs a live SDK — this covers the parsing surface that decides
+        // whether the fix's re-bind is attempted at all.
+
+        [Theory]
+        [InlineData("&http : HttpClient", "http", "HttpClient")]
+        [InlineData("&sess : WebSession", "sess", "WebSession")]
+        [InlineData("&items : SdtCandUNIEDU Collection", "items", "SdtCandUNIEDU")]
+        [InlineData("&a : Numeric(4)\n&bc : MyBC\n&b : Character(20)", "bc", "MyBC")]
+        public void ExtractOriginalTypeNameFromDump_ResolvedBinding_ReturnsTypeName(string dump, string varName, string expected)
+        {
+            Assert.Equal(expected, WriteService.ExtractOriginalTypeNameFromDump(dump, varName));
+        }
+
+        [Theory]
+        [InlineData("&s : GX_SDT(4)", "s")]
+        [InlineData("&s : GX_BUSCOMP(4)", "s")]
+        [InlineData("&s : GX_USRDEFTYP(4)", "s")]
+        public void ExtractOriginalTypeNameFromDump_UnresolvedFallbackFormat_ReturnsNull(string dump, string varName)
+        {
+            // ResolveTypeRepresentation's own "couldn't resolve a bound name" fallback — the
+            // caller must not guess a type name from this, so rollback stays scalar-only.
+            Assert.Null(WriteService.ExtractOriginalTypeNameFromDump(dump, varName));
+        }
+
+        [Fact]
+        public void ExtractOriginalTypeNameFromDump_VariableNotInDump_ReturnsNull()
+        {
+            Assert.Null(WriteService.ExtractOriginalTypeNameFromDump("&other : HttpClient", "missing"));
+        }
+
+        [Theory]
+        [InlineData(null, "http")]
+        [InlineData("", "http")]
+        [InlineData("&http : HttpClient", null)]
+        [InlineData("&http : HttpClient", "")]
+        public void ExtractOriginalTypeNameFromDump_NullOrEmptyInputs_ReturnsNull(string dump, string varName)
+        {
+            Assert.Null(WriteService.ExtractOriginalTypeNameFromDump(dump, varName));
         }
     }
 }

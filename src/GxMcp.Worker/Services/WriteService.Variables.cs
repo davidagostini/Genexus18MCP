@@ -858,6 +858,28 @@ namespace GxMcp.Worker.Services
                 // Atomic delete + add: keep the VariablesPart change in memory until
                 // obj.Save() either succeeds or we restore the original variable.
                 global::Artech.Genexus.Common.Variable originalSnapshot = existing;
+
+                // issue #47 — capture the original variable's non-primitive type name (SDT / BC /
+                // built-in GeneXus data type) BEFORE Remove(), via the same read-path resolver
+                // GetVariablesAsText uses internally. Rollback needs this to re-bind the original
+                // shape instead of silently downgrading to a bare scalar. Stays null for a plain
+                // scalar/domain original, or when the resolver itself can't name the binding —
+                // either way rollback then falls back to exactly today's scalar-only restore.
+                string originalTypeName = null;
+                bool bindingNotRestored = false;
+                try
+                {
+                    if (originalSnapshot.Type == global::Artech.Genexus.Common.eDBType.GX_SDT
+                        || originalSnapshot.Type == global::Artech.Genexus.Common.eDBType.GX_BUSCOMP
+                        || originalSnapshot.Type == global::Artech.Genexus.Common.eDBType.GX_USRDEFTYP
+                        || originalSnapshot.Type == global::Artech.Genexus.Common.eDBType.GX_EXTERNAL_OBJECT)
+                    {
+                        string dumpedText = VariableInjector.GetVariablesAsText(varPart);
+                        originalTypeName = ExtractOriginalTypeNameFromDump(dumpedText, varName);
+                    }
+                }
+                catch { /* best-effort; null means fall back to scalar-only restore */ }
+
                 // issue #36.2 — track whether a primitive eDBType was actually applied so the
                 // success message can report the REAL persisted type (e.g. Blob→BINARY), never
                 // a bare echo of the requested canonical.
@@ -1004,6 +1026,41 @@ namespace GxMcp.Worker.Services
                             try { restored.Length = originalSnapshot.Length; } catch { }
                             try { restored.Decimals = originalSnapshot.Decimals; } catch { }
                             try { if (originalSnapshot.DomainBasedOn != null) restored.DomainBasedOn = originalSnapshot.DomainBasedOn; } catch { }
+
+                            // issue #47 — best-effort re-bind of the original SDT/BC/built-in GeneXus
+                            // data type binding, mirroring the forward bind path above. A plain
+                            // scalar/domain original leaves originalTypeName null, so this block is a
+                            // no-op and rollback behaves exactly as it did before this change.
+                            if (!string.IsNullOrEmpty(originalTypeName))
+                            {
+                                try
+                                {
+                                    bool rebound = false;
+                                    if (originalSnapshot.Type == global::Artech.Genexus.Common.eDBType.GX_SDT
+                                        || originalSnapshot.Type == global::Artech.Genexus.Common.eDBType.GX_BUSCOMP)
+                                    {
+                                        var originalBoundObject = VariableInjector.ResolveTypeObject(varPart.Model, originalTypeName);
+                                        if (originalBoundObject != null && originalBoundObject.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            VariableInjector.BindVariableToSdt(restored, originalBoundObject);
+                                            rebound = true;
+                                        }
+                                        else if (originalBoundObject is global::Artech.Genexus.Common.Objects.Transaction originalBoundTrn && originalBoundTrn.IsBusinessComponent)
+                                        {
+                                            VariableInjector.BindVariableToBC(restored, originalBoundObject);
+                                            rebound = true;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        rebound = VariableInjector.TryBindGenexusDataType(restored, originalTypeName)
+                                                  || VariableInjector.TryBindBuiltinUserDefinedType(restored, originalTypeName);
+                                    }
+                                    if (!rebound) bindingNotRestored = true;
+                                }
+                                catch { bindingNotRestored = true; }
+                            }
+
                             varPart.Variables.Add(restored);
                         }
                     }
@@ -1014,10 +1071,18 @@ namespace GxMcp.Worker.Services
                     // when the message doesn't match the heuristic.
                     var boundResp = TryBuildBoundToControlsError(ex, obj, varName, existingVarId);
                     if (boundResp != null) return boundResp;
+                    // issue #47 — don't claim a full restore when the original had a non-primitive
+                    // binding (SDT / BC / built-in) that couldn't be re-bound; only the scalar
+                    // shape was recovered. The common primitive/domain case keeps the plain hint.
+                    string rollbackHint = "The modify+save failed; the original variable was restored. Check if the variable is bound to controls.";
+                    if (bindingNotRestored)
+                    {
+                        rollbackHint += " The original had a non-primitive type; verify its binding with genexus_read part=Variables.";
+                    }
                     return McpResponse.Err(
                         code: "ModifyVariableFailed",
                         message: ex.Message,
-                        hint: "The modify+save failed; the original variable was restored. Check if the variable is bound to controls.",
+                        hint: rollbackHint,
                         nextSteps: new JArray(McpResponse.NextStep(
                             tool: "genexus_read",
                             args: new JObject { ["name"] = target, ["part"] = "Variables" },
@@ -1037,6 +1102,33 @@ namespace GxMcp.Worker.Services
                         why: "Lists current variables to confirm state.")),
                     target: target);
             }
+        }
+
+        // issue #47 — pure helper: given the "&Name : TypeRepr [Collection]" text
+        // VariableInjector.GetVariablesAsText emits for a VariablesPart, extract the type token
+        // for `varName`, or null when it's unresolvable/absent. ResolveTypeRepresentation's
+        // fallback format ("<eDBType>(<len>[,<dec>])") means the read path couldn't name the
+        // binding either, so that shape is treated the same as "not found" — the caller must not
+        // guess a type name from it. Internal + no SDK types in its signature so it's unit-testable
+        // without a live KB (see GxMcp.Worker.Tests via InternalsVisibleTo).
+        internal static string ExtractOriginalTypeNameFromDump(string dumpedText, string varName)
+        {
+            if (string.IsNullOrEmpty(dumpedText) || string.IsNullOrEmpty(varName)) return null;
+            foreach (var dumpedLine in dumpedText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(
+                    dumpedLine,
+                    @"^&" + System.Text.RegularExpressions.Regex.Escape(varName) + @"\s*:\s*(.+?)(\s+Collection)?$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (m.Success)
+                {
+                    string candidate = m.Groups[1].Value.Trim();
+                    if (System.Text.RegularExpressions.Regex.IsMatch(candidate, @"^GX_\w+\(\d+(,\d+)?\)$"))
+                        return null;
+                    return candidate;
+                }
+            }
+            return null;
         }
     }
 }
