@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v2.31.0 — 2026-07-23
+
+GeneXus Server "Ignored Objects" visibility, plus full variable-type authoring (issue #45).
 
 ### Added
 
@@ -9,14 +11,6 @@
 ### Changed
 
 - **`genexus_gxserver action=pending` now flags which objects will actually commit.** The pending changelist mixed committable objects with ignored ones and labelled them all "pending". Each object now carries `ignoredForCommit` (true = the object sits in the IDE's "Ignored Objects" tab and a full commit skips it), and the response adds `committableCount` / `ignoredCount`.
-
-### Internal
-
-- Commit-ignore state is read from the object's `ModelEntityOutput` of type **505** in the design model — the marker the IDE writes for "Add to 'Ignored Objects'" (reverse-engineered on GeneXus 18.0.7: mitmproxy capture proved the toggle makes no server call, then a metadata-DB before/after diff isolated the 505 row; the 505 set was verified to equal the IDE's Ignored-Objects tab exactly). Read via the inherited `Artech.Udm.Framework.Model.LoadLastEntityOutput(key, 505, …)` (the high-level `UI.Framework ITeamDevClientService.GetIgnoredForCommit()` does not resolve in the headless worker). `GxServerSyncService` gains the `ignored` action + `IgnoredEnvelope` fallback + `IsCommitIgnored`/`LocalChangeType`/`EnumIgnoredForUpdate` helpers. tool_definitions.json + discovery golden fixture regenerated. New worker tests: `Ignored_NoMetadata_ReturnsConnectedFalse`, `Ignored_WithDotGxState_ReturnsEmptyIgnoredArrays`, `Run_IgnoredAction_IsAcceptedNotBadAction`. `ignoredForCommit` verified live over HTTP against AcademicoHomolog1's real changelist.
-
-## v2.30.2 — 2026-07-23
-
-Authoring fix (issue #45): variables of a built-in GeneXus data type.
 
 ### Fixed
 
@@ -27,6 +21,7 @@ Authoring fix (issue #45): variables of a built-in GeneXus data type.
 
 ### Internal
 
+- Commit-ignore state is read from the object's `ModelEntityOutput` of type **505** in the design model — the marker the IDE writes for "Add to 'Ignored Objects'" (reverse-engineered on GeneXus 18.0.7: mitmproxy capture proved the toggle makes no server call, then a metadata-DB before/after diff isolated the 505 row; the 505 set was verified to equal the IDE's Ignored-Objects tab exactly). Read via the inherited `Artech.Udm.Framework.Model.LoadLastEntityOutput(key, 505, …)` (the high-level `UI.Framework ITeamDevClientService.GetIgnoredForCommit()` does not resolve in the headless worker). `GxServerSyncService` gains the `ignored` action + `IgnoredEnvelope` fallback + `IsCommitIgnored`/`LocalChangeType`/`EnumIgnoredForUpdate` helpers. tool_definitions.json + discovery golden fixture regenerated. New worker tests: `Ignored_NoMetadata_ReturnsConnectedFalse`, `Ignored_WithDotGxState_ReturnsEmptyIgnoredArrays`, `Run_IgnoredAction_IsAcceptedNotBadAction`. `ignoredForCommit` verified live over HTTP against AcademicoHomolog1's real changelist.
 - issue #45: `VariableInjector.TryBindGenexusDataType` resolves a type name via `DataTypeProvider.GetProvider(model).GetTypeByName(name, model)` and applies the returned `AttCustomType` (setting `Variable.Type` from its category, `ATTCUSTOMTYPE`, and `DataTypeString`), replacing the hardcoded `WebSession=31` subtype map that covered only 1 of ~137 built-ins. Wired into `BuildResolvedVariableInto` (add), `ModifyVariableInternal` (modify), and `SetVariablesFromText` (DSL) ahead of the legacy `TryBindBuiltinUserDefinedType` fallback; read-side `ResolveTypeRepresentation` now honors `DataTypeString` for `GX_EXTERNAL_OBJECT` too.
 - issue #45 follow-ups: `SetVariablesFromText` now assigns `IsCollection` after the type-application block (the SDK resets the flag when `Variable.Type` is set). `VariableInjector.StripLiteralsAndComments` blanks string-literal and comment content (length/newline preserving, doubled-quote aware) before the `&`-token scan in `InjectVariables`. `SaveAsService.SaveAs` continues past a per-part clone failure, accumulating `created.partsSkipped`, and only returns `PartialFailure` when zero parts cloned; `SaveAsServiceTests` updated (non-fatal skip + total-failure cases).
 - Live-verified on AcademicoHomolog1 (GX 18.0.7): full type matrix (primitives, `Url` domain, `Parametros` SDT, `HttpClient`/`Location`/`Geolocation`/`WebSession`/`HttpRequest`/`MailMessage` built-ins, `Arquivos` KB External Object, numeric collection) round-trips; Source using `&http.Host`/`.Execute` and `&numColl.Count` specifies with 0 errors; ampersands in string literals no longer auto-declare vars. 9 new resolver/masker tests in `Issue33WebSessionAndSdtCollectionTests` plus updated `SaveAsServiceTests`. (SDT-collection member access at the source level, e.g. `&sdtColl.Count`, is a separate SDK semantic unrelated to these fixes.)
