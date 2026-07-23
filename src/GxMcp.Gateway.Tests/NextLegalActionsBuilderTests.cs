@@ -64,7 +64,7 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(result);
             var tools = result!.Select(s => s["tool"]?.ToString()).ToList();
             Assert.Contains("genexus_inspect", tools);
-            Assert.Contains("genexus_create_object", tools);
+            Assert.Contains("genexus_create", tools);
         }
 
         [Fact]
@@ -155,6 +155,118 @@ namespace GxMcp.Gateway.Tests
             var result = NextLegalActionsBuilder.BuildFor("genexus_apply_pattern", args, payload, isError: false);
             Assert.NotNull(result);
             Assert.True(result!.Count <= 3, $"expected ≤3 suggestions, got {result.Count}");
+        }
+
+        // --- Plan 041: canonical genexus_create dispatch by action ---
+
+        [Fact]
+        public void CanonicalCreate_ActionObject_SuggestsEditAndApplyPattern()
+        {
+            var args = new JObject { ["action"] = "object", ["type"] = "Transaction", ["name"] = "Foo" };
+            var payload = new JObject { ["status"] = "Success", ["name"] = "Foo", ["type"] = "Transaction" };
+            var result = NextLegalActionsBuilder.BuildFor("genexus_create", args, payload, isError: false);
+
+            Assert.NotNull(result);
+            Assert.NotEmpty(result!);
+            var first = (JObject)result[0];
+            Assert.Equal("genexus_edit", first["tool"]?.ToString());
+        }
+
+        [Fact]
+        public void CanonicalCreate_ActionPopup_SuggestsEditAndBuild()
+        {
+            var args = new JObject { ["action"] = "popup", ["parent"] = "WorkWithPlusFoo", ["name"] = "PopupFoo" };
+            var payload = new JObject { ["status"] = "Success", ["created"] = "PopupFoo" };
+            var result = NextLegalActionsBuilder.BuildFor("genexus_create", args, payload, isError: false);
+
+            Assert.NotNull(result);
+            Assert.NotEmpty(result!);
+            var tools = result!.Select(s => s["tool"]?.ToString()).ToList();
+            Assert.Contains("genexus_edit", tools);
+        }
+
+        [Fact]
+        public void CanonicalCreate_ActionSaveAs_SuggestsEditAndBuild()
+        {
+            var args = new JObject { ["action"] = "save_as", ["newName"] = "FooCopy" };
+            var payload = new JObject { ["status"] = "Success", ["created"] = "FooCopy" };
+            var result = NextLegalActionsBuilder.BuildFor("genexus_create", args, payload, isError: false);
+
+            Assert.NotNull(result);
+            Assert.NotEmpty(result!);
+            var tools = result!.Select(s => s["tool"]?.ToString()).ToList();
+            Assert.Contains("genexus_edit", tools);
+            Assert.Contains("genexus_lifecycle", tools);
+        }
+
+        [Fact]
+        public void CanonicalCreate_Error_ReturnsNull()
+        {
+            var args = new JObject { ["action"] = "object", ["type"] = "Transaction", ["name"] = "Foo" };
+            var payload = new JObject { ["status"] = "Error", ["message"] = "spec failure" };
+            var result = NextLegalActionsBuilder.BuildFor("genexus_create", args, payload, isError: true);
+            Assert.Null(result);
+        }
+
+        [Fact]
+        public void CanonicalCreate_UnknownAction_ReturnsNull()
+        {
+            var args = new JObject { ["action"] = "translate" };
+            var payload = new JObject { ["status"] = "Success" };
+            var result = NextLegalActionsBuilder.BuildFor("genexus_create", args, payload, isError: false);
+            Assert.Null(result);
+        }
+
+        // --- Plan 041: no emitted suggestion may name a known-legacy alias ---
+
+        private static readonly string[] KnownLegacyToolNames =
+        {
+            "genexus_undo",
+            "genexus_create_object",
+            "genexus_create_popup",
+            "genexus_save_as",
+            "genexus_logs",
+            "genexus_playbook",
+        };
+
+        [Theory]
+        [InlineData("genexus_apply_pattern")]
+        [InlineData("genexus_create")]
+        [InlineData("genexus_edit")]
+        [InlineData("genexus_lifecycle")]
+        [InlineData("genexus_versioning")]
+        public void NoSuggestion_NamesAKnownLegacyAlias(string toolName)
+        {
+            var args = new JObject
+            {
+                ["target"] = "Foo",
+                ["name"] = "Foo",
+                ["action"] = toolName == "genexus_create" ? "object" : "build",
+                ["type"] = "Transaction",
+                ["pattern"] = "WorkWithPlus",
+                ["parent"] = "WorkWithPlusFoo",
+                ["newName"] = "FooCopy",
+                ["validParentTypes"] = new JArray("Transaction"),
+            };
+            var payload = new JObject
+            {
+                ["status"] = "Success",
+                ["hostName"] = "WorkWithPlusFoo",
+                ["name"] = "Foo",
+                ["created"] = "Foo",
+                ["target"] = "Foo",
+            };
+
+            foreach (var isError in new[] { false, true })
+            {
+                var result = NextLegalActionsBuilder.BuildFor(toolName, args, payload, isError);
+                if (result == null) continue;
+                foreach (var s in result.OfType<JObject>())
+                {
+                    var tool = s["tool"]?.ToString();
+                    Assert.DoesNotContain(tool, KnownLegacyToolNames);
+                }
+            }
         }
     }
 }

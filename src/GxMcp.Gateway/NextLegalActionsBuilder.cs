@@ -53,6 +53,13 @@ namespace GxMcp.Gateway
             JArray? suggestions = toolName.ToLowerInvariant() switch
             {
                 "genexus_apply_pattern" => BuildForApplyPattern(args, responsePayload, isError),
+                "genexus_create" => isError ? null : (S(args["action"])?.ToLowerInvariant() switch
+                {
+                    "object" => BuildForCreateObject(args, responsePayload),
+                    "popup" => BuildForCreatePopup(args, responsePayload),
+                    "save_as" => BuildForSaveAs(args, responsePayload),
+                    _ => null,
+                }),
                 "genexus_create_object" => isError ? null : BuildForCreateObject(args, responsePayload),
                 "genexus_create_popup" => isError ? null : BuildForCreatePopup(args, responsePayload),
                 "genexus_edit" => isError ? null : BuildForEdit(args, responsePayload),
@@ -102,8 +109,8 @@ namespace GxMcp.Gateway
                     }
                     string firstValid = validTypes[0]?.ToString() ?? "Transaction";
                     arr.Add(Suggest(
-                        "genexus_create_object",
-                        new JObject { ["type"] = firstValid, ["name"] = "NewHost" },
+                        "genexus_create",
+                        new JObject { ["action"] = "object", ["type"] = firstValid, ["name"] = "NewHost" },
                         $"Create an object of a supported parent type (e.g. {firstValid}) and apply the pattern to it",
                         "medium"));
                     return arr;
@@ -141,11 +148,6 @@ namespace GxMcp.Gateway
                     "Revert if the pattern apply was wrong",
                     "low"));
             }
-            arr2.Add(Suggest(
-                "genexus_playbook",
-                new JObject { ["topic"] = "pattern_reapply" },
-                "Read the pattern apply/reapply playbook for src0265/src0216 diagnostics and template-choice guidance",
-                "medium"));
             return arr2;
         }
 
@@ -215,11 +217,6 @@ namespace GxMcp.Gateway
                 new JObject { ["action"] = "build", ["target"] = popup },
                 "Build the popup target to confirm it compiles",
                 "medium"));
-            arr.Add(Suggest(
-                "genexus_playbook",
-                new JObject { ["topic"] = "popup_layout" },
-                "Read the polished WWP popup PatternInstance idiom before customizing the host (label/value alignment, vertical radios, primary action bar)",
-                "medium"));
             return arr;
         }
 
@@ -246,8 +243,8 @@ namespace GxMcp.Gateway
                     "Render the edited object in the headless browser to spot regressions",
                     "medium"),
                 Suggest(
-                    "genexus_undo",
-                    new JObject { ["target"] = name },
+                    "genexus_versioning",
+                    new JObject { ["action"] = "undo", ["target"] = name },
                     "Undo the patch if the build or preview shows it was wrong",
                     "low"),
             };
@@ -272,8 +269,8 @@ namespace GxMcp.Gateway
                 var arr = new JArray
                 {
                     Suggest(
-                        "genexus_logs",
-                        new JObject { ["tail"] = 200 },
+                        "genexus_telemetry",
+                        new JObject { ["action"] = "logs", ["tail"] = 200 },
                         "Read the build log tail to find the first compile error",
                         "high"),
                 };
