@@ -459,7 +459,8 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
     "lint": "eslint src",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "check": "npm run compile && npm run lint && npm test"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

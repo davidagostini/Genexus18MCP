@@ -61,7 +61,7 @@ facing changes. Deferred until Phases 0–1 land.
 
 | Plan | Phase | Title | Status |
 |------|-------|-------|--------|
-| 051 | 0 | Nexus IDE test + lint/typecheck baseline & gate | TODO |
+| 051 | 0 | Nexus IDE test + lint/typecheck baseline & gate | DONE |
 | 052 | 1 | Honest rename + real reference/definition locations | TODO |
 | 053 | 1 | Resolve SyncManager + fix mis-wired command + hygiene | TODO |
 

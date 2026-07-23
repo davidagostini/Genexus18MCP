@@ -48,6 +48,22 @@ Each recovery rotates `gateway_debug.log` and `worker_debug.log` into `.prev.log
 
 The gateway stays warm by default. The worker is lazy and exits after `Server.WorkerIdleTimeoutMinutes` of inactivity, so a healthy gateway no longer implies a permanently resident worker process.
 
+## Testing
+
+Run `npm run check` from `src/nexus-ide` before committing or cutting a release. It chains
+the three gates in order and stops at the first failure:
+
+```powershell
+npm run check   # compile (tsc) && lint (eslint) && test (mocha via @vscode/test-electron)
+```
+
+Individually: `npm run compile` (typecheck), `npm run lint` (ESLint 9; the repo currently
+carries a warning-only baseline — 0 errors is the bar, new warnings should be fixed or
+justified), `npm test` (downloads/launches a real VS Code instance headlessly and runs the
+mocha suites under `src/test/suite/`). `npm test` needs a Windows desktop session (it can't
+run on a headless CI runner without a display) — see `docs/nexus-ide-roadmap.md` Phase 0 for
+the coverage this protects.
+
 ## Main Commands
 
 - `GeneXus: Open KB`
