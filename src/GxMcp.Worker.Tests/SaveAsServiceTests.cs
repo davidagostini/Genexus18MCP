@@ -226,11 +226,35 @@ namespace GxMcp.Worker.Tests
             Assert.Empty(cloner.Applies);
         }
 
+        // issue #45: a single inapplicable/failing part (e.g. "Layout" on a Procedure) must NOT
+        // abort the clone before the important parts (Variables) are copied. The failing part is
+        // skipped and reported under created.partsSkipped; the clone still succeeds.
         [Fact]
-        public void PartFailure_ReturnsPartialFailureWithUndoHint()
+        public void PartFailure_NonFatal_SkipsPartAndClonesTheRest()
         {
-            var cloner = ClonerWith("ProcA", "Procedure", "Source", "Rules", "Variables");
-            cloner.FailOnPart = "Rules";
+            var cloner = ClonerWith("ProcA", "Procedure", "Source", "Layout", "Variables");
+            cloner.FailOnPart = "Layout";
+            var svc = new SaveAsService(cloner);
+
+            var args = new JObject { ["name"] = "ProcA", ["newName"] = "ProcACopy" };
+            var json = JObject.Parse(svc.SaveAs(args));
+
+            Assert.Equal("ok", json["status"]?.ToString());
+            var partsCloned = (JArray)json["result"]?["created"]?["partsCloned"];
+            Assert.Contains(partsCloned, t => t.ToString() == "Source");
+            Assert.Contains(partsCloned, t => t.ToString() == "Variables");
+            Assert.DoesNotContain(partsCloned, t => t.ToString() == "Layout");
+            var skipped = (JArray)json["result"]?["created"]?["partsSkipped"];
+            Assert.NotNull(skipped);
+            Assert.Contains(skipped, t => t["part"]?.ToString() == "Layout");
+        }
+
+        // When NOTHING clones (every part fails), the clone is a genuine failure with an undo hint.
+        [Fact]
+        public void AllPartsFail_ReturnsPartialFailureWithUndoHint()
+        {
+            var cloner = ClonerWith("ProcA", "Procedure", "Source");
+            cloner.FailOnPart = "Source";
             var svc = new SaveAsService(cloner);
 
             var args = new JObject { ["name"] = "ProcA", ["newName"] = "ProcACopy" };
@@ -238,10 +262,6 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal("error", json["status"]?.ToString());
             Assert.Equal("PartialFailure", json["error"]?["code"]?.ToString());
-            Assert.Equal("clonePart:Rules", json["failedStep"]?.ToString());
-            var done = (JArray)json["completedSteps"];
-            Assert.Contains(done, t => t.ToString() == "create:ProcACopy");
-            Assert.Contains(done, t => t.ToString() == "clonePart:Source");
             Assert.Contains("genexus_delete_object", json["error"]?["hint"]?.ToString() ?? "");
         }
 

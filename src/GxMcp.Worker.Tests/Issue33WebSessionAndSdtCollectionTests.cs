@@ -77,5 +77,46 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("DomainReference", res.CanonicalType);
             Assert.Equal(typeName, res.DomainName);
         }
+
+        // ── issue #45 follow-up: &-tokens inside string literals / comments are DATA, not vars ──
+        // The auto-declare scanner must not see an ampersand that lives in a quoted string (URL
+        // query, HTML entity) or a comment, or it declares spurious VARCHAR(100) variables.
+
+        [Fact]
+        public void StripLiteralsAndComments_BlanksAmpersandsInStringLiterals()
+        {
+            var code = "&url = \"https://x/y?a=1&status=paid&b=2\"\n&html = \"a&nbsp;b\"\n&real = &other";
+            var masked = VariableInjector.StripLiteralsAndComments(code);
+            // Real code ampersands survive; literal ones are gone.
+            Assert.Contains("&url", masked);
+            Assert.Contains("&html", masked);
+            Assert.Contains("&real", masked);
+            Assert.Contains("&other", masked);
+            Assert.DoesNotContain("status", masked);
+            Assert.DoesNotContain("nbsp", masked);
+        }
+
+        [Fact]
+        public void StripLiteralsAndComments_BlanksAmpersandsInComments()
+        {
+            var code = "&keep = 1 // &dropLine comment\n/* &dropBlock */\n&alsoKeep = 2";
+            var masked = VariableInjector.StripLiteralsAndComments(code);
+            Assert.Contains("&keep", masked);
+            Assert.Contains("&alsoKeep", masked);
+            Assert.DoesNotContain("dropLine", masked);
+            Assert.DoesNotContain("dropBlock", masked);
+        }
+
+        [Fact]
+        public void StripLiteralsAndComments_HandlesDoubledQuoteEscaping()
+        {
+            // GeneXus escapes a quote inside a string by doubling it. The string does not end at the
+            // doubled quote, so &inside stays masked and &after (real code) survives.
+            var code = "&s = \"he said \"\"&inside\"\" ok\"\n&after = 1";
+            var masked = VariableInjector.StripLiteralsAndComments(code);
+            Assert.Contains("&s", masked);
+            Assert.Contains("&after", masked);
+            Assert.DoesNotContain("inside", masked);
+        }
     }
 }

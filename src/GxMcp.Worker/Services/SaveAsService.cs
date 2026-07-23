@@ -138,6 +138,7 @@ namespace GxMcp.Worker.Services
             //      clear "where it stopped" + undo hint envelope. ----
             var completedSteps = new JArray();
             var partsCloned = new JArray();
+            var partsFailed = new JArray();
 
             // Step 1: create empty target object of the same type.
             string createResult = _cloner.CreateObject(src.Type, newName);
@@ -147,16 +148,29 @@ namespace GxMcp.Worker.Services
             }
             completedSteps.Add("create:" + newName);
 
-            // Step 2: clone each part.
+            // Step 2: clone each part. A single part failing must NOT abort the clone — the
+            // available-parts list is a superset that can include parts inapplicable to this
+            // object type (e.g. "Layout" on a Procedure), and one such failure used to stop the
+            // loop before the important parts (Variables carrying a working &HttpClient) were ever
+            // cloned. Skip the failing part, record it, and keep going (issue #45).
             foreach (var part in (src.Parts ?? new List<string>()))
             {
                 string r = _cloner.ClonePart(sourceName, newName, part, typeFilter);
                 if (!IsSuccess(r))
                 {
-                    return Partial(sourceName, newName, completedSteps, "clonePart:" + part, r);
+                    partsFailed.Add(new JObject { ["part"] = part, ["detail"] = SafeParseOrString(r) });
+                    continue;
                 }
                 completedSteps.Add("clonePart:" + part);
                 partsCloned.Add(part);
+            }
+
+            // Only a total failure to clone anything is fatal — otherwise a partial clone is a
+            // usable result (the agent gets partsCloned + partsFailed and can retry specific parts).
+            if (partsCloned.Count == 0)
+            {
+                return Partial(sourceName, newName, completedSteps, "clonePart:<all>",
+                    partsFailed.Count > 0 ? partsFailed.First.ToString() : "No cloneable parts on source.");
             }
 
             // Step 3: optionally clone the WWP pattern instance.
@@ -190,6 +204,7 @@ namespace GxMcp.Worker.Services
                     ["partsCloned"] = partsCloned
                 }
             };
+            if (partsFailed.Count > 0) ((JObject)payload["created"])["partsSkipped"] = partsFailed;
             if (patternBlock != null) payload["patternInstance"] = patternBlock;
             return McpResponse.Ok(target: newName, code: "SavedAs", result: payload);
         }

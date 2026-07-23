@@ -24,7 +24,14 @@ namespace GxMcp.Worker.Helpers
             var variablesPart = obj.Parts.Get<VariablesPart>();
             if (variablesPart == null) return;
 
-            var matches = System.Text.RegularExpressions.Regex.Matches(code, @"&(\w+)");
+            // Scan for &-tokens on source with string literals and comments blanked out, so an
+            // ampersand that is DATA rather than a variable — a URL query ("...&status=paid"),
+            // an HTML entity ("&nbsp;"), a commented-out line — no longer auto-declares a spurious
+            // VARCHAR(100) variable (issue #45). The literal text itself is untouched on save; only
+            // the name-extraction view is masked.
+            string scanCode = StripLiteralsAndComments(code);
+
+            var matches = System.Text.RegularExpressions.Regex.Matches(scanCode, @"&(\w+)");
             var varNames = matches.Cast<System.Text.RegularExpressions.Match>()
                 .Select(m => m.Groups[1].Value)
                 .Distinct()
@@ -32,7 +39,7 @@ namespace GxMcp.Worker.Helpers
 
             // Detect &var.Field usage — these vars are likely SDTs/BCs, not scalars
             var sdtCandidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(code, @"&(\w+)\."))
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(scanCode, @"&(\w+)\."))
             {
                 sdtCandidates.Add(m.Groups[1].Value);
             }
@@ -49,6 +56,57 @@ namespace GxMcp.Worker.Helpers
                     }
                 }
             }
+        }
+
+        // Blank out string-literal contents and comments in GeneXus source, preserving length and
+        // newlines, so only ampersands in CODE are seen by the auto-declare scanner. Handles GeneXus
+        // doubled-quote escaping inside strings (""), both string delimiters, and // and /* */
+        // comments. issue #45. Used only for &-token extraction — never for what gets persisted.
+        internal static string StripLiteralsAndComments(string code)
+        {
+            if (string.IsNullOrEmpty(code)) return code ?? string.Empty;
+            var sb = new System.Text.StringBuilder(code.Length);
+            int i = 0, n = code.Length;
+            while (i < n)
+            {
+                char c = code[i];
+                if (c == '"' || c == '\'')
+                {
+                    char delim = c;
+                    sb.Append(' '); i++;
+                    while (i < n)
+                    {
+                        char d = code[i];
+                        if (d == delim)
+                        {
+                            // Doubled delimiter inside a string is an escaped quote — stay in-string.
+                            if (i + 1 < n && code[i + 1] == delim) { sb.Append("  "); i += 2; continue; }
+                            sb.Append(' '); i++; break;
+                        }
+                        sb.Append(d == '\n' || d == '\r' ? d : ' ');
+                        i++;
+                    }
+                    continue;
+                }
+                if (c == '/' && i + 1 < n && code[i + 1] == '/')
+                {
+                    while (i < n && code[i] != '\n' && code[i] != '\r') { sb.Append(' '); i++; }
+                    continue;
+                }
+                if (c == '/' && i + 1 < n && code[i + 1] == '*')
+                {
+                    sb.Append("  "); i += 2;
+                    while (i < n && !(code[i] == '*' && i + 1 < n && code[i + 1] == '/'))
+                    {
+                        sb.Append(code[i] == '\n' || code[i] == '\r' ? code[i] : ' ');
+                        i++;
+                    }
+                    if (i < n) { sb.Append("  "); i += 2; }
+                    continue;
+                }
+                sb.Append(c); i++;
+            }
+            return sb.ToString();
         }
 
         internal static global::Artech.Genexus.Common.Variable CreateVariable(VariablesPart part, string name, Models.SearchIndex index = null, bool sdtMemberAccessHint = false)
@@ -424,8 +482,6 @@ namespace GxMcp.Worker.Helpers
                         part.Variables.Add(v);
                     }
 
-                    v.IsCollection = isCollection;
-
                     // 1. Map string type to eDBType (including Aliases)
                     if (TryParseDbType(typeStr, out var dbType))
                     {
@@ -465,6 +521,12 @@ namespace GxMcp.Worker.Helpers
                             Logger.Info($"Resolved variable {name} type to {targetObj.TypeDescriptor.Name}: {targetObj.Name}");
                         }
                     }
+
+                    // Collection flag LAST: setting v.Type (above) resets IsCollection in the SDK,
+                    // so assigning it before the type silently produced a non-collection variable
+                    // (its .Count failed as "unknown function"). Only the typed add path — which
+                    // sets collection after the type — yielded a real collection until now (issue #45).
+                    try { v.IsCollection = isCollection; } catch { /* not all types are collectible */ }
                 }
             }
 
