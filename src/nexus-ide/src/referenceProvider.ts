@@ -1,8 +1,21 @@
 import * as vscode from "vscode";
-import { GxFileSystemProvider } from "./gxFileSystem";
+import { GxFileSystemProvider, TYPE_SUFFIX } from "./gxFileSystem";
 import { GxUriParser } from "./utils/GxUriParser";
 
+// Cap on how many `usedby:` hits we deep-scan for a real Range. Objects beyond the cap
+// still get a Location (object-level, (0,0)) so they aren't lost, but their source isn't
+// fetched/scanned — that would mean fetching potentially hundreds of objects' source.
+const MAX_DEEP_SCAN = 50;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export class GxReferenceProvider implements vscode.ReferenceProvider {
+  private static readonly outputChannel = vscode.window.createOutputChannel(
+    "Nexus IDE References",
+  );
+
   constructor(private readonly provider: GxFileSystemProvider) {}
 
   async provideReferences(
@@ -14,26 +27,127 @@ export class GxReferenceProvider implements vscode.ReferenceProvider {
     if (!GxUriParser.isGeneXusUri(document.uri)) return [];
 
     const range = document.getWordRangeAtPosition(position);
-    const word = document.getText(range);
+    if (!range) return [];
 
-    // Remove & if it's a variable reference (we don't support global variable search yet, searching for object uses)
-    const targetName = word.startsWith("&") ? word.substring(1) : word;
+    const word = document.getText(range);
+    // VS Code's default word pattern excludes '&', so a variable's word range never
+    // includes its leading '&' even when the cursor sits inside "&Total" — peek at the
+    // character right before the matched word to detect the variable prefix.
+    const precedingChar =
+      range.start.character > 0
+        ? document.getText(new vscode.Range(range.start.translate(0, -1), range.start))
+        : "";
+    const isVariable = word.startsWith("&") || precedingChar === "&";
+
+    // Variables are local to the object; we don't have a cross-KB variable search yet, so
+    // scan the currently open document's text for real occurrences instead of the (wrong)
+    // KB-wide `usedby:` lookup the old code ran against the stripped name.
+    if (isVariable) {
+      const varName = word.startsWith("&") ? word.substring(1) : word;
+      return this.findVariableReferencesInDocument(document, varName);
+    }
+
+    const targetName = word;
 
     try {
       const results = await this.provider.queryObjects(`usedby:${targetName}`, 100, 15000);
+      if (!results || !results.results) return [];
 
-      if (results && results.results) {
-        return results.results.map((obj: any) => {
-          return new vscode.Location(
+      const objects: any[] = results.results;
+      const toScan = objects.slice(0, MAX_DEEP_SCAN);
+      const overflow = objects.slice(MAX_DEEP_SCAN);
+
+      if (overflow.length > 0) {
+        GxReferenceProvider.outputChannel.appendLine(
+          `[Nexus IDE] References for '${targetName}': ${objects.length} object(s) found via usedby, deep-scanning only the first ${MAX_DEEP_SCAN}. ${overflow.length} object(s) reported at object-level location only.`,
+        );
+      }
+
+      const locations: vscode.Location[] = [];
+      for (const obj of toScan) {
+        locations.push(...(await this.locateInObjectSource(obj, targetName)));
+      }
+      for (const obj of overflow) {
+        locations.push(
+          new vscode.Location(
             GxUriParser.toEditorUri(obj.type, obj.name),
             new vscode.Position(0, 0),
-          );
-        });
+          ),
+        );
       }
+
+      return locations;
     } catch (e) {
       console.error("[Nexus IDE] Reference Provider error:", e);
+      GxReferenceProvider.outputChannel.appendLine(
+        `[Nexus IDE] Reference Provider error for '${targetName}': ${e}`,
+      );
     }
 
     return [];
+  }
+
+  private findVariableReferencesInDocument(
+    document: vscode.TextDocument,
+    varName: string,
+  ): vscode.Location[] {
+    const text = document.getText();
+    const regex = new RegExp(`&${escapeRegExp(varName)}\\b`, "gi");
+    const locations: vscode.Location[] = [];
+
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      const start = document.positionAt(match.index);
+      const end = document.positionAt(match.index + match[0].length);
+      locations.push(new vscode.Location(document.uri, new vscode.Range(start, end)));
+    }
+
+    return locations;
+  }
+
+  private async locateInObjectSource(
+    obj: any,
+    targetName: string,
+  ): Promise<vscode.Location[]> {
+    const uri = GxUriParser.toEditorUri(obj.type, obj.name);
+    const fallback = [new vscode.Location(uri, new vscode.Position(0, 0))];
+
+    try {
+      const target =
+        obj.type && TYPE_SUFFIX[obj.type] ? `${obj.type}:${obj.name}` : obj.name;
+      const result = await this.provider.callMcpTool(
+        "genexus_read",
+        { name: target, part: "Source" },
+        15000,
+      );
+
+      if (!result || typeof result.source !== "string") {
+        return fallback;
+      }
+
+      const source = result.isBase64
+        ? Buffer.from(result.source, "base64").toString("utf8")
+        : result.source;
+      const lines = source.split(/\r?\n/);
+      const lineRegex = new RegExp(`\\b${escapeRegExp(targetName)}\\b`, "gi");
+      const locations: vscode.Location[] = [];
+
+      lines.forEach((lineText: string, lineIndex: number) => {
+        lineRegex.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = lineRegex.exec(lineText)) !== null) {
+          const start = new vscode.Position(lineIndex, match.index);
+          const end = new vscode.Position(lineIndex, match.index + match[0].length);
+          locations.push(new vscode.Location(uri, new vscode.Range(start, end)));
+        }
+      });
+
+      return locations.length > 0 ? locations : fallback;
+    } catch (e) {
+      GxReferenceProvider.outputChannel.appendLine(
+        `[Nexus IDE] Failed to fetch source for ${obj.type}:${obj.name} while resolving references to '${targetName}': ${e}`,
+      );
+      return fallback;
+    }
   }
 }

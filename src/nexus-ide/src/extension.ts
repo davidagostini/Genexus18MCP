@@ -664,7 +664,7 @@ function initializeExtension(
     showCollapseAll: false,
   });
 
-  const providerManager = new ProviderManager(context, provider);
+  const providerManager = new ProviderManager(context, provider, shadowService);
   providerManager.register();
 
   const commandManager = new CommandManager(

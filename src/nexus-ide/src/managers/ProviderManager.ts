@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { GxFileSystemProvider } from "../gxFileSystem";
+import { GxShadowService } from "../gxShadowService";
 import { GxDocumentSymbolProvider } from "../symbolProvider";
 import { GxDefinitionProvider } from "../definitionProvider";
 import { GxHoverProvider } from "../hoverProvider";
@@ -19,6 +20,7 @@ export class ProviderManager {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly provider: GxFileSystemProvider,
+    private readonly shadowService?: GxShadowService,
   ) {}
 
   register() {
@@ -63,7 +65,7 @@ export class ProviderManager {
       ),
       vscode.languages.registerRenameProvider(
         "genexus",
-        new GxRenameProvider(this.provider),
+        new GxRenameProvider(this.provider, this.shadowService),
       ),
       vscode.languages.registerDocumentFormattingEditProvider(
         "genexus",
