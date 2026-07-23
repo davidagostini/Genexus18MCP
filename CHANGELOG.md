@@ -2,7 +2,18 @@
 
 ## [Unreleased]
 
-Agent-ergonomics round: louder argument validation and a content-first default.
+Agent-ergonomics round: louder argument validation, richer list metadata, content-first defaults, and a batch of correctness fixes.
+
+### Added
+
+- **List responses now carry `empty`, `returned`, and `totalByType` for far more tools.** These signals — which let an agent tell "0 results" from a silent failure and paginate without guessing — previously only appeared on `genexus_query` / `genexus_list_objects`. They now also attach to tools whose collection uses another key or is nested one level down (e.g. `genexus_api` endpoints, `genexus_versioning` history, gxserver pending/ignored/conflicts).
+
+### Fixed
+
+- **A second build started in the split-second after the first no longer slips past the "build already running" guard.** The guard read an in-flight set that a build only joined on a background thread, so two builds fired back-to-back could both be admitted and race the generated output. Builds now register synchronously before the background work is scheduled.
+- **`next_legal_actions` follow-up suggestions work again for object/popup/save-as creation.** After the tool consolidation the suggestion builder was still keyed on pre-consolidation tool names, so a `genexus_create` call produced no follow-up hints; it now dispatches on the canonical tool + `action`, and every suggestion points at a current tool name (so it holds even with legacy aliases disabled).
+- **`genexus_variable action=modify` rollback now restores a non-primitive type.** When a retype failed and the variable was rolled back, an original SDT / Business Component / built-in GeneXus data-type binding (e.g. `HttpClient`, `WebSession`) was silently downgraded to a bare scalar while the tool reported "the original variable was restored." The rollback now re-establishes the original binding, and the message flags when it couldn't.
+- **Per-tool help is reachable by the current tool names.** `resources/read genexus://kb/tool-help/<tool>` returned nothing for `genexus_create` / `genexus_db` because those entries were still keyed by their pre-consolidation names; help now resolves by canonical name, and a legacy name still resolves via alias fallback.
 
 ### Changed
 
@@ -11,7 +22,14 @@ Agent-ergonomics round: louder argument validation and a content-first default.
 
 ### Internal
 
-- `GatewayArgsValidator.Violation` gains a `Suggestion`: DidYouMean over enum values, and — for tools without `additionalProperties: false` — over declared property names (edit distance ≤ 2, gated by a `CrossCuttingArgs` allowlist so undeclared pass-through args and projection/KB options are never rejected). `Program.RequestLoop`'s `InvalidArgs` envelope surfaces `suggestion` per violation and appends it to the hint. `ApiIntrospectService` defaults a missing `action` to the read-only `list`. Tests: 4 added in `GatewayArgsValidatorTests` (enum suggestion, far-value no-suggestion, unknown-key typo, cross-cutting not flagged); `ApiIntrospectServiceTests.Run_MissingAction` rewritten to assert the content-first `list` default. No `tool_definitions.json` / discovery-fixture change.
+- `GatewayArgsValidator.Violation` gains a `Suggestion`: DidYouMean over enum values, and — for tools without `additionalProperties: false` — over declared property names (edit distance ≤ 2, gated by a `CrossCuttingArgs` allowlist). `Program.RequestLoop`'s `InvalidArgs` envelope surfaces `suggestion` per violation. `ApiIntrospectService` defaults a missing `action` to the read-only `list`.
+- `NextLegalActionsBuilder` gains a canonical `genexus_create` case dispatching by `action` (object/popup/save_as); emitted suggestions repointed to canonical names (`genexus_versioning action=undo`, `genexus_telemetry action=logs`), the nonexistent `genexus_playbook` suggestion dropped.
+- `Program.ToolPayload.NormalizeToolPayloadForAxi` resolves the collection via a `matchedKey`/`collectionHost` lookup that broadens the recognized key set and descends one level into the canonical `result` object; aggregates are written at top level; field projection stays scoped to search tools.
+- `BuildService` registers `_inFlightBuilds` synchronously in `Build()`; the `referencedButNotBuilt` evidence check uses a precomputed `HashSet` instead of a nested `checkList.Any` scan.
+- `WriteService.Variables` captures the original type name before removal (via the public `GetVariablesAsText` + a new `ExtractOriginalTypeNameFromDump` helper) and replays the SDT/BC/built-in bind in the rollback branch.
+- `ToolHelpCatalog.Get` resolves legacy names through `McpRouter.TryRewriteLegacyTool`; two entries re-keyed to canonical umbrella names.
+- New non-wired `ToolIdentity` prototype + design doc (`docs/tool-identity-registry.md`) for a single canonical tool-name source of truth (advisor plan 046 — spike; not yet wired into the catalogs).
+- Tests: full suites green — Gateway 697 passed / 7 skipped, Worker 1578 passed / 4 skipped. New tests across `GatewayArgsValidatorTests`, `NextLegalActionsBuilderTests`, `GatewayBudgetTests`, `BuildServiceTests`, `Issue33WebSessionAndSdtCollectionTests`, `McpRouterTests`, `ToolIdentityTests`. Advisor plans + this work: `plans/040`–`046`.
 
 ## v2.31.1 — 2026-07-23
 

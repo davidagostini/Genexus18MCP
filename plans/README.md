@@ -23,21 +23,24 @@ work, gxserver "ignored objects", BuildService additions). Every finding was vet
 against live code by the advisor — three subagent line-attributions were wrong and
 corrected before planning.
 
-**These plans are NOT auto-applied.** Unlike passes 3–6, the maintainer has not
-authorized auto-apply; 040–046 are advisor-authored handoffs awaiting a decision.
-(Two separate agent-ergo fixes already shipped this session on `main` at `4082fd3`,
-CHANGELOG `[Unreleased]`, unreleased: fail-loud typo'd-arg validation + content-first
-`genexus_api` default — those are done and not in this backlog.)
+**All seven applied (2026-07-23).** The maintainer authorized apply-all; each plan was
+executed by a separate executor subagent in an isolated worktree, advisor-reviewed
+(scope + diff + tests), and cherry-picked to `main` (commits `3b7ce81`, `c5eba73`,
+`43d5a5c`, `d48e1aa`, `280412d`, `cef140f`, `f33e7ab`). Consolidated gate on merged
+`main` green: solution builds 0 errors; Gateway 697 passed / 7 skipped; Worker 1578
+passed / 4 skipped. **Not released** (unreleased in CHANGELOG `[Unreleased]`).
+(Two earlier agent-ergo fixes shipped this session on `main` at `4082fd3`: fail-loud
+typo'd-arg validation + content-first `genexus_api` default — done, not in this backlog.)
 
 | Plan | Title | Priority | Effort | Risk | Depends on | Status |
 |------|-------|----------|--------|------|------------|--------|
-| 040 | Close the build "already running" TOCTOU race (`_inFlightBuilds` registered async in `RunBuild`) | P1 | S | LOW | — | TODO |
-| 041 | Restore `next_legal_actions` for the consolidated create family (builder keyed on legacy tool names) | P1 | S-M | LOW | — | TODO |
-| 042 | Make aggregates + empty-state universal (enrichment only fires for 8 fixed top-level keys) | P2 | M | LOW-MED | — | TODO |
-| 043 | Restore SDT/BC/built-in bindings in modify-variable rollback (only primitives restored today) | P2 | M | MED | — | TODO |
-| 044 | Key tool-help by canonical names + resolve legacy aliases (help unreachable by canonical name) | P3 | S | LOW | — | TODO |
-| 045 | De-quadratic the `referencedButNotBuilt` evidence scan (`checkList.Any` in nested loops) | P3 | S | LOW | — | TODO |
-| 046 | Design a single tool-identity registry (SPIKE — durable fix for 041 + 044's shared root cause) | P3 | M | LOW | informed by 041, 044 | TODO |
+| 040 | Close the build "already running" TOCTOU race (`_inFlightBuilds` registered async in `RunBuild`) | P1 | S | LOW | — | DONE |
+| 041 | Restore `next_legal_actions` for the consolidated create family (builder keyed on legacy tool names) | P1 | S-M | LOW | — | DONE |
+| 042 | Make aggregates + empty-state universal (enrichment only fires for 8 fixed top-level keys) | P2 | M | LOW-MED | — | DONE |
+| 043 | Restore SDT/BC/built-in bindings in modify-variable rollback (only primitives restored today) | P2 | M | MED | — | DONE |
+| 044 | Key tool-help by canonical names + resolve legacy aliases (help unreachable by canonical name) | P3 | S | LOW | — | DONE |
+| 045 | De-quadratic the `referencedButNotBuilt` evidence scan (`checkList.Any` in nested loops) | P3 | S | LOW | — | DONE |
+| 046 | Design a single tool-identity registry (SPIKE — durable fix for 041 + 044's shared root cause) | P3 | M | LOW | informed by 041, 044 | DONE |
 
 Recommended order: **040, 041** (P1 — build-correctness + a silently-dead ergo
 feature) → **042, 043** (P2) → **044, 045** (P3 quick wins) → **046** (design spike,
