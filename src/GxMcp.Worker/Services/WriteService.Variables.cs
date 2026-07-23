@@ -341,8 +341,14 @@ namespace GxMcp.Worker.Services
                     else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
                         VariableInjector.BindVariableToBC(newVar, targetObj);
                 }
-                // Built-in user-defined types (WebSession, ...) aren't KB objects, so ResolveTypeObject
-                // can't find them — bind by name to the GX_USRDEFTYP effective type (issue #33).
+                // Built-in GeneXus data types (HttpClient, WebSession, Location, ...) aren't KB
+                // objects, so ResolveTypeObject can't find them — resolve by name through the SDK's
+                // own type registry (issue #45). Covers all ~137 built-ins generically.
+                else if (VariableInjector.TryBindGenexusDataType(newVar, resolvedTypeForSdk))
+                {
+                }
+                // Legacy hardcoded fallback (issue #33) — only if the SDK registry path above is
+                // unavailable in a given headless build.
                 else if (VariableInjector.TryBindBuiltinUserDefinedType(newVar, resolvedTypeForSdk))
                 {
                 }
@@ -902,7 +908,11 @@ namespace GxMcp.Worker.Services
                             else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
                                 VariableInjector.BindVariableToBC(newVar, targetObj);
                         }
-                        // WebSession & other built-in user-defined types (issue #33).
+                        // Built-in GeneXus data types (HttpClient, WebSession, ...) via the SDK
+                        // registry (issue #45), with the legacy hardcoded map as fallback (issue #33).
+                        else if (VariableInjector.TryBindGenexusDataType(newVar, resolvedTypeForSdk))
+                        {
+                        }
                         else if (VariableInjector.TryBindBuiltinUserDefinedType(newVar, resolvedTypeForSdk))
                         {
                         }

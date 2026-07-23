@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.30.2 — 2026-07-23
+
+Authoring fix (issue #45): variables of a built-in GeneXus data type.
+
+### Fixed
+
+- **You can now declare a variable of a built-in GeneXus data type — `HttpClient`, `HttpRequest`, `HttpResponse`, `WebSession`, `MailMessage`, `ExcelDocument`, and the rest — through the MCP.** Previously `genexus_variable add typeName=HttpClient` failed with `UnknownType`, `modify` silently persisted a dangling reference, and the `genexus_edit part=Variables` DSL silently coerced the variable to `NUMERIC(4)` — so any object that calls out over HTTP (`&http.Host`, `&http.Execute(…)`) could not be authored without opening the GeneXus IDE by hand. All three paths (`add`, `modify`, and the `mode=full` Variables DSL) now resolve the type through GeneXus's own type registry, exactly as the IDE's variable Type picker does, and the variable round-trips (reads back by name) and passes specification with member access resolved. Only `WebSession` was previously special-cased; every built-in GeneXus data type is now recognized generically.
+
+### Internal
+
+- issue #45: `VariableInjector.TryBindGenexusDataType` resolves a type name via `DataTypeProvider.GetProvider(model).GetTypeByName(name, model)` and applies the returned `AttCustomType` (setting `Variable.Type` from its category, `ATTCUSTOMTYPE`, and `DataTypeString`), replacing the hardcoded `WebSession=31` subtype map that covered only 1 of ~137 built-ins. Wired into `BuildResolvedVariableInto` (add), `ModifyVariableInternal` (modify), and `SetVariablesFromText` (DSL) ahead of the legacy `TryBindBuiltinUserDefinedType` fallback; read-side `ResolveTypeRepresentation` now honors `DataTypeString` for `GX_EXTERNAL_OBJECT` too. Live-verified on AcademicoHomolog1 (GX 18.0.7): add + modify + DSL round-trip for `HttpClient`/`HttpRequest`/`MailMessage`/`WebSession`, and a Source using `&http.Host`/`.BaseURL`/`.AddHeader`/`.Execute` specifies with 0 errors. 6 new resolver-gate tests in `Issue33WebSessionAndSdtCollectionTests`.
+
 ## v2.30.1 — 2026-07-23
 
 Data-loss and reliability fixes (issues #43 and #44).

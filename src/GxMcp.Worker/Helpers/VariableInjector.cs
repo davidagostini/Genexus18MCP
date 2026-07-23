@@ -378,10 +378,13 @@ namespace GxMcp.Worker.Helpers
                 return string.Format("{0}({1}{2})", v.Type, v.Length, v.Decimals > 0 ? "," + v.Decimals : "");
             }
 
-            // User-defined effective type (WebSession, ...): DataTypeString holds the type name.
-            // Without this a WebSession variable serializes as "GX_USRDEFTYP(4)" and round-tripping
-            // through an edit would drop the type (issue #33).
-            if (v.Type == global::Artech.Genexus.Common.eDBType.GX_USRDEFTYP)
+            // Built-in GeneXus data type (WebSession, HttpClient, ...): DataTypeString holds the type
+            // name. Without this a WebSession variable serializes as "GX_USRDEFTYP(4)" and round-tripping
+            // through an edit would drop the type (issue #33). GX_EXTERNAL_OBJECT is covered too so any
+            // external-object-category built-in reads back by name rather than "GX_EXTERNAL_OBJECT(4)"
+            // (issue #45).
+            if (v.Type == global::Artech.Genexus.Common.eDBType.GX_USRDEFTYP
+                || v.Type == global::Artech.Genexus.Common.eDBType.GX_EXTERNAL_OBJECT)
             {
                 try
                 {
@@ -431,9 +434,16 @@ namespace GxMcp.Worker.Helpers
                         v.DomainBasedOn = null; 
                         v.SetPropertyValue("DataType", null); // Reset user type if it was set
                     }
+                    else if (TryBindGenexusDataType(v, typeStr))
+                    {
+                        // Built-in GeneXus data types (HttpClient, WebSession, Location, ...) via the
+                        // SDK type registry (issue #45). Without this the DSL silently left the var at
+                        // its default NUMERIC(4) type for any non-primitive built-in.
+                        Logger.Info($"Resolved variable {name} type to GeneXus data type {typeStr}");
+                    }
                     else if (TryBindBuiltinUserDefinedType(v, typeStr))
                     {
-                        // WebSession & other built-in user-defined types (issue #33).
+                        // Legacy hardcoded WebSession fallback (issue #33).
                         Logger.Info($"Resolved variable {name} type to built-in user-defined type {typeStr}");
                     }
                     else
@@ -522,6 +532,35 @@ namespace GxMcp.Worker.Helpers
             if (canonical == null) return false;
             BindVariableToExternalObject(v, canonical, BuiltinUserDefinedTypes[canonical]);
             return true;
+        }
+
+        // issue #45 — bind a variable to ANY built-in GeneXus data type (HttpClient, HttpRequest,
+        // HttpResponse, WebSession, Location, MailMessage, ExcelDocument, …) by resolving the name
+        // through the SDK's own type registry, exactly as the IDE's variable "Type" picker does.
+        // DataTypeProvider.GetTypeByName returns the AttCustomType the SDK wants persisted — carrying
+        // the correct effective-type category (Variable.Type) and the runtime subtype guid — so we
+        // don't hardcode a per-type id table (the WebSession=31 map only covered one of ~137 types).
+        // Returns false when the name isn't a known GeneXus data type, so callers still surface
+        // UnknownType. Setting DataTypeString mirrors the name for read-back round-tripping.
+        public static bool TryBindGenexusDataType(global::Artech.Genexus.Common.Variable v, string typeName)
+        {
+            if (v == null || string.IsNullOrWhiteSpace(typeName)) return false;
+            try
+            {
+                var model = v.Model;
+                if (model == null) return false;
+                var provider = Artech.Genexus.Common.Types.DataTypeProvider.GetProvider(model);
+                if (provider == null) return false;
+                var att = provider.GetTypeByName(typeName.Trim(), model);
+                if (att == null) return false;
+                v.Type = (global::Artech.Genexus.Common.eDBType)att.DataType;
+                try { v.SetPropertyValue("ATTCUSTOMTYPE", att); }
+                catch (Exception ex) { Logger.Warn("[TryBindGenexusDataType] SetPropertyValue ATTCUSTOMTYPE failed: " + ex.Message); return false; }
+                try { v.SetPropertyValue("DataTypeString", typeName.Trim()); } catch { /* read-back mirror; best-effort */ }
+                Logger.Info($"[TryBindGenexusDataType] Bound {v.Name} -> {typeName} (category {att.DataType}, guid {att.Guid})");
+                return true;
+            }
+            catch (Exception ex) { Logger.Warn("[TryBindGenexusDataType] " + ex.Message); return false; }
         }
 
         // GX_USRDEFTYP = user-defined effective type (AttCustomType category 255). The concrete

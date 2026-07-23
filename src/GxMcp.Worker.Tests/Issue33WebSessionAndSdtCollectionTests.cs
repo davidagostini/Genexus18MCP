@@ -55,5 +55,27 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("DomainReference", res.CanonicalType);
             Assert.Equal("WebSession", res.DomainName);
         }
+
+        // ── issue #45: any built-in GeneXus data type name must pass the resolver gate ──
+        // The resolver has no KB access, so it can't confirm HttpClient/HttpRequest/… are real
+        // GeneXus types — that resolution happens later via VariableInjector.TryBindGenexusDataType
+        // (DataTypeProvider.GetTypeByName), exercised by the live-KB verification in the PR. What
+        // MUST hold here is that these names are accepted as a recognized reference so the add /
+        // modify / DSL paths REACH the SDK bind instead of being rejected up front with UnknownType
+        // (the original blocker) — or silently coerced to NUMERIC(4) / a dangling DomainReference.
+        [Theory]
+        [InlineData("HttpClient")]
+        [InlineData("HttpRequest")]
+        [InlineData("HttpResponse")]
+        [InlineData("MailMessage")]
+        [InlineData("Location")]
+        [InlineData("Geolocation")]
+        public void VariableTypeResolver_GenexusDataTypes_ResolveAsRecognizedReference(string typeName)
+        {
+            var res = VariableTypeResolver.Resolve(typeName);
+            Assert.True(res.Recognized);
+            Assert.Equal("DomainReference", res.CanonicalType);
+            Assert.Equal(typeName, res.DomainName);
+        }
     }
 }
