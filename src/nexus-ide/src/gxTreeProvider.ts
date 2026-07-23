@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { GxUriParser } from "./utils/GxUriParser";
+import { Logger } from "./utils/Logger";
 
 const TYPE_ICON_FILE: Record<string, string> = {
   Module: "module",
@@ -163,7 +164,8 @@ export class GxTreeProvider implements vscode.TreeDataProvider<GxTreeItem> {
         typeof entry.name === "string" &&
         typeof entry.type === "string",
       );
-    } catch {
+    } catch (e) {
+      Logger.warn(`[Nexus IDE] Container index at ${indexPath} is unreadable or corrupt: ${e}`);
       return [];
     }
   }

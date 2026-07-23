@@ -332,7 +332,10 @@ export class BackendManager {
       if (status) {
         return;
       }
-    } catch {
+    } catch (e) {
+      // Load-bearing: ping throwing here confirms the leased gateway isn't
+      // responding, so control falls through to the taskkill below.
+      Logger.debug(`[BackendManager] Stale-lease ping failed (falling through to cleanup): ${e}`);
     }
 
     try {
@@ -385,7 +388,8 @@ export class BackendManager {
       if (!status) {
         return false;
       }
-    } catch {
+    } catch (e) {
+      Logger.debug(`[BackendManager] isGatewayAlreadyReady ping failed: ${e}`);
       return false;
     }
 
@@ -423,7 +427,9 @@ export class BackendManager {
         this.backendLogPath,
         `[${new Date().toISOString()}] ${message}\n`,
       );
-    } catch {}
+    } catch (e) {
+      Logger.debug(`[BackendManager] Failed to append trace log: ${e}`);
+    }
   }
 
   private isProcessAlive(processId: number): boolean {
@@ -435,6 +441,9 @@ export class BackendManager {
       process.kill(processId, 0);
       return true;
     } catch {
+      // process.kill(pid, 0) throwing ESRCH is the normal/expected way this
+      // check reports "not alive" - not a failure worth logging (called on
+      // every health-check tick).
       return false;
     }
   }
@@ -444,7 +453,9 @@ export class BackendManager {
       if (fs.existsSync(leasePath)) {
         fs.unlinkSync(leasePath);
       }
-    } catch {}
+    } catch (e) {
+      Logger.debug(`[BackendManager] Failed to delete lease file ${leasePath}: ${e}`);
+    }
   }
 }
 

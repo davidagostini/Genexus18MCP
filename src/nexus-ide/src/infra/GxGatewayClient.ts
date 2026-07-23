@@ -200,7 +200,8 @@ export class GxGatewayClient {
               }
             }
             return text;
-          } catch {
+          } catch (e) {
+            Logger.debug(`[GxGateway] Content text inspection failed: ${e}`);
             return text;
           }
         }
@@ -211,7 +212,8 @@ export class GxGatewayClient {
 
       Logger.info(`[GxGateway] No result wrapper found.`);
       return fullResponse;
-    } catch {
+    } catch (e) {
+      Logger.warn(`[GxGateway] Gateway response body was not valid JSON; returning raw body: ${e}`);
       return body;
     }
   }

@@ -173,7 +173,8 @@ export class McpDiscoveryManager {
       let entries: fs.Dirent[];
       try {
         entries = fs.readdirSync(current, { withFileTypes: true });
-      } catch {
+      } catch (e) {
+        Logger.debug(`[Nexus IDE] Discovery-file cleanup could not read ${current}: ${e}`);
         continue;
       }
 

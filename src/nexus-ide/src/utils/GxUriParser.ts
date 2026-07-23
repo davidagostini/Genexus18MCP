@@ -3,6 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { GX_SCHEME } from "../constants";
 import { GxPartMapper } from "./GxPartMapper";
+import { Logger } from "./Logger";
 
 export interface GxUriInfo {
   type: string;
@@ -75,7 +76,8 @@ export class GxUriParser {
 
         this.registerMirrorEntry(entry);
       }
-    } catch {
+    } catch (e) {
+      Logger.warn(`[Nexus IDE] Mirror index at ${indexPath} is unreadable or corrupt: ${e}`);
       this.clearMirrorIndex();
     }
   }

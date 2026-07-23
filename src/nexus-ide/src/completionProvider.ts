@@ -71,7 +71,9 @@ export class GxCompletionItemProvider implements vscode.CompletionItemProvider {
                 items.push(item);
               }
             }
-          } catch {}
+          } catch (e) {
+            Logger.debug(`[Nexus IDE] SDT/Transaction/Domain lookup failed for "${word}": ${e}`);
+          }
         }
       } else {
         // Suggest common variable prefixes or names if applicable
@@ -311,7 +313,9 @@ export class GxCompletionItemProvider implements vscode.CompletionItemProvider {
               item.preselect = true;
               items.push(item);
             }
-          } catch {}
+          } catch (e) {
+            Logger.debug(`[Nexus IDE] Base table attribute lookup failed for "${baseTable}": ${e}`);
+          }
         }
       }
     }

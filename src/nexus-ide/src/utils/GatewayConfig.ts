@@ -4,6 +4,7 @@ import * as os from "os";
 import { createHash } from "crypto";
 import * as vscode from "vscode";
 import { CONFIG_MCP_PORT, DEFAULT_MCP_PORT } from "../constants";
+import { Logger } from "./Logger";
 
 export const GATEWAY_LEASE_STALE_AFTER_MS = 45_000;
 
@@ -55,7 +56,8 @@ export function tryReadGatewayConfig(extensionPath: string): any | undefined {
 
   try {
     return readJsonFile(configPath);
-  } catch {
+  } catch (e) {
+    Logger.warn(`[Nexus IDE] Gateway config at ${configPath} is unreadable or corrupt: ${e}`);
     return undefined;
   }
 }
@@ -116,7 +118,8 @@ export function readGatewayLease(leasePath: string): GatewayLeaseRecord | undefi
 
   try {
     return readJsonFile(leasePath) as GatewayLeaseRecord;
-  } catch {
+  } catch (e) {
+    Logger.warn(`[Nexus IDE] Gateway lease at ${leasePath} is unreadable or corrupt: ${e}`);
     return undefined;
   }
 }
@@ -141,7 +144,8 @@ function normalizeGatewayPath(rawPath: string | undefined): string {
 
   try {
     return path.resolve(rawPath).replace(/[\\/]+$/, "").toLowerCase();
-  } catch {
+  } catch (e) {
+    Logger.debug(`[Nexus IDE] path.resolve failed for "${rawPath}"; using raw fallback: ${e}`);
     return rawPath.trim().replace(/[\\/]+$/, "").toLowerCase();
   }
 }

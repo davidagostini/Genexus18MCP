@@ -84,7 +84,9 @@ export class GxDiagnosticProvider {
                     const lineText = document.lineAt(line).text;
                     const snippetIndex = lineText.indexOf(issue.snippet);
                     if (snippetIndex >= 0) col = snippetIndex;
-                } catch {}
+                } catch (e) {
+                    Logger.debug(`[Nexus IDE] Diagnostic snippet-range lookup failed: ${e}`);
+                }
                 range = new vscode.Range(line, col, line, col + issue.snippet.length);
             } else {
                 try {

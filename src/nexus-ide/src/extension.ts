@@ -58,7 +58,9 @@ function appendLifecycleLog(message: string): void {
       lifecycleLogPath,
       `[${new Date().toISOString()}] ${message}\n`,
     );
-  } catch {}
+  } catch (e) {
+    Logger.debug(`[Nexus IDE] Failed to append lifecycle log: ${e}`);
+  }
 }
 
 function isMirrorReadyForMount(shadowRoot: string): boolean {
@@ -75,7 +77,8 @@ function isMirrorReadyForMount(shadowRoot: string): boolean {
     const raw = fs.readFileSync(indexPath, "utf8");
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) && parsed.length > 0;
-  } catch {
+  } catch (e) {
+    Logger.warn(`[Nexus IDE] Mirror index at ${indexPath} is unreadable or corrupt: ${e}`);
     return false;
   }
 }
@@ -169,7 +172,8 @@ export async function hasUsableSearchIndex(
   try {
     const rootEntries = await provider.browseObjects("");
     return Array.isArray(rootEntries) && rootEntries.some(isRootBrowseEntry);
-  } catch {
+  } catch (e) {
+    Logger.debug(`[Nexus IDE] Root browse fallback check failed: ${e}`);
     return false;
   }
 }
@@ -542,7 +546,9 @@ export async function addKbFolder(
 
     try {
       await vscode.commands.executeCommand(`${VIEW_EXPLORER}.focus`);
-    } catch {}
+    } catch (e) {
+      Logger.debug(`[Nexus IDE] Explorer view focus failed: ${e}`);
+    }
 
     vscode.window.setStatusBarMessage(
       "$(folder-opened) GeneXus KB pronta no Explorer",
@@ -568,7 +574,9 @@ export async function addKbFolder(
         context.globalState.update(STATE_KEY_FOLDER_ADDED, true);
         try {
           await vscode.commands.executeCommand(`${VIEW_EXPLORER}.focus`);
-        } catch {}
+        } catch (e) {
+          Logger.debug(`[Nexus IDE] Explorer view focus failed: ${e}`);
+        }
         vscode.window.setStatusBarMessage(
           "$(folder-opened) GeneXus KB montada no Explorer",
           DEFAULT_STATUS_BAR_TIMEOUT,

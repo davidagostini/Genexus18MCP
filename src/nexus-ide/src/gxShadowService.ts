@@ -229,7 +229,8 @@ export class GxShadowService {
       const raw = fs.readFileSync(indexPath, "utf8");
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed);
-    } catch {
+    } catch (e) {
+      Logger.warn(`[Nexus IDE] Container index at ${indexPath} is unreadable or corrupt: ${e}`);
       return false;
     }
   }
@@ -339,7 +340,8 @@ export class GxShadowService {
     if (!fs.existsSync(filePath)) return false;
     try {
       return fs.readFileSync(filePath, "utf8").startsWith(PLACEHOLDER_PREFIX);
-    } catch {
+    } catch (e) {
+      Logger.debug(`[Nexus IDE] isPlaceholder read failed for ${filePath}: ${e}`);
       return false;
     }
   }
@@ -382,7 +384,9 @@ export class GxShadowService {
       if (fromDisk) {
         return fromDisk;
       }
-    } catch {}
+    } catch (e) {
+      Logger.debug(`[Nexus IDE] Placeholder-info disk read failed for ${uri.fsPath}: ${e}`);
+    }
 
     const parsed = GxUriParser.parse(uri);
     if (!parsed?.name) {
@@ -596,7 +600,8 @@ export class GxShadowService {
       const raw = fs.readFileSync(indexPath, "utf8");
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed) ? parsed : [];
-    } catch {
+    } catch (e) {
+      Logger.warn(`[Nexus IDE] Mirror index at ${indexPath} is unreadable or corrupt: ${e}`);
       return [];
     }
   }
@@ -729,7 +734,8 @@ export class GxShadowService {
 
       this._fileHashes.set(filePath, currentHash);
       return false;
-    } catch {
+    } catch (e) {
+      Logger.debug(`[Nexus IDE] shouldIgnore hash check failed for ${filePath}: ${e}`);
       return false;
     }
   }

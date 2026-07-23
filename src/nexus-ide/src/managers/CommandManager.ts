@@ -26,6 +26,7 @@ import {
 } from "../constants";
 
 import { GxUriParser } from "../utils/GxUriParser";
+import { Logger } from "../utils/Logger";
 
 type DiscoverySnapshot = {
   tools: any[];
@@ -81,7 +82,8 @@ export class CommandManager {
 
       try {
         return JSON.stringify(obj, null, 2);
-      } catch {
+      } catch (e) {
+        Logger.debug(`[Nexus IDE] Failed to stringify gateway result: ${e}`);
         return String(value);
       }
     }

@@ -137,7 +137,9 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
     Logger.info("[Nexus IDE] Warming up KB...");
     try {
       await this.callMcpMethod("ping", undefined, 2000);
-    } catch {}
+    } catch (e) {
+      Logger.debug(`[Nexus IDE] Warmup ping failed (retry loop follows): ${e}`);
+    }
 
     this._kbInitPromise = (async () => {
       let lastError: unknown;
@@ -232,7 +234,9 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
           : res.source;
         this._cache.metadataCache.set(uri.toString() + ":" + partName, decoded);
       }
-    } catch {}
+    } catch (e) {
+      Logger.debug(`[Nexus IDE] Metadata prefetch failed for ${objType}:${objName} (${partName}): ${e}`);
+    }
   }
 
   watch(
