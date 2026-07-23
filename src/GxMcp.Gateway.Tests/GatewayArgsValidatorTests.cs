@@ -191,6 +191,96 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains(result.Violations, v => v.Path == "unknown");
         }
 
+        // ── 7b. Enum violation carries a DidYouMean suggestion ───────────────
+
+        [Fact]
+        public void Validate_OutOfEnumValue_TypoNearMember_CarriesSuggestion()
+        {
+            GatewayArgsValidator.ClearCache();
+            GatewayArgsValidator.PrimeCache("genexus_edit", MakeSchema(
+                props: new[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
+            ));
+
+            var result = GatewayArgsValidator.Validate("genexus_edit", new JObject { ["mode"] = "patche" });
+
+            Assert.False(result.Ok);
+            var v = Assert.Single(result.Violations);
+            Assert.Equal("mode", v.Path);
+            Assert.Equal("patch", v.Suggestion);
+        }
+
+        [Fact]
+        public void Validate_OutOfEnumValue_FarValue_NoSuggestion()
+        {
+            GatewayArgsValidator.ClearCache();
+            GatewayArgsValidator.PrimeCache("genexus_edit", MakeSchema(
+                props: new[] { ("mode", "string", new[] { "full", "patch", "ops" }) }
+            ));
+
+            var result = GatewayArgsValidator.Validate("genexus_edit", new JObject { ["mode"] = "completely_wrong" });
+
+            Assert.False(result.Ok);
+            Assert.Null(Assert.Single(result.Violations).Suggestion);
+        }
+
+        // ── 7c. Unknown-arg typo detection (no additionalProperties:false) ────
+
+        [Fact]
+        public void Validate_UnknownArg_TypoOfDeclaredProp_FailsLoudWithSuggestion()
+        {
+            GatewayArgsValidator.ClearCache();
+            GatewayArgsValidator.PrimeCache("genexus_read", MakeSchema(
+                props: new[] { ("name", "string", (string[]?)null), ("part", "string", (string[]?)null) }
+            ));
+
+            // "nam" is one edit from the declared "name" → high-confidence typo.
+            var result = GatewayArgsValidator.Validate("genexus_read", new JObject { ["nam"] = "Foo" });
+
+            Assert.False(result.Ok);
+            var v = Assert.Single(result.Violations);
+            Assert.Equal("nam", v.Path);
+            Assert.Equal("unknown argument", v.Actual);
+            Assert.Equal("name", v.Suggestion);
+        }
+
+        [Fact]
+        public void Validate_UnknownArg_NotCloseToAnyProp_IsNotFlagged()
+        {
+            GatewayArgsValidator.ClearCache();
+            GatewayArgsValidator.PrimeCache("genexus_read", MakeSchema(
+                props: new[] { ("name", "string", (string[]?)null) }
+            ));
+
+            // "include" isn't within edit distance of "name" — undeclared passthrough
+            // args must NOT be rejected (only high-confidence typos fail loud).
+            var result = GatewayArgsValidator.Validate("genexus_read", new JObject { ["include"] = "x" });
+
+            Assert.True(result.Ok);
+            Assert.Empty(result.Violations);
+        }
+
+        [Fact]
+        public void Validate_CrossCuttingArg_IsNeverFlagged()
+        {
+            GatewayArgsValidator.ClearCache();
+            // Declare a prop close enough that a naive check might misfire, then
+            // confirm the cross-cutting allowlist wins.
+            GatewayArgsValidator.PrimeCache("genexus_query", MakeSchema(
+                props: new[] { ("name", "string", (string[]?)null) }
+            ));
+
+            var result = GatewayArgsValidator.Validate("genexus_query", new JObject
+            {
+                ["name"] = "Foo",
+                ["axiCompact"] = false,
+                ["projection"] = "minimal",
+                ["fields"] = new JArray("name")
+            });
+
+            Assert.True(result.Ok);
+            Assert.Empty(result.Violations);
+        }
+
         // ── 8. End-to-end: bad args via ProcessMcpRequest → InvalidArgs envelope ──
 
         [Fact]

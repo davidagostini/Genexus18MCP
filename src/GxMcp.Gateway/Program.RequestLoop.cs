@@ -241,14 +241,25 @@ namespace GxMcp.Gateway
                         var firstViolation = validationResult.Violations[0];
                         string hint = firstViolation.Actual == "missing"
                             ? $"Required field '{firstViolation.Path}' is missing — expected {firstViolation.Expected}."
-                            : $"Field '{firstViolation.Path}': expected {firstViolation.Expected}, got {firstViolation.Actual}.";
+                            : firstViolation.Actual == "unknown argument"
+                                ? $"Unknown argument '{firstViolation.Path}'."
+                                : $"Field '{firstViolation.Path}': expected {firstViolation.Expected}, got {firstViolation.Actual}.";
+                        if (!string.IsNullOrEmpty(firstViolation.Suggestion))
+                        {
+                            hint += $" Did you mean '{firstViolation.Suggestion}'?";
+                        }
 
                         var violationsArr = new Newtonsoft.Json.Linq.JArray(
-                            validationResult.Violations.Select(v => new JObject
+                            validationResult.Violations.Select(v =>
                             {
-                                ["path"] = v.Path,
-                                ["expected"] = v.Expected,
-                                ["actual"] = v.Actual
+                                var vo = new JObject
+                                {
+                                    ["path"] = v.Path,
+                                    ["expected"] = v.Expected,
+                                    ["actual"] = v.Actual
+                                };
+                                if (!string.IsNullOrEmpty(v.Suggestion)) vo["suggestion"] = v.Suggestion;
+                                return vo;
                             }));
 
                         var invalidArgsPayload = new JObject

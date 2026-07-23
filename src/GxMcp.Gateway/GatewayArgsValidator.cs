@@ -25,7 +25,23 @@ namespace GxMcp.Gateway
             public string Path { get; init; } = "";
             public string Expected { get; init; } = "";
             public string Actual { get; init; } = "";
+            /// <summary>
+            /// Best DidYouMean match for a typo'd enum value or arg key, when one
+            /// is within edit distance. Null when there's no close candidate.
+            /// </summary>
+            public string? Suggestion { get; init; }
         }
+
+        // Cross-cutting arguments the gateway/worker honour on (almost) every tool
+        // but that individual tool schemas don't redeclare (projection knobs, KB
+        // selectors, mutation guards). Never flagged as unknown even when a tool's
+        // `properties` doesn't list them.
+        private static readonly HashSet<string> CrossCuttingArgs = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "axiCompact", "projection", "fields", "full",
+            "kb", "alias", "workingDir", "correlationId",
+            "dryRun", "confirm", "force"
+        };
 
         public sealed class ValidationResult
         {
@@ -83,7 +99,30 @@ namespace GxMcp.Gateway
                     }
 
                     var propSchema = properties[prop.Name] as JObject;
-                    if (propSchema == null) continue;
+                    if (propSchema == null)
+                    {
+                        // Unknown key on a tool without additionalProperties:false.
+                        // Fail loud ONLY when it's a high-confidence typo of a
+                        // declared property (edit distance <= 2) — that can't be a
+                        // legitimate undeclared passthrough arg, so it's almost
+                        // certainly a slip. Cross-cutting args are never flagged.
+                        if (!CrossCuttingArgs.Contains(prop.Name))
+                        {
+                            string? keySuggestion = DidYouMean.Suggest(
+                                prop.Name, properties.Properties().Select(p => p.Name));
+                            if (keySuggestion != null)
+                            {
+                                violations.Add(new Violation
+                                {
+                                    Path = prop.Name,
+                                    Expected = "a known argument",
+                                    Actual = "unknown argument",
+                                    Suggestion = keySuggestion
+                                });
+                            }
+                        }
+                        continue;
+                    }
 
                     string? declaredType = propSchema["type"]?.ToString();
                     var enumValues = propSchema["enum"] as JArray;
@@ -114,7 +153,8 @@ namespace GxMcp.Gateway
                             {
                                 Path = prop.Name,
                                 Expected = "one of [" + string.Join(", ", allowed) + "]",
-                                Actual = val
+                                Actual = val,
+                                Suggestion = DidYouMean.Suggest(val, allowed)
                             });
                         }
                     }

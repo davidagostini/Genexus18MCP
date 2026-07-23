@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+Agent-ergonomics round: louder argument validation and a content-first default.
+
+### Changed
+
+- **Mistyped arguments and enum values now fail loud with a "did you mean" suggestion.** Passing an unknown argument that's a keystroke or two from a real one (e.g. `nam` for `name`), or an out-of-range enum value (e.g. `mode: "patche"` when the choices are `full` / `patch` / `ops`), is now rejected up front — the closest valid name is returned in the error message and in a structured `suggestion` field — instead of the value being silently ignored. Genuinely unrecognized pass-through arguments and cross-cutting options (`axiCompact`, `projection`, `fields`, `kb`, …) are never flagged, so this catches slips without breaking working calls.
+- **`genexus_api` with no `action` now lists the KB's exposed APIs** instead of returning an "action is required" error, so a bare call shows live data — matching the other umbrella tools.
+
+### Internal
+
+- `GatewayArgsValidator.Violation` gains a `Suggestion`: DidYouMean over enum values, and — for tools without `additionalProperties: false` — over declared property names (edit distance ≤ 2, gated by a `CrossCuttingArgs` allowlist so undeclared pass-through args and projection/KB options are never rejected). `Program.RequestLoop`'s `InvalidArgs` envelope surfaces `suggestion` per violation and appends it to the hint. `ApiIntrospectService` defaults a missing `action` to the read-only `list`. Tests: 4 added in `GatewayArgsValidatorTests` (enum suggestion, far-value no-suggestion, unknown-key typo, cross-cutting not flagged); `ApiIntrospectServiceTests.Run_MissingAction` rewritten to assert the content-first `list` default. No `tool_definitions.json` / discovery-fixture change.
+
 ## v2.31.1 — 2026-07-23
 
 Variable-retype reporting honesty (issue #46 follow-up).

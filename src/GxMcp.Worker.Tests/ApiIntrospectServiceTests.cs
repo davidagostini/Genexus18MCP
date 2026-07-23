@@ -270,13 +270,16 @@ namespace GxMcp.Worker.Tests
         // ---- Run() entrypoint shape ---------------------------------------
 
         [Fact]
-        public void Run_MissingAction_ReturnsInvalidActionEnvelope()
+        public void Run_MissingAction_DefaultsToList_ContentFirst()
         {
+            // Content-first: a bare genexus_api call enumerates APIs instead of
+            // erroring. With no index wired the list is empty, but the envelope
+            // is a successful `list`, not an InvalidAction error.
             var svc = new ApiIntrospectService(null, null, null);
             var json = svc.Run(new JObject());
             var obj = JObject.Parse(json);
-            Assert.Equal("error", obj["status"]?.ToString());
-            Assert.Equal("InvalidAction", obj["error"]?["code"]?.ToString());
+            Assert.Equal("ok", obj["status"]?.ToString());
+            Assert.NotNull(obj["result"]?["endpoints"]);
         }
 
         [Fact]

@@ -49,8 +49,10 @@ namespace GxMcp.Worker.Services
             try
             {
                 string action = args?["action"]?.ToString()?.ToLowerInvariant();
+                // Content-first: a bare call (no action) enumerates the KB's APIs —
+                // live data, not an error. `list` is read-only, so it's the safe default.
                 if (string.IsNullOrEmpty(action))
-                    return Err("InvalidAction", "action is required (list|describe|diff_baseline|snapshot).");
+                    action = "list";
 
                 switch (action)
                 {
