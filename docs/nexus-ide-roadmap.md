@@ -49,13 +49,14 @@ The "looks like it works but doesn't" set real users hit today:
 - Code actions driven by the diagnostics the linter already produces (today: 1 hardcoded fix).
 - `LayoutView` editor (or honest read-only labeling).
 
-### Phase 4 — Release discipline (tied to the MCP) — *future plan*
+### Phase 4 — Release discipline (tied to the MCP) — **plan 061 (done)**
 Decision (2026-07-23): the extension versions and ships **with the MCP**, one cycle.
-Practical work: fold VSIX build/package into the MCP release flow (`release.ps1` /
-`.github/workflows/release.yml`) so a server release also produces/publishes the matching
-extension VSIX; reconcile the extension's own `version` field (currently `1.1.0`) with the
-MCP version policy; add a CHANGELOG section (or shared CHANGELOG entries) for extension-
-facing changes. Deferred until Phases 0–1 land.
+`release.ps1` now bumps `src/nexus-ide/package.json`'s version in lockstep with the root
+package/csprojs, builds + packages the extension VSIX (`npx @vscode/vsce package`), and
+attaches `nexus-ide-<version>.vsix` to the same GitHub Release as `publish.zip`. Marketplace
+publish (`vsce publish`) stays a **manual** step — it needs a `VSCE_PAT` secret this repo
+doesn't have; run it by hand from `src/nexus-ide` (`npx @vscode/vsce publish -p <token>`)
+when a marketplace release is wanted. `.github/workflows/release.yml` is untouched.
 
 ## Current plan set
 
@@ -64,9 +65,10 @@ facing changes. Deferred until Phases 0–1 land.
 | 051 | 0 | Nexus IDE test + lint/typecheck baseline & gate | DONE |
 | 052 | 1 | Honest rename + real reference/definition locations | DONE |
 | 053 | 1 | Resolve SyncManager + fix mis-wired command + hygiene | DONE |
+| 061 | 4 | Fold the Nexus IDE VSIX into `release.ps1` | DONE |
 
-Phases 2–4 are described above but NOT yet written as plans — they become plans once
-Phase 0–1 land and the baseline is protecting the changes.
+Phases 2–3 are described above but NOT yet written as plans — they become plans once
+the baseline keeps protecting the changes.
 
 ## Ordering rationale
 

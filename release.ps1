@@ -92,7 +92,8 @@ $bumpFiles = @(
     'CHANGELOG.md',
     'publish.zip.sha256',
     'src/GxMcp.Gateway/GxMcp.Gateway.csproj',
-    'src/GxMcp.Worker/GxMcp.Worker.csproj'
+    'src/GxMcp.Worker/GxMcp.Worker.csproj',
+    'src/nexus-ide/package.json'
 )
 if ($status -and -not $AllowDirty) {
     $dirtyPaths = @($status | ForEach-Object { $_.Substring(3).Trim().Trim('"') -replace '\\', '/' })
@@ -219,6 +220,22 @@ if ($needsBump) {
         }
         Ok "GxMcp.Worker.csproj → $Version"
     }
+
+    # src/nexus-ide/package.json — Nexus IDE ships in lockstep with the MCP.
+    # Same regex-preserving-format approach as the root package.json above,
+    # scoped to the FIRST top-level "version" so it can't drift onto a nested
+    # dependency's version field.
+    $extPkgPath = Join-Path $root 'src\nexus-ide\package.json'
+    if (Test-Path $extPkgPath) {
+        if (-not $DryRun) {
+            $raw = Get-Content $extPkgPath -Raw
+            $bumped = [Regex]::Replace($raw,
+                '("version"\s*:\s*")[^"]+(")',
+                "`${1}$Version`${2}", 1)
+            [System.IO.File]::WriteAllText($extPkgPath, $bumped, [System.Text.UTF8Encoding]::new($false))
+        }
+        Ok "src/nexus-ide/package.json → $Version"
+    }
 } else {
     Ok "Version unchanged — skipping bump."
 }
@@ -253,6 +270,37 @@ foreach ($rel in $requiredArtefacts) {
     }
 }
 Ok "publish/ artefacts validated."
+
+# ── 3b. Build + package the Nexus IDE VSIX (additive, separate from build.ps1) ──
+$extDir = Join-Path $root 'src\nexus-ide'
+$vsixPath = Join-Path $root "nexus-ide-$Version.vsix"
+if (-not $SkipBuild) {
+    Step "Building Nexus IDE VSIX"
+    if (-not (Test-Path (Join-Path $extDir 'node_modules'))) {
+        Invoke-Cmd 'npm' @('--prefix', $extDir, 'install')
+    }
+    Invoke-Cmd 'npm' @('--prefix', $extDir, 'run', 'compile')
+    if (-not $DryRun) {
+        Push-Location $extDir
+        try {
+            & npx --yes @vscode/vsce package --no-dependencies -o $vsixPath
+            if ($LASTEXITCODE -ne 0) {
+                Fail "npx @vscode/vsce package failed (exit $LASTEXITCODE) — not shipping a release claiming an extension it couldn't build."
+            }
+        } finally {
+            Pop-Location
+        }
+        if (-not (Test-Path $vsixPath)) {
+            Fail "Expected VSIX not found at $vsixPath after vsce package."
+        }
+        Ok "nexus-ide-$Version.vsix packaged."
+    } else {
+        Write-Host "    $ npx --yes @vscode/vsce package --no-dependencies -o $vsixPath  (cwd: $extDir)" -ForegroundColor DarkGray
+        Ok "[dry-run] would package nexus-ide-$Version.vsix"
+    }
+} else {
+    Warn "-SkipBuild set; reusing existing $vsixPath if present."
+}
 
 # ── 4. Optional test pass ─────────────────────────────────────────────────
 if (-not $SkipTests) {
@@ -383,6 +431,8 @@ $createArgs = @(
 )
 # Attach the checksum sidecar so the gateway self-updater can verify the download.
 if (Test-Path $shaPath) { $createArgs += $shaPath }
+# Attach the Nexus IDE VSIX — ships in lockstep with the MCP release.
+if ($DryRun -or (Test-Path $vsixPath)) { $createArgs += $vsixPath }
 Invoke-Cmd 'gh' $createArgs
 
 Ok "Release created: https://github.com/lennix1337/Genexus18MCP/releases/tag/$tag"

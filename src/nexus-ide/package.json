@@ -34,7 +34,6 @@
   ],
   "files": [
     "out",
-    "backend",
     "resources",
     "syntaxes",
     "themes",
