@@ -149,14 +149,37 @@ namespace GxMcp.Worker.Services
                         why: "Lists objects so you can find the correct name and type.")),
                     target: target);
 
-                var files = PatternSnapshotStore.List(obj.Guid.ToString());
                 var arr = new JArray();
-                foreach (var f in files) arr.Add(new JObject
+
+                // Pattern-instance snapshots (WWP reapply guard) — kept for back-compat.
+                var patternFiles = PatternSnapshotStore.List(obj.Guid.ToString());
+                foreach (var f in patternFiles) arr.Add(new JObject
                 {
                     ["path"] = f,
                     ["fileName"] = System.IO.Path.GetFileName(f),
-                    ["sizeBytes"] = new System.IO.FileInfo(f).Length
+                    ["sizeBytes"] = new System.IO.FileInfo(f).Length,
+                    ["kind"] = "pattern"
                 });
+
+                // issue #43 #3 — the pre-write .bak that every WriteObject captures lives in the
+                // EditSnapshotStore, not the pattern store; surface it here too so the destructive
+                // edit's own backup is listable (and restorable) through the tool.
+                string kbPath = null;
+                try { kbPath = _objectService.GetKbService().GetKbPath(); } catch { }
+                string editRoot = EditSnapshotStore.ResolveRoot(kbPath);
+                foreach (var e in EditSnapshotStore.ListForGuid(editRoot, obj.Guid.ToString()))
+                {
+                    arr.Add(new JObject
+                    {
+                        ["path"] = e.Path,
+                        ["fileName"] = e.FileName,
+                        ["sizeBytes"] = e.Bytes,
+                        ["part"] = e.Part,
+                        ["timestamp"] = e.Timestamp,
+                        ["kind"] = "edit"
+                    });
+                }
+
                 return McpResponse.Ok(
                     target: obj.Name,
                     code: "PatternSnapshotList",

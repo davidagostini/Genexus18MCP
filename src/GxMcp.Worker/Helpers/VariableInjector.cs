@@ -679,12 +679,28 @@ namespace GxMcp.Worker.Helpers
                 {
                     // Check for Domain
                     if (obj is global::Artech.Genexus.Common.Objects.Domain) return obj;
-                    
+
                     // Check for SDT
                     if (obj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)) return obj;
 
                     // Check for Transaction (as BC)
                     if (obj is Transaction trn && trn.IsBusinessComponent) return obj;
+                }
+
+                // issue #43 #7 — nested SDT member/item type, e.g. "SdtCandUNIEDU.SdtCandUNIEDUItem".
+                // This dotted form is exactly what the SDK emits on READ for a variable bound to a
+                // Collection SDT as a single item (VariableTypeResolver already flags "SdtFoo.Item" as
+                // expected here). The whole dotted string is not a KB object name — only the parent SDT
+                // is — so split off the parent and resolve it. BindVariableToSdt(newVar, parentSdt) then
+                // produces the "<Sdt>.<Sdt>Item" item type, since the SDK derives the ".Item" suffix
+                // from the SDT's own collection-ness (IsCollection left false), matching the read form.
+                if (typeName != null && typeName.IndexOf('.') > 0)
+                {
+                    string parentName = typeName.Substring(0, typeName.IndexOf('.'));
+                    foreach (var obj in model.Objects.GetByName(null, null, parentName))
+                    {
+                        if (obj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)) return obj;
+                    }
                 }
             }
             catch { /* Ignore model errors */ }

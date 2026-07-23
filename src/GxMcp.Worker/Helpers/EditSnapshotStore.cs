@@ -128,6 +128,71 @@ namespace GxMcp.Worker.Helpers
         }
 
         /// <summary>
+        /// A single edit-snapshot entry surfaced to the tool surface.
+        /// </summary>
+        public sealed class SnapshotEntry
+        {
+            public string Path;
+            public string FileName;
+            public string Part;
+            public string Timestamp;
+            public long Bytes;
+        }
+
+        /// <summary>
+        /// issue #43 #3 — list ALL edit snapshots for an object guid across every part,
+        /// newest first. <c>snapshots-list</c> used to look only at the pattern-snapshot
+        /// store, so the pre-write <c>.bak</c> every WriteObject creates was invisible.
+        /// The part token is parsed back out of the filename
+        /// (<c>&lt;guid&gt;-&lt;part&gt;-&lt;timestamp&gt;.bak</c>).
+        /// </summary>
+        public static List<SnapshotEntry> ListForGuid(string snapshotRoot, string objectGuid)
+        {
+            var hits = new List<SnapshotEntry>();
+            if (string.IsNullOrWhiteSpace(snapshotRoot) || !Directory.Exists(snapshotRoot)) return hits;
+            string safeGuid = Sanitize(objectGuid ?? string.Empty);
+            string prefix = safeGuid + "-";
+
+            try
+            {
+                foreach (var p in Directory.EnumerateFiles(snapshotRoot))
+                {
+                    string fn = Path.GetFileName(p);
+                    if (!fn.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+                    bool gz = fn.EndsWith(".bak.gz", StringComparison.OrdinalIgnoreCase);
+                    bool bak = fn.EndsWith(".bak", StringComparison.OrdinalIgnoreCase);
+                    if (!gz && !bak) continue;
+
+                    // Strip prefix + extension, then split the "<part>-<timestamp>" remainder
+                    // on the LAST '-' (Sanitize turns '-' into '_', so neither part nor guid
+                    // token contains a literal '-'; only the field separators do).
+                    string stem = fn.Substring(prefix.Length);
+                    string ext = gz ? ".bak.gz" : ".bak";
+                    if (stem.Length >= ext.Length) stem = stem.Substring(0, stem.Length - ext.Length);
+                    string part = null, ts = null;
+                    int lastDash = stem.LastIndexOf('-');
+                    if (lastDash > 0)
+                    {
+                        part = stem.Substring(0, lastDash);
+                        ts = stem.Substring(lastDash + 1);
+                    }
+
+                    long size = 0;
+                    try { size = new FileInfo(p).Length; } catch { }
+                    hits.Add(new SnapshotEntry { Path = p, FileName = fn, Part = part, Timestamp = ts, Bytes = size });
+                }
+                // Sort by the parsed timestamp, newest first. Sorting by FileName would sort by
+                // the part token first (it precedes the timestamp in the name), interleaving parts.
+                hits = hits.OrderByDescending(h => h.Timestamp ?? string.Empty, StringComparer.Ordinal).ToList();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[EditSnapshotStore] ListForGuid failed for " + objectGuid + ": " + ex.Message);
+            }
+            return hits;
+        }
+
+        /// <summary>
         /// Read snapshot content from a path. Auto-detects gzip via <c>.gz</c> extension.
         /// Returns <c>null</c> on any I/O error (logged).
         /// </summary>

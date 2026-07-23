@@ -979,7 +979,13 @@ namespace GxMcp.Worker.Services
                 string priorContent = null;
                 try
                 {
-                    string readJson = _objectService.ReadObjectSource(target, resolvedPart, null, null, "mcp", true, null);
+                    // issue #43 #2 (incomplete snapshot): read the FULL part. The old call
+                    // passed offset=null/limit=null with client="mcp", which triggers the
+                    // ~200-line / 16KB MCP pagination default — so the pre-write .bak captured
+                    // only the head of a large part and could NOT restore it. offset=0/limit=0 is
+                    // the explicit "no pagination, return everything" opt-out (ReadPagination).
+                    // typeFilter is forwarded so a homonym Transaction/Table snapshots the right object.
+                    string readJson = _objectService.ReadObjectSource(target, resolvedPart, 0, 0, "mcp", false, typeFilter);
                     if (!string.IsNullOrWhiteSpace(readJson))
                     {
                         var parsed = JObject.Parse(readJson);

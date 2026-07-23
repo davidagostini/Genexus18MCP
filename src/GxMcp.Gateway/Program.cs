@@ -111,6 +111,10 @@ namespace GxMcp.Gateway
         // #3: the client request that triggered a proxy→master promotion, buffered so the new
         // master can replay it once instead of dropping it across the takeover.
         private static string? _promotionReplayLine;
+        // issue #43 #6: the client's initialize line, persisted across proxy RE-ENTRIES so a
+        // session lost mid-conversation (e.g. a slow worker_reload timing the proxy out) can be
+        // re-handshaked instead of wedging the whole server on "Master error: BadRequest".
+        private static string? _proxyCachedInitializeLine;
         private static readonly TimeSpan _pendingRequestRetention = TimeSpan.FromMinutes(65);
         // issue #40: never keep the log handle open inside node_modules — that makes
         // `npx genexus-mcp@latest` fail with EBUSY on Windows when it refreshes the package.
@@ -674,7 +678,12 @@ namespace GxMcp.Gateway
             // master session can be re-established transparently (replay initialize → fresh
             // session → resend the failed request) instead of relaying "Master error: NotFound"
             // to the client forever.
-            string? cachedInitializeLine = null;
+            // issue #43 #6: seed from the static cache so the initialize survives a proxy
+            // RE-ENTRY. When a slow reload makes the proxy time out and loop back into a fresh
+            // RunMcpProxyAsync (sessionId reset to null), a mid-session client will not resend
+            // initialize — without the persisted copy we could never re-handshake and every call
+            // 400'd ("Missing MCP-Session-Id") forever until a full client restart.
+            string? cachedInitializeLine = _proxyCachedInitializeLine;
             var reader = Console.In;
             var cts = new CancellationTokenSource();
             var ct = cts.Token;
@@ -702,7 +711,10 @@ namespace GxMcp.Gateway
                         // Remember the initialize handshake so we can replay it if the master
                         // session later expires (issue #38 defect #3).
                         if (string.Equals(request["method"]?.ToString(), "initialize", StringComparison.Ordinal))
+                        {
                             cachedInitializeLine = line;
+                            _proxyCachedInitializeLine = line; // survive proxy re-entry (issue #43 #6)
+                        }
                         var content = new StringContent(body, Encoding.UTF8, "application/json");
                         
                         if (sessionId != null) content.Headers.Add("MCP-Session-Id", sessionId);
@@ -785,6 +797,34 @@ namespace GxMcp.Gateway
                                     continue; // resend the original request with the fresh session
                                 }
                                 Log("[Proxy] Re-handshake failed (no cached initialize or master refused); returning error to client.");
+                            }
+
+                            // issue #43 #6: a 400 "Missing MCP-Session-Id" from a LIVE master means our
+                            // session was lost — typically after a slow worker_reload made the proxy time
+                            // out and re-enter RunMcpProxyAsync with sessionId=null. The master rejects
+                            // every non-initialize call without a session header, so the whole server used
+                            // to return "Master error: BadRequest" forever until a full client restart.
+                            // Recover exactly like the 404 case: replay the (persisted) initialize to mint a
+                            // fresh session, then resend the original request. Gated on the session-missing
+                            // signal so a genuine bad-request 400 still surfaces to the client.
+                            if (response.StatusCode == System.Net.HttpStatusCode.BadRequest
+                                && !isNotification
+                                && !string.IsNullOrEmpty(cachedInitializeLine)
+                                && remoteError != null
+                                && remoteError.IndexOf("MCP-Session-Id", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                Log("[Proxy] Master 400 (session missing). Re-initializing session...");
+                                sessionId = null;
+                                string? newSessionId = await ProxyRehandshakeAsync(httpClient, baseUrl, cachedInitializeLine, ct);
+                                if (newSessionId != null)
+                                {
+                                    sessionId = newSessionId;
+                                    Log($"[Proxy] Re-handshake complete (after 400). New ID: {sessionId}");
+                                    _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, cts.Token));
+                                    retryCount++;
+                                    continue; // resend the original request with the fresh session
+                                }
+                                Log("[Proxy] Re-handshake after 400 failed; returning error to client.");
                             }
 
                             Log($"[Proxy] Master status {response.StatusCode}: {remoteError}");

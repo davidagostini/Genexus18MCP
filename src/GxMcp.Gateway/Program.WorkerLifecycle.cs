@@ -214,6 +214,19 @@ namespace GxMcp.Gateway
                             string opId = pp?["progressToken"]?.ToString();
                             if (!string.IsNullOrWhiteSpace(opId))
                                 _operationTracker.TouchProgress(opId, pp?["stage"]?.ToString(), pp?["message"]?.ToString());
+
+                            // issue #44: never relay a progress frame whose operation is no longer
+                            // active (terminal, or an unknown/literal token). A retired token —
+                            // classically an async build still emitting "Build phase: OpeningKB"
+                            // after its RPC returned Accepted — makes the client (Cursor) mark the
+                            // transport errored ("progress notification for an unknown token") and
+                            // drop the whole MCP connection. Progress for a live op still flows; the
+                            // async progress channel is the self-scoped lifecycle status poll.
+                            if (!_operationTracker.IsProgressTokenActive(opId))
+                            {
+                                Log($"[Gateway] Dropped stale/unknown progress token '{opId}' (op not active) — not relayed to client.");
+                                return;
+                            }
                         }
                         if (ShouldForwardNotificationToStdio(method, val["params"]))
                         {

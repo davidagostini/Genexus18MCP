@@ -112,6 +112,28 @@ namespace GxMcp.Gateway.Routers
 
                     string? mode = args?["mode"]?.ToString();
                     ValidateEditMode(mode);
+
+                    // issue #43 #1 (data-loss): `operation` (Replace/Insert_After/Append) is a
+                    // mode=patch parameter. Before this guard, passing it WITHOUT mode=patch fell
+                    // through to the else-branch below, which runs a FULL-PART replace using
+                    // `content` and silently discards `operation` — so Append/Insert_After
+                    // overwrote the entire part with just the payload (~888 lines → payload).
+                    // Any explicit operation now implies patch semantics; combining it with an
+                    // incompatible mode is a hard usage error instead of a silent destructive write.
+                    string? editOperation = args?["operation"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(editOperation)
+                        && !string.Equals(mode, "patch", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(mode, "ops", StringComparison.OrdinalIgnoreCase))
+                            throw new UsageException(
+                                "usage_error",
+                                $"operation='{editOperation}' is a mode=patch parameter and cannot be combined with mode={mode}. "
+                                + "Omit mode (or set mode=patch) for Replace/Insert_After/Append; use mode=full only to replace the entire part with `content`.");
+                        // mode was null/empty → reinterpret as patch so operation is honored.
+                        mode = "patch";
+                    }
+
                     bool returnPostState = args?["return_post_state"]?.ToObject<bool?>() ?? true;
                     bool verbose = args?["verbose"]?.ToObject<bool?>() ?? false;
                     // Items 5 + 37 (friction 2026-05-22): forward visualVerify to the

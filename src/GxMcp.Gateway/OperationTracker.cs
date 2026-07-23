@@ -189,6 +189,24 @@ namespace GxMcp.Gateway
             }
         }
 
+        // issue #44 — a worker progress frame carries progressToken == operationId. It must only
+        // be relayed to the client while that operation is still live (Running/Accepted). Async
+        // builds keep emitting "Build phase: OpeningKB" long after their wrapping RPC returned
+        // Accepted (which retired the client's progressToken); relaying those, an unknown
+        // literal token (e.g. bulk-index), or a token for an expired/terminal op makes the client
+        // (Cursor) error the transport with "progress notification for an unknown token" and drop
+        // the connection. Returns true only when the op is tracked AND not yet terminal.
+        public bool IsProgressTokenActive(string operationId)
+        {
+            if (string.IsNullOrWhiteSpace(operationId)) return false;
+            if (!_operations.TryGetValue(operationId, out var record)) return false;
+            lock (record.SyncRoot)
+            {
+                return string.Equals(record.Status, "Running", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(record.Status, "Accepted", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
         public void MarkFailedByRequest(string requestId, string errorMessage)
         {
             if (string.IsNullOrWhiteSpace(requestId)) return;

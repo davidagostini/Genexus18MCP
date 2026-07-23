@@ -122,5 +122,38 @@ namespace GxMcp.Worker.Tests
             string missing = Path.Combine(_root, "does-not-exist.bak");
             Assert.Null(EditSnapshotStore.ReadSnapshot(missing));
         }
+
+        // issue #43 #3 — ListForGuid surfaces every part's snapshot for an object so
+        // genexus_lifecycle snapshots-list can show the pre-write .bak the edit created.
+        [Fact]
+        public void ListForGuid_ReturnsAllPartsNewestFirst()
+        {
+            // Realistic guid with hyphens — Sanitize turns '-' into '_', so the field
+            // separators are the only literal '-' the part parser can key on.
+            const string guid = "f6ca1c0d-5ac1-4c2b-9e11-abc123456789";
+            EditSnapshotStore.SaveSnapshot(_root, guid, "Source", "src rev 1");
+            System.Threading.Thread.Sleep(2);
+            EditSnapshotStore.SaveSnapshot(_root, guid, "Source", "src rev 2");
+            System.Threading.Thread.Sleep(2);
+            EditSnapshotStore.SaveSnapshot(_root, guid, "Events", "evt rev 1");
+            // A different object's snapshot must not leak in.
+            EditSnapshotStore.SaveSnapshot(_root, "99999999-0000-0000-0000-000000000000", "Source", "other");
+
+            var entries = EditSnapshotStore.ListForGuid(_root, guid);
+
+            Assert.Equal(3, entries.Count);
+            // newest first (Events was saved last).
+            Assert.Equal("Events", entries[0].Part);
+            Assert.Contains(entries, e => e.Part == "Source");
+            Assert.All(entries, e => Assert.False(string.IsNullOrWhiteSpace(e.Timestamp)));
+            Assert.All(entries, e => Assert.True(e.Bytes > 0));
+        }
+
+        [Fact]
+        public void ListForGuid_EmptyRoot_ReturnsEmpty()
+        {
+            var entries = EditSnapshotStore.ListForGuid(_root, "no-such-guid");
+            Assert.Empty(entries);
+        }
     }
 }

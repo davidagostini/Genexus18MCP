@@ -32,6 +32,45 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(0, p95);
         }
 
+        // issue #44 regression: the gateway must only relay a worker progress frame while its
+        // operation is live. A retired/terminal/unknown token (classically an async build still
+        // emitting "Build phase: OpeningKB" after its RPC returned) must NOT be relayed, or the
+        // client errors the transport on "progress notification for an unknown token".
+        [Fact]
+        public void IsProgressTokenActive_TrueWhileRunning_FalseOnceTerminalOrUnknown()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            string requestId = "req-progress";
+            string opId = tracker.StartOperation(requestId, "genexus_lifecycle", null, "cid");
+
+            // Live operation → progress is relayed.
+            Assert.True(tracker.IsProgressTokenActive(opId));
+
+            // Unknown / literal tokens (e.g. the bulk-index constant) are never relayed.
+            Assert.False(tracker.IsProgressTokenActive("genexus-mcp-bulk-index"));
+            Assert.False(tracker.IsProgressTokenActive(null));
+            Assert.False(tracker.IsProgressTokenActive(""));
+
+            // Once the op completes (final response sent, client token retired), stale
+            // progress for the same token is dropped.
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["status"] = "Success" }
+            });
+            Assert.False(tracker.IsProgressTokenActive(opId));
+        }
+
+        [Fact]
+        public void IsProgressTokenActive_FalseAfterCancel()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            string opId = tracker.StartOperation("req-cancel", "genexus_lifecycle", null, "cid");
+            Assert.True(tracker.IsProgressTokenActive(opId));
+            tracker.MarkCancelled(opId, "cancelled by client");
+            Assert.False(tracker.IsProgressTokenActive(opId));
+        }
+
         // BUG-05 regression: on JSON-RPC id reuse within the retention window,
         // StartOperation overwrites _requestToOperation to the new op. CleanupExpired
         // of the OLD op must not then delete the mapping now pointing at the NEW op.
