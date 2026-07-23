@@ -11,6 +11,65 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
 
+## Seventh-pass audit (2026-07-23, against `4082fd3` / v2.31.1) — agent-ergonomics + new-code correctness
+
+First `improve` pass to audit the **agent-ergonomics / token-efficiency** surface —
+every prior pass (1–6) was scoped to performance + bug-fixing and explicitly skipped
+this category, so the perf/bug well is nearly dry and the fresh leverage is here. Two
+tracks: (a) advisor-audited the agent-ergo layer directly (output shaping, curated
+catalogs, tool-name consolidation drift); (b) one read-only subagent swept the
+correctness of code ADDED since v2.29.3 (`f63f204..HEAD`: issue #45/#46 variable-type
+work, gxserver "ignored objects", BuildService additions). Every finding was vetted
+against live code by the advisor — three subagent line-attributions were wrong and
+corrected before planning.
+
+**These plans are NOT auto-applied.** Unlike passes 3–6, the maintainer has not
+authorized auto-apply; 040–046 are advisor-authored handoffs awaiting a decision.
+(Two separate agent-ergo fixes already shipped this session on `main` at `4082fd3`,
+CHANGELOG `[Unreleased]`, unreleased: fail-loud typo'd-arg validation + content-first
+`genexus_api` default — those are done and not in this backlog.)
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 040 | Close the build "already running" TOCTOU race (`_inFlightBuilds` registered async in `RunBuild`) | P1 | S | LOW | — | TODO |
+| 041 | Restore `next_legal_actions` for the consolidated create family (builder keyed on legacy tool names) | P1 | S-M | LOW | — | TODO |
+| 042 | Make aggregates + empty-state universal (enrichment only fires for 8 fixed top-level keys) | P2 | M | LOW-MED | — | TODO |
+| 043 | Restore SDT/BC/built-in bindings in modify-variable rollback (only primitives restored today) | P2 | M | MED | — | TODO |
+| 044 | Key tool-help by canonical names + resolve legacy aliases (help unreachable by canonical name) | P3 | S | LOW | — | TODO |
+| 045 | De-quadratic the `referencedButNotBuilt` evidence scan (`checkList.Any` in nested loops) | P3 | S | LOW | — | TODO |
+| 046 | Design a single tool-identity registry (SPIKE — durable fix for 041 + 044's shared root cause) | P3 | M | LOW | informed by 041, 044 | TODO |
+
+Recommended order: **040, 041** (P1 — build-correctness + a silently-dead ergo
+feature) → **042, 043** (P2) → **044, 045** (P3 quick wins) → **046** (design spike,
+do after 041/044 so the doc reflects the tactical fixes it subsumes). All seven touch
+disjoint files and can run in parallel worktrees; 046 is a doc/spike and changes no
+runtime behavior.
+
+Dependency notes:
+- **041 and 044 share a root cause** (curated catalogs keyed on pre-consolidation tool
+  names). They are independent tactical fixes; **046** is the design spike for the
+  durable single-source-of-truth registry that would subsume both and add a guard test
+  so the drift can't recur. Land 041/044 first, then let 046's doc reflect them.
+
+Considered and rejected this pass (so nobody re-audits):
+- **ERGO-04 — extend minimal-schema field projection beyond `genexus_query`/`genexus_list_objects`**:
+  NOT WORTH DOING. Every other list-returning tool (modules, versions, endpoints,
+  controls, …) returns small collections (<~100 items); the compact-field savings are
+  marginal and the risk of stripping a field an agent needs is real. Revisit only if a
+  new tool starts returning large per-item shapes. (Aggregates/empty for those tools IS
+  worth it — that's plan 042.)
+- **SaveAsService clone-loop "success with partsSkipped"** (`SaveAsService.cs:147-170`):
+  BY-DESIGN, not a bug. The v2.31.0 changelog documents that a per-part clone failure
+  is now non-fatal and surfaced under `created.partsSkipped`; the subagent flagged it
+  only as a tradeoff to confirm. `partsSkipped` is surfaced in the envelope. No change.
+- **The entire historical perf/bug backlog** (plans 001–039, 6 passes): DONE or
+  already-rejected. This pass did not re-audit index build, dispatch, decomposition,
+  concurrency, or the SDK-endpoint services — they are covered.
+- **TOON output on the MCP path**: deferred by the maintainer (2026-07-23) — the one
+  remaining big token lever, invasive (breaks the documented JSON-in-JSON contract +
+  ~900 tests). Do it later as a dedicated opt-in design (per-call `format=toon`,
+  default json). Not planned here.
+
 ## Sixth-pass audit (2026-07-21, against `f63f204`) — performance + bug-fixing only
 
 Third focused `improve` pass of the day, scoped to **performance and correctness bugs
