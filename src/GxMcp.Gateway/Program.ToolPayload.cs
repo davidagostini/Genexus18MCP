@@ -385,21 +385,40 @@ namespace GxMcp.Gateway
                 obj["noChange"] = true;
             }
 
-            string[] collectionKeys = { "results", "objects", "items", "tools", "checks", "entries", "nodes", "controls" };
-            foreach (var key in collectionKeys)
-            {
-                if (obj[key] is not JArray arr)
-                {
-                    continue;
-                }
+            string[] collectionKeys = {
+                "results", "objects", "items", "tools", "checks", "entries", "nodes", "controls",
+                // Additional primary-collection keys used by non-search tools:
+                "endpoints", "history", "snapshots", "versions", "modules",
+                "pending", "ignored", "conflicts", "targets", "pipelines"
+            };
 
-                if (requestedFields != null &&
+            // Where the collection lives: top-level first (search tools), then inside the
+            // canonical `result` object (McpResponse.Ok producers). Deterministic lookup —
+            // never auto-detect "the sole array property" (would wrongly pick up per-row
+            // sub-arrays like `endpoints[i].parms`).
+            JObject collectionHost = obj;
+            string? matchedKey = collectionKeys.FirstOrDefault(k => obj[k] is JArray);
+            if (matchedKey == null && obj["result"] is JObject resultObj)
+            {
+                matchedKey = collectionKeys.FirstOrDefault(k => resultObj[k] is JArray);
+                if (matchedKey != null)
+                {
+                    collectionHost = resultObj;
+                }
+            }
+
+            if (matchedKey != null)
+            {
+                var arr = (JArray)collectionHost[matchedKey]!;
+
+                if (collectionHost == obj &&
+                    requestedFields != null &&
                     requestedFields.Count > 0 &&
                     ShouldProjectFieldsForTool(toolName))
                 {
-                    obj[key] = ProjectArrayItems(arr, requestedFields);
+                    obj[matchedKey] = ProjectArrayItems(arr, requestedFields);
                     meta["fields"] = new JArray(requestedFields.OrderBy(field => field, StringComparer.OrdinalIgnoreCase));
-                    arr = (JArray)obj[key]!;
+                    arr = (JArray)obj[matchedKey]!;
                 }
 
                 if (meta["totalByType"] == null)
@@ -440,8 +459,6 @@ namespace GxMcp.Gateway
                         obj["nextOffset"] = offset + returned;
                     }
                 }
-
-                break;
             }
 
             // Only emit a `meta` block when at least one signal was attached;

@@ -482,5 +482,112 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(first["description"]);
             Assert.Null(first["type"]); // not requested
         }
+
+        [Fact]
+        public void NormalizeToolPayloadForAxi_ShouldAddAggregatesForNestedResultCollection()
+        {
+            // genexus_api shape: array lives under result.endpoints, not top-level.
+            var payload = new JObject
+            {
+                ["status"] = "ok",
+                ["result"] = new JObject
+                {
+                    ["endpoints"] = new JArray(
+                        new JObject { ["type"] = "Api" },
+                        new JObject { ["type"] = "Api" })
+                }
+            };
+
+            var method = typeof(Program).GetMethod(
+                "NormalizeToolPayloadForAxi",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            var normalized = (JToken?)method!.Invoke(null, new object?[] { payload, "genexus_api", null, false });
+            var obj = Assert.IsType<JObject>(normalized);
+
+            Assert.Equal(2, obj["returned"]?.Value<int>());
+            Assert.False(obj["empty"]?.Value<bool>() ?? true);
+            Assert.Equal(2, obj["meta"]?["totalByType"]?["Api"]?.Value<int>());
+        }
+
+        [Fact]
+        public void NormalizeToolPayloadForAxi_ShouldFlagEmptyForNestedEmptyCollection()
+        {
+            var payload = new JObject
+            {
+                ["status"] = "ok",
+                ["result"] = new JObject
+                {
+                    ["endpoints"] = new JArray()
+                }
+            };
+
+            var method = typeof(Program).GetMethod(
+                "NormalizeToolPayloadForAxi",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            var normalized = (JToken?)method!.Invoke(null, new object?[] { payload, "genexus_api", null, false });
+            var obj = Assert.IsType<JObject>(normalized);
+
+            Assert.Equal(0, obj["returned"]?.Value<int>());
+            Assert.True(obj["empty"]?.Value<bool>() ?? false);
+            var help = Assert.IsType<JArray>(obj["help"]);
+            Assert.Contains(help, item => item?.ToString()?.Contains("No results returned", StringComparison.OrdinalIgnoreCase) == true);
+        }
+
+        [Fact]
+        public void NormalizeToolPayloadForAxi_ShouldStillEnrichTopLevelResultsRegression()
+        {
+            // Regression guard: top-level `results` (query/list_objects shape) must
+            // keep working exactly as before the nested/broadened lookup was added.
+            var payload = new JObject
+            {
+                ["count"] = 1,
+                ["results"] = new JArray(new JObject { ["name"] = "A", ["type"] = "Procedure" })
+            };
+
+            var method = typeof(Program).GetMethod(
+                "NormalizeToolPayloadForAxi",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            var normalized = (JToken?)method!.Invoke(null, new object?[] { payload, "genexus_query", null, false });
+            var obj = Assert.IsType<JObject>(normalized);
+
+            Assert.Equal(1, obj["returned"]?.Value<int>());
+            Assert.False(obj["empty"]?.Value<bool>() ?? true);
+            Assert.Equal(1, obj["meta"]?["totalByType"]?["Procedure"]?.Value<int>());
+        }
+
+        [Fact]
+        public void NormalizeToolPayloadForAxi_ShouldNotAddAggregatesWhenNoCollectionPresent()
+        {
+            var payload = new JObject
+            {
+                ["status"] = "ok",
+                ["result"] = new JObject
+                {
+                    ["note"] = "x"
+                }
+            };
+
+            var method = typeof(Program).GetMethod(
+                "NormalizeToolPayloadForAxi",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            Assert.NotNull(method);
+
+            var normalized = (JToken?)method!.Invoke(null, new object?[] { payload, "genexus_gxserver", null, false });
+            var obj = Assert.IsType<JObject>(normalized);
+
+            Assert.Null(obj["returned"]);
+            Assert.Null(obj["empty"]);
+            Assert.Null(obj["meta"]);
+        }
     }
 }
