@@ -58,7 +58,25 @@ advisor-reviewed, cherry-picked to `main` (`4b6b115` 051, `ce10e5c`+`414c005` 05
 calls across 17 files (recon said 49); ~31 bare `catch {}` (recon said 11); OutputChannel
 sprawl (Bootstrap/MCP/Build/SQL/Test/References). **Execute SEQUENTIALLY** (054→055→056→057,
 merge between each) — `console.*`/`catch{}` are pervasive so the plans share files; parallel
-worktrees would conflict. Phases 3–4 remain (roadmap `docs/nexus-ide-roadmap.md`).
+worktrees would conflict.
+
+### Phase 3 — feature completeness (written 2026-07-23, awaiting execution)
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 058 | Real, context-aware inline completion (real `&var.` members + optional AI, drop hardcoded ghost text) | P2 | M | LOW-MED | 051 | TODO |
+| 059 | Diagnostics-driven code actions (fix from real diagnostics, not any `&word`) | P2 | M | LOW | 051 | TODO |
+| 060 | LayoutView — honest read-only label + sandboxed rendering under a strict CSP | P3 | S-M | LOW-MED | 051 | TODO |
+
+### Phase 4 — release discipline (written 2026-07-23, awaiting execution)
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 061 | Fold the Nexus IDE VSIX into `release.ps1` (version lockstep + build + attach to GH release) | P3 | M | MED-HIGH | 051 | TODO |
+
+Phase 3 plans are largely independent (different provider files) but should run after Phase 2
+lands (they touch files Phase 2 modified). 061 (Phase 4) touches `release.ps1` — verify via
+`-DryRun`, never cut a real release from the plan itself. Everything build/test local/self-hosted.
 
 Grounding: `renameProvider.ts:74` (empty edit), `referenceProvider.ts:29` ((0,0) locations),
 `managers/SyncManager.ts` imported at `extension.ts:16` but never registered (dead code),
