@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.33.0 — 2026-07-23
+
+The **Nexus IDE VS Code extension** is brought up to the MCP server's quality bar and now ships with every release. (The `genexus-mcp` server itself is unchanged from v2.32.0 — this is a lockstep version bump whose substance is the extension.)
+
+### Added
+
+- **The Nexus IDE extension now ships as a `.vsix` attached to each GitHub Release.** `release.ps1` versions the extension in lockstep with the server, builds it, and attaches `nexus-ide-<version>.vsix` next to `publish.zip`. (Marketplace `vsce publish` stays a manual step — it needs a token this repo doesn't store.)
+
+### Fixed
+
+- **Rename now actually updates the editor.** Renaming a variable/attribute ran server-side but the editor showed nothing (it returned an empty edit); it now refreshes the affected open documents (skipping ones with unsaved changes). Also fixed variable renames being mis-routed to the attribute-rename operation.
+- **Find References / Go to Definition return real locations** instead of collapsing every hit to the top of the object; variable references within a document now resolve.
+- **Code actions come from real linter diagnostics** (e.g. "Remove unused variable" on an unused-variable warning) instead of a blanket "Create Variable" offered on any `&word`.
+- **Inline completion is context-aware** — real member suggestions for `&var.` sourced from the KB, plus optional AI completion (opt-in via `genexus.inlineCompletion.ai`) — replacing the previous hardcoded ghost text.
+- **Live KB→editor sync is active** (the sync listener was built but never wired in), and the mis-labeled "Explain Code with AI" action now matches what it actually does.
+- **Webviews are hardened.** The diagram view bundles mermaid locally (no CDN) under a strict Content-Security-Policy; the layout preview is honestly labeled read-only and renders the SDK's HTML inside a sandboxed iframe.
+- **Silently-swallowed failures now surface** in a structured, level-gated log (`genexus.logLevel`) that replaces scattered console output.
+- **Packaged-install backend resolution is deterministic** — the extension resolves its backend from the packaged location instead of guessing dev-tree paths.
+
+### Internal
+
+- Nexus IDE elevation plans 051–061 (`plans/`, design in `docs/nexus-ide-roadmap.md`, gap map in `docs/nexus-ide-recon.md`). Each executed in an isolated worktree, reviewed, and merged. Extension test suite grew 9 → 76 (`@vscode/test-electron`, runs locally/self-hosted — VS Code + GeneXus SDK can't run on GitHub-hosted CI). One transient extension-host test flake observed (1 failure in 5 runs, not reproducible across 4 subsequent runs) — known minor, not a logic error. New shared `gxMemberResolver` + `Logger` + `GxVariableToken` helpers; `SyncManager` wired; `release.ps1` bumps `src/nexus-ide/package.json` and builds/attaches the VSIX. Deferred follow-ups tracked in the roadmap doc.
+
 ## v2.32.0 — 2026-07-23
 
 Agent-ergonomics round: louder argument validation, richer list metadata, content-first defaults, and a batch of correctness fixes.

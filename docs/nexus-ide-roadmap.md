@@ -58,17 +58,32 @@ publish (`vsce publish`) stays a **manual** step — it needs a `VSCE_PAT` secre
 doesn't have; run it by hand from `src/nexus-ide` (`npx @vscode/vsce publish -p <token>`)
 when a marketplace release is wanted. `.github/workflows/release.yml` is untouched.
 
-## Current plan set
+## Current plan set — ALL PHASES DONE (2026-07-23)
 
 | Plan | Phase | Title | Status |
 |------|-------|-------|--------|
 | 051 | 0 | Nexus IDE test + lint/typecheck baseline & gate | DONE |
 | 052 | 1 | Honest rename + real reference/definition locations | DONE |
-| 053 | 1 | Resolve SyncManager + fix mis-wired command + hygiene | DONE |
+| 053 | 1 | Resolve SyncManager (wired) + fix mis-wired command | DONE |
+| 054 | 2 | Structured, level-gated Logger (replaced ~110 `console.*`) | DONE |
+| 055 | 2 | Audit ~31 bare `catch {}` — surface real failures | DONE |
+| 056 | 2 | Webview CSP + local mermaid (no CDN) | DONE |
+| 057 | 2 | Anchor packaged backend/shadow resolution (no dev-tree guessing) | DONE |
+| 058 | 3 | Context-aware inline completion (real members + opt-in AI) | DONE |
+| 059 | 3 | Diagnostics-driven code actions (GX008 remove-unused; blanket removed) | DONE |
+| 060 | 3 | LayoutView honest read-only + sandboxed iframe under CSP | DONE |
 | 061 | 4 | Fold the Nexus IDE VSIX into `release.ps1` | DONE |
 
-Phases 2–3 are described above but NOT yet written as plans — they become plans once
-the baseline keeps protecting the changes.
+Every plan: executed one-per-executor in an isolated worktree, advisor-reviewed
+(scope + diff + real `npm run check`), cherry-picked to `main`. Extension test suite grew
+9 → 76 (`@vscode/test-electron`, runs locally/self-hosted). One transient extension-host
+flake observed (1 failure in 5 runs, not reproducible over 4 subsequent runs) — treated as
+a known minor flake like the MCP's own, not a logic error.
+
+Follow-ups deliberately deferred (not blockers): verify LayoutView's `allow-scripts` iframe
+sandbox against a real KB layout; map more linter diagnostic codes (GX001-013/020-022) to
+code actions as safe fixes are identified; a real "Explain Code with AI" command (would let
+053's relabel become a real binding); automate `vsce publish` if a `VSCE_PAT` secret is added.
 
 ## Ordering rationale
 
