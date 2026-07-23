@@ -460,6 +460,11 @@
           ],
           "default": "info",
           "description": "Minimum severity written to the 'GeneXus Nexus IDE' output channel."
+        },
+        "genexus.inlineCompletion.ai": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable AI-backed inline (ghost text) completion via the genexus_ai_complete MCP tool. Requires the gateway's GXMCP_AI_COMPLETE_URL/_KEY/_MODEL environment variables to be configured; otherwise no ghost text is shown."
         }
       }
     }

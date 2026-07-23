@@ -3,12 +3,16 @@ import { Logger } from "./utils/Logger";
 import {
   nativeFunctions,
   keywords,
-  typeMethods,
   dataTypes,
   ruleKeywords,
 } from "./gxNativeFunctions";
 import { GxFileSystemProvider } from "./gxFileSystem";
 import { GxUriParser } from "./utils/GxUriParser";
+import {
+  getObjectVariables,
+  resolveVariableMembers,
+  extractStructureFields,
+} from "./gxMemberResolver";
 
 export class GxCompletionItemProvider implements vscode.CompletionItemProvider {
   private varCache = new Map<string, any[]>();
@@ -117,60 +121,28 @@ export class GxCompletionItemProvider implements vscode.CompletionItemProvider {
       const varName = memberMatch[1];
       const partial = memberMatch[2];
       const objName = this.getObjName(document);
-      const variables = await this.getVariables(objName);
-      const variable = variables.find(
-        (v) => v.name.toLowerCase() === varName.toLowerCase(),
+      const resolved = await resolveVariableMembers(
+        this.provider,
+        objName,
+        varName,
+        partial,
+        this.varCache,
       );
 
-      if (variable) {
-        let type = variable.type;
-        const isCollection = type.endsWith("Collection");
-        if (isCollection) type = "Collection";
-
-        // SDT / Transaction Structure Completion
-        if (
-          !["Character", "Numeric", "Date", "DateTime", "Boolean", "Collection"].includes(type) &&
-          !type.startsWith("Character") &&
-          !type.startsWith("Numeric") &&
-          !type.startsWith("VarChar")
-        ) {
-          try {
-            const structure = await this.provider.getStructure(
-              type,
-              "get_visual",
-              undefined,
-              15000,
-            );
-            const fields = this.extractStructureFields(structure);
-            if (fields.length > 0) {
-              for (const field of fields) {
-                if (
-                  partial &&
-                  !field.name.toLowerCase().startsWith(partial.toLowerCase())
-                )
-                  continue;
-                const item = new vscode.CompletionItem(
-                  field.name,
-                  vscode.CompletionItemKind.Field,
-                );
-                item.detail = `(Field) ${field.type}${field.isCollection ? " Collection" : ""}`;
-                item.sortText = `000_${field.name}`; // Fields first
-                items.push(item);
-              }
-            }
-          } catch (e) {
-            Logger.error(`[Nexus IDE] SDT Structure error: ${e}`);
-          }
+      if (resolved) {
+        // SDT / Transaction Structure Completion (fields first)
+        for (const field of resolved.fields) {
+          const item = new vscode.CompletionItem(
+            field.name,
+            vscode.CompletionItemKind.Field,
+          );
+          item.detail = `(Field) ${field.type}${field.isCollection ? " Collection" : ""}`;
+          item.sortText = `000_${field.name}`; // Fields first
+          items.push(item);
         }
 
         // Standard Methods
-        const methods = typeMethods[type] || typeMethods["Character"];
-        for (const m of methods) {
-          if (
-            partial &&
-            !m.name.toLowerCase().startsWith(partial.toLowerCase())
-          )
-            continue;
+        for (const m of resolved.methods) {
           const item = new vscode.CompletionItem(
             m.name,
             vscode.CompletionItemKind.Method,
@@ -297,7 +269,7 @@ export class GxCompletionItemProvider implements vscode.CompletionItemProvider {
               undefined,
               15000,
             );
-            for (const attr of this.extractStructureFields(directAttrs)) {
+            for (const attr of extractStructureFields(directAttrs)) {
               if (
                 word &&
                 !attr.name.toLowerCase().startsWith(word.toLowerCase())
@@ -328,28 +300,6 @@ export class GxCompletionItemProvider implements vscode.CompletionItemProvider {
   }
 
   private async getVariables(objName: string): Promise<any[]> {
-    if (this.varCache.has(objName)) return this.varCache.get(objName)!;
-
-    try {
-      const result = await this.provider.readObjectVariables(objName, 15000);
-      if (result && Array.isArray(result)) {
-        this.varCache.set(objName, result);
-        return result;
-      }
-    } catch (e) {
-      Logger.error(`[Nexus IDE] Error fetching variables: ${e}`);
-    }
-    return [];
-  }
-
-  private extractStructureFields(structure: any): Array<{ name: string; type: string; isCollection?: boolean }> {
-    const children = Array.isArray(structure?.children) ? structure.children : [];
-    return children
-      .filter((child: any) => child && typeof child.name === "string")
-      .map((child: any) => ({
-        name: child.name,
-        type: child.type || "Unknown",
-        isCollection: Boolean(child.isCollection),
-      }));
+    return getObjectVariables(this.provider, objName, this.varCache);
   }
 }

@@ -1,38 +1,118 @@
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
+import { Logger } from "./utils/Logger";
+import { GxFileSystemProvider } from "./gxFileSystem";
+import { GxUriParser } from "./utils/GxUriParser";
+import { resolveVariableMembers } from "./gxMemberResolver";
 
-export class GxInlineCompletionItemProvider implements vscode.InlineCompletionItemProvider {
-    async provideInlineCompletionItems(
-        document: vscode.TextDocument,
-        position: vscode.Position,
-        _context: vscode.InlineCompletionContext,
-        _token: vscode.CancellationToken
-    ): Promise<vscode.InlineCompletionItem[] | vscode.InlineCompletionList> {
-        const items: vscode.InlineCompletionItem[] = [];
-        const lineText = document.lineAt(position).text;
-        const lineUntilCursor = lineText.substring(0, position.character);
+const AI_TIMEOUT_MS = 4000;
+const AI_CONTEXT_LINES = 20;
 
-        // 1. Logic for patterns like &var.
-        const dotMatch = lineUntilCursor.match(/&([a-zA-Z0-9_]+)\.$/);
-        if (dotMatch) {
-            const varName = dotMatch[1];
-            // Basic generic suggestions as ghost text
-            items.push(new vscode.InlineCompletionItem("IsEmpty()", new vscode.Range(position, position)));
-            items.push(new vscode.InlineCompletionItem("SetEmpty()", new vscode.Range(position, position)));
-            
-            if (varName.toLowerCase().includes('coll') || varName.toLowerCase().endsWith('s')) {
-                items.push(new vscode.InlineCompletionItem("Count", new vscode.Range(position, position)));
-            }
-        }
+export class GxInlineCompletionItemProvider
+  implements vscode.InlineCompletionItemProvider
+{
+  private varCache = new Map<string, any[]>();
 
-        // 2. Logic for control structures
-        if (lineUntilCursor.trim().toLowerCase() === 'if') {
-            items.push(new vscode.InlineCompletionItem(" &var.IsEmpty()", new vscode.Range(position, position)));
-        }
+  constructor(private readonly provider?: GxFileSystemProvider) {}
 
-        if (lineUntilCursor.trim().toLowerCase() === 'for each') {
-            items.push(new vscode.InlineCompletionItem(" defined by ${1:Attribute}", new vscode.Range(position, position)));
-        }
+  async provideInlineCompletionItems(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    _context: vscode.InlineCompletionContext,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.InlineCompletionItem[] | vscode.InlineCompletionList> {
+    if (!this.provider || token.isCancellationRequested) return [];
 
-        return items;
+    const lineText = document.lineAt(position).text;
+    const lineUntilCursor = lineText.substring(0, position.character);
+
+    // 1. &var. member ghost text: real members resolved via the SDK, reusing
+    // the same resolution the completion provider uses. Unknown variable ->
+    // nothing, never a hardcoded guess.
+    const dotMatch = lineUntilCursor.match(/&([a-zA-Z0-9_]+)\.$/);
+    if (dotMatch) {
+      return this.resolveMemberGhostText(document, dotMatch[1], position, token);
     }
+
+    // 2. Optional AI free-form completion (opt-in, degrades to nothing).
+    return this.resolveAiGhostText(document, position, lineUntilCursor, token);
+  }
+
+  private async resolveMemberGhostText(
+    document: vscode.TextDocument,
+    varName: string,
+    position: vscode.Position,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.InlineCompletionItem[]> {
+    const objName = GxUriParser.getObjectName(document.uri);
+    let resolved;
+    try {
+      resolved = await resolveVariableMembers(
+        this.provider!,
+        objName,
+        varName,
+        "",
+        this.varCache,
+      );
+    } catch (e) {
+      Logger.debug(`[Nexus IDE] Inline completion member resolution failed: ${e}`);
+      return [];
+    }
+
+    if (token.isCancellationRequested || !resolved) return [];
+
+    const range = new vscode.Range(position, position);
+    const items: vscode.InlineCompletionItem[] = [];
+    for (const field of resolved.fields) {
+      items.push(new vscode.InlineCompletionItem(field.name, range));
+    }
+    for (const m of resolved.methods) {
+      items.push(new vscode.InlineCompletionItem(`${m.name}()`, range));
+    }
+    return items;
+  }
+
+  private async resolveAiGhostText(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    lineUntilCursor: string,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.InlineCompletionItem[]> {
+    const aiEnabled = vscode.workspace
+      .getConfiguration("genexus")
+      .get<boolean>("inlineCompletion.ai", false);
+    if (!aiEnabled || !lineUntilCursor.trim()) return [];
+
+    const startLine = Math.max(0, position.line - AI_CONTEXT_LINES);
+    const context = document.getText(
+      new vscode.Range(new vscode.Position(startLine, 0), position),
+    );
+
+    try {
+      const result = await Promise.race([
+        this.provider!.callMcpTool("genexus_ai_complete", { context }),
+        new Promise<undefined>((resolve) =>
+          setTimeout(() => resolve(undefined), AI_TIMEOUT_MS),
+        ),
+      ]);
+
+      if (
+        token.isCancellationRequested ||
+        !result ||
+        result.code === "AiEndpointNotConfigured" ||
+        !result.completion
+      ) {
+        return [];
+      }
+
+      return [
+        new vscode.InlineCompletionItem(
+          String(result.completion),
+          new vscode.Range(position, position),
+        ),
+      ];
+    } catch (e) {
+      Logger.debug(`[Nexus IDE] AI inline completion unavailable: ${e}`);
+      return [];
+    }
+  }
 }

@@ -48,7 +48,7 @@ export class ProviderManager {
       ),
       vscode.languages.registerInlineCompletionItemProvider(
         "genexus",
-        new GxInlineCompletionItemProvider(),
+        new GxInlineCompletionItemProvider(this.provider),
       ),
       vscode.languages.registerSignatureHelpProvider(
         "genexus",
