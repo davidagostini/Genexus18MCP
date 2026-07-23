@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
+import { Logger } from "./utils/Logger";
 import * as crypto from "crypto";
 import { TYPE_SUFFIX, GxFileSystemProvider } from "./gxFileSystem";
 import { GxUriParser } from "./utils/GxUriParser";
@@ -406,7 +407,7 @@ export class GxShadowService {
 
     const info = this.resolveHydrationTarget(uri, currentText);
     if (!info?.name) {
-      console.warn(`[GxShadow] Unable to resolve hydration target for ${uri.fsPath}`);
+      Logger.warn(`[GxShadow] Unable to resolve hydration target for ${uri.fsPath}`);
       return false;
     }
 
@@ -425,7 +426,7 @@ export class GxShadowService {
     );
 
     if (!result || typeof result.source !== "string") {
-      console.warn(
+      Logger.warn(
         `[GxShadow] genexus_read returned no source for ${target} (${info.part || "Source"})`,
       );
       return false;
@@ -466,7 +467,7 @@ export class GxShadowService {
       const browseStartedAt = Date.now();
       const children = await provider.browseObjects(parentPath);
       const browseElapsedMs = Date.now() - browseStartedAt;
-      console.log(
+      Logger.info(
         `[GxShadow] browseObjects(${progressLabel}) returned ${children.length} item(s) in ${browseElapsedMs}ms.`,
       );
       if (parentPath.length === 0 && children.length === 0) {
@@ -580,7 +581,7 @@ export class GxShadowService {
       }
       return shadowPath;
     } catch (e) {
-      console.error(`[Shadow Service] SyncToDisk failed: ${e}`);
+      Logger.error(`[Shadow Service] SyncToDisk failed: ${e}`);
       return null;
     }
   }
@@ -853,7 +854,7 @@ export class GxShadowService {
 
       this._fileContentCache.set(filePath, content);
     } catch (e) {
-      console.error(`[Shadow Service] SyncToKB failed for ${filePath}: ${e}`);
+      Logger.error(`[Shadow Service] SyncToKB failed for ${filePath}: ${e}`);
       const info = GxUriParser.parse(vscode.Uri.file(filePath));
       const fallbackTarget =
         info?.name

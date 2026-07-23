@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { Logger } from "./utils/Logger";
 import { GxShadowService } from "./gxShadowService";
 import { GxDiagnosticProvider } from "./diagnosticProvider";
 import { GxGatewayClient } from "./infra/GxGatewayClient";
@@ -133,7 +134,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
   public async initKb() {
     if (this._kbInitPromise) return this._kbInitPromise;
 
-    console.log("[Nexus IDE] Warming up KB...");
+    Logger.info("[Nexus IDE] Warming up KB...");
     try {
       await this.callMcpMethod("ping", undefined, 2000);
     } catch {}
@@ -153,7 +154,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
     })();
 
     this._kbInitPromise.then(() => {
-      console.log("[Nexus IDE] KB SDK Init complete. Refreshing Root...");
+      Logger.info("[Nexus IDE] KB SDK Init complete. Refreshing Root...");
       this._emitter.fire([
         {
           type: vscode.FileChangeType.Changed,
@@ -161,7 +162,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
         },
       ]);
     }).catch((error) => {
-      console.error("[Nexus IDE] KB init failed:", error);
+      Logger.error(`[Nexus IDE] KB init failed: ${error}`);
       this._kbInitPromise = null;
     });
 
@@ -176,7 +177,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
     this._metadataWarmupStarted = true;
     setTimeout(() => {
       void this.shadowMetadata().catch((error) => {
-        console.error("[Nexus IDE] Deferred metadata warmup failed:", error);
+        Logger.error(`[Nexus IDE] Deferred metadata warmup failed: ${error}`);
       });
     }, 1000);
   }
@@ -203,7 +204,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
         }
       }
     } catch (e) {
-      console.error("[Nexus IDE] Shadowing failed:", e);
+      Logger.error(`[Nexus IDE] Shadowing failed: ${e}`);
     }
   }
 
@@ -363,7 +364,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
         return mapped;
       }
     } catch (e) {
-      console.error(`[GxFS] readDirectory error for ${uri.toString()}:`, e);
+      Logger.error(`[GxFS] readDirectory error for ${uri.toString()}: ${e}`);
     }
     return [];
   }
@@ -757,7 +758,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
             throw error;
           }
 
-          console.warn(
+          Logger.warn(
             `[GxFS] ${options?.scopeLabel ?? "typed browse"}: ${typeFilter} failed with '${error instanceof Error ? error.message : String(error)}'. Continuing.`,
           );
         }
@@ -839,7 +840,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
         }
 
         if (pageNumber > 1 && pageAdded > 0) {
-          console.warn(
+          Logger.warn(
             `[GxFS] Structural list page ${pageNumber} added ${pageAdded} child(ren) for ${parentName}.`,
           );
         }
@@ -849,7 +850,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
         }
 
         if (pageAdded === 0) {
-          console.warn(
+          Logger.warn(
             `[GxFS] Structural list pagination stalled for ${parentName} at offset ${offset}. Aborting further page fetches to avoid an infinite loop.`,
           );
           break;
@@ -861,7 +862,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
       const normalized = sortEntries(collected);
 
       if (normalized.length > 0) {
-        console.warn(
+        Logger.warn(
           `[GxFS] Structural list resolved ${normalized.length} child(ren) for ${parentName}.`,
         );
       }
@@ -870,7 +871,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
     };
 
     const loadRootFallback = async (): Promise<any[]> => {
-      console.warn(
+      Logger.warn(
         `[GxFS] Falling back to sequential root enumeration after direct root browse failed or returned no items.`,
       );
 
@@ -910,7 +911,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
       ]);
 
       if (combinedEntries.length > 0) {
-        console.warn(
+        Logger.warn(
           `[GxFS] Root fallback resolved ${combinedEntries.length} root item(s), including ${containerEntries.length} container(s).`,
         );
       }
@@ -924,7 +925,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
         return structuralChildren;
       }
     } catch (error) {
-      console.warn(
+      Logger.warn(
         `[GxFS] Structural list failed for ${parentName}: ${error instanceof Error ? error.message : String(error)}. Falling back to search-based browse.`,
       );
     }
@@ -932,7 +933,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
     if (parentName === ROOT_PARENT_NAME) {
       const fallbackObjects = await loadRootFallback();
       if (fallbackObjects.length > 0) {
-        console.warn(
+        Logger.warn(
           `[GxFS] Root browse resolved immediately via fallback query with ${fallbackObjects.length} container(s).`,
         );
         return fallbackObjects;
@@ -953,7 +954,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
       if (parentPath.length === 0) {
         const fallbackObjects = await loadRootFallback();
         if (fallbackObjects.length > 0) {
-          console.warn(
+          Logger.warn(
             `[GxFS] Root browse failed with '${error instanceof Error ? error.message : String(error)}'; recovered ${fallbackObjects.length} root containers via fallback query.`,
           );
           return fallbackObjects;
@@ -966,7 +967,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
       if (parentPath.length === 0 && /timeout gateway/i.test(result.error)) {
         const fallbackObjects = await loadRootFallback();
         if (fallbackObjects.length > 0) {
-          console.warn(
+          Logger.warn(
             `[GxFS] Root browse timed out; recovered ${fallbackObjects.length} root containers via fallback query.`,
           );
           return fallbackObjects;
@@ -982,7 +983,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
     if (parentPath.length === 0 && objects.length === 0) {
       const fallbackObjects = await loadRootFallback();
       if (fallbackObjects.length > 0) {
-        console.warn(
+        Logger.warn(
           `[GxFS] Root browse returned 0 objects; recovered ${fallbackObjects.length} root containers via fallback query.`,
         );
         return fallbackObjects;
@@ -996,7 +997,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
       if (parentPath.length === 0) {
         const fallbackObjects = await loadRootFallback();
         if (fallbackObjects.length > 0) {
-          console.warn(
+          Logger.warn(
             `[GxFS] Root browse used fallback after truncated result and recovered ${fallbackObjects.length} item(s).`,
           );
           return fallbackObjects;

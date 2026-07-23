@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { nativeFunctions } from './gxNativeFunctions';
 import { GxUriParser } from './utils/GxUriParser';
+import { Logger } from './utils/Logger';
 import { GxFileSystemProvider } from './gxFileSystem';
 
 export class GxHoverProvider implements vscode.HoverProvider {
@@ -80,7 +81,7 @@ export class GxHoverProvider implements vscode.HoverProvider {
                     }
                 }
             } catch (e) {
-                console.error("[Nexus IDE] Error fetching variable hover:", e);
+                Logger.error(`[Nexus IDE] Error fetching variable hover: ${e}`);
             }
         }
 
@@ -122,7 +123,7 @@ export class GxHoverProvider implements vscode.HoverProvider {
                     }
                 }
             } catch (e) {
-                console.error("[Nexus IDE] Hover error:", e);
+                Logger.error(`[Nexus IDE] Hover error: ${e}`);
             }
         }
 

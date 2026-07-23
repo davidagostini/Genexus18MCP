@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { nativeFunctions } from './gxNativeFunctions';
 import { GxFileSystemProvider } from './gxFileSystem';
+import { Logger } from './utils/Logger';
 
 export class GxSignatureHelpProvider implements vscode.SignatureHelpProvider {
     constructor(private readonly provider: GxFileSystemProvider) {}
@@ -65,7 +66,7 @@ export class GxSignatureHelpProvider implements vscode.SignatureHelpProvider {
                 return sig;
             }
         } catch (e) {
-            console.error("[Nexus IDE] Signature Help error:", e);
+            Logger.error(`[Nexus IDE] Signature Help error: ${e}`);
         }
 
         return undefined;

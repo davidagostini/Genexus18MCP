@@ -4,6 +4,7 @@ import * as path from "path";
 import * as os from "os";
 import { GxFileSystemProvider } from "../gxFileSystem";
 import { resolveGatewayHttpPort } from "../utils/GatewayConfig";
+import { Logger } from "../utils/Logger";
 import {
   CONFIG_SECTION,
   COMMAND_PREFIX,
@@ -75,17 +76,17 @@ export class McpDiscoveryManager {
       };
 
       await this.context.globalState.update(STATE_KEY_MCP_DISCOVERY, snapshot);
-      console.log(
+      Logger.info(
         `[McpDiscoveryManager] MCP discovery loaded: ${tools.length} tools, ${resources.length} resources, ${resourceTemplates.length} templates, ${prompts.length} prompts.`,
       );
       return snapshot;
     } catch (e) {
-      console.warn("[McpDiscoveryManager] Live MCP discovery failed:", e);
+      Logger.warn(`[McpDiscoveryManager] Live MCP discovery failed: ${e}`);
       const cached = this.context.globalState.get<DiscoverySnapshot>(
         STATE_KEY_MCP_DISCOVERY,
       );
       if (cached) {
-        console.log("[McpDiscoveryManager] Using cached MCP discovery snapshot.");
+        Logger.info("[McpDiscoveryManager] Using cached MCP discovery snapshot.");
         return cached;
       }
 
@@ -127,13 +128,12 @@ export class McpDiscoveryManager {
 
     try {
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-      console.log(
+      Logger.info(
         `[McpDiscoveryManager] Discovery file created at ${configPath}`,
       );
     } catch (e) {
-      console.error(
-        "[McpDiscoveryManager] Failed to create discovery file:",
-        e,
+      Logger.error(
+        `[McpDiscoveryManager] Failed to create discovery file: ${e}`,
       );
     }
   }
@@ -191,13 +191,12 @@ export class McpDiscoveryManager {
 
         try {
           fs.unlinkSync(fullPath);
-          console.log(
+          Logger.info(
             `[McpDiscoveryManager] Removed local discovery file during development: ${fullPath}`,
           );
         } catch (e) {
-          console.warn(
-            `[McpDiscoveryManager] Failed to remove local discovery file during development: ${fullPath}`,
-            e,
+          Logger.warn(
+            `[McpDiscoveryManager] Failed to remove local discovery file during development: ${fullPath} (${e})`,
           );
         }
       }
@@ -218,7 +217,7 @@ export class McpDiscoveryManager {
       const contributedTools =
         currentExtension?.packageJSON?.contributes?.languageModelTools;
       if (!Array.isArray(contributedTools) || contributedTools.length === 0) {
-        console.log(
+        Logger.info(
           "[McpDiscoveryManager] Skipping LM tool bridge because the extension does not contribute static languageModelTools.",
         );
         return;
@@ -238,7 +237,7 @@ export class McpDiscoveryManager {
         const disposable = anyVscode.lm.registerTool(tool.name, {
           invoke: async (options: any, _token: vscode.CancellationToken) => {
             const args = options?.parameters ?? {};
-            console.log(
+            Logger.info(
               `[McpDiscoveryManager] Tool invoked: ${tool.name} with args: ${JSON.stringify(args)}`,
             );
 
@@ -261,12 +260,12 @@ export class McpDiscoveryManager {
       }
 
       if (tools.length > 0) {
-        console.log(
+        Logger.info(
           `[McpDiscoveryManager] Registered ${tools.length} MCP tools for VS Code LM.`,
         );
       }
     } catch (e) {
-      console.error("[McpDiscoveryManager] Failed to register MCP tools:", e);
+      Logger.error(`[McpDiscoveryManager] Failed to register MCP tools: ${e}`);
     }
   }
 

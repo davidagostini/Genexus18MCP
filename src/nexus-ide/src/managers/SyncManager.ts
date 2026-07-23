@@ -3,6 +3,7 @@ import * as http from "http";
 import * as path from "path";
 import { GxFileSystemProvider } from "../gxFileSystem";
 import { GxShadowService } from "../gxShadowService";
+import { Logger } from "../utils/Logger";
 
 export class SyncManager {
   private _sseRequest?: http.ClientRequest;
@@ -45,7 +46,7 @@ export class SyncManager {
       }
     };
 
-    console.log(`[SyncManager] Connecting to SSE: ${this.provider.baseUrl}`);
+    Logger.info(`[SyncManager] Connecting to SSE: ${this.provider.baseUrl}`);
 
     this._sseRequest = http.request(options, (res) => {
       let buffer = "";
@@ -56,18 +57,18 @@ export class SyncManager {
       });
 
       res.on("end", () => {
-        console.log("[SyncManager] SSE Connection ended. Reconnecting in 5s...");
+        Logger.info("[SyncManager] SSE Connection ended. Reconnecting in 5s...");
         this.scheduleReconnect();
       });
 
       res.on("error", (err) => {
-        console.error("[SyncManager] SSE Error:", err);
+        Logger.error(`[SyncManager] SSE Error: ${err}`);
         this.scheduleReconnect();
       });
     });
 
     this._sseRequest.on("error", (err) => {
-      console.error("[SyncManager] SSE Request Error:", err);
+      Logger.error(`[SyncManager] SSE Request Error: ${err}`);
       this.scheduleReconnect();
     });
 
@@ -109,7 +110,7 @@ export class SyncManager {
         });
 
         if (matchingDocs.length > 0) {
-            console.log(`[SyncManager] External change detected for ${objectName}. Refreshing ${matchingDocs.length} documents.`);
+            Logger.info(`[SyncManager] External change detected for ${objectName}. Refreshing ${matchingDocs.length} documents.`);
             vscode.window.setStatusBarMessage(`$(sync) KB Atualizada: ${objectName}`, 5000);
             
             // Wait a bit to ensure the OS/SDK has finished file operations
@@ -117,7 +118,7 @@ export class SyncManager {
 
             for (const doc of matchingDocs) {
                 if (doc.isDirty) {
-                    console.log(`[SyncManager] Skipping refresh for dirty document: ${objectName}`);
+                    Logger.info(`[SyncManager] Skipping refresh for dirty document: ${objectName}`);
                     continue;
                 }
 

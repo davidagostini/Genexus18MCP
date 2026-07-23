@@ -449,6 +449,12 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically start the MCP backend when the extension activates."
+        },
+        "genexus.logLevel": {
+          "type": "string",
+          "enum": ["error", "warn", "info", "debug"],
+          "default": "info",
+          "description": "Minimum severity written to the 'GeneXus Nexus IDE' output channel."
         }
       }
     }

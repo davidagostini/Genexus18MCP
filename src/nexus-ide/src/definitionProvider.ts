@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { GxFileSystemProvider } from "./gxFileSystem";
 import { GxUriParser } from "./utils/GxUriParser";
+import { Logger } from "./utils/Logger";
 
 export class GxDefinitionProvider implements vscode.DefinitionProvider {
   private _cache = new Map<
@@ -62,7 +63,7 @@ export class GxDefinitionProvider implements vscode.DefinitionProvider {
         }
       }
     } catch (e) {
-      console.error("[Nexus IDE] Definition error:", e);
+      Logger.error(`[Nexus IDE] Definition error: ${e}`);
     }
 
     return undefined;

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { GxFileSystemProvider, TYPE_SUFFIX } from "./gxFileSystem";
 import { GxUriParser } from "./utils/GxUriParser";
+import { Logger } from "./utils/Logger";
 import { isVariableToken, stripVariablePrefix } from "./utils/GxVariableToken";
 
 // Cap on how many `usedby:` hits we deep-scan for a real Range. Objects beyond the cap
@@ -13,10 +14,6 @@ function escapeRegExp(value: string): string {
 }
 
 export class GxReferenceProvider implements vscode.ReferenceProvider {
-  private static readonly outputChannel = vscode.window.createOutputChannel(
-    "Nexus IDE References",
-  );
-
   constructor(private readonly provider: GxFileSystemProvider) {}
 
   async provideReferences(
@@ -51,7 +48,7 @@ export class GxReferenceProvider implements vscode.ReferenceProvider {
       const overflow = objects.slice(MAX_DEEP_SCAN);
 
       if (overflow.length > 0) {
-        GxReferenceProvider.outputChannel.appendLine(
+        Logger.info(
           `[Nexus IDE] References for '${targetName}': ${objects.length} object(s) found via usedby, deep-scanning only the first ${MAX_DEEP_SCAN}. ${overflow.length} object(s) reported at object-level location only.`,
         );
       }
@@ -71,10 +68,7 @@ export class GxReferenceProvider implements vscode.ReferenceProvider {
 
       return locations;
     } catch (e) {
-      console.error("[Nexus IDE] Reference Provider error:", e);
-      GxReferenceProvider.outputChannel.appendLine(
-        `[Nexus IDE] Reference Provider error for '${targetName}': ${e}`,
-      );
+      Logger.error(`[Nexus IDE] Reference Provider error for '${targetName}': ${e}`);
     }
 
     return [];
@@ -137,7 +131,7 @@ export class GxReferenceProvider implements vscode.ReferenceProvider {
 
       return locations.length > 0 ? locations : fallback;
     } catch (e) {
-      GxReferenceProvider.outputChannel.appendLine(
+      Logger.warn(
         `[Nexus IDE] Failed to fetch source for ${obj.type}:${obj.name} while resolving references to '${targetName}': ${e}`,
       );
       return fallback;

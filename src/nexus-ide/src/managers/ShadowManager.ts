@@ -4,6 +4,7 @@ import { GxShadowService } from "../gxShadowService";
 import { GxDiagnosticProvider } from "../diagnosticProvider";
 
 import { GxFileSystemProvider } from "../gxFileSystem";
+import { Logger } from "../utils/Logger";
 
 export class ShadowManager {
   private watcher: vscode.FileSystemWatcher | undefined;
@@ -19,7 +20,7 @@ export class ShadowManager {
     const shadowRoot = this.shadowService.shadowRoot;
     if (!fs.existsSync(shadowRoot)) {
       fs.mkdirSync(shadowRoot, { recursive: true });
-      console.log(`[ShadowManager] Created shadow root: ${shadowRoot}`);
+      Logger.info(`[ShadowManager] Created shadow root: ${shadowRoot}`);
     }
 
     this.watcher = vscode.workspace.createFileSystemWatcher(

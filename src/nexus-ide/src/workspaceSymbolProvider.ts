@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { GxFileSystemProvider } from "./gxFileSystem";
 import { GxUriParser } from "./utils/GxUriParser";
+import { Logger } from "./utils/Logger";
 
 export class GxWorkspaceSymbolProvider
   implements vscode.WorkspaceSymbolProvider
@@ -36,7 +37,7 @@ export class GxWorkspaceSymbolProvider
         });
       }
     } catch (e) {
-      console.error("[Nexus IDE] Workspace Symbol error:", e);
+      Logger.error(`[Nexus IDE] Workspace Symbol error: ${e}`);
     }
 
     return [];

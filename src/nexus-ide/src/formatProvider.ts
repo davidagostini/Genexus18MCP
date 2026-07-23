@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GxFileSystemProvider } from './gxFileSystem';
+import { Logger } from './utils/Logger';
 
 export class GxFormatProvider implements vscode.DocumentFormattingEditProvider {
     constructor(private readonly provider: GxFileSystemProvider) {}
@@ -26,7 +27,7 @@ export class GxFormatProvider implements vscode.DocumentFormattingEditProvider {
                 return [vscode.TextEdit.replace(fullRange, result.formatted)];
             }
         } catch (e) {
-            console.error("[Nexus IDE] Formatting error:", e);
+            Logger.error(`[Nexus IDE] Formatting error: ${e}`);
             vscode.window.setStatusBarMessage(
                 "$(warning) GeneXus formatting skipped",
                 3000,

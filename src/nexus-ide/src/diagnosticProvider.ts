@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { GxFileSystemProvider } from './gxFileSystem';
 import { GxUriParser } from './utils/GxUriParser';
+import { Logger } from './utils/Logger';
 
 export class GxDiagnosticProvider {
     private diagnosticCollection: vscode.DiagnosticCollection;
@@ -45,7 +46,7 @@ export class GxDiagnosticProvider {
                 this.diagnosticCollection.delete(document.uri);
             }
         } catch (e) {
-            console.error("[Nexus IDE] Diagnostic error:", e);
+            Logger.error(`[Nexus IDE] Diagnostic error: ${e}`);
         } finally {
             this.pendingRefreshes.delete(docKey);
         }

@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { Logger } from "./utils/Logger";
 import {
   nativeFunctions,
   keywords,
@@ -28,7 +29,7 @@ export class GxCompletionItemProvider implements vscode.CompletionItemProvider {
     const lineText = document.lineAt(position).text;
     const lineUntilCursor = lineText.substring(0, position.character);
 
-    console.log(`[GxCompletion] Part: ${part}, Line: "${lineText}"`);
+    Logger.info(`[GxCompletion] Part: ${part}, Line: "${lineText}"`);
 
     // --- PART-SPECIFIC PRIORITIZATION ---
 
@@ -156,7 +157,7 @@ export class GxCompletionItemProvider implements vscode.CompletionItemProvider {
               }
             }
           } catch (e) {
-            console.error("[Nexus IDE] SDT Structure error:", e);
+            Logger.error(`[Nexus IDE] SDT Structure error: ${e}`);
           }
         }
 
@@ -332,7 +333,7 @@ export class GxCompletionItemProvider implements vscode.CompletionItemProvider {
         return result;
       }
     } catch (e) {
-      console.error("[Nexus IDE] Error fetching variables:", e);
+      Logger.error(`[Nexus IDE] Error fetching variables: ${e}`);
     }
     return [];
   }

@@ -2,6 +2,7 @@ import * as http from "http";
 import * as vscode from "vscode";
 import { GxShadowService } from "../gxShadowService";
 import { DEFAULT_MCP_PORT } from "../constants";
+import { Logger } from "../utils/Logger";
 
 const MCP_PROTOCOL_VERSION = "2025-11-25";
 const SLOW_REQUEST_MS = 1200;
@@ -10,7 +11,6 @@ export class GxGatewayClient {
   private _baseUrl = `http://127.0.0.1:${DEFAULT_MCP_PORT}/mcp`;
   private _mcpSessionId?: string;
   private _shadowService?: GxShadowService;
-  private static readonly outputChannel = vscode.window.createOutputChannel("GeneXus MCP");
   private static readonly statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   private static activeRequests = 0;
 
@@ -177,7 +177,7 @@ export class GxGatewayClient {
 
   private unwrapGatewayResponse(body: string): any {
     try {
-      console.log(`[GxGateway] Response body received (length: ${body.length})`);
+      Logger.info(`[GxGateway] Response body received (length: ${body.length})`);
       const fullResponse = JSON.parse(body);
 
       if (fullResponse && fullResponse.result) {
@@ -195,7 +195,7 @@ export class GxGatewayClient {
               try {
                 return JSON.parse(trimmed);
               } catch (innerE) {
-                console.error(`[GxGateway] JSON parse error in content:`, innerE);
+                Logger.error(`[GxGateway] JSON parse error in content: ${innerE}`);
                 return text;
               }
             }
@@ -205,11 +205,11 @@ export class GxGatewayClient {
           }
         }
 
-        console.log(`[GxGateway] Found result wrapper but no content list.`);
+        Logger.info(`[GxGateway] Found result wrapper but no content list.`);
         return fullResponse.result;
       }
 
-      console.log(`[GxGateway] No result wrapper found.`);
+      Logger.info(`[GxGateway] No result wrapper found.`);
       return fullResponse;
     } catch {
       return body;
@@ -258,9 +258,7 @@ export class GxGatewayClient {
       try {
         GxGatewayClient.activeRequests++;
         this.updateBusyStatus(requestLabel);
-        GxGatewayClient.outputChannel.appendLine(
-          `[${new Date(startedAt).toISOString()}] -> ${requestLabel}`,
-        );
+        Logger.debug(`[GxGateway] -> ${requestLabel}`);
 
         if (this._shadowService && command.params) {
           command.params.shadowPath = this._shadowService.shadowRoot;
@@ -269,7 +267,7 @@ export class GxGatewayClient {
         const data = JSON.stringify(command);
         const timeout = customTimeout || 120000;
 
-        console.log(
+        Logger.info(
           `[GxGateway] Calling: ${targetUrl} with module ${command.module ?? command.method}...`,
         );
         const url = new URL(targetUrl);
@@ -285,7 +283,7 @@ export class GxGatewayClient {
             timeout: timeout,
           },
           (res) => {
-            console.log(
+            Logger.info(
               `[GxGateway] Response status: ${res.statusCode} for module: ${command.module ?? command.method}`,
             );
             let body = "";
@@ -362,9 +360,7 @@ export class GxGatewayClient {
   private finishTrackedRequest(requestLabel: string, startedAt: number, outcome: string): void {
     const duration = Date.now() - startedAt;
     const slowMarker = duration >= SLOW_REQUEST_MS ? " SLOW" : "";
-    GxGatewayClient.outputChannel.appendLine(
-      `[${new Date().toISOString()}] <- ${requestLabel} (${duration}ms) ${outcome}${slowMarker}`,
-    );
+    Logger.debug(`[GxGateway] <- ${requestLabel} (${duration}ms) ${outcome}${slowMarker}`);
     GxGatewayClient.activeRequests = Math.max(0, GxGatewayClient.activeRequests - 1);
     this.updateBusyStatus();
   }

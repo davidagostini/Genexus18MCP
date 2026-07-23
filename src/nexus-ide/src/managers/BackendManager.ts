@@ -3,6 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as cp from "child_process";
 import { GxFileSystemProvider } from "../gxFileSystem";
+import { Logger } from "../utils/Logger";
 import {
   buildGatewayIdentity,
   GATEWAY_LEASE_STALE_AFTER_MS,
@@ -62,7 +63,7 @@ export class BackendManager {
       try {
         persistedConfig = readJsonFile(configFile);
       } catch (e) {
-        console.error("[BackendManager] Failed to read canonical config.json:", e);
+        Logger.error(`[BackendManager] Failed to read canonical config.json: ${e}`);
       }
     }
 
@@ -79,7 +80,7 @@ export class BackendManager {
       this.trace(
         `Auto-start aborted. kbPath='${kbPath}' installationPath='${installationPath}'`,
       );
-      console.log(
+      Logger.info(
         "[BackendManager] Missing KB Path or Installation Path. Auto-start aborted.",
       );
       return false;
@@ -96,7 +97,7 @@ export class BackendManager {
         currentConfig.Server.HttpPort = this.getEffectivePort(config);
         fs.writeFileSync(configFile, JSON.stringify(currentConfig, null, 2));
       } catch (e) {
-        console.error("[BackendManager] Failed to update canonical config.json:", e);
+        Logger.error(`[BackendManager] Failed to update canonical config.json: ${e}`);
       }
     }
 
@@ -108,7 +109,7 @@ export class BackendManager {
     );
 
     if (await this.isGatewayAlreadyReady(provider, gatewayIdentity)) {
-      console.log("[BackendManager] Reusing already running MCP Gateway.");
+      Logger.info("[BackendManager] Reusing already running MCP Gateway.");
       this.trace(
         `gateway_reused pid=${readGatewayLease(gatewayIdentity.leasePath)?.processId ?? "unknown"} key=${gatewayIdentity.instanceKey}`,
       );
@@ -125,12 +126,12 @@ export class BackendManager {
 
     await this.cleanupBrokenGatewayInstance(gatewayIdentity, provider);
 
-    console.log("[BackendManager] Starting MCP Gateway...");
+    Logger.info("[BackendManager] Starting MCP Gateway...");
     this.trace(`Starting MCP Gateway. backendDir='${backendDir}' configFile='${configFile}' effectivePort='${effectivePortPreview(config)}'`);
     try {
       const effectivePort = this.getEffectivePort(config);
       const launchSpec = this.resolveLaunchSpec(backendDir);
-      console.log(
+      Logger.info(
         `[BackendManager] Launch command: ${launchSpec.command} ${launchSpec.args.join(" ")}`.trim(),
       );
       this.trace(
@@ -155,18 +156,18 @@ export class BackendManager {
       if (this.backendProcess) {
         this.backendProcess.on("error", (error) => {
           this.trace(`Gateway spawn error: ${error.message}`);
-          console.error("[BackendManager] Gateway spawn failed:", error);
+          Logger.error(`[BackendManager] Gateway spawn failed: ${error}`);
         });
 
         this.backendProcess.on("exit", (code) => {
           this.trace(`Gateway process exit. code=${code ?? "null"}`);
-          console.log(`[BackendManager] Gateway exited with code ${code}`);
+          Logger.info(`[BackendManager] Gateway exited with code ${code}`);
           this.backendProcess = undefined;
         });
       }
     } catch (e) {
       this.trace(`Failed to spawn gateway: ${String(e)}`);
-      console.error("[BackendManager] Failed to spawn Gateway:", e);
+      Logger.error(`[BackendManager] Failed to spawn Gateway: ${e}`);
     }
 
     await this.waitForGatewayReady(provider);
@@ -198,22 +199,22 @@ export class BackendManager {
     }
 
     try {
-      console.log("[BackendManager] Searching for .gxw files...");
+      Logger.info("[BackendManager] Searching for .gxw files...");
       const files = await vscode.workspace.findFiles(
         "*.gxw",
         "**/node_modules/**",
         1,
       );
-      console.log(
+      Logger.info(
         `[BackendManager] findFiles returned ${files.length} results.`,
       );
       if (files.length > 0) {
         const found = path.dirname(files[0].fsPath);
-        console.log(`[BackendManager] Found KB at: ${found}`);
+        Logger.info(`[BackendManager] Found KB at: ${found}`);
         return found;
       }
     } catch (e) {
-      console.error("[BackendManager] Error in findFiles:", e);
+      Logger.error(`[BackendManager] Error in findFiles: ${e}`);
     }
 
     // Use configuration or empty string, no hardcoded defaults
@@ -235,7 +236,7 @@ export class BackendManager {
     await this.start(provider, forceStart);
     if (this.onRecovered) {
       try { await this.onRecovered(); }
-      catch (e) { console.error("[BackendManager] onRecovered callback failed:", e); }
+      catch (e) { Logger.error(`[BackendManager] onRecovered callback failed: ${e}`); }
     }
   }
 
@@ -278,7 +279,7 @@ export class BackendManager {
     const devGatewayExe = path.join(devGatewayDir, "GxMcp.Gateway.exe");
 
     if (fs.existsSync(devGatewayExe)) {
-      console.log(`[BackendManager] Using development gateway at: ${devGatewayDir}`);
+      Logger.info(`[BackendManager] Using development gateway at: ${devGatewayDir}`);
       return {
         backendDir: devGatewayDir,
         gatewayExe: devGatewayExe,
@@ -288,7 +289,7 @@ export class BackendManager {
     const publishDir = path.join(this.context.extensionPath, "..", "..", "publish");
     const publishGatewayExe = path.join(publishDir, "GxMcp.Gateway.exe");
     if (fs.existsSync(publishGatewayExe)) {
-      console.log(`[BackendManager] Using development publish backend at: ${publishDir}`);
+      Logger.info(`[BackendManager] Using development publish backend at: ${publishDir}`);
       return {
         backendDir: publishDir,
         gatewayExe: publishGatewayExe,
@@ -355,7 +356,7 @@ export class BackendManager {
         const status = await provider.callMcpMethod("ping", undefined, 2000);
         if (status) {
           this.trace(`Gateway ready after ${attempt} attempt(s).`);
-          console.log(
+          Logger.info(
             `[BackendManager] Gateway ready after ${attempt} attempt(s).`,
           );
           return;

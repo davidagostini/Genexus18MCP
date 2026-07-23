@@ -16,6 +16,7 @@ import { McpDiscoveryManager } from "./managers/McpDiscoveryManager";
 import { SyncManager } from "./managers/SyncManager";
 import { GxUriParser } from "./utils/GxUriParser";
 import { resolveGatewayHttpPort, tryReadGatewayConfig } from "./utils/GatewayConfig";
+import { Logger } from "./utils/Logger";
 import { 
   GX_SCHEME, 
   STATE_KEY_FOLDER_ADDED, 
@@ -32,7 +33,6 @@ let isActivated = false;
 let activeShadowRoot: string | undefined;
 let pendingMountPromise: Promise<void> | undefined;
 let pendingKbBootstrapPromise: Promise<void> | undefined;
-let bootstrapOutput: vscode.OutputChannel | undefined;
 let lifecycleLogPath: string | undefined;
 let activeProvider: GxFileSystemProvider | undefined;
 let activeTreeProvider: GxTreeProvider | undefined;
@@ -41,18 +41,9 @@ let initializationPromise: Promise<void> | undefined;
 
 type BootstrapReporter = (message: string) => void;
 
-function getBootstrapOutput(): vscode.OutputChannel {
-  if (!bootstrapOutput) {
-    bootstrapOutput = vscode.window.createOutputChannel("GeneXus MCP Bootstrap");
-  }
-
-  return bootstrapOutput;
-}
-
 function reportBootstrapStatus(message: string, report?: BootstrapReporter): void {
   const formatted = `[Nexus IDE] ${message}`;
-  console.log(formatted);
-  getBootstrapOutput().appendLine(formatted);
+  Logger.info(formatted);
   appendLifecycleLog(formatted);
   report?.(message);
 }
@@ -424,37 +415,37 @@ export async function ensureKbExplorerReady(
 
 export function activate(context: vscode.ExtensionContext) {
   if (isActivated) {
-    console.log("[Nexus IDE] Activation skipped; extension already initialized.");
+    Logger.info("[Nexus IDE] Activation skipped; extension already initialized.");
     return;
   }
   isActivated = true;
+  Logger.activate(context);
 
-  console.log("[Nexus IDE] Extension activating...");
+  Logger.info("[Nexus IDE] Extension activating...");
   lifecycleLogPath = path.join(context.extensionPath, "extension_lifecycle.log");
   appendLifecycleLog("[Nexus IDE] activate()");
 
   const provider = new GxFileSystemProvider();
   activeProvider = provider;
-  context.subscriptions.push(getBootstrapOutput());
 
   // 1. REGISTER COMMANDS FIRST (Ensure they are always available)
   context.subscriptions.push(
     vscode.commands.registerCommand("nexus-ide.openKb", async () => {
-      console.log("[Nexus IDE] Command 'nexus-ide.openKb' triggered.");
+      Logger.info("[Nexus IDE] Command 'nexus-ide.openKb' triggered.");
       await ensureKbExplorerReady(context, {
         forceRematerialize: false,
         reason: "Open KB",
       });
     }),
     vscode.commands.registerCommand("nexus-ide.addKbFolder", async () => {
-      console.log("[Nexus IDE] Manual 'nexus-ide.addKbFolder' triggered.");
+      Logger.info("[Nexus IDE] Manual 'nexus-ide.addKbFolder' triggered.");
       await ensureKbExplorerReady(context, {
         forceRematerialize: false,
         reason: "Force Add KB Folder",
       });
     }),
     vscode.commands.registerCommand("nexus-ide.refreshFilesystem", async () => {
-      console.log(
+      Logger.info(
         "[Nexus IDE] Command 'nexus-ide.refreshFilesystem' triggered.",
       );
       await ensureKbExplorerReady(context, {
@@ -472,7 +463,7 @@ export function activate(context: vscode.ExtensionContext) {
         isReadonly: false,
       }),
     );
-    console.log(
+    Logger.info(
       `[Nexus IDE] GxFileSystemProvider registered for scheme '${GX_SCHEME}'.`,
     );
 
@@ -480,22 +471,22 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.fs
       .stat(vscode.Uri.from({ scheme: GX_SCHEME, path: "/" }))
       .then(
-        () => console.log(`[Nexus IDE] Scheme '${GX_SCHEME}' warm up success.`),
+        () => Logger.info(`[Nexus IDE] Scheme '${GX_SCHEME}' warm up success.`),
         () => {},
       );
   } catch (e) {
-    console.error("[Nexus IDE] FS registration failed:", e);
+    Logger.error(`[Nexus IDE] FS registration failed: ${e}`);
   }
 
   // 3. DEFERRED INITIALIZATION
   initializationPromise = (async () => {
     try {
       await initializeExtension(context, provider);
-      console.log("[Nexus IDE] Initialization complete.");
+      Logger.info("[Nexus IDE] Initialization complete.");
     } catch (e) {
-      console.error("[Nexus IDE] Init error:", e);
+      Logger.error(`[Nexus IDE] Init error: ${e}`);
       if (e instanceof Error) {
-        console.error(`[Nexus IDE] Stack: ${e.stack}`);
+        Logger.error(`[Nexus IDE] Stack: ${e.stack}`);
       }
     }
   })();
@@ -546,10 +537,7 @@ export async function addKbFolder(
       provider?.clearDirCache?.();
       activeTreeProvider?.refresh();
     } catch (e) {
-      console.warn("[Nexus IDE] Failed to refresh mounted mirror folder:", e);
-      getBootstrapOutput().appendLine(
-        `[Nexus IDE] Failed to refresh mounted mirror folder: ${getErrorMessage(e)}`,
-      );
+      Logger.warn(`[Nexus IDE] Failed to refresh mounted mirror folder: ${getErrorMessage(e)}`);
     }
 
     try {
@@ -587,13 +575,13 @@ export async function addKbFolder(
         );
         return; // Success, exit retry loop
       } catch (e) {
-        console.warn(
+        Logger.warn(
           `[Nexus IDE] Mirror mount point not ready yet (Attempt ${attempt}/${maxRetries}). Retrying in ${delayMs}ms...`,
         );
         if (attempt < maxRetries) {
           await new Promise(resolve => setTimeout(resolve, delayMs));
         } else {
-          console.error("[Nexus IDE] Auto-mount failed after maximum retries.");
+          Logger.error("[Nexus IDE] Auto-mount failed after maximum retries.");
           vscode.window.showWarningMessage("Failed to connect to GeneXus KB MCP Server. You can try reconnecting manually from the Command Palette.");
         }
       }
@@ -604,12 +592,12 @@ function initializeExtension(
   context: vscode.ExtensionContext,
   provider: GxFileSystemProvider,
 ) {
-  console.log("[Nexus IDE] Starting deferred initialization...");
+  Logger.info("[Nexus IDE] Starting deferred initialization...");
   appendLifecycleLog("[Nexus IDE] initializeExtension()");
 
   const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
   const port = resolveGatewayHttpPort(context.extensionPath, config);
-  console.log(`[Nexus IDE] Using MCP port ${port}.`);
+  Logger.info(`[Nexus IDE] Using MCP port ${port}.`);
   provider.baseUrl = `http://127.0.0.1:${port}/mcp`;
   activeShadowRoot = resolveShadowRootPath(context);
 
@@ -720,7 +708,7 @@ function initializeExtension(
 
   // Recovery callback: re-materialize workspace when backend restarts
   backendManager.onRecovered = async () => {
-    console.log("[Nexus IDE] Backend recovered. Re-materializing workspace...");
+    Logger.info("[Nexus IDE] Backend recovered. Re-materializing workspace...");
     try {
       await provider.initKb();
       if (!shadowService.hasMaterializedWorkspace()) {
@@ -736,7 +724,7 @@ function initializeExtension(
       );
     } catch (e) {
       provider.isWorkspaceHydrating = false;
-      console.error("[Nexus IDE] Re-materialization after recovery failed:", e);
+      Logger.error(`[Nexus IDE] Re-materialization after recovery failed: ${e}`);
     }
   };
 
@@ -745,19 +733,19 @@ function initializeExtension(
     .start(provider)
     .then(async (started) => {
       if (!started) {
-        console.warn("[Nexus IDE] Backend startup was skipped or aborted.");
+        Logger.warn("[Nexus IDE] Backend startup was skipped or aborted.");
         return;
       }
       if (IS_TEST_MODE) {
-        console.log("[Nexus IDE] Test mode: skipping live MCP discovery registration.");
+        Logger.info("[Nexus IDE] Test mode: skipping live MCP discovery registration.");
         return;
       }
       if (context.extensionMode === vscode.ExtensionMode.Development) {
-        console.log(
+        Logger.info(
           "[Nexus IDE] Backend started successfully. Skipping discovery registration in development mode.",
         );
       } else {
-        console.log(
+        Logger.info(
           "[Nexus IDE] Backend started successfully. Registering discovery tools...",
         );
         discoveryManager.register();
@@ -769,10 +757,10 @@ function initializeExtension(
           skipBackendStart: true,
         });
       } catch (kbError) {
-        console.error("[Nexus IDE] KB init failed:", kbError);
+        Logger.error(`[Nexus IDE] KB init failed: ${kbError}`);
       }
     })
-    .catch((e) => console.error("[Nexus IDE] Backend start failed:", e));
+    .catch((e) => Logger.error(`[Nexus IDE] Backend start failed: ${e}`));
 
   // Watch for Save event
 
@@ -798,7 +786,7 @@ function initializeExtension(
         return;
       }
 
-      console.log(`[Nexus IDE] Hydrating mirror file: ${doc.uri.fsPath}`);
+      Logger.info(`[Nexus IDE] Hydrating mirror file: ${doc.uri.fsPath}`);
       provider.beginInteractiveHydration();
 
       let hydrated = false;
@@ -822,23 +810,21 @@ function initializeExtension(
               );
             }
           } catch (recoveryError) {
-            console.error(
-              `[Nexus IDE] Backend recovery failed for ${doc.uri.fsPath}:`,
-              recoveryError,
+            Logger.error(
+              `[Nexus IDE] Backend recovery failed for ${doc.uri.fsPath}: ${recoveryError}`,
             );
             return;
           }
         } else {
-          console.error(`[Nexus IDE] Hydration failed for ${doc.uri.fsPath}:`, error);
+          Logger.error(`[Nexus IDE] Hydration failed for ${doc.uri.fsPath}: ${error}`);
           return;
         }
       } finally {
         provider.endInteractiveHydration();
       }
       if (!hydrated && shadowService.isPlaceholder(doc.uri.fsPath)) {
-        console.error(
-          `[Nexus IDE] Hydration failed for ${doc.uri.fsPath}:`,
-          hydrationError ?? "hydrate returned false",
+        Logger.error(
+          `[Nexus IDE] Hydration failed for ${doc.uri.fsPath}: ${hydrationError ?? "hydrate returned false"}`,
         );
       }
       if (!hydrated || doc.isDirty) {
@@ -849,7 +835,7 @@ function initializeExtension(
       try {
         hydratedText = fs.readFileSync(doc.uri.fsPath, "utf8");
       } catch (error) {
-        console.error("[Nexus IDE] Failed to read hydrated mirror file:", error);
+        Logger.error(`[Nexus IDE] Failed to read hydrated mirror file: ${error}`);
         return;
       }
 
@@ -867,9 +853,8 @@ function initializeExtension(
         try {
           await vscode.commands.executeCommand("workbench.action.files.revert");
         } catch (error) {
-          console.error(
-            `[Nexus IDE] Failed to revert hydrated mirror file ${doc.uri.fsPath}:`,
-            error,
+          Logger.error(
+            `[Nexus IDE] Failed to revert hydrated mirror file ${doc.uri.fsPath}: ${error}`,
           );
         }
       }
@@ -923,10 +908,10 @@ function initializeExtension(
   void Promise.all(
     visibleMirrorDocs.map((doc) => hydrateMirrorDocument(doc)),
   ).catch((error) => {
-    console.error("[Nexus IDE] Initial mirror hydration failed:", error);
+    Logger.error(`[Nexus IDE] Initial mirror hydration failed: ${error}`);
   });
 
-  console.log("[Nexus IDE] Deferred initialization complete.");
+  Logger.info("[Nexus IDE] Deferred initialization complete.");
 }
 
 export function deactivate() {
