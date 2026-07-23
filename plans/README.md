@@ -45,7 +45,20 @@ advisor-reviewed, cherry-picked to `main` (`4b6b115` 051, `ce10e5c`+`414c005` 05
 - Follow-up noted: a genuine "Explain Code with AI" command (Phase 3, `genexus_ai_complete`)
   would let 053's relabel become a real binding.
 
-Phases 2–4 remain (roadmap `docs/nexus-ide-roadmap.md`), to be written as plans next.
+### Phase 2 — robustness / hygiene (written 2026-07-23, awaiting execution)
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 054 | Structured, level-gated logging (Logger + migrate ~110 `console.*` + consolidate channels) | P2 | M-L | LOW | 051 | TODO |
+| 055 | Audit ~31 bare `catch {}` — stop swallowing real failures (log via 054) | P2 | M | LOW-MED | 054 | TODO |
+| 056 | Harden webviews — CSP + local mermaid (DiagramView loads CDN, no CSP) | P2 | S-M | LOW-MED | — | TODO |
+| 057 | Fix dev-tree path assumptions in packaged resolution (BackendManager/gxShadowService) | P3 | M | MED | 051 | TODO |
+
+**Corrected scope** (current-code grep, larger than the recon estimate): ~110 `console.*`
+calls across 17 files (recon said 49); ~31 bare `catch {}` (recon said 11); OutputChannel
+sprawl (Bootstrap/MCP/Build/SQL/Test/References). **Execute SEQUENTIALLY** (054→055→056→057,
+merge between each) — `console.*`/`catch{}` are pervasive so the plans share files; parallel
+worktrees would conflict. Phases 3–4 remain (roadmap `docs/nexus-ide-roadmap.md`).
 
 Grounding: `renameProvider.ts:74` (empty edit), `referenceProvider.ts:29` ((0,0) locations),
 `managers/SyncManager.ts` imported at `extension.ts:16` but never registered (dead code),
