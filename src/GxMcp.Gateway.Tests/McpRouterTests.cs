@@ -697,6 +697,26 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ToolHelpCatalog_ResolvesCanonicalNamesAfterUmbrellaConsolidation()
+        {
+            var createHelp = ToolHelpCatalog.Get("genexus_create");
+            Assert.False(string.IsNullOrWhiteSpace(createHelp), "No help text for genexus_create");
+
+            var dbHelp = ToolHelpCatalog.Get("genexus_db");
+            Assert.False(string.IsNullOrWhiteSpace(dbHelp), "No help text for genexus_db");
+        }
+
+        [Fact]
+        public void ToolHelpCatalog_ResolvesLegacyAliasViaCanonicalFallback()
+        {
+            // genexus_create_object is a pre-consolidation legacy name; TryRewriteLegacyTool
+            // maps it to genexus_create (action=object), so Get should resolve it there too.
+            var legacyHelp = ToolHelpCatalog.Get("genexus_create_object");
+            Assert.False(string.IsNullOrWhiteSpace(legacyHelp), "No help text for legacy alias genexus_create_object");
+            Assert.Equal(ToolHelpCatalog.Get("genexus_create"), legacyHelp);
+        }
+
+        [Fact]
         public void ResourcesRead_ToolHelp_ReturnsMarkdownForKnownTool()
         {
             var request = JObject.Parse(@"{
