@@ -155,3 +155,66 @@ suite("GxRenameProvider - editor refresh on rename", () => {
     }
   });
 });
+
+suite("GxRenameProvider - routes to the correct server action based on token kind", () => {
+  test("renaming a variable ('&Total') sends action: 'RenameVariable' to the server", async () => {
+    // VS Code's default word pattern excludes '&', so the word range only ever covers
+    // "Total" — detection must come from the character preceding the range, not the word
+    // text itself. This is the exact bug: before the fix, isVariable was always false here.
+    const shadowRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ide-rename-route-var-"));
+    const shadowService = new GxShadowService("http://127.0.0.1:1", shadowRoot);
+    const filePath = path.join(shadowRoot, "Total.gx");
+    fs.writeFileSync(filePath, "&Total = 1");
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+
+    const fsProvider = new GxFileSystemProvider();
+    (fsProvider as any).fireFileChange = () => {};
+    (shadowService as any).hydrateOpenedFile = async () => true;
+
+    let receivedArgs: any;
+    (fsProvider as any).refactor = async (args: any) => {
+      receivedArgs = args;
+      return { message: "Renamed OK" };
+    };
+
+    const provider = new GxRenameProvider(fsProvider, shadowService);
+    const wordStart = doc.getText().indexOf("Total");
+    const position = new vscode.Position(0, wordStart + 1);
+
+    await provider.provideRenameEdits(doc, position, "NewTotal", NO_TOKEN);
+
+    assert.ok(receivedArgs, "expected provider.refactor to have been called");
+    assert.strictEqual(receivedArgs.action, "RenameVariable");
+    assert.strictEqual(receivedArgs.target, "Total");
+  });
+
+  test("renaming a non-variable token (e.g. an attribute) sends action: 'RenameAttribute' to the server", async () => {
+    const shadowRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ide-rename-route-attr-"));
+    const shadowService = new GxShadowService("http://127.0.0.1:1", shadowRoot);
+    const filePath = path.join(shadowRoot, "AttributeBlue.gx");
+    fs.writeFileSync(filePath, "AttributeBlue = 1");
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+
+    const fsProvider = new GxFileSystemProvider();
+    (fsProvider as any).fireFileChange = () => {};
+    (shadowService as any).hydrateOpenedFile = async () => true;
+
+    let receivedArgs: any;
+    (fsProvider as any).refactor = async (args: any) => {
+      receivedArgs = args;
+      return { message: "Renamed OK" };
+    };
+
+    const provider = new GxRenameProvider(fsProvider, shadowService);
+    const wordStart = doc.getText().indexOf("AttributeBlue");
+    const position = new vscode.Position(0, wordStart + 1);
+
+    await withStubbedReorgPrompt(() =>
+      provider.provideRenameEdits(doc, position, "AttributeGreen", NO_TOKEN),
+    );
+
+    assert.ok(receivedArgs, "expected provider.refactor to have been called");
+    assert.strictEqual(receivedArgs.action, "RenameAttribute");
+    assert.strictEqual(receivedArgs.target, "AttributeBlue");
+  });
+});

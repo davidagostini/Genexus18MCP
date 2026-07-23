@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { GxFileSystemProvider, TYPE_SUFFIX } from "./gxFileSystem";
 import { GxUriParser } from "./utils/GxUriParser";
+import { isVariableToken, stripVariablePrefix } from "./utils/GxVariableToken";
 
 // Cap on how many `usedby:` hits we deep-scan for a real Range. Objects beyond the cap
 // still get a Location (object-level, (0,0)) so they aren't lost, but their source isn't
@@ -30,21 +31,13 @@ export class GxReferenceProvider implements vscode.ReferenceProvider {
     if (!range) return [];
 
     const word = document.getText(range);
-    // VS Code's default word pattern excludes '&', so a variable's word range never
-    // includes its leading '&' even when the cursor sits inside "&Total" — peek at the
-    // character right before the matched word to detect the variable prefix.
-    const precedingChar =
-      range.start.character > 0
-        ? document.getText(new vscode.Range(range.start.translate(0, -1), range.start))
-        : "";
-    const isVariable = word.startsWith("&") || precedingChar === "&";
+    const isVariable = isVariableToken(document, range, word);
 
     // Variables are local to the object; we don't have a cross-KB variable search yet, so
     // scan the currently open document's text for real occurrences instead of the (wrong)
     // KB-wide `usedby:` lookup the old code ran against the stripped name.
     if (isVariable) {
-      const varName = word.startsWith("&") ? word.substring(1) : word;
-      return this.findVariableReferencesInDocument(document, varName);
+      return this.findVariableReferencesInDocument(document, stripVariablePrefix(word));
     }
 
     const targetName = word;

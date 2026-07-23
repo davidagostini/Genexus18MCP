@@ -3,6 +3,7 @@ import { GxUriParser } from './utils/GxUriParser';
 import { GxFileSystemProvider } from './gxFileSystem';
 import { GxShadowService } from './gxShadowService';
 import { formatMcpErrorMessage } from './utils/McpErrorFormatter';
+import { isVariableToken } from './utils/GxVariableToken';
 
 export class GxRenameProvider implements vscode.RenameProvider {
     constructor(
@@ -21,7 +22,7 @@ export class GxRenameProvider implements vscode.RenameProvider {
 
         const oldName = document.getText(range);
         const objName = this.getObjName(document);
-        const isVariable = oldName.startsWith('&');
+        const isVariable = isVariableToken(document, range, oldName);
         
         try {
             await vscode.window.withProgress({
