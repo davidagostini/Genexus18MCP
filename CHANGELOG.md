@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.31.1 — 2026-07-23
+
+Variable-retype reporting honesty (issue #46 follow-up).
+
+### Fixed
+
+- **`genexus_variable action=modify` now reports the type it actually persisted.** Retyping a variable to a built-in GeneXus data type (e.g. `Properties`), an SDT, a Business Component, or a Domain reported `persistedType: "DomainReference"` — an internal placeholder, not a real type — even though the variable was correctly persisted. It now reports the real type name (`"Properties"`, the SDT/BC/Domain name). Declaring `Properties` (and every other built-in data type) already worked as of v2.31.0; this only corrects the confusing success message.
+- **`genexus_variable action=modify` no longer silently falls back to `NUMERIC(4)` when a type can't be resolved.** If a requested type matched no Domain, SDT, Business Component, or built-in GeneXus data type, modify used to leave the variable at its default `NUMERIC(4)` and still report success. It now fails loudly, rolls the variable back to its original type, and leaves it unchanged.
+
+### Internal
+
+- issue #46: `ModifyVariableInternal` tracks the resolved bind name (`boundTypeName`) across the SDT/BC/Domain/`TryBindGenexusDataType`/`TryBindBuiltinUserDefinedType` branches, uses it for `requestedType`/`persistedType`/`details` on a non-primitive retype, and throws (triggering the existing best-effort rollback) when every bind path misses instead of persisting a default-typed variable. New resolver case `Properties` in `Issue33WebSessionAndSdtCollectionTests`; functional round-trip (DSL + modify persist `Properties`, spec 0 errors) verified live on AcademicoHomolog1 (GX 18.0.7).
+
 ## v2.31.0 — 2026-07-23
 
 GeneXus Server "Ignored Objects" visibility, plus full variable-type authoring (issue #45).

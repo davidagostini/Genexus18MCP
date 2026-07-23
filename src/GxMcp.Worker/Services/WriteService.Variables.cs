@@ -862,6 +862,11 @@ namespace GxMcp.Worker.Services
                 // success message can report the REAL persisted type (e.g. Blob→BINARY), never
                 // a bare echo of the requested canonical.
                 bool appliedPrimitive = false;
+                // issue #46 — the meaningful type name for a non-primitive bind (SDT / BC / Domain /
+                // built-in GeneXus data type like "Properties"). Stays null until a bind actually
+                // succeeds, so a bind that silently applied nothing can be caught below instead of
+                // persisting a default NUMERIC(4) and reporting the internal "DomainReference" token.
+                string boundTypeName = null;
                 try
                 {
                     varPart.Variables.Remove(existing);
@@ -899,22 +904,39 @@ namespace GxMcp.Worker.Services
                     else
                     {
                         var targetObj = VariableInjector.ResolveTypeObject(varPart.Model, resolvedTypeForSdk);
-                        if (targetObj != null)
+                        if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
                         {
-                            if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
-                                newVar.DomainBasedOn = dom;
-                            else if (targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
-                                VariableInjector.BindVariableToSdt(newVar, targetObj);
-                            else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
-                                VariableInjector.BindVariableToBC(newVar, targetObj);
+                            newVar.DomainBasedOn = dom;
+                            boundTypeName = dom.Name;
                         }
-                        // Built-in GeneXus data types (HttpClient, WebSession, ...) via the SDK
-                        // registry (issue #45), with the legacy hardcoded map as fallback (issue #33).
+                        else if (targetObj != null && targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+                        {
+                            VariableInjector.BindVariableToSdt(newVar, targetObj);
+                            boundTypeName = targetObj.Name;
+                        }
+                        else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
+                        {
+                            VariableInjector.BindVariableToBC(newVar, targetObj);
+                            boundTypeName = targetObj.Name;
+                        }
+                        // Built-in GeneXus data types (HttpClient, WebSession, Properties, ...) via the
+                        // SDK registry (issue #45/#46), with the legacy hardcoded map as fallback (#33).
                         else if (VariableInjector.TryBindGenexusDataType(newVar, resolvedTypeForSdk))
                         {
+                            boundTypeName = resolvedTypeForSdk;
                         }
                         else if (VariableInjector.TryBindBuiltinUserDefinedType(newVar, resolvedTypeForSdk))
                         {
+                            boundTypeName = resolvedTypeForSdk;
+                        }
+                        else
+                        {
+                            // issue #46 — nothing resolved the name: not a KB Domain/SDT/BC, not a
+                            // built-in GeneXus data type. Throwing here rolls back to the original
+                            // variable instead of persisting a silent default NUMERIC(4) and reporting
+                            // success — the exact failure the reporter hit on the pre-#45 build.
+                            throw new InvalidOperationException(
+                                $"Type '{newTypeName}' could not be resolved to a Domain, SDT, Business Component, or built-in GeneXus data type; original variable preserved.");
                         }
                     }
 
@@ -930,8 +952,14 @@ namespace GxMcp.Worker.Services
                     // length/decimals; if it differs from what was requested, say so explicitly so
                     // a coercion can never masquerade as the requested type. Non-primitive (SDT /
                     // Domain / BC / WebSession) binds keep the canonical name, which is meaningful.
-                    var resultPayload = new JObject { ["requestedType"] = resolution.CanonicalType };
-                    string persistedDesc = resolution.CanonicalType;
+                    // issue #46 — the requested type as the caller named it. "DomainReference" is an
+                    // internal resolver token, never a real type: for a non-primitive bind report the
+                    // name that was actually requested/bound (e.g. "Properties", a Domain/SDT name).
+                    string requestedDisplay = appliedPrimitive || boundTypeName == null
+                        ? resolution.CanonicalType
+                        : boundTypeName;
+                    var resultPayload = new JObject { ["requestedType"] = requestedDisplay };
+                    string persistedDesc = requestedDisplay;
                     if (appliedPrimitive)
                     {
                         try
@@ -943,6 +971,10 @@ namespace GxMcp.Worker.Services
                                 persistedDesc += "(" + shownLen.Value + (shownDec.HasValue && shownDec.Value > 0 ? "," + shownDec.Value : "") + ")";
                         }
                         catch { persistedDesc = resolution.CanonicalType; }
+                    }
+                    else if (boundTypeName != null)
+                    {
+                        persistedDesc = boundTypeName;
                     }
                     resultPayload["persistedType"] = persistedDesc;
                     bool coerced = appliedPrimitive && !string.Equals(persistedDesc.Split('(')[0], resolution.CanonicalType, StringComparison.OrdinalIgnoreCase);

@@ -70,6 +70,9 @@ namespace GxMcp.Worker.Tests
         [InlineData("MailMessage")]
         [InlineData("Location")]
         [InlineData("Geolocation")]
+        // issue #46: the "Properties" data type is just another built-in — it must survive the
+        // resolver gate the same way so add/modify/DSL reach the SDK bind (was persisting NUMERIC(4)).
+        [InlineData("Properties")]
         public void VariableTypeResolver_GenexusDataTypes_ResolveAsRecognizedReference(string typeName)
         {
             var res = VariableTypeResolver.Resolve(typeName);
