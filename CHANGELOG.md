@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## v2.32.0 — 2026-07-23
 
 Agent-ergonomics round: louder argument validation, richer list metadata, content-first defaults, and a batch of correctness fixes.
 
