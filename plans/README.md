@@ -11,6 +11,35 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
 
+## Direction plans (2026-07-23, against `cf736ec` / v2.32.0) — awaiting approval
+
+Forward-looking design/spike plans from a `next`-style direction pass (grounded in
+repo evidence, not generic ideation). **These are NOT executed** — read-only handoffs
+the maintainer picked to write up; they await an explicit go-ahead before any executor
+runs. (Nexus IDE (#6) was scoped as a read-only recon, not a plan — see
+`docs/nexus-ide-recon.md`.)
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 047 | Live-KB test harness (fixture KB + `GXMCP_TEST_KB` gate) — end the recurring "build-only" coverage hole | P2 | L | LOW | — | TODO |
+| 048 | Wire the tool-identity registry (046) into the catalogs + guard test | P2 | M | LOW-MED | 046 (DONE) | TODO |
+| 049 | Expand help + `next_legal_actions` coverage across the tool surface | P3 | M | LOW | 048 | TODO |
+| 050 | Wire the deferred write paths — translations `CaptionExpression` + DSO (spike) | P3 | M | MED | 047 | TODO |
+
+Dependency notes:
+- **048 → 049**: 049 adds catalog coverage using `ToolIdentity` as the authoritative
+  tool list + the 048 guard test to keep new entries honest. Land 048 first.
+- **047 → 050**: 050 wires SDK writes that can only be *verified* against an opened KB;
+  047 provides that harness. Without 047, 050 can only ship build-only (like 023/025/030/043).
+- **047** is the highest-leverage of the set: it unblocks real verification for 050 and
+  for converting the existing build-only plans to live coverage.
+
+Grounding evidence (why each is real, not speculative):
+- 047: plans 023/025/030/043 shipped build-only; `PatternApplyServiceTests`/`PatternParityHarnessTests` TODOs blocked on a fixture KB; the `LiveKbFact`/`GXMCP_TEST_KB` gate already exists.
+- 048: 046's `ToolIdentity` prototype + doc already exist; ERGO-01/03 (plans 041/044) were the same drift class fixed twice.
+- 049: `ToolHelpCatalog` covers ~10/40 tools; `NextLegalActionsBuilder` covers 7.
+- 050: `TranslationsService.cs:58` "SDK write path not wired yet"; AGENTS.md "DSO write ops exist in the SDK but aren't wired."
+
 ## Seventh-pass audit (2026-07-23, against `4082fd3` / v2.31.1) — agent-ergonomics + new-code correctness
 
 First `improve` pass to audit the **agent-ergonomics / token-efficiency** surface —
