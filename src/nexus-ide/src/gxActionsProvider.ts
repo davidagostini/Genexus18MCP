@@ -53,7 +53,7 @@ export class GxActionsProvider implements vscode.TreeDataProvider<ActionItem> {
         if (element.contextValue === 'ai') {
             return [
                 new ActionItem('Auto-Fix Build Errors', vscode.TreeItemCollapsibleState.None, 'action', 'sparkle', 'nexus-ide.autoFix'),
-                new ActionItem('Explain Code with AI', vscode.TreeItemCollapsibleState.None, 'action', 'comment-discussion', 'nexus-ide.copyMcpConfig')
+                new ActionItem('Copy MCP Config for Copilot/Claude', vscode.TreeItemCollapsibleState.None, 'action', 'comment-discussion', 'nexus-ide.copyMcpConfig')
             ];
         }
 

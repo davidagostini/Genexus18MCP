@@ -667,6 +667,10 @@ function initializeExtension(
   const providerManager = new ProviderManager(context, provider, shadowService);
   providerManager.register();
 
+  const syncManager = new SyncManager(context, provider, shadowService);
+  syncManager.register();
+  context.subscriptions.push({ dispose: () => syncManager.dispose() });
+
   const commandManager = new CommandManager(
     context,
     provider,
