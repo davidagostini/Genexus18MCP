@@ -63,14 +63,15 @@ namespace GxMcp.Worker.Services
             {
                 case "status":
                 case "pending":
+                case "ignored":
                 case "conflicts":
                 case "history":
                     break;
                 default:
                     return McpResponse.Err(
                         code: "BadAction",
-                        message: "Unknown action '" + action + "'. Expected one of: status, pending, conflicts, history, commit, update, lock, resolve.",
-                        hint: "Pass action=status, action=pending, action=conflicts, action=history, action=commit, action=update, action=lock, or action=resolve.",
+                        message: "Unknown action '" + action + "'. Expected one of: status, pending, ignored, conflicts, history, commit, update, lock, resolve.",
+                        hint: "Pass action=status, action=pending, action=ignored, action=conflicts, action=history, action=commit, action=update, action=lock, or action=resolve.",
                         nextSteps: new JArray { McpResponse.NextStep("genexus_gxserver", new JObject { ["action"] = "status" }, "Query connection status.") });
             }
 
@@ -85,6 +86,7 @@ namespace GxMcp.Worker.Services
             {
                 case "status": return StatusEnvelope(kbPath, kbAlias);
                 case "pending": return PendingEnvelope(kbPath);
+                case "ignored": return IgnoredEnvelope(kbPath);
                 case "conflicts": return ConflictsEnvelope(kbPath);
                 default: return HistoryEnvelope(kbPath, limit);
             }
@@ -151,15 +153,25 @@ namespace GxMcp.Worker.Services
                     case "pending":
                     {
                         if (!linked) return NotLinked();
+                        // GetLocalChanges returns every locally-changed object; the Commit dialog
+                        // splits them into "Pending Commits" (committable) and "Ignored Objects".
+                        // The ignore flag is the object's ModelEntityOutput OutputTypeId=505 in the
+                        // design model (see IsCommitIgnored) — read locally, no server round-trip.
                         var objects = new JArray();
+                        int ignoredCount = 0;
                         foreach (var h in EnumLocalChanges(svc, model))
                         {
+                            bool ignored = IsCommitIgnored(model, h);
+                            if (ignored) ignoredCount++;
                             objects.Add(new JObject
                             {
                                 ["name"] = SafeStr(() => (string)h.ObjectName) ?? SafeStr(() => h.GetName()),
                                 ["operation"] = SafeStr(() => h.Operation.ToString()),
                                 ["lastChange"] = SafeStr(() => h.LastChange.ToUniversalTime().ToString("o")),
-                                ["user"] = SafeStr(() => (string)h.Username)
+                                ["user"] = SafeStr(() => (string)h.Username),
+                                // true = object is in the IDE's "Ignored Objects" tab; a full commit
+                                // skips it. false = staged in "Pending Commits".
+                                ["ignoredForCommit"] = ignored
                             });
                         }
                         return McpResponse.Ok(
@@ -168,8 +180,63 @@ namespace GxMcp.Worker.Services
                             {
                                 ["connected"] = true,
                                 ["count"] = objects.Count,
+                                ["committableCount"] = objects.Count - ignoredCount,
+                                ["ignoredCount"] = ignoredCount,
                                 ["objects"] = objects,
+                                ["note"] = ignoredCount > 0
+                                    ? "Objects with ignoredForCommit=true are in the IDE 'Ignored Objects' tab and a full commit skips them. Use action=ignored to list only those."
+                                    : null,
                                 ["source"] = "sdk:ITeamDevClientService"
+                            });
+                    }
+
+                    case "ignored":
+                    {
+                        if (!linked) return NotLinked();
+                        // Commit-ignored: locally-changed objects excluded from commit (IDE
+                        // Commit > "Ignored Objects"). Flagged by ModelEntityOutput type 505.
+                        var commitIgnored = new JArray();
+                        int committable = 0;
+                        foreach (var h in EnumLocalChanges(svc, model))
+                        {
+                            if (IsCommitIgnored(model, h))
+                            {
+                                commitIgnored.Add(new JObject
+                                {
+                                    ["name"] = SafeStr(() => (string)h.ObjectName) ?? SafeStr(() => h.GetName()),
+                                    ["type"] = LocalChangeType(model, h),
+                                    ["operation"] = SafeStr(() => h.Operation.ToString()),
+                                    ["lastChange"] = SafeStr(() => h.LastChange.ToUniversalTime().ToString("o")),
+                                    ["user"] = SafeStr(() => (string)h.Username)
+                                });
+                            }
+                            else committable++;
+                        }
+                        // Update-ignored: objects excluded from server UPDATEs (a distinct list —
+                        // the IDE's Update > "Ignored Objects").
+                        var updateIgnored = new JArray();
+                        foreach (var d in EnumIgnoredForUpdate(svc, model))
+                        {
+                            updateIgnored.Add(new JObject
+                            {
+                                ["name"] = SafeStr(() => (string)d.Name),
+                                ["guid"] = SafeStr(() => d.Guid.ToString()),
+                                ["objectType"] = SafeStr(() => d.ObjectType.ToString()),
+                                ["versionDate"] = SafeStr(() => ((DateTime)d.VersionDate).ToUniversalTime().ToString("o"))
+                            });
+                        }
+                        return McpResponse.Ok(
+                            code: "GxServerIgnoredRetrieved",
+                            result: new JObject
+                            {
+                                ["connected"] = true,
+                                ["commitIgnoredCount"] = commitIgnored.Count,
+                                ["commitIgnored"] = commitIgnored,
+                                ["committableCount"] = committable,
+                                ["updateIgnoredCount"] = updateIgnored.Count,
+                                ["updateIgnored"] = updateIgnored,
+                                ["note"] = "commitIgnored = locally-changed objects excluded from commit (IDE Commit > Ignored Objects). updateIgnored = objects excluded from server updates (IDE Update > Ignored Objects).",
+                                ["source"] = "sdk:ITeamDevClientService+ModelEntityOutput"
                             });
                     }
 
@@ -254,6 +321,72 @@ namespace GxMcp.Worker.Services
             IEnumerable raw = svc.GetLocalChanges(model);
             if (raw == null) yield break;
             foreach (var h in raw) yield return h;
+        }
+
+        // The GeneXus output-type id that marks an object as "ignored for commit". When you
+        // right-click an object in the Commit dialog and choose "Add to 'Ignored Objects'", the
+        // IDE writes a ModelEntityOutput row of this type against the object in the design model
+        // (empty data — the row's presence IS the flag). Reverse-engineered against GeneXus
+        // 18.0.7 (metadata-DB before/after diff of the toggle; verified the 505 set equals the
+        // IDE's Ignored-Objects tab exactly). The high-level API that owns this constant —
+        // UI.Framework ITeamDevClientService.GetIgnoredForCommit()/IsIgnoredForCommit() — does
+        // not resolve in the headless worker, so we read the underlying output directly.
+        private const int CommitIgnoreOutputTypeId = 505;
+
+        // LoadLastEntityOutput is a public method on Artech.Udm.Framework.Model (KBModel's base).
+        // Cached MethodInfo; reflection keeps us tolerant of the out-parameter signature.
+        private static System.Reflection.MethodInfo _loadLastEntityOutput;
+        private static System.Reflection.MethodInfo GetLoadLastEntityOutput()
+        {
+            if (_loadLastEntityOutput == null)
+            {
+                _loadLastEntityOutput = typeof(Artech.Udm.Framework.Model).GetMethod(
+                    "LoadLastEntityOutput",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
+                    null,
+                    new[] { typeof(Artech.Udm.Framework.EntityKey), typeof(int), typeof(DateTime).MakeByRefType(), typeof(byte[]).MakeByRefType() },
+                    null);
+            }
+            return _loadLastEntityOutput;
+        }
+
+        // True when the object is in the IDE's Commit > "Ignored Objects" tab: it carries a
+        // ModelEntityOutput of type 505 in the design model. Best-effort — false on any failure
+        // (so an object is never wrongly reported as ignored).
+        private static bool IsCommitIgnored(KBModel model, dynamic h)
+        {
+            try
+            {
+                var m = GetLoadLastEntityOutput();
+                if (m == null) return false;
+                object[] args = new object[] { (Artech.Udm.Framework.EntityKey)(object)h.Key, CommitIgnoreOutputTypeId, null, null };
+                return (bool)m.Invoke(model, args);
+            }
+            catch { return false; }
+        }
+
+        // Friendly object-type name (Procedure / WebPanel / Transaction / Environment …) for a
+        // local change, resolved from the KBObject behind the key. Best-effort; null if unresolved.
+        private static string LocalChangeType(KBModel model, dynamic h)
+        {
+            try
+            {
+                var o = Artech.Architecture.Common.Objects.KBObject.Get(model, (Artech.Udm.Framework.EntityKey)(object)h.Key);
+                if (o != null && o.TypeDescriptor != null) return (string)o.TypeDescriptor.Name;
+            }
+            catch { }
+            return null;
+        }
+
+        // The Update-ignore list (distinct from commit-ignore): objects excluded when receiving
+        // server updates. This one IS exposed on the Common service.
+        private static IEnumerable<dynamic> EnumIgnoredForUpdate(ITeamDevClientService svc, KBModel model)
+        {
+            IEnumerable raw;
+            try { raw = svc.GetIgnoredObjectsForUpdate(model); }
+            catch { yield break; }
+            if (raw == null) yield break;
+            foreach (var d in raw) yield return d;
         }
 
         // A conflict entity's ToString() is the type FQN (e.g. "...Objects.WebPanel"), not the
@@ -352,6 +485,30 @@ namespace GxMcp.Worker.Services
                 {
                     ["connected"] = true,
                     ["objects"] = new JArray(),
+                    ["note"] = "metadata parsing pending — connection detected via " + det.DetectedPath
+                });
+        }
+
+        internal static string IgnoredEnvelope(string kbPath)
+        {
+            var det = Detect(kbPath);
+            if (!det.Connected)
+            {
+                return McpResponse.Ok(
+                    code: "GxServerIgnoredRetrieved",
+                    result: new JObject
+                    {
+                        ["connected"] = false,
+                        ["hint"] = "This KB is not connected to a GeneXus Server instance."
+                    });
+            }
+            return McpResponse.Ok(
+                code: "GxServerIgnoredRetrieved",
+                result: new JObject
+                {
+                    ["connected"] = true,
+                    ["commitIgnored"] = new JArray(),
+                    ["updateIgnored"] = new JArray(),
                     ["note"] = "metadata parsing pending — connection detected via " + det.DetectedPath
                 });
         }

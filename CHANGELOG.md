@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`genexus_gxserver action=ignored` — list the objects Team Development leaves out of a commit.** Surfaces the two "Ignored Objects" sets the IDE shows: `commitIgnored` (locally-changed objects you excluded from commit — each with name, type, operation, last change, user) and `updateIgnored` (objects excluded when receiving server updates). Read-only; returns `{connected:false}` on a KB not linked to a GeneXus Server.
+
+### Changed
+
+- **`genexus_gxserver action=pending` now flags which objects will actually commit.** The pending changelist mixed committable objects with ignored ones and labelled them all "pending". Each object now carries `ignoredForCommit` (true = the object sits in the IDE's "Ignored Objects" tab and a full commit skips it), and the response adds `committableCount` / `ignoredCount`.
+
+### Internal
+
+- Commit-ignore state is read from the object's `ModelEntityOutput` of type **505** in the design model — the marker the IDE writes for "Add to 'Ignored Objects'" (reverse-engineered on GeneXus 18.0.7: mitmproxy capture proved the toggle makes no server call, then a metadata-DB before/after diff isolated the 505 row; the 505 set was verified to equal the IDE's Ignored-Objects tab exactly). Read via the inherited `Artech.Udm.Framework.Model.LoadLastEntityOutput(key, 505, …)` (the high-level `UI.Framework ITeamDevClientService.GetIgnoredForCommit()` does not resolve in the headless worker). `GxServerSyncService` gains the `ignored` action + `IgnoredEnvelope` fallback + `IsCommitIgnored`/`LocalChangeType`/`EnumIgnoredForUpdate` helpers. tool_definitions.json + discovery golden fixture regenerated. New worker tests: `Ignored_NoMetadata_ReturnsConnectedFalse`, `Ignored_WithDotGxState_ReturnsEmptyIgnoredArrays`, `Run_IgnoredAction_IsAcceptedNotBadAction`. `ignoredForCommit` verified live over HTTP against AcademicoHomolog1's real changelist.
+
 ## v2.30.2 — 2026-07-23
 
 Authoring fix (issue #45): variables of a built-in GeneXus data type.

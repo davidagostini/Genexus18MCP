@@ -1294,7 +1294,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "GxServer (Team Development) sync. Read: status|pending|conflicts|history. Write (destructive; requires a GXserver-linked KB): commit (message; optional targets[] = commit ONLY those pending objects; reports committedObjects + remoteVersion) | update (applies changes into local KB; apply=false = download only; leaves conflicts flagged) | lock (target) | resolve (targets[] + strategy). theirs/automerge/update talk to the server and need creds via GXMCP_TEAMDEV_USER/PASSWORD env (url auto-resolves). Returns {connected:false} when KB is not linked.",
+      "description": "GxServer (Team Development) sync. Read: status|pending|ignored|conflicts|history. pending lists locally-changed objects, each flagged ignoredForCommit (true = in the IDE 'Ignored Objects' tab, skipped by a full commit). ignored lists ONLY the excluded objects: commitIgnored (IDE Commit > Ignored Objects) + updateIgnored (IDE Update > Ignored Objects). Write (destructive; requires a GXserver-linked KB): commit (message; optional targets[] = commit ONLY those pending objects; reports committedObjects + remoteVersion) | update (applies changes into local KB; apply=false = download only; leaves conflicts flagged) | lock (target) | resolve (targets[] + strategy). theirs/automerge/update talk to the server and need creds via GXMCP_TEAMDEV_USER/PASSWORD env (url auto-resolves). Returns {connected:false} when KB is not linked.",
       "inputSchema": {
         "examples": [
           {
@@ -1327,6 +1327,7 @@
             "enum": [
               "status",
               "pending",
+              "ignored",
               "conflicts",
               "history",
               "commit",

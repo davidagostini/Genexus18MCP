@@ -83,6 +83,48 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Ignored_NoMetadata_ReturnsConnectedFalse()
+        {
+            string kb = NewTmpKb();
+            try
+            {
+                var jo = JObject.Parse(GxServerSyncService.IgnoredEnvelope(kb));
+                Assert.Equal("GxServerIgnoredRetrieved", (string)jo["code"]);
+                Assert.False((bool)jo["result"]!["connected"]);
+                Assert.Null(jo["result"]!["commitIgnored"]);
+            }
+            finally { try { Directory.Delete(kb, true); } catch { } }
+        }
+
+        [Fact]
+        public void Ignored_WithDotGxState_ReturnsEmptyIgnoredArrays()
+        {
+            string kb = NewTmpKb();
+            try
+            {
+                string dot = Path.Combine(kb, ".gx");
+                Directory.CreateDirectory(dot);
+                File.WriteAllText(Path.Combine(dot, "gxserver-state.xml"), "<state/>");
+
+                var jo = JObject.Parse(GxServerSyncService.IgnoredEnvelope(kb));
+                Assert.True((bool)jo["result"]!["connected"]);
+                Assert.Equal(JTokenType.Array, jo["result"]!["commitIgnored"].Type);
+                Assert.Equal(JTokenType.Array, jo["result"]!["updateIgnored"].Type);
+            }
+            finally { try { Directory.Delete(kb, true); } catch { } }
+        }
+
+        [Fact]
+        public void Run_IgnoredAction_IsAcceptedNotBadAction()
+        {
+            // action=ignored must route through the read path, not fall into BadAction.
+            var svc = new GxServerSyncService(null);
+            var jo = JObject.Parse(svc.Run(new JObject { ["action"] = "ignored" }));
+            Assert.NotEqual("BadAction", (string)jo["error"]?["code"]);
+            Assert.Equal("GxServerIgnoredRetrieved", (string)jo["code"]);
+        }
+
+        [Fact]
         public void Run_BadAction_ReturnsGracefulError()
         {
             var svc = new GxServerSyncService(null);
