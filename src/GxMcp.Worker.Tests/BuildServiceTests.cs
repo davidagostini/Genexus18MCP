@@ -643,6 +643,58 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Build_SecondCallImmediatelyAfterFirst_IsRejectedSynchronously()
+        {
+            // issue #42 (P3c) TOCTOU: the in-flight registration must happen
+            // synchronously inside Build() (before Task.Run schedules RunBuild), so a
+            // second Build() call arriving in that window cannot slip through the
+            // "already running" guard. No delay between the two calls — that is the
+            // whole point of this test.
+            //
+            // GX_KB_PATH must be a real (if empty) directory: with it unset/empty,
+            // RunBuild's own early-return ("KB Path not found") completes and removes
+            // the in-flight entry in well under a millisecond on a warm thread pool,
+            // racing this test's second synchronous call. A real path routes RunBuild
+            // past that early return into the external MSBuild.exe spawn, which has
+            // enough real OS overhead to keep the first build's entry alive for the
+            // immediate second call — without needing a live GeneXus KB/SDK.
+            var prevAllow = Environment.GetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS");
+            var prevKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-race-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempKb);
+            Environment.SetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS", null);
+            Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
+            string firstTaskId = null;
+            try
+            {
+                var svc = new BuildService();
+
+                string firstJson = svc.Build("Build", "RaceFirstProc", "none", 200, false);
+                var firstJo = JObject.Parse(firstJson);
+                Assert.NotEqual("BuildAlreadyRunning", firstJo["status"]?.ToString());
+                firstTaskId = firstJo["taskId"]?.ToString();
+                Assert.False(string.IsNullOrEmpty(firstTaskId));
+
+                string secondJson = svc.Build("Build", "RaceSecondProc", "none", 200, false);
+                var secondJo = JObject.Parse(secondJson);
+                Assert.Equal("BuildAlreadyRunning", secondJo["status"]?.ToString());
+                Assert.Equal("BuildAlreadyRunning", secondJo["code"]?.ToString());
+                Assert.Equal(firstTaskId, secondJo["activeTaskId"]?.ToString());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_ALLOW_CONCURRENT_BUILDS", prevAllow);
+                Environment.SetEnvironmentVariable("GX_KB_PATH", prevKb);
+                try { Directory.Delete(tempKb, true); } catch { }
+                if (firstTaskId != null)
+                {
+                    InFlightRegistry().TryRemove(firstTaskId, out _);
+                    TasksRegistry().TryRemove(firstTaskId, out _);
+                }
+            }
+        }
+
+        [Fact]
         public void GetActiveBuilds_IgnoresOrphanedRunningStatusNotInFlight()
         {
             // A "Running"-labelled task in _tasks that is NOT in _inFlightBuilds (e.g.

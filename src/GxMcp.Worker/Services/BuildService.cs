@@ -1149,6 +1149,12 @@ namespace GxMcp.Worker.Services
 
             _tasks[taskId] = status;
 
+            // issue #42 (P3c): register the in-flight build here — synchronously, before the
+            // background task is scheduled — so a second Build() call cannot slip through the
+            // "already running" guard during the window before RunBuild's own registration runs.
+            if (status.KbPath == null) { try { status.KbPath = GetKBPath(); } catch { } }
+            _inFlightBuilds[status.TaskId] = status;
+
             Task.Run(() => RunBuild(status, action, targets));
 
             string acceptedMessage;
