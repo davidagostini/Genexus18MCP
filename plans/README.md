@@ -11,6 +11,28 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
 
+## Nexus IDE elevation (2026-07-23, against `52e66f1`) — awaiting approval
+
+Bring the `src/nexus-ide` VS Code extension (it has real users) up to the MCP server's
+quality bar. Phased program in `docs/nexus-ide-roadmap.md`; recon map in
+`docs/nexus-ide-recon.md`. Release is tied to the MCP (versions in lockstep). **Not
+executed** — read-only handoffs awaiting go-ahead. Phase 0–1 written now; Phases 2–4
+described in the roadmap, to become plans after 0–1 land.
+
+| Plan | Phase | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|-------|----------|--------|------|------------|--------|
+| 051 | 0 | Nexus IDE test + lint/typecheck baseline & gate | P1 | M | LOW | — | TODO |
+| 052 | 1 | Honest rename + real reference/definition locations | P1 | M | MED | 051 | TODO |
+| 053 | 1 | Resolve SyncManager (wire/delete) + fix mis-wired command | P2 | S-M | MED | 051 | TODO |
+
+Order: 051 (safety net) → 052 (most user-visible "looks-broken") → 053. All build/test
+local/self-hosted (`@vscode/test-electron` + GeneXus SDK can't run on GitHub-hosted CI).
+
+Grounding: `renameProvider.ts:74` (empty edit), `referenceProvider.ts:29` ((0,0) locations),
+`managers/SyncManager.ts` imported at `extension.ts:16` but never registered (dead code),
+`gxActionsProvider.ts:56` (label/command mismatch). Extension test/lint/compile infra
+already exists (`package.json` scripts + `@vscode/test-electron` + ESLint 9).
+
 ## Direction plans (2026-07-23, against `cf736ec` / v2.32.0) — awaiting approval
 
 Forward-looking design/spike plans from a `next`-style direction pass (grounded in
