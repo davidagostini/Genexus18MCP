@@ -21,12 +21,31 @@ described in the roadmap, to become plans after 0–1 land.
 
 | Plan | Phase | Title | Priority | Effort | Risk | Depends on | Status |
 |------|-------|-------|----------|--------|------|------------|--------|
-| 051 | 0 | Nexus IDE test + lint/typecheck baseline & gate | P1 | M | LOW | — | TODO |
-| 052 | 1 | Honest rename + real reference/definition locations | P1 | M | MED | 051 | TODO |
-| 053 | 1 | Resolve SyncManager (wire/delete) + fix mis-wired command | P2 | S-M | MED | 051 | TODO |
+| 051 | 0 | Nexus IDE test + lint/typecheck baseline & gate | P1 | M | LOW | — | DONE |
+| 052 | 1 | Honest rename + real reference/definition locations | P1 | M | MED | 051 | DONE |
+| 053 | 1 | Resolve SyncManager (wire/delete) + fix mis-wired command | P2 | S-M | MED | 051 | DONE |
 
 Order: 051 (safety net) → 052 (most user-visible "looks-broken") → 053. All build/test
 local/self-hosted (`@vscode/test-electron` + GeneXus SDK can't run on GitHub-hosted CI).
+
+**Phase 0–1 applied (2026-07-23).** Executed one plan per executor in isolated worktrees,
+advisor-reviewed, cherry-picked to `main` (`4b6b115` 051, `ce10e5c`+`414c005` 052,
+`75839a4` 053). **Not released** (tied to the MCP cycle). Validation (real —
+`@vscode/test-electron` runs in this environment):
+- 051: 34 new unit tests (`GxGatewayClient`, `BackendManager`, providers) + `check` gate; suite 11→45.
+- 052: rename now refreshes the editor on success (dirty-doc-guarded); references emit real
+  `Range`s (source-scanned, 50-cap + fallback) + within-doc variable refs; suite →54. **Fixed a
+  real found-along-the-way bug**: VS Code's word pattern excludes `&`, so variable rename was
+  mis-routing to `RenameAttribute` — now detected via a shared `GxVariableToken` helper + routing tests.
+- 053: `SyncManager` **wired** (gateway confirmed to emit `notifications/resources/updated` —
+  `Program.Notifications.cs:193`), not deleted; dirty-doc-guard test added; mis-wired
+  "Explain Code with AI" → relabeled to match `copyMcpConfig` (no real explain command exists yet); suite →56.
+- Integrated on `main`: `tsc` 0 errors, `eslint` 0 errors (63 pre-existing warnings). Full
+  56-test suite proven green on the combined branch (053 branched off `main`+051+052).
+- Follow-up noted: a genuine "Explain Code with AI" command (Phase 3, `genexus_ai_complete`)
+  would let 053's relabel become a real binding.
+
+Phases 2–4 remain (roadmap `docs/nexus-ide-roadmap.md`), to be written as plans next.
 
 Grounding: `renameProvider.ts:74` (empty edit), `referenceProvider.ts:29` ((0,0) locations),
 `managers/SyncManager.ts` imported at `extension.ts:16` but never registered (dead code),
