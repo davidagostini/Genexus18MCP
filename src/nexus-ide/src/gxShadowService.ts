@@ -72,17 +72,14 @@ export class GxShadowService {
     }
 
     if (!workspaceRoot || workspaceRoot.startsWith("genexus")) {
-      let current = __dirname;
-      while (current !== path.dirname(current)) {
-        if (
-          fs.existsSync(path.join(current, ".git")) ||
-          fs.existsSync(path.join(current, "Genexus18MCP.sln"))
-        ) {
-          workspaceRoot = current;
-          break;
-        }
-        current = path.dirname(current);
-      }
+      // Previously this walked up from __dirname looking for .git/Genexus18MCP.sln
+      // to guess a monorepo root when no workspace is open. That guess only makes
+      // sense in the dev checkout; in a packaged install there is no repo to find,
+      // so inventing a "root" here would be meaningless (and GxShadowService has
+      // no vscode.ExtensionContext to gate this on reliably - extension.ts already
+      // resolves shadowRoot from context.extensionPath before ever calling here,
+      // so this branch is not exercised by any production or dev caller today).
+      // Fall back to cwd rather than guess a repo root that may not exist.
       if (!workspaceRoot) workspaceRoot = process.cwd();
     }
 

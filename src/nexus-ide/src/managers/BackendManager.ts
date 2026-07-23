@@ -265,35 +265,41 @@ export class BackendManager {
   }
 
   private resolveBackendDirectory(): { backendDir: string; gatewayExe: string } {
+    // Packaged backend/ under the extension install dir is the FIRST, authoritative
+    // resolution. Dev-tree bin/publish paths are only consulted when we can prove
+    // we're running from the dev checkout (extensionMode === Development) - never
+    // let a dev path win in a packaged install.
     const packagedBackendDir = path.join(this.context.extensionPath, "backend");
     const packagedGatewayExe = path.join(packagedBackendDir, "GxMcp.Gateway.exe");
 
-    const devGatewayDir = path.join(
-      this.context.extensionPath,
-      "..",
-      "GxMcp.Gateway",
-      "bin",
-      "Debug",
-      "net8.0-windows",
-    );
-    const devGatewayExe = path.join(devGatewayDir, "GxMcp.Gateway.exe");
+    if (this.context.extensionMode === vscode.ExtensionMode.Development) {
+      const devGatewayDir = path.join(
+        this.context.extensionPath,
+        "..",
+        "GxMcp.Gateway",
+        "bin",
+        "Debug",
+        "net8.0-windows",
+      );
+      const devGatewayExe = path.join(devGatewayDir, "GxMcp.Gateway.exe");
 
-    if (fs.existsSync(devGatewayExe)) {
-      Logger.info(`[BackendManager] Using development gateway at: ${devGatewayDir}`);
-      return {
-        backendDir: devGatewayDir,
-        gatewayExe: devGatewayExe,
-      };
-    }
+      if (fs.existsSync(devGatewayExe)) {
+        Logger.info(`[BackendManager] Using development gateway at: ${devGatewayDir}`);
+        return {
+          backendDir: devGatewayDir,
+          gatewayExe: devGatewayExe,
+        };
+      }
 
-    const publishDir = path.join(this.context.extensionPath, "..", "..", "publish");
-    const publishGatewayExe = path.join(publishDir, "GxMcp.Gateway.exe");
-    if (fs.existsSync(publishGatewayExe)) {
-      Logger.info(`[BackendManager] Using development publish backend at: ${publishDir}`);
-      return {
-        backendDir: publishDir,
-        gatewayExe: publishGatewayExe,
-      };
+      const publishDir = path.join(this.context.extensionPath, "..", "..", "publish");
+      const publishGatewayExe = path.join(publishDir, "GxMcp.Gateway.exe");
+      if (fs.existsSync(publishGatewayExe)) {
+        Logger.info(`[BackendManager] Using development publish backend at: ${publishDir}`);
+        return {
+          backendDir: publishDir,
+          gatewayExe: publishGatewayExe,
+        };
+      }
     }
 
     return {

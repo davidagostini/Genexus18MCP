@@ -16,11 +16,14 @@ import {
  * lifecycle is NOT exercised here (per plan 051 scope: pure-ish parts only).
  */
 suite("BackendManager path resolution + lease logic", () => {
-  function makeContext(extensionPath: string): vscode.ExtensionContext {
-    return { extensionPath } as unknown as vscode.ExtensionContext;
+  function makeContext(
+    extensionPath: string,
+    extensionMode: vscode.ExtensionMode = vscode.ExtensionMode.Production,
+  ): vscode.ExtensionContext {
+    return { extensionPath, extensionMode } as unknown as vscode.ExtensionContext;
   }
 
-  test("resolveBackendDirectory prefers a dev gateway build when present", () => {
+  test("resolveBackendDirectory prefers a dev gateway build when present in Development mode", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ide-backend-dev-"));
     try {
       const extensionDir = path.join(tempRoot, "extension");
@@ -30,7 +33,9 @@ suite("BackendManager path resolution + lease logic", () => {
       fs.mkdirSync(devGatewayDir, { recursive: true });
       fs.writeFileSync(path.join(devGatewayDir, "GxMcp.Gateway.exe"), "");
 
-      const manager = new BackendManager(makeContext(extensionDir)) as any;
+      const manager = new BackendManager(
+        makeContext(extensionDir, vscode.ExtensionMode.Development),
+      ) as any;
       const resolved = manager.resolveBackendDirectory();
 
       assert.strictEqual(resolved.backendDir, devGatewayDir);
@@ -46,7 +51,9 @@ suite("BackendManager path resolution + lease logic", () => {
       const extensionDir = path.join(tempRoot, "extension");
       fs.mkdirSync(extensionDir, { recursive: true });
 
-      const manager = new BackendManager(makeContext(extensionDir)) as any;
+      const manager = new BackendManager(
+        makeContext(extensionDir, vscode.ExtensionMode.Development),
+      ) as any;
       const resolved = manager.resolveBackendDirectory();
 
       assert.strictEqual(resolved.backendDir, path.join(extensionDir, "backend"));
@@ -54,6 +61,64 @@ suite("BackendManager path resolution + lease logic", () => {
         resolved.gatewayExe,
         path.join(extensionDir, "backend", "GxMcp.Gateway.exe"),
       );
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("resolveBackendDirectory anchors to the packaged backend dir in Production mode, even when dev paths exist", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ide-backend-packaged-"));
+    try {
+      const extensionDir = path.join(tempRoot, "extension");
+      fs.mkdirSync(extensionDir, { recursive: true });
+
+      // A dev gateway build AND a publish dir both exist alongside the
+      // packaged extension - a packaged (Production-mode) install must
+      // never resolve to either of these dev-tree paths.
+      const devGatewayDir = path.join(tempRoot, "GxMcp.Gateway", "bin", "Debug", "net8.0-windows");
+      fs.mkdirSync(devGatewayDir, { recursive: true });
+      fs.writeFileSync(path.join(devGatewayDir, "GxMcp.Gateway.exe"), "");
+
+      const publishDir = path.join(tempRoot, "publish");
+      fs.mkdirSync(publishDir, { recursive: true });
+      fs.writeFileSync(path.join(publishDir, "GxMcp.Gateway.exe"), "");
+
+      const packagedBackendDir = path.join(extensionDir, "backend");
+      fs.mkdirSync(packagedBackendDir, { recursive: true });
+      fs.writeFileSync(path.join(packagedBackendDir, "GxMcp.Gateway.exe"), "");
+
+      const manager = new BackendManager(
+        makeContext(extensionDir, vscode.ExtensionMode.Production),
+      ) as any;
+      const resolved = manager.resolveBackendDirectory();
+
+      assert.strictEqual(resolved.backendDir, packagedBackendDir);
+      assert.strictEqual(
+        resolved.gatewayExe,
+        path.join(packagedBackendDir, "GxMcp.Gateway.exe"),
+      );
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("resolveBackendDirectory falls back to the publish dir in Development mode when only it exists", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ide-backend-publish-"));
+    try {
+      const extensionDir = path.join(tempRoot, "src", "extension");
+      fs.mkdirSync(extensionDir, { recursive: true });
+
+      const publishDir = path.join(tempRoot, "publish");
+      fs.mkdirSync(publishDir, { recursive: true });
+      fs.writeFileSync(path.join(publishDir, "GxMcp.Gateway.exe"), "");
+
+      const manager = new BackendManager(
+        makeContext(extensionDir, vscode.ExtensionMode.Development),
+      ) as any;
+      const resolved = manager.resolveBackendDirectory();
+
+      assert.strictEqual(resolved.backendDir, publishDir);
+      assert.strictEqual(resolved.gatewayExe, path.join(publishDir, "GxMcp.Gateway.exe"));
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
