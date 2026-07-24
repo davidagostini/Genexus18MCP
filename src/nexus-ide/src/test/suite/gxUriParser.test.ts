@@ -2,6 +2,7 @@ import * as assert from "assert";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import * as vscode from "vscode";
 import { GxUriParser } from "../../utils/GxUriParser";
 import { Logger } from "../../utils/Logger";
 
@@ -40,5 +41,57 @@ suite("GxUriParser.loadMirrorIndex corrupt-index handling", () => {
     assert.ok(warnLine!.includes(indexPath), "warning should mention the corrupt index path");
 
     assert.strictEqual(GxUriParser.findMirrorPath("Transaction", "Anything"), null);
+  });
+});
+
+suite("GxUriParser.resolveWithinRoot containment", () => {
+  const root = path.join("C:", "shadow-root");
+
+  test("joins a simple segment and stays under root", () => {
+    const result = GxUriParser.resolveWithinRoot(root, "Procedure", "MyProc.gx");
+    assert.ok(result, "expected a non-null resolved path");
+    assert.ok(
+      result!.toLowerCase().startsWith(path.resolve(root).toLowerCase()),
+      "resolved path should start with the root",
+    );
+  });
+
+  test("allows legitimate nested module segments", () => {
+    const result = GxUriParser.resolveWithinRoot(root, "Module1", "Module2", "X.gx");
+    assert.ok(result, "expected nested segments to be allowed");
+    assert.ok(
+      result!.toLowerCase().startsWith(path.resolve(root).toLowerCase()),
+      "resolved nested path should stay under the root",
+    );
+  });
+
+  test("rejects a traversal escape via '..' segments", () => {
+    const result = GxUriParser.resolveWithinRoot(root, "..", "..", "X.gx");
+    assert.strictEqual(result, null);
+  });
+
+  test("rejects an absolute segment that would replace the root", () => {
+    const result = GxUriParser.resolveWithinRoot(root, "C:\\Windows\\System32", "x");
+    assert.strictEqual(result, null);
+  });
+});
+
+suite("GxUriParser.parse gxkb18-scheme containment", () => {
+  test("rejects a gxkb18 URI whose type segment is a traversal marker", () => {
+    // The split-based parser only ever inspects the segment immediately
+    // preceding the filename as `type` (earlier segments, e.g. a leading
+    // '../../', are discarded and never reach a path.join downstream) - so
+    // the traversal marker has to land in that exact slot to be a real risk.
+    const uri = vscode.Uri.parse("gxkb18:/../Name.gx");
+    const info = GxUriParser.parse(uri);
+    assert.strictEqual(info, null);
+  });
+
+  test("still parses a normal gxkb18 URI (no regression)", () => {
+    const uri = vscode.Uri.parse("gxkb18:/Procedure/MyProc.gx");
+    const info = GxUriParser.parse(uri);
+    assert.ok(info, "expected a normal URI to parse");
+    assert.strictEqual(info!.type, "Procedure");
+    assert.strictEqual(info!.name, "MyProc");
   });
 });

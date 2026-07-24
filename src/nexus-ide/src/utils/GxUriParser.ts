@@ -31,6 +31,27 @@ export class GxUriParser {
     return targetPath.replace(/\\/g, "/").replace(/^\/+/, "");
   }
 
+  /**
+   * Joins `segments` under `root` and returns the absolute path ONLY if it stays
+   * inside `root`; returns null on any traversal/absolute escape. Allows legitimate
+   * nested segments (module folders) — containment is checked on the resolved path,
+   * not by forbidding '/'.
+   */
+  static resolveWithinRoot(root: string, ...segments: string[]): string | null {
+    if (!root) return null;
+    const resolvedRoot = path.resolve(root);
+    const target = path.resolve(resolvedRoot, ...segments.filter((s) => s.length > 0));
+    const rootWithSep = resolvedRoot.endsWith(path.sep) ? resolvedRoot : resolvedRoot + path.sep;
+    if (target !== resolvedRoot && !target.startsWith(rootWithSep)) return null;
+    return target;
+  }
+
+  private static hasUnsafeSegment(seg: string): boolean {
+    if (!seg) return false;
+    return seg.split(/[\\/]/).some((p) => p === ".." || p === ".") ||
+      /\0/.test(seg) || path.isAbsolute(seg);
+  }
+
   static getMirrorIndexPath(shadowRoot?: string): string | null {
     const base = shadowRoot || this._shadowRoot;
     if (!base) return null;
@@ -183,6 +204,8 @@ export class GxUriParser {
       cleanName = nameParts.join(".");
     }
     cleanName = GxPartMapper.stripTypeSuffix(cleanName);
+
+    if (this.hasUnsafeSegment(type) || this.hasUnsafeSegment(cleanName)) return null;
 
     return {
       type,

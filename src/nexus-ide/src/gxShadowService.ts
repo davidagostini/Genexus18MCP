@@ -247,17 +247,31 @@ export class GxShadowService {
       part,
     );
 
-    return fs.existsSync(canonicalPath) ? canonicalPath : mirrorPath;
+    return canonicalPath && fs.existsSync(canonicalPath) ? canonicalPath : mirrorPath;
   }
 
   private resolveCanonicalShadowPath(
     targetDir: string,
     obj: { name: string; type: string },
     part = "Source",
-  ): string {
-    const canonicalPath = path.join(targetDir, this.getObjectFileName(obj, part));
+  ): string | null {
+    const relativeDir = path.relative(this._shadowRoot, targetDir);
+    const canonicalPath = GxUriParser.resolveWithinRoot(
+      this._shadowRoot,
+      relativeDir,
+      this.getObjectFileName(obj, part),
+    );
+    if (!canonicalPath) {
+      Logger.warn(
+        `[GxShadow] Rejected unsafe canonical shadow path for ${obj.type}:${obj.name} (part=${part}).`,
+      );
+      return null;
+    }
+
     const legacyName = this.getLegacyObjectFileName(obj, part);
-    const legacyPath = legacyName ? path.join(targetDir, legacyName) : null;
+    const legacyPath = legacyName
+      ? GxUriParser.resolveWithinRoot(this._shadowRoot, relativeDir, legacyName)
+      : null;
 
     if (legacyPath && fs.existsSync(legacyPath)) {
       if (!fs.existsSync(canonicalPath)) {
@@ -310,9 +324,19 @@ export class GxShadowService {
       return null;
     }
 
-    const siblingAbsolutePath = path.join(this._shadowRoot, siblingEntry.path);
+    const siblingAbsolutePath = GxUriParser.resolveWithinRoot(this._shadowRoot, siblingEntry.path);
+    if (!siblingAbsolutePath) {
+      Logger.warn(
+        `[GxShadow] Rejected unsafe sibling entry path "${siblingEntry.path}" for ${obj.type}:${obj.name}.`,
+      );
+      return null;
+    }
     const targetDir = path.dirname(siblingAbsolutePath);
     const newFilePath = this.resolveCanonicalShadowPath(targetDir, obj, part);
+
+    if (!newFilePath) {
+      return null;
+    }
 
     if (!fs.existsSync(newFilePath)) {
       this.writeTrackedFile(newFilePath, this.buildPlaceholder(obj, part));
@@ -487,7 +511,13 @@ export class GxShadowService {
             child.type,
             siblingNames,
           );
-          const nextDir = path.join(parentDir, displayName);
+          const nextDir = GxUriParser.resolveWithinRoot(parentDir, displayName);
+          if (!nextDir) {
+            Logger.warn(
+              `[GxShadow] Rejected unsafe container path for ${child.type}:${child.name}; skipping.`,
+            );
+            continue;
+          }
           containerEntries.push({
             type: child.type,
             name: child.name,
@@ -504,6 +534,12 @@ export class GxShadowService {
         }
 
         const filePath = this.resolveCanonicalShadowPath(parentDir, child);
+        if (!filePath) {
+          Logger.warn(
+            `[GxShadow] Rejected unsafe shadow path for ${child.type}:${child.name} during materialization; skipping.`,
+          );
+          continue;
+        }
         if (!fs.existsSync(filePath)) {
           this.writeTrackedFile(filePath, this.buildPlaceholder(child));
         }
@@ -560,7 +596,11 @@ export class GxShadowService {
       const indexedPath = info.type
         ? this.findIndexedShadowPath({ name: info.name, type: info.type }, part)
         : null;
-      const fallbackDir = path.join(this._shadowRoot, info.type || "Objects");
+      const fallbackDir = GxUriParser.resolveWithinRoot(this._shadowRoot, info.type || "Objects");
+      if (!fallbackDir) {
+        Logger.warn(`[Shadow Service] Rejected unsafe fallback dir for type "${info.type}"; aborting sync.`);
+        return null;
+      }
       if (!fs.existsSync(fallbackDir)) fs.mkdirSync(fallbackDir, { recursive: true });
 
       const shadowPath =
@@ -570,6 +610,13 @@ export class GxShadowService {
           { name: info.name, type: info.type || "Object" },
           part,
         );
+
+      if (!shadowPath) {
+        Logger.warn(
+          `[Shadow Service] Rejected unsafe shadow path for ${info.type}:${info.name}; aborting sync.`,
+        );
+        return null;
+      }
 
       this.writeTrackedFile(shadowPath, content);
       if (info.type) {
@@ -645,12 +692,22 @@ export class GxShadowService {
     let changed = false;
 
     for (const entry of currentIndex) {
-      const targetDir = path.dirname(path.join(this._shadowRoot, entry.path));
+      const resolvedEntryPath = GxUriParser.resolveWithinRoot(this._shadowRoot, entry.path);
+      if (!resolvedEntryPath) {
+        Logger.warn(
+          `[GxShadow] Rejected unsafe mirror index entry path "${entry.path}" for ${entry.type}:${entry.name}; skipping.`,
+        );
+        continue;
+      }
+      const targetDir = path.dirname(resolvedEntryPath);
       const canonicalPath = this.resolveCanonicalShadowPath(
         targetDir,
         { name: entry.name, type: entry.type },
         entry.part,
       );
+      if (!canonicalPath) {
+        continue;
+      }
       const normalized = this.buildIndexEntry(
         canonicalPath,
         { name: entry.name, type: entry.type },
@@ -679,6 +736,9 @@ export class GxShadowService {
         { name: info.name, type: info.type },
         info.part,
       );
+      if (!canonicalPath) {
+        continue;
+      }
       const normalized = this.buildIndexEntry(
         canonicalPath,
         { name: info.name, type: info.type },
@@ -712,8 +772,8 @@ export class GxShadowService {
 
     const sampleSize = Math.min(index.length, 5);
     for (let i = 0; i < sampleSize; i++) {
-      const fullPath = path.join(this._shadowRoot, index[i].path);
-      if (fs.existsSync(fullPath)) return true;
+      const fullPath = GxUriParser.resolveWithinRoot(this._shadowRoot, index[i].path);
+      if (fullPath && fs.existsSync(fullPath)) return true;
     }
 
     return false;

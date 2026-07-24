@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
-import * as path from "path";
 import { Logger } from "./utils/Logger";
 import { GxShadowService } from "./gxShadowService";
 import { GxDiagnosticProvider } from "./diagnosticProvider";
@@ -294,12 +293,9 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
     if (size === 0) {
       const info = GxUriParser.parse(uri);
       if (info) {
-        const shadowPath = path.join(
-          this._shadowService?.shadowRoot || "",
-          info.type,
-          `${info.name}.gx`,
-        );
-        size = fs.existsSync(shadowPath) ? fs.statSync(shadowPath).size : 0;
+        const shadowRoot = this._shadowService?.shadowRoot || "";
+        const shadowPath = GxUriParser.resolveWithinRoot(shadowRoot, info.type, `${info.name}.gx`);
+        size = shadowPath && fs.existsSync(shadowPath) ? fs.statSync(shadowPath).size : 0;
       }
     }
 
