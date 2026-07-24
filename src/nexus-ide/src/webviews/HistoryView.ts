@@ -42,7 +42,7 @@ export class HistoryView {
       historyProvider.clear(objName);
     });
 
-    panel.webview.html = `<h1>Carregando historico de ${objName}...</h1>`;
+    panel.webview.html = `<h1>Carregando historico de ${escapeHtml(objName)}...</h1>`;
 
     try {
       const result = await provider.callMcpTool("genexus_history", {
