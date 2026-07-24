@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.34.0 — 2026-07-24
+
+Correctness fixes for reading and writing SDT / Data Provider objects, plus an explicit failure for folder/module placement.
+
+### Fixed
+
+- **Reading a collection SDT no longer flattens it.** `genexus_inspect` and `genexus_structure action=get_visual` reported a top-level collection SDT as `isCollection: false` with a flat field list, because the collection flag lives on the structure's root level, not on the SDT object. Both now report `isCollection: true` and the collection item name (e.g. `"DASDTCursosAlunoItem"`), and `get_visual` now also carries each field's length/decimals — matching what the IDE and `genexus_read part=Structure` show.
+- **SDT members typed as another SDT now read as that SDT's name.** A member referencing another SDT came back as the opaque `"GX_SDT"` token; it now includes `referencedType` with the referenced object's name (e.g. `"CobrancaEndpointServiceconvenioDto"`).
+- **Setting a Data Provider's `OutputSDT` now persists.** `genexus_properties action=set propertyName=OutputSDT value=<SDT name>` reported success but wrote an empty value, because `OutputSDT` is a read-only derived string and the writable output is a typed reference. The MCP now resolves the SDT name and applies it through the SDK's typed Data Provider output API. Passing an empty value clears the output; a non-existent SDT name is rejected with `OutputSdtNotFound` instead of silently emptying the property.
+
+### Changed
+
+- **Renaming an object via `genexus_properties` is rejected instead of half-applied.** Setting the `Name` property re-keyed the object in memory but left the index stale (the object became unreachable under its new name) and never updated references. It now returns `RenameNotViaProperties` pointing to `genexus_refactor action=RenameObject`, which renames the object, patches its call-sites, and refreshes the index.
+- **`genexus_create` rejects a folder/module destination instead of ignoring it.** `genexus_create action=object` accepts optional `folder` / `module` / `parentPath` and, because the GeneXus 18 SDK exposes no API to place an object into a folder/module, returns `FolderPlacementUnsupported` up front rather than silently creating the object in Root Module. Create the object without a destination, then move it in the GeneXus IDE.
+
+### Internal
+
+- New `SdtMemberResolver` helper (shared SDT-reference name resolution); `PropertyService.SetDataProviderOutputSdt` routes through `Artech.Genexus.Common.Properties+DPRV.SetOutput(IPropertyBag, DataProviderOutputReference)`. Tool-schema token budget 16400 → 16600 for the new `genexus_create` folder/module/parentPath args. Added `Issue47To50SdtAndPlacementTests` and a router-forwarding test; golden `tools-list` fixture regenerated. All fixes live-verified over HTTP against a real KB (AcademicoHomolog1).
+
 ## v2.33.1 — 2026-07-23
 
 Hardening and correctness fixes for the **Nexus IDE VS Code extension**. (The `genexus-mcp` server is unchanged from v2.33.0 — this is a lockstep version bump whose substance is the extension.)

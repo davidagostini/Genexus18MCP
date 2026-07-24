@@ -105,6 +105,22 @@ namespace GxMcp.Worker.Services
                         target: target);
                 }
 
+                // issue #49: renaming an object by setting its "Name" via the generic property
+                // setter half-works — obj.Name = newName persists to the KB, but the index cache
+                // is never re-keyed, so the object is unreachable under the new name afterwards
+                // (get returns ObjectNotFound) and a subsequent rename can orphan the old state.
+                // Renaming is a refactor (it must also patch every caller), not a scalar write.
+                // Reject it and route to the operation that does it correctly.
+                if (string.IsNullOrEmpty(controlName) && string.Equals(propName?.Trim(), "Name", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Models.McpResponse.Err(
+                        code: "RenameNotViaProperties",
+                        message: $"Cannot rename '{target}' by setting the 'Name' property: this only re-keys the object in memory, leaving the index stale (the object becomes unreachable under the new name) and does not update references from other objects.",
+                        hint: "Use genexus_refactor action=RenameObject, which renames the object, patches its call-sites, and refreshes the index.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_refactor", new JObject { ["action"] = "RenameObject", ["target"] = target, ["newName"] = value, ["type"] = typeFilter }, "Renames the object and patches every reference to it.")),
+                        target: target);
+                }
+
                 // issue #41: ControlValues is a STRUCTURED property (the static combo's
                 // list of value/description pairs), not a scalar. The generic string setter
                 // can't represent it, so the SDK writes an empty collection — silently
@@ -118,6 +134,17 @@ namespace GxMcp.Worker.Services
                         hint: "Edit the static values in the GeneXus IDE (the control/attribute's Control Info > Values editor). This property is not writable as a plain string through the SDK.",
                         nextSteps: new JArray(Models.McpResponse.NextStep("genexus_properties", new JObject { ["action"] = "get", ["name"] = target, ["control"] = controlName }, "Read the current ControlValues so you don't lose them.")),
                         target: target);
+                }
+
+                // issue #48: a Data Provider's OutputSDT is a READ-ONLY derived string
+                // ("OutputSDT:String {get;}") — the real output is a DataProviderOutputReference
+                // set via Properties.DPRV.SetOutput. The generic string setter can't write the
+                // get-only property, so it silently cleared the output while reporting success.
+                // Route to the typed SDK API instead.
+                if (string.IsNullOrEmpty(controlName)
+                    && string.Equals(propName?.Trim(), "OutputSDT", StringComparison.OrdinalIgnoreCase))
+                {
+                    return SetDataProviderOutputSdt(obj, target, value);
                 }
 
                 dynamic container = obj;
@@ -234,6 +261,100 @@ namespace GxMcp.Worker.Services
 
         private static bool IsObjectPlacementProperty(string propName)
             => !string.IsNullOrEmpty(propName) && _placementProps.Contains(propName.Trim());
+
+        // issue #48: set a Data Provider's output SDT through the typed SDK API. OutputSDT is a
+        // read-only derived string; the writable output is a DataProviderOutputReference applied
+        // via the static helper Artech.Genexus.Common.Properties+DPRV.SetOutput(IPropertyBag,
+        // DataProviderOutputReference). Passing an empty value clears the output.
+        private string SetDataProviderOutputSdt(KBObject obj, string target, string value)
+        {
+            try
+            {
+                if (!string.Equals(obj.TypeDescriptor?.Name, "DataProvider", StringComparison.OrdinalIgnoreCase))
+                    return Models.McpResponse.Err(
+                        code: "OutputSdtNotADataProvider",
+                        message: $"OutputSDT applies to Data Providers; '{target}' is a {obj.TypeDescriptor?.Name}.",
+                        hint: "Set OutputSDT only on a DataProvider object.",
+                        target: target);
+
+                KBObject sdt = null;
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    sdt = _objectService.FindObject(value.Trim(), "SDT");
+                    if (sdt == null)
+                        return Models.McpResponse.Err(
+                            code: "OutputSdtNotFound",
+                            message: $"Cannot set OutputSDT: no SDT named '{value}' was found in the Knowledge Base.",
+                            hint: "Pass the name of an existing SDT (or an empty value to clear the output).",
+                            nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", new JObject { ["type"] = "SDT", ["query"] = value }, "Lists SDTs matching the name.")),
+                            target: target);
+                }
+
+                var commonAsm = typeof(global::Artech.Genexus.Common.Objects.Transaction).Assembly;
+                var refType = commonAsm.GetType("Artech.Genexus.Common.CustomTypes.DataProviderOutputReference");
+                var dprvType = commonAsm.GetType("Artech.Genexus.Common.Properties+DPRV");
+                if (refType == null || dprvType == null)
+                    return Models.McpResponse.Err(
+                        code: "OutputSdtApiUnavailable",
+                        message: "The SDK types for setting a Data Provider output (DataProviderOutputReference / Properties.DPRV) were not found.",
+                        hint: "This GeneXus build may differ; report the version from genexus_whoami.",
+                        target: target);
+
+                var setOutput = dprvType.GetMethod("SetOutput",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                if (setOutput == null)
+                    return Models.McpResponse.Err(
+                        code: "OutputSdtApiUnavailable",
+                        message: "Properties.DPRV.SetOutput was not found in this SDK build.",
+                        target: target);
+
+                // Build the reference: ctor(KBObject) for a target SDT, or a null reference to clear.
+                object outputRef = null;
+                if (sdt != null)
+                {
+                    var ctor = refType.GetConstructor(new[] { typeof(KBObject) })
+                               ?? refType.GetConstructor(new[] { typeof(Artech.Architecture.Common.Objects.KBObjectReference) });
+                    if (ctor == null)
+                        return Models.McpResponse.Err(
+                            code: "OutputSdtApiUnavailable",
+                            message: "DataProviderOutputReference has no (KBObject) constructor in this SDK build.",
+                            target: target);
+                    outputRef = ctor.GetParameters()[0].ParameterType == typeof(KBObject)
+                        ? ctor.Invoke(new object[] { sdt })
+                        : ctor.Invoke(new object[] { new Artech.Architecture.Common.Objects.KBObjectReference(sdt) });
+                }
+
+                using (var trans = obj.Model.KB.BeginTransaction())
+                {
+                    bool committed = false;
+                    try
+                    {
+                        // The IPropertyBag is the KBObject itself (PropertiesObject) — obj.Properties
+                        // is only an enumerable projection of descriptors, not the bag.
+                        setOutput.Invoke(null, new object[] { obj, outputRef });
+                        obj.EnsureSave();
+                        trans.Commit();
+                        committed = true;
+                        InvalidatePropertyCache(obj);
+                    }
+                    finally
+                    {
+                        if (!committed) { try { trans.Rollback(); } catch { } }
+                    }
+                }
+
+                return Models.McpResponse.Ok(target: target, code: "PropertyApplied",
+                    result: new JObject { ["property"] = "OutputSDT", ["value"] = sdt?.Name ?? "" });
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "OutputSdtWriteFailed",
+                    message: ex.InnerException?.Message ?? ex.Message,
+                    hint: "Check the worker log for the SDK stack trace.",
+                    target: target);
+            }
+        }
 
         // Properties on Transaction (and other KBObjects) have heterogeneous underlying CLR types:
         // bool, int, enum, or string. SetPropertyValue(string, object) does not coerce, so passing

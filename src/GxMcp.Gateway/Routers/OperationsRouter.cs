@@ -524,6 +524,12 @@ namespace GxMcp.Gateway.Routers
                         // issue #28 item 7: SDT first-item seed override.
                         firstItem = args?["firstItem"]?.ToString(),
                         firstItemType = args?["firstItemType"]?.ToString(),
+                        // issue #50: forward a requested folder/module destination so the worker
+                        // can reject it loudly (SDK placement is a no-op) instead of silently
+                        // creating in Root Module.
+                        folder = args?["folder"]?.ToString(),
+                        destModule = args?["module"]?.ToString(),
+                        parentPath = args?["parentPath"]?.ToString(),
                         dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
                     };
 

@@ -119,6 +119,27 @@ namespace GxMcp.Worker.Services
                 var kb = _kbService.GetKB();
                 if (kb == null) return McpResponse.Err(code: "NoKb", message: "No KB open");
 
+                // issue #50: a requested folder/module destination cannot be honored — the
+                // GeneXus 18 SDK exposes no object-placement API (KBObject.Create takes no
+                // container, and Parent/ParentKey/Module setters are no-op stubs). Rather than
+                // silently create the object in Root Module (the reporter's complaint: the caller
+                // only discovers the misplacement via a follow-up list), reject up front so the
+                // caller can create without a destination and move it in the IDE.
+                string requestedFolder = options?["folder"]?.ToString();
+                string requestedModule = options?["destModule"]?.ToString();
+                string requestedParent = options?["parentPath"]?.ToString();
+                string requestedPlacement = !string.IsNullOrWhiteSpace(requestedFolder) ? requestedFolder
+                    : !string.IsNullOrWhiteSpace(requestedModule) ? requestedModule
+                    : !string.IsNullOrWhiteSpace(requestedParent) ? requestedParent : null;
+                if (requestedPlacement != null)
+                {
+                    return McpResponse.Err(
+                        code: "FolderPlacementUnsupported",
+                        message: $"Cannot create '{name}' inside '{requestedPlacement}': the GeneXus 18 SDK has no API to place an object into a folder/module (creation always lands in Root Module, and the Parent/Module setters are no-ops). The destination was NOT applied.",
+                        hint: "Create the object without a folder/module (it lands in Root Module), then move it in the GeneXus IDE (KB Explorer drag-and-drop / right-click > Move). Re-issue this call without folder/module/parentPath to create it.",
+                        target: name);
+                }
+
                 Logger.Info(string.Format("Creating Object: {0} ({1})", name, type));
 
                 // Map string type to Guid. First try the well-known descriptor table (covers

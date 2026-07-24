@@ -302,6 +302,27 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("Procedure", json["type"]?.ToString());
         }
 
+        // issue #50: a requested folder/module destination is forwarded to the worker (as
+        // folder/destModule/parentPath) so it can reject with FolderPlacementUnsupported instead
+        // of silently creating in Root Module. `module` is remapped to destModule to avoid
+        // colliding with the routing `module=Object` field.
+        [Fact]
+        public void ConvertToolCall_CreateObject_ForwardsFolderDestination()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_create","arguments":{"action":"object","type":"Procedure","name":"TesteMcpGx","folder":"eSocialSMT","module":"MyModule","parentPath":"Root Module/eSocialSMT"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Object", json["module"]?.ToString());
+            Assert.Equal("Create", json["action"]?.ToString());
+            Assert.Equal("eSocialSMT", json["folder"]?.ToString());
+            Assert.Equal("MyModule", json["destModule"]?.ToString());
+            Assert.Equal("Root Module/eSocialSMT", json["parentPath"]?.ToString());
+        }
+
         [Fact]
         public void ConvertToolCall_RemovedOpenKbToolMapsToNull()
         {

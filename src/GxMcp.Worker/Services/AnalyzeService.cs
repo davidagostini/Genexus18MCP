@@ -1993,12 +1993,15 @@ namespace GxMcp.Worker.Services
             try { root = ds.Root; } catch { try { root = ds.StructureRoot; } catch { } }
             if (root == null) return null;
 
+            KBModel model = null;
+            try { model = sdt.Model; } catch { }
+
             var items = new JArray();
             try
             {
                 foreach (dynamic child in root.Items)
                 {
-                    var node = BuildSdtItemNode(child);
+                    var node = BuildSdtItemNode(child, model);
                     if (node != null) items.Add(node);
                 }
             }
@@ -2010,12 +2013,31 @@ namespace GxMcp.Worker.Services
             int leafCount = 0, levelCount = 0;
             CountSdtItems(items, ref leafCount, ref levelCount);
 
-            return new JObject
+            var result = new JObject
             {
                 ["itemCount"] = leafCount,
-                ["levelCount"] = levelCount,
-                ["items"] = items
+                ["levelCount"] = levelCount
             };
+
+            // issue #47: a top-level collection SDT (the "Collection" checkbox on the SDT root)
+            // carries its collection flag on the structure ROOT level, not on the SDT KBObject —
+            // sdt.IsCollection reads false there. Surface it (with the collection item name) so
+            // callers see the collection root the IDE shows, instead of a flat structure.
+            dynamic dsdt = sdt;
+            bool rootIsCollection = false;
+            try { rootIsCollection = (bool)root.IsCollection; } catch { }
+            if (!rootIsCollection) { try { rootIsCollection = (bool)dsdt.IsCollection; } catch { } }
+            result["isCollection"] = rootIsCollection;
+            if (rootIsCollection)
+            {
+                string itemName = null;
+                try { itemName = (string)root.CollectionItemName; } catch { }
+                if (string.IsNullOrEmpty(itemName)) { try { itemName = (string)dsdt.CollectionItemName; } catch { } }
+                if (!string.IsNullOrEmpty(itemName)) result["collectionItemName"] = itemName;
+            }
+
+            result["items"] = items;
+            return result;
         }
 
         private static void CountSdtItems(JArray items, ref int leafCount, ref int levelCount)
@@ -2036,7 +2058,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private static JObject BuildSdtItemNode(dynamic item)
+        private static JObject BuildSdtItemNode(dynamic item, KBModel model = null)
         {
             if (item == null) return null;
             var node = new JObject();
@@ -2060,6 +2082,15 @@ namespace GxMcp.Worker.Services
                 string typeStr = null;
                 try { typeStr = item.Type != null ? item.Type.ToString() : null; } catch { }
                 if (!string.IsNullOrEmpty(typeStr)) node["type"] = typeStr;
+
+                // issue #47: a reference-typed member (GX_SDT / user-defined type) reads back as
+                // the raw enum ("GX_SDT"); surface the referenced object's name so callers see the
+                // SDT/type the IDE shows instead of an opaque primitive-looking token.
+                if (model != null && GxMcp.Worker.Helpers.SdtMemberResolver.IsReferenceType(typeStr))
+                {
+                    string refName = GxMcp.Worker.Helpers.SdtMemberResolver.ResolveReferencedTypeName((object)item, model);
+                    if (!string.IsNullOrEmpty(refName)) node["referencedType"] = refName;
+                }
 
                 // Length / Decimals are exposed on most SDTItem surfaces; harvest defensively.
                 try { object len = item.Length; if (len != null) node["length"] = Convert.ToInt32(len); } catch { }

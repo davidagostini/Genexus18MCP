@@ -86,7 +86,10 @@ namespace GxMcp.Gateway.Tests
             //   2026-07-20 (reliability batch): 16200 → 16400 for genexus_lifecycle's
             //   new compile_check `callers`/`callerCap` (target-only scoping) and build
             //   `deploy` (full deploy → runnable output) params. Measured ~16254; ~146 headroom.
-            Assert.True(approxTokens < 16400, $"tool_definitions.json is ~{approxTokens} tokens; budget 16400.");
+            //   2026-07-24 (issue #50): 16400 → 16600 for genexus_create's new
+            //   folder/module/parentPath destination args (rejected with
+            //   FolderPlacementUnsupported). Measured ~16489; ~111 headroom.
+            Assert.True(approxTokens < 16600, $"tool_definitions.json is ~{approxTokens} tokens; budget 16600.");
         }
     }
 }

@@ -538,6 +538,10 @@
             "description": "object SDT optional: type of the seeded first item (Character/Numeric/VarChar/…). Defaults to VarChar.",
             "type": "string"
           },
+          "folder": {
+            "description": "object: requested Folder destination. Rejected with FolderPlacementUnsupported — SDK cannot place objects; create then move in the IDE.",
+            "type": "string"
+          },
           "includePatternInstance": {
             "description": "save_as.",
             "type": "boolean"
@@ -550,6 +554,10 @@
             "description": "object Domain.",
             "type": "integer"
           },
+          "module": {
+            "description": "object: requested Module destination. Rejected with FolderPlacementUnsupported (see folder).",
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -560,6 +568,10 @@
           "overwrite": {
             "description": "save_as.",
             "type": "boolean"
+          },
+          "parentPath": {
+            "description": "object: requested folder/module path. Rejected with FolderPlacementUnsupported (see folder).",
+            "type": "string"
           },
           "part": {
             "description": "sd_panel_edit/template.",
