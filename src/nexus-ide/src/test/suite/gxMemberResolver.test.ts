@@ -1,5 +1,5 @@
 import * as assert from "assert";
-import { getObjectVariables } from "../../gxMemberResolver";
+import { getObjectVariables, resolveVariableMembers } from "../../gxMemberResolver";
 import { GxFileSystemProvider } from "../../gxFileSystem";
 
 suite("getObjectVariables - TTL cache", () => {
@@ -58,5 +58,17 @@ suite("getObjectVariables - TTL cache", () => {
     const second = await getObjectVariables(fsProvider, "MyObject", cache);
     assert.deepStrictEqual(second, []);
     assert.strictEqual(callCount, 2, "a null result must not be cached, so every call refetches");
+  });
+});
+
+suite("resolveVariableMembers - malformed variable guard", () => {
+  test("variable with no `type` returns undefined instead of throwing", async () => {
+    const fsProvider = new GxFileSystemProvider();
+    (fsProvider as any).readObjectVariables = async () => [{ name: "x" }];
+
+    const cache = new Map<string, any[]>();
+    const result = await resolveVariableMembers(fsProvider, "MyObject", "x", "", cache);
+
+    assert.strictEqual(result, undefined);
   });
 });

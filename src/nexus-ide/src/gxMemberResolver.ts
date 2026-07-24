@@ -89,7 +89,9 @@ export async function resolveVariableMembers(
   );
   if (!variable) return undefined;
 
-  let type = variable.type;
+  const type0 = variable.type;
+  if (typeof type0 !== "string" || type0.length === 0) return undefined;
+  let type = type0;
   const isCollection = type.endsWith("Collection");
   if (isCollection) type = "Collection";
 
