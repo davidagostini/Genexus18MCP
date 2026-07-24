@@ -315,6 +315,20 @@ namespace GxMcp.Worker.Services
 
         public string ClonePart(string sourceName, string newName, string partName, string typeFilter)
         {
+            // issue #51: the SDT structure part cannot be cloned through the textual DSL without
+            // dropping the root Collection flag, the collection item name, and Domain/SDT-typed
+            // members. Clone it natively (SerializeToXml -> DeserializeFromXml) instead. Returns
+            // null when not applicable (non-SDT, or the native round-trip didn't stick), in which
+            // case we fall through to the text path below.
+            bool isStructureAlias = partName != null &&
+                (partName.Equals("SDTStructure", StringComparison.OrdinalIgnoreCase) ||
+                 partName.Equals("Structure", StringComparison.OrdinalIgnoreCase));
+            if (isStructureAlias)
+            {
+                string native = _objects.CloneSdtStructurePart(sourceName, newName);
+                if (native != null) return native;
+            }
+
             // Read source-part as text, write to new object via the same
             // WriteService pipeline a normal genexus_edit goes through.
             string readJson = _objects.ReadObjectSource(sourceName, partName, null, null, "mcp", false, typeFilter);

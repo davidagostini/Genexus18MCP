@@ -93,7 +93,10 @@ namespace GxMcp.Gateway.Tests
             //   genexus_properties action=move (destination/destKind/dryRun params)
             //   + reworked genexus_create folder/module copy (now creates-then-moves
             //   instead of rejecting). Measured ~16629; ~71 headroom.
-            Assert.True(approxTokens < 16700, $"tool_definitions.json is ~{approxTokens} tokens; budget 16700.");
+            //   2026-07-24 (issue #52): 16700 → 16900 for genexus_structure update_visual
+            //   SDT support (description + payload docs for isCollection/collectionItemName/
+            //   basedOnDomain + an SDT example). Measured ~16760; ~140 headroom.
+            Assert.True(approxTokens < 16900, $"tool_definitions.json is ~{approxTokens} tokens; budget 16900.");
         }
     }
 }

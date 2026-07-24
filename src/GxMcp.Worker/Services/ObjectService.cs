@@ -849,6 +849,199 @@ namespace GxMcp.Worker.Services
 
         private static readonly Guid SDT_STRUCTURE_PART_GUID = Guid.Parse("8597371d-1941-4c12-9c17-48df9911e2f3");
 
+        // Locate an SDT's structure part (SDTStructurePart) by GUID / descriptor / class name.
+        private static KBObjectPart FindSdtStructurePartOf(KBObject sdt)
+        {
+            if (sdt == null) return null;
+            foreach (KBObjectPart p in sdt.Parts)
+            {
+                try
+                {
+                    if (p.Type == SDT_STRUCTURE_PART_GUID) return p;
+                    string descName = p.TypeDescriptor?.Name ?? "";
+                    string className = p.GetType().Name;
+                    if (descName.IndexOf("SDTStructure", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        className.IndexOf("SDTStructure", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return p;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        // issue #51: an SDT cloned through the textual structure DSL (SdkObjectCloner's default
+        // per-part copy) loses the root Collection flag, the collection item name, and any
+        // Domain/SDT-typed member — the flat "Name : TYPE" text projection encodes none of them,
+        // so a collection SDT round-tripped as a flat, non-collection SDT. SerializeToXml /
+        // DeserializeFromXml on the SDTStructure part only round-trips the <Properties> bag (not
+        // the structure items, same as pattern parts — measured), so instead copy the structure
+        // at the object-model level: replicate the root Collection metadata + every item / level
+        // (including its type, length/decimals, collection flag, and ATTCUSTOMTYPE reference for
+        // Domain/SDT-typed members). Returns a McpResponse JSON envelope on success, or null when
+        // the native path isn't applicable / copied nothing (caller falls back to the text path).
+        public string CloneSdtStructurePart(string sourceName, string targetName)
+        {
+            try
+            {
+                var srcObj = FindObject(sourceName);
+                var tgtObj = FindObject(targetName);
+                if (srcObj == null || tgtObj == null) return null;
+                if (!string.Equals(srcObj.TypeDescriptor?.Name, "SDT", StringComparison.OrdinalIgnoreCase)) return null;
+
+                var srcPart = FindSdtStructurePartOf(srcObj);
+                var tgtPart = FindSdtStructurePartOf(tgtObj);
+                if (srcPart == null || tgtPart == null) return null;
+
+                dynamic srcRoot = null, tgtRoot = null;
+                try { srcRoot = ((dynamic)srcPart).Root; } catch { }
+                try { tgtRoot = ((dynamic)tgtPart).Root; } catch { }
+                if (srcRoot == null || tgtRoot == null) return null;
+
+                // Root-level collection metadata (the flag the text DSL cannot express).
+                try { tgtRoot.IsCollection = (bool)srcRoot.IsCollection; } catch { }
+                try
+                {
+                    string cin = (string)srcRoot.CollectionItemName;
+                    if (!string.IsNullOrEmpty(cin)) tgtRoot.CollectionItemName = cin;
+                }
+                catch { }
+
+                Artech.Architecture.Common.Objects.KBModel model = null;
+                try { model = srcObj.Model; } catch { }
+
+                // Drop the seed item CreateObject added, then copy the source structure verbatim.
+                ClearSdtItems(tgtRoot);
+                int copied = CopySdtItems(srcRoot, tgtRoot, model);
+                if (copied == 0) return null; // nothing copied → let the text path try
+
+                tgtObj.Save();
+
+                bool isCollection = false;
+                string collectionItemName = null;
+                try { isCollection = (bool)((dynamic)tgtPart).Root.IsCollection; } catch { }
+                try { collectionItemName = (string)((dynamic)tgtPart).Root.CollectionItemName; } catch { }
+
+                try { var idx = _kbService?.GetIndexCache(); if (idx != null) idx.UpdateEntry(tgtObj); }
+                catch (Exception ex) { Logger.Error("CloneSdtStructurePart: index UpdateEntry failed for " + targetName + ": " + ex.Message); }
+
+                var result = new JObject
+                {
+                    ["part"] = "SDTStructure",
+                    ["clonedVia"] = "objectModel",
+                    ["itemsCopied"] = copied,
+                    ["isCollection"] = isCollection
+                };
+                if (!string.IsNullOrEmpty(collectionItemName)) result["collectionItemName"] = collectionItemName;
+                return McpResponse.Ok(target: targetName, code: "Success", result: result);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("CloneSdtStructurePart failed for " + targetName + ": " + (ex.InnerException?.Message ?? ex.Message));
+                return null; // fall back to the text path
+            }
+        }
+
+        // Remove every item currently under an SDT structure node (used to drop the create-time seed).
+        private static void ClearSdtItems(dynamic node)
+        {
+            try
+            {
+                var dead = new List<object>();
+                foreach (dynamic it in node.Items) dead.Add(it);
+                foreach (dynamic d in dead) { try { node.Items.Remove(d); } catch { } }
+            }
+            catch { }
+        }
+
+        // Recursively copy every item/level from a source SDT structure node onto a target node,
+        // preserving type, length/decimals, the per-item collection flag, the Domain link
+        // (DomainBasedOn) and SDT-reference (GX_SDT) so Domain-based / SDT-typed members survive
+        // the clone instead of collapsing to their base primitive type. Returns items copied.
+        private static int CopySdtItems(dynamic srcNode, dynamic tgtNode, Artech.Architecture.Common.Objects.KBModel model)
+        {
+            int n = 0;
+            Type tgtNodeType = ((object)tgtNode).GetType();
+            Type eDBTypeT = tgtNodeType.Assembly.GetType("Artech.Genexus.Common.eDBType");
+            System.Reflection.MethodInfo addItem = eDBTypeT != null
+                ? tgtNodeType.GetMethod("AddItem", new[] { typeof(string), eDBTypeT }) : null;
+            System.Reflection.MethodInfo addLevel = tgtNodeType.GetMethod("AddLevel", new[] { typeof(string) });
+
+            foreach (dynamic srcItem in srcNode.Items)
+            {
+                string name;
+                try { name = (string)srcItem.Name; } catch { continue; }
+
+                bool isLeaf;
+                try { isLeaf = srcItem.IsLeafItem; }
+                catch
+                {
+                    bool hasChildren = false;
+                    try { foreach (var _ in srcItem.Items) { hasChildren = true; break; } } catch { }
+                    isLeaf = !hasChildren;
+                }
+
+                bool isCollection = false;
+                try { isCollection = (bool)srcItem.IsCollection; } catch { }
+
+                if (!isLeaf)
+                {
+                    if (addLevel == null) continue;
+                    dynamic newLevel;
+                    try { newLevel = addLevel.Invoke((object)tgtNode, new object[] { name }); }
+                    catch (Exception ex) { Logger.Error("CopySdtItems: AddLevel('" + name + "') failed: " + (ex.InnerException?.Message ?? ex.Message)); continue; }
+                    if (newLevel == null) continue;
+                    try { newLevel.IsCollection = isCollection; } catch { }
+                    n += 1 + CopySdtItems(srcItem, newLevel, model);
+                }
+                else
+                {
+                    if (addItem == null) continue;
+                    object dbType;
+                    try { dbType = srcItem.Type; } catch { continue; }
+                    dynamic newItem;
+                    try { newItem = addItem.Invoke((object)tgtNode, new object[] { name, dbType }); }
+                    catch (Exception ex) { Logger.Error("CopySdtItems: AddItem('" + name + "') failed: " + (ex.InnerException?.Message ?? ex.Message)); continue; }
+                    if (newItem == null) continue;
+                    try { newItem.Length = srcItem.Length; } catch { }
+                    try { newItem.Decimals = srcItem.Decimals; } catch { }
+                    try { newItem.IsCollection = isCollection; } catch { }
+                    CopySdtItemTypeReference((object)srcItem, (object)newItem, (string)dbType?.ToString(), model);
+                    n++;
+                }
+            }
+            return n;
+        }
+
+        // Preserve a leaf member's non-primitive typing: a Domain-based member (DomainBasedOn) or a
+        // member referencing another SDT (GX_SDT). The base eDBType was already applied by AddItem;
+        // this re-establishes the reference the type token alone doesn't carry.
+        private static void CopySdtItemTypeReference(object srcItem, object newItem, string typeToken, Artech.Architecture.Common.Objects.KBModel model)
+        {
+            // Domain link — copy the DomainBasedOn reference (a shared Domain KBObject) directly.
+            try
+            {
+                dynamic dbo = ((dynamic)srcItem).DomainBasedOn;
+                if (dbo != null) { try { ((dynamic)newItem).DomainBasedOn = dbo; return; } catch { } }
+            }
+            catch { }
+
+            // SDT reference — resolve the referenced SDT's name from the source's ATTCUSTOMTYPE and
+            // re-bind on the target (setting the property value verbatim doesn't stick across items).
+            if (model != null && typeToken != null && typeToken.StartsWith("GX_SDT", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    string refName = GxMcp.Worker.Helpers.SdtMemberResolver.ResolveReferencedTypeName(srcItem, model);
+                    if (!string.IsNullOrEmpty(refName))
+                    {
+                        var sdtObj = GxMcp.Worker.Helpers.VariableInjector.ResolveTypeObject(model, refName);
+                        if (sdtObj != null) GxMcp.Worker.Helpers.VariableInjector.BindSdtItemToSdt(newItem, sdtObj);
+                    }
+                }
+                catch (Exception ex) { Logger.Debug("CopySdtItemTypeReference (SDT) failed: " + ex.Message); }
+            }
+        }
+
         // Returns the eDBType name actually seeded (e.g. "VARCHAR", "NUMERIC") for the
         // response's seededDescription, or null if seeding fell through / already populated.
         private static string InitializeSDTWithDefaultItem(KBObject sdt, string sdtName, string itemName = "Item1", string itemTypeName = "VARCHAR")

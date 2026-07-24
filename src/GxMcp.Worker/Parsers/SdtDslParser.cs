@@ -194,7 +194,7 @@ namespace GxMcp.Worker.Parsers
             return n;
         }
 
-        private static void MarkPartDirty(object part, string objName)
+        internal static void MarkPartDirty(object part, string objName)
         {
             if (part == null) return;
             // 1) part.Dirty = true (most SDK parts expose this directly)

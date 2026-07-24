@@ -32,11 +32,18 @@ namespace GxMcp.Worker.Services
             try {
                 var obj = _objectService.FindObject(targetName);
                 if (obj == null) return HealingService.FormatNotFoundError(targetName, _objectService.GetKbService().GetIndexCache().GetIndex());
+
+                // issue #52: SDT structure updates (root Collection flag + item name, Domain-based
+                // and SDT-reference members, nested levels) go through the SDT-specific writer —
+                // the Transaction path below can't express any of that.
+                if (obj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+                    return _sdtService.UpdateSDTStructure(targetName, payload);
+
                 var trn = obj as Transaction;
                 if (trn == null) return Models.McpResponse.Err(
                     code: "NotATransaction",
-                    message: "Object is not a Transaction.",
-                    hint: "Visual structure updates currently support Transaction objects only.",
+                    message: "Object is not a Transaction or SDT.",
+                    hint: "Visual structure updates support Transaction and SDT objects.",
                     target: targetName,
                     nextSteps: new Newtonsoft.Json.Linq.JArray(Models.McpResponse.NextStep(
                         tool: "genexus_analyze",

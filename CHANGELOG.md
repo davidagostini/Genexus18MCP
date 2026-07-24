@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Full-fidelity SDT structure: cloning and authoring a collection SDT now preserve the collection flag, the item level, Domain-based members and SDT references — none of which the flat text projection could carry.
+
+### Added
+
+- **Author an SDT's structure with `genexus_structure action=update_visual`.** Previously `update_visual` only accepted Transactions (an SDT returned `NotATransaction`) and `genexus_create type=SDT` could seed just one flat member, so a collection SDT with an item level and Domain-typed members could only be built in the GeneXus IDE. `update_visual` on an SDT now takes a structured payload — `{ isCollection, collectionItemName, children:[…] }` — where each child is a primitive member (`type` + `length`/`decimals`), a Domain-based member (`basedOnDomain:"<Domain>"`), an SDT reference (`type:"<OtherSdt>"`, optionally `isCollection:true`), or a nested level (`isLevel:true` with its own `children`). Members absent from the payload are removed, matching the Transaction path.
+
+### Fixed
+
+- **Cloning a collection SDT via `genexus_create action=save_as` no longer flattens it.** The clone was rebuilt from the SDT's flat textual structure, which encodes neither the root collection flag, the collection item name, nor Domain/SDT-typed members — so a collection SDT was cloned as a flat, non-collection SDT with every Domain member collapsed to its base type. The SDT structure is now copied at the model level, so the clone preserves the collection flag and item name, each member's type/length/decimals, per-member collection flags, nested levels, Domain links (`basedOnDomain`), and SDT references.
+- **A Domain-based SDT member now reads back with its Domain.** `genexus_structure action=get_visual` reported a member based on a Domain only by its underlying base type (e.g. a Domain over `Numeric(2)` read as bare `NUMERIC`), hiding the Domain link. The read now includes `basedOnDomain` with the Domain's name.
+
+### Internal
+
+- `ObjectService.CloneSdtStructurePart` (object-model copy: root collection metadata + recursive item/level copy incl. `DomainBasedOn` and `SdtMemberResolver`/`BindSdtItemToSdt` re-bind for GX_SDT members) is invoked from `SdkObjectCloner.ClonePart` for the structure part — SerializeToXml/DeserializeFromXml on the SDTStructure part only round-trips the `<Properties>` bag, not the items (measured), so the native-XML path was abandoned. `SDTService.UpdateSDTStructure` + `SyncSdtJsonNodes` drive the JSON authoring path; `StructureService.UpdateVisualStructure` routes SDTs there. `SdtDslParser.MarkPartDirty` widened to `internal`. Tool-schema token budget 16700 → 16900. Both fixes live-verified over HTTP against a real KB (collection clone, Domain member, SDT-reference member, nested level round-trip).
+
 ## v2.35.0 — 2026-07-24
 
 ### Added
