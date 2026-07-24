@@ -87,13 +87,16 @@ export class GxInlineCompletionItemProvider
       new vscode.Range(new vscode.Position(startLine, 0), position),
     );
 
+    const controller = new AbortController();
+    const cancelSub = token.onCancellationRequested(() => controller.abort());
+    const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
     try {
-      const result = await Promise.race([
-        this.provider!.callMcpTool("genexus_ai_complete", { context }),
-        new Promise<undefined>((resolve) =>
-          setTimeout(() => resolve(undefined), AI_TIMEOUT_MS),
-        ),
-      ]);
+      const result = await this.provider!.callMcpTool(
+        "genexus_ai_complete",
+        { context },
+        undefined,
+        controller.signal,
+      );
 
       if (
         token.isCancellationRequested ||
@@ -113,6 +116,9 @@ export class GxInlineCompletionItemProvider
     } catch (e) {
       Logger.debug(`[Nexus IDE] AI inline completion unavailable: ${e}`);
       return [];
+    } finally {
+      clearTimeout(timer);
+      cancelSub.dispose();
     }
   }
 }

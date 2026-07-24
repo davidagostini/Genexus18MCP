@@ -8,7 +8,10 @@ async function openDoc(content: string): Promise<vscode.TextDocument> {
 }
 
 const NO_CONTEXT = {} as vscode.InlineCompletionContext;
-const NOT_CANCELLED = { isCancellationRequested: false } as vscode.CancellationToken;
+const NOT_CANCELLED = {
+  isCancellationRequested: false,
+  onCancellationRequested: () => ({ dispose: () => {} }),
+} as vscode.CancellationToken;
 
 function labelsOf(
   result: vscode.InlineCompletionItem[] | vscode.InlineCompletionList,

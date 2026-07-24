@@ -208,4 +208,76 @@ suite("GxGatewayClient", () => {
       server.close();
     }
   });
+
+  // --- Abort-signal wiring (plan 066) ---
+
+  test("callMcp rejects promptly when the signal aborts, well before the timeout", async () => {
+    const server = http.createServer(() => {
+      // Never respond; the abort should tear the request down long before
+      // the 60s customTimeout would ever fire.
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const client = new GxGatewayClient(`http://127.0.0.1:${port}`);
+      const controller = new AbortController();
+
+      const started = Date.now();
+      const pending = assert.rejects(() =>
+        client.callMcp("tools/list", undefined, 60000, controller.signal),
+      );
+      controller.abort();
+      await pending;
+      const elapsed = Date.now() - started;
+
+      assert.ok(elapsed < 5000, `expected prompt rejection on abort, took ${elapsed}ms`);
+      assert.strictEqual(
+        (client as any).constructor.activeRequests,
+        0,
+        "activeRequests must settle back to 0 after an aborted request",
+      );
+    } finally {
+      server.close();
+    }
+  });
+
+  test("an aborted call is not retried even when it looks like a retriable transport error", async () => {
+    let requestCount = 0;
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const parsed = JSON.parse(body);
+        res.setHeader("Content-Type", "application/json");
+        if (parsed.method === "initialize") {
+          res.setHeader("mcp-session-id", "session-abort-test");
+          res.end(JSON.stringify({ result: { ok: true } }));
+          return;
+        }
+        requestCount++;
+        // Never respond to the real call; the abort fires before any response.
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const client = new GxGatewayClient(`http://127.0.0.1:${port}`);
+      const controller = new AbortController();
+
+      const pending = assert.rejects(() =>
+        client.callMcp("tools/list", undefined, 60000, controller.signal),
+      );
+      // Give the real (non-initialize) request a tick to be issued, then abort it.
+      setTimeout(() => controller.abort(), 50);
+      await pending;
+
+      assert.strictEqual(requestCount, 1, "expected exactly one attempt; abort must not be retried");
+    } finally {
+      server.close();
+    }
+  });
 });

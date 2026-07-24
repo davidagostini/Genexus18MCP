@@ -34,7 +34,7 @@ export class GxGatewayClient {
     return this._baseUrl;
   }
 
-  async initializeMcpSession(customTimeout?: number): Promise<string> {
+  async initializeMcpSession(customTimeout?: number, signal?: AbortSignal): Promise<string> {
     if (this._mcpSessionId) {
       return this._mcpSessionId;
     }
@@ -58,6 +58,7 @@ export class GxGatewayClient {
       {
         "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
       },
+      signal,
     );
 
     const sessionId = response.headers["mcp-session-id"];
@@ -69,12 +70,12 @@ export class GxGatewayClient {
     return this._mcpSessionId;
   }
 
-  async callMcp(method: string, params?: any, customTimeout?: number): Promise<any> {
+  async callMcp(method: string, params?: any, customTimeout?: number, signal?: AbortSignal): Promise<any> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const sessionId = await this.initializeMcpSession(customTimeout);
+        const sessionId = await this.initializeMcpSession(customTimeout, signal);
         const response = await this.postRawJsonRpc(
           this.mcpBaseUrl,
           {
@@ -88,6 +89,7 @@ export class GxGatewayClient {
             "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
             "MCP-Session-Id": sessionId,
           },
+          signal,
         );
 
         const unwrapped = this.unwrapGatewayResponse(response.body);
@@ -99,7 +101,7 @@ export class GxGatewayClient {
         return unwrapped;
       } catch (error) {
         lastError = error;
-        if (!this.isRetriableTransportError(error) || attempt === 3) {
+        if (this.isAbortError(error) || !this.isRetriableTransportError(error) || attempt === 3) {
           throw error;
         }
 
@@ -139,7 +141,7 @@ export class GxGatewayClient {
     return Array.isArray(result?.prompts) ? result.prompts : [];
   }
 
-  async callMcpTool(name: string, args?: any, customTimeout?: number): Promise<any> {
+  async callMcpTool(name: string, args?: any, customTimeout?: number, signal?: AbortSignal): Promise<any> {
     return this.callMcp(
       "tools/call",
       {
@@ -147,6 +149,7 @@ export class GxGatewayClient {
         arguments: args ?? {},
       },
       customTimeout,
+      signal,
     );
   }
 
@@ -232,6 +235,11 @@ export class GxGatewayClient {
       errorValue.toLowerCase().includes("unknown or expired mcp session");
   }
 
+  private isAbortError(error: unknown): boolean {
+    return (error instanceof Error && error.name === "AbortError") ||
+      (typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ABORT_ERR");
+  }
+
   private isRetriableTransportError(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error ?? "");
     const lowered = message.toLowerCase();
@@ -251,6 +259,7 @@ export class GxGatewayClient {
     command: any,
     customTimeout?: number,
     extraHeaders?: Record<string, string>,
+    signal?: AbortSignal,
   ): Promise<{ body: string; headers: http.IncomingHttpHeaders }> {
     return new Promise((resolve, reject) => {
       const requestLabel = this.describeCommand(command);
@@ -283,6 +292,7 @@ export class GxGatewayClient {
               ...(extraHeaders ?? {}),
             },
             timeout: timeout,
+            signal,
           },
           (res) => {
             Logger.info(

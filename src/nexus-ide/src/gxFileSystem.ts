@@ -560,8 +560,9 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
     name: string,
     args?: any,
     customTimeout?: number,
+    signal?: AbortSignal,
   ): Promise<any> {
-    return this._gateway.callMcpTool(name, args, customTimeout);
+    return this._gateway.callMcpTool(name, args, customTimeout, signal);
   }
 
   public async readMcpResource(
