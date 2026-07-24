@@ -18,18 +18,26 @@ ledger stands and was NOT re-audited). The only un-independently-audited surface
 the `src/nexus-ide` VS Code extension (~8.6k TS lines from plans 051–061 — those were
 executor-written and reviewed only by the *executing* advisor, never given a fresh
 cold audit). Two parallel read-only Explore subagents (security; correctness) swept it;
-every finding was vetted against live code by the advisor before planning. **Not
-executed** — read-only handoffs awaiting go-ahead. Verification for all: run from
-`src/nexus-ide/` — `npm run check` (compile + eslint + `@vscode/test-electron`).
+every finding was vetted against live code by the advisor before planning. Verification
+for all: run from `src/nexus-ide/` — `npm run check` (compile + eslint + `@vscode/test-electron`).
+
+**All six applied & released in v2.33.1 (2026-07-23).** Executed one executor subagent per
+plan in isolated worktrees (two waves — 062/063/064/065, then 066/067 rebased on the landed
+wave), advisor-reviewed (scope + full diff + tests), and cherry-picked to `main` (commits
+`ca7d679`+`43c5fbc` 062, `bfed370` 063, `2dd85c0` 064, `052d756` 065, `5a748a0` 066,
+`9a1bb40`+`89f80e2` 067). Consolidated gate on merged `main`: `npm run check` green —
+compile 0 errors, eslint 0 errors (63 pre-existing warnings), **100 tests passing**
+(suite 76 → 100). 062 took one REVISE round (also escape the no-CSP HistoryView loading
+placeholder the plan missed).
 
 | Plan | Title | Priority | Effort | Risk | Depends on | Status |
 |------|-------|----------|--------|------|------------|--------|
-| 062 | Escape KB-derived strings in Structure/Index/History webviews (close stored-XSS under `unsafe-inline` CSP) | P1 | S-M | LOW | — | TODO |
-| 063 | Give the `&var.` member cache a TTL (completions frozen for the whole session today) | P2 | S | LOW | — | TODO |
-| 064 | Guard rename against unsaved edits before the KB-side rename (stale rename shown as success) | P2 | S | LOW | — | TODO |
-| 065 | Contain gxkb18-URI-derived paths inside the shadow root (path-traversal; `file:` branch already guards, gxkb18 doesn't) | P2 | M | MED | — | TODO |
-| 066 | Abort in-flight AI inline-completion HTTP requests on cancel/timeout (leak + pinned status bar) | P2 | M | MED | — | TODO |
-| 067 | Two papercuts — guard `variable.type.endsWith` + honor `ReferenceProvider` `includeDeclaration` | P3 | S | LOW | — | TODO |
+| 062 | Escape KB-derived strings in Structure/Index/History webviews (close stored-XSS under `unsafe-inline` CSP) | P1 | S-M | LOW | — | DONE |
+| 063 | Give the `&var.` member cache a TTL (completions frozen for the whole session today) | P2 | S | LOW | — | DONE |
+| 064 | Guard rename against unsaved edits before the KB-side rename (stale rename shown as success) | P2 | S | LOW | — | DONE |
+| 065 | Contain gxkb18-URI-derived paths inside the shadow root (path-traversal; `file:` branch already guards, gxkb18 doesn't) | P2 | M | MED | — | DONE |
+| 066 | Abort in-flight AI inline-completion HTTP requests on cancel/timeout (leak + pinned status bar) | P2 | M | MED | — | DONE |
+| 067 | Two papercuts — guard `variable.type.endsWith` + honor `ReferenceProvider` `includeDeclaration` | P3 | S | LOW | — | DONE |
 
 Recommended order: **062** (security, P1, HIGH-confidence, clean verification) →
 **063, 064** (P2 LOW-risk user-visible correctness, clean tests) → **065, 066** (P2

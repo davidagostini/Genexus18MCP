@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.33.1 — 2026-07-23
+
+Hardening and correctness fixes for the **Nexus IDE VS Code extension**. (The `genexus-mcp` server is unchanged from v2.33.0 — this is a lockstep version bump whose substance is the extension.)
+
+### Fixed
+
+- **Webviews no longer execute markup smuggled through Knowledge Base content.** The Structure, Index, and History views built their HTML by concatenating KB-derived values (object / attribute / index names, descriptions, formulas, revision authors and comments) without escaping, under a policy that allowed inline handlers — so a crafted name or comment could run script inside the view and reach the extension host. Every KB-derived value is now HTML-escaped before display (matching the Properties view, which already constructed its DOM safely).
+- **Virtual-file paths can no longer escape the KB mirror folder.** The object type/name segments taken from `gxkb18:` URIs are now validated, and every mirror file path is confined to the shadow root — closing a path-traversal gap on both the read and the write paths (the on-disk `file:` path already enforced this).
+- **`&variable.` member completion now reflects edits made during the session.** An object's variable list was cached on first use and never refreshed, so a newly added, renamed, or retyped variable didn't appear (or showed members for the old type) until the window was reloaded. The cache now expires after 30 seconds, matching the hover cache.
+- **Renaming with unsaved edits open no longer silently misses them.** A rename runs against the *saved* Knowledge Base; if the document has unsaved changes the extension now prompts to save first (or cancel) instead of reporting success while unsaved occurrences are left un-renamed.
+- **AI inline completion now aborts its network request** when you keep typing or it times out, instead of leaving the request running server-side and the "N ops" status-bar indicator stuck.
+- **Smaller correctness fixes:** a completion path that could throw on a malformed variable payload is now guarded, and "Find All References" honors a caller's request to exclude the declaration.
+
+### Internal
+
+- Nexus IDE cold-audit plans 062–067 (`plans/`) — the first independent audit of the extension code added in 051–061. Each executed in an isolated worktree, advisor-reviewed (scope + diff + tests), and cherry-picked to `main`. New `utils/htmlEscape.ts` + `GxUriParser.resolveWithinRoot`/segment validation; `getObjectVariables` TTL via a per-cache `WeakMap`; `AbortSignal` threaded through `GxGatewayClient.callMcpTool → callMcp → initializeMcpSession → postRawJsonRpc`. Extension test suite grew 76 → 100 (`@vscode/test-electron`, runs locally/self-hosted).
+
 ## v2.33.0 — 2026-07-23
 
 The **Nexus IDE VS Code extension** is brought up to the MCP server's quality bar and now ships with every release. (The `genexus-mcp` server itself is unchanged from v2.32.0 — this is a lockstep version bump whose substance is the extension.)
