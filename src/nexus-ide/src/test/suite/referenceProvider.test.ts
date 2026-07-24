@@ -139,4 +139,56 @@ suite("GxReferenceProvider - real reference locations", () => {
     assert.strictEqual(locations.length, 3, "expected all 3 occurrences of &Total in the open document");
     assert.ok(locations.every((l) => l.uri.toString() === doc.uri.toString()));
   });
+
+  test("includeDeclaration: true returns all occurrences of a variable", async () => {
+    const doc = await openDoc(["&Total = 0", "&Total = &Total + 1", "&Other = 2"].join("\n"));
+    const fsProvider = new GxFileSystemProvider();
+    (fsProvider as any).queryObjects = async () => ({ results: [] });
+
+    const provider = new GxReferenceProvider(fsProvider);
+    const wordStart = doc.getText().indexOf("Total");
+    const position = new vscode.Position(0, wordStart + 1);
+
+    const locations = await provider.provideReferences(
+      doc, position, { includeDeclaration: true } as vscode.ReferenceContext, NO_TOKEN,
+    );
+
+    assert.strictEqual(locations.length, 3);
+  });
+
+  test("includeDeclaration: false drops the first (declaration) occurrence of a variable", async () => {
+    const doc = await openDoc(["&Total = 0", "&Total = &Total + 1", "&Other = 2"].join("\n"));
+    const fsProvider = new GxFileSystemProvider();
+    (fsProvider as any).queryObjects = async () => ({ results: [] });
+
+    const provider = new GxReferenceProvider(fsProvider);
+    const wordStart = doc.getText().indexOf("Total");
+    const position = new vscode.Position(0, wordStart + 1);
+
+    const locations = await provider.provideReferences(
+      doc, position, { includeDeclaration: false } as vscode.ReferenceContext, NO_TOKEN,
+    );
+
+    assert.strictEqual(locations.length, 2, "expected the first occurrence (the declaration) dropped");
+  });
+
+  test("includeDeclaration: false on a variable with zero occurrences returns [] (no negative slice)", async () => {
+    const doc = await openDoc("&Unrelated = 1");
+    const fsProvider = new GxFileSystemProvider();
+    (fsProvider as any).queryObjects = async () => ({ results: [] });
+
+    const provider = new GxReferenceProvider(fsProvider);
+    const wordStart = doc.getText().indexOf("Unrelated");
+    const position = new vscode.Position(0, wordStart + 1);
+
+    const locationsInclude = await provider.provideReferences(
+      doc, position, { includeDeclaration: true } as vscode.ReferenceContext, NO_TOKEN,
+    );
+    const locationsExclude = await provider.provideReferences(
+      doc, position, { includeDeclaration: false } as vscode.ReferenceContext, NO_TOKEN,
+    );
+
+    assert.strictEqual(locationsInclude.length, 1);
+    assert.strictEqual(locationsExclude.length, 0);
+  });
 });

@@ -34,11 +34,15 @@ export class GxReferenceProvider implements vscode.ReferenceProvider {
     // scan the currently open document's text for real occurrences instead of the (wrong)
     // KB-wide `usedby:` lookup the old code ran against the stripped name.
     if (isVariable) {
-      return this.findVariableReferencesInDocument(document, stripVariablePrefix(word));
+      return this.findVariableReferencesInDocument(
+        document, stripVariablePrefix(word), context.includeDeclaration,
+      );
     }
 
     const targetName = word;
 
+    // The attribute `usedby:` path has no single provider-known declaration site (results
+    // span the whole KB), so `context.includeDeclaration` isn't actionable here.
     try {
       const results = await this.provider.queryObjects(`usedby:${targetName}`, 100, 15000);
       if (!results || !results.results) return [];
@@ -77,6 +81,7 @@ export class GxReferenceProvider implements vscode.ReferenceProvider {
   private findVariableReferencesInDocument(
     document: vscode.TextDocument,
     varName: string,
+    includeDeclaration: boolean,
   ): vscode.Location[] {
     const text = document.getText();
     const regex = new RegExp(`&${escapeRegExp(varName)}\\b`, "gi");
@@ -87,6 +92,14 @@ export class GxReferenceProvider implements vscode.ReferenceProvider {
       const start = document.positionAt(match.index);
       const end = document.positionAt(match.index + match[0].length);
       locations.push(new vscode.Location(document.uri, new vscode.Range(start, end)));
+    }
+
+    // The first occurrence in document order is treated as the declaration site (there's
+    // no separate Variables-part declaration lookup here — see plan 067 maintenance notes).
+    // Only exclude on an explicit `false`; an unset flag defaults to VS Code's own
+    // "include declaration" behavior.
+    if (includeDeclaration === false && locations.length > 0) {
+      return locations.slice(1);
     }
 
     return locations;
