@@ -1102,6 +1102,23 @@ namespace GxMcp.Gateway.Routers
                 };
             }
 
+            if (action.Equals("move", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return new
+                {
+                    module = "Property",
+                    action = "Move",
+                    target = args?["name"]?.ToString(),
+                    destination = args?["destination"]?.ToString(),
+                    folder = args?["folder"]?.ToString(),
+                    module_ = args?["module"]?.ToString(),
+                    destModule = args?["destModule"]?.ToString(),
+                    destKind = args?["destKind"]?.ToString(),
+                    dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                    type = args?["type"]?.ToString()
+                };
+            }
+
             return new
             {
                 module = "Property",

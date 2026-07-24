@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## v2.35.0 — 2026-07-24
+
+### Added
+
+- **Objects can now be placed into a Folder or Module.** `genexus_properties action=move name=<obj> destination=<Folder or Module>` moves an object into a KB Explorer container — the same operation as drag-and-drop / right-click → Move in the IDE (add `destKind=Folder|Module` only to disambiguate a shared name). The move is re-read afterwards to confirm it stuck, so a write that doesn't persist returns `MoveNotPersisted` instead of a false success. `dryRun=true` previews `from`/`to` without writing.
+
+### Changed
+
+- **`genexus_create` now honors a `folder` / `module` destination instead of rejecting it.** Passing `folder=<name>` or `module=<name>` creates the object in Root Module and then moves it into the target container (verified), reporting the outcome under `placement`. This replaces the previous `FolderPlacementUnsupported` rejection — the earlier "the SDK cannot place objects" conclusion was wrong (it came from decompiling a metadata-only reference assembly whose members are all empty stubs; the real move persists at runtime via the SDK). `list`/`inspect` reflect the new location immediately.
 
 ### Fixed
 
@@ -9,6 +17,7 @@
 ### Internal
 
 - `VariableInjector.TryBindSdtItemType` (thin wrapper over `TryBindGenexusDataType` → `DataTypeProvider.GetTypeByName`) is attempted before the strip-to-parent `ResolveTypeObject` bind for dotted names, in both `WriteService.BuildResolvedVariableInto` (add/batch) and `ModifyVariableInternal`. The DSL path (`SetVariablesFromText`) already tried the type-picker resolver first, so it was unaffected. Added a `Messages.Message` resolver case; live-verified over HTTP against a real KB (AcademicoHomolog1) with a hot-swapped worker.
+- Object placement (move): new `ObjectMover` helper persists the parent via reflection on `Artech.Udm.Framework.EntityManager.SaveWithParent(entity, parentEntity, prefs)` (fallbacks: `UpdateParent`, `KBObject.Save`); `ObjectService.MoveObject` resolves the Folder/Module container, moves, re-reads `Parent` from a fresh `Objects.Get`, and reports `MoveNotPersisted` on mismatch. `PropertyService` placement-property writes and `genexus_create` folder/module now route here. `IndexCacheService.InvalidateHierarchy(guid)` drops the per-Guid hierarchy cache + old-parent `ChildrenByParent` slot before `UpdateEntry` so `list`/`inspect` re-file the moved object. Tool-schema token budget 16600 → 16700. Golden `tools-list` fixture regenerated. Live-verified over HTTP against a real KB (AcademicoHomolog1): folder move (Folder id-265 written to the object's `Folder` property, survives a KB reopen) and module move, both via `EntityManager.SaveWithParent`.
 
 ## v2.34.0 — 2026-07-24
 

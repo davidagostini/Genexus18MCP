@@ -90,19 +90,15 @@ namespace GxMcp.Worker.Services
                 var obj = _objectService.FindObject(target, typeFilter);
                 if (obj == null) return Models.McpResponse.Err(code: "ObjectNotFound", message: "Object not found.", hint: "Check the target name and that the KB is open.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists available objects to verify the target name.")), target: target);
 
-                // Folder/module placement is NOT a writable property in the GeneXus 18 SDK:
-                // KBObject.set_Parent / set_ParentKey / set_Module are no-op stubs at the IL
-                // level, so the SDK silently swallows the write and the object never moves.
-                // Fail loudly here instead of returning a bogus PropertyApplied — a silent
-                // success that does nothing is worse than an explicit "not supported".
+                // Folder/module placement is not a scalar property write — it's a parent
+                // move. Route it to ObjectService.MoveObject (create-in-Root then reparent
+                // via the Udm EntityManager). The old "not writable — Parent/Module setters
+                // are no-ops" verdict was a facade-DLL decompilation artefact; see ObjectMover.
                 if (string.IsNullOrEmpty(controlName) && IsObjectPlacementProperty(propName))
                 {
-                    return Models.McpResponse.Err(
-                        code: "FolderMoveNotSupported",
-                        message: $"Cannot move '{target}' by setting the '{propName}' property: object folder/module placement is not writable through the GeneXus 18 SDK (the underlying Parent/Module setters are no-ops).",
-                        hint: "Move the object to a folder/module using the GeneXus IDE (drag-and-drop in the KB Explorer, or right-click > Move). There is no SDK-backed move operation the MCP can call.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Confirms the object's current folder/module placement.")),
-                        target: target);
+                    string kind = propName.Trim().StartsWith("Module", StringComparison.OrdinalIgnoreCase) ? "Module"
+                        : propName.Trim().StartsWith("Folder", StringComparison.OrdinalIgnoreCase) ? "Folder" : null;
+                    return _objectService.MoveObject(target, value, typeFilter, kind);
                 }
 
                 // issue #49: renaming an object by setting its "Name" via the generic property

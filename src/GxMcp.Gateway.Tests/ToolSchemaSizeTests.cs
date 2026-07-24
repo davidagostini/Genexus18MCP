@@ -89,7 +89,11 @@ namespace GxMcp.Gateway.Tests
             //   2026-07-24 (issue #50): 16400 → 16600 for genexus_create's new
             //   folder/module/parentPath destination args (rejected with
             //   FolderPlacementUnsupported). Measured ~16489; ~111 headroom.
-            Assert.True(approxTokens < 16600, $"tool_definitions.json is ~{approxTokens} tokens; budget 16600.");
+            //   2026-07-24 (issue #50 rework — real move): 16600 → 16700 for
+            //   genexus_properties action=move (destination/destKind/dryRun params)
+            //   + reworked genexus_create folder/module copy (now creates-then-moves
+            //   instead of rejecting). Measured ~16629; ~71 headroom.
+            Assert.True(approxTokens < 16700, $"tool_definitions.json is ~{approxTokens} tokens; budget 16700.");
         }
     }
 }

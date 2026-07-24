@@ -119,26 +119,20 @@ namespace GxMcp.Worker.Services
                 var kb = _kbService.GetKB();
                 if (kb == null) return McpResponse.Err(code: "NoKb", message: "No KB open");
 
-                // issue #50: a requested folder/module destination cannot be honored — the
-                // GeneXus 18 SDK exposes no object-placement API (KBObject.Create takes no
-                // container, and Parent/ParentKey/Module setters are no-op stubs). Rather than
-                // silently create the object in Root Module (the reporter's complaint: the caller
-                // only discovers the misplacement via a follow-up list), reject up front so the
-                // caller can create without a destination and move it in the IDE.
+                // issue #50 (revised): a requested folder/module destination IS honored — the
+                // object is created in Root Module, then moved via MoveObject (see ObjectMover
+                // for why the earlier "SDK can't place objects" verdict was a facade-DLL
+                // decompilation artefact). The move runs after Save and is verified below.
+                // NOTE: read "destModule", never "module" — at the worker layer options["module"]
+                // is the routing key ("Object"), not a destination.
                 string requestedFolder = options?["folder"]?.ToString();
                 string requestedModule = options?["destModule"]?.ToString();
                 string requestedParent = options?["parentPath"]?.ToString();
                 string requestedPlacement = !string.IsNullOrWhiteSpace(requestedFolder) ? requestedFolder
                     : !string.IsNullOrWhiteSpace(requestedModule) ? requestedModule
                     : !string.IsNullOrWhiteSpace(requestedParent) ? requestedParent : null;
-                if (requestedPlacement != null)
-                {
-                    return McpResponse.Err(
-                        code: "FolderPlacementUnsupported",
-                        message: $"Cannot create '{name}' inside '{requestedPlacement}': the GeneXus 18 SDK has no API to place an object into a folder/module (creation always lands in Root Module, and the Parent/Module setters are no-ops). The destination was NOT applied.",
-                        hint: "Create the object without a folder/module (it lands in Root Module), then move it in the GeneXus IDE (KB Explorer drag-and-drop / right-click > Move). Re-issue this call without folder/module/parentPath to create it.",
-                        target: name);
-                }
+                string requestedPlacementKind = !string.IsNullOrWhiteSpace(requestedFolder) ? "Folder"
+                    : !string.IsNullOrWhiteSpace(requestedModule) ? "Module" : null;
 
                 Logger.Info(string.Format("Creating Object: {0} ({1})", name, type));
 
@@ -265,6 +259,29 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex) { Logger.Error("CreateObject: index UpdateEntry failed for " + name + ": " + ex.Message); }
 
                 Logger.Info(string.Format("Object created successfully in {0}ms", sw.ElapsedMilliseconds));
+
+                // Honor a requested folder/module placement by moving the just-created
+                // object. If the move fails the object still exists in Root Module, so we
+                // surface a partial-success payload rather than throwing away the creation.
+                JObject placementMeta = null;
+                if (requestedPlacement != null)
+                {
+                    string moveJson = MoveObject(name, requestedPlacement, typeFilter: type, destKind: requestedPlacementKind);
+                    JObject moveResp = null;
+                    try { moveResp = JObject.Parse(moveJson); } catch { }
+                    bool moveOk = string.Equals(moveResp?["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase);
+                    placementMeta = new JObject
+                    {
+                        ["requested"] = requestedPlacement,
+                        ["kind"] = requestedPlacementKind,
+                        ["moved"] = moveOk,
+                        ["detail"] = moveResp ?? (JToken)moveJson
+                    };
+                    if (!moveOk)
+                        placementMeta["note"] = "Object created in Root Module but the move into '" + requestedPlacement +
+                            "' did not complete. See detail; move it with genexus_properties action=move, or in the IDE.";
+                }
+
                 string idStr = "";
                 try { idStr = newObj.Key?.Id.ToString() ?? ""; } catch { try { idStr = newObj.Guid.ToString(); } catch { } }
                 var responsePayload = new JObject
@@ -273,6 +290,7 @@ namespace GxMcp.Worker.Services
                     ["name"] = name,
                     ["id"] = idStr
                 };
+                if (placementMeta != null) responsePayload["placement"] = placementMeta;
                 JObject metaObj = null;
                 if (domainMeta != null)
                 {
@@ -1297,6 +1315,136 @@ namespace GxMcp.Worker.Services
         {
             return string.Equals(type, "Table", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(type, "View", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Immediate KB Explorer parent (folder/module) name of an object, normalized so
+        // the Root Module reads as "Root Module" (its SDK Name is empty / DesignModel).
+        private static string ImmediateParentName(KBObject obj)
+        {
+            try
+            {
+                var parent = obj?.Parent;
+                if (parent == null) return "Root Module";
+                string ptype = null;
+                try { ptype = parent.TypeDescriptor?.Name; } catch { }
+                if (string.Equals(ptype, "DesignModel", StringComparison.OrdinalIgnoreCase))
+                    return "Root Module";
+                string pname = null;
+                try { pname = parent.Name; } catch { }
+                return string.IsNullOrWhiteSpace(pname) ? "Root Module" : pname;
+            }
+            catch { return null; }
+        }
+
+        // Move an object into a Folder or Module (its KB Explorer parent). Replaces the
+        // old FolderPlacementUnsupported/FolderMoveNotSupported rejects — see ObjectMover
+        // for why the "SDK can't do it" verdict was wrong (facade-DLL decompilation).
+        public string MoveObject(string target, string destination, string typeFilter = null, string destKind = null, bool dryRun = false)
+        {
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                var kb = _kbService.GetKB();
+                if (kb == null) return McpResponse.Err(code: "NoKb", message: "No KB open");
+                if (string.IsNullOrWhiteSpace(target))
+                    return McpResponse.Err(code: "BadArgs", message: "target (object to move) is required.");
+                if (string.IsNullOrWhiteSpace(destination))
+                    return McpResponse.Err(code: "BadArgs", message: "destination (folder or module name) is required.");
+
+                var obj = FindObject(target, typeFilter);
+                if (obj == null)
+                    return McpResponse.Err(code: "ObjectNotFound", message: "Object '" + target + "' not found.",
+                        hint: "Check the name/type. genexus_list_objects lists available objects.",
+                        nextSteps: new JArray(McpResponse.NextStep("genexus_list_objects", null, "Lists available objects to verify the target name.")),
+                        target: target);
+
+                // Resolve the destination container. Honor an explicit destKind
+                // (Folder/Module); otherwise try Folder first, then Module.
+                KBObject container = null;
+                string kind = destKind?.Trim();
+                if (!string.IsNullOrEmpty(kind))
+                {
+                    container = FindObject(destination, kind);
+                }
+                else
+                {
+                    container = FindObject(destination, "Folder") ?? FindObject(destination, "Module");
+                }
+                if (container == null)
+                    return McpResponse.Err(code: "DestinationNotFound",
+                        message: "No Folder or Module named '" + destination + "' in this KB.",
+                        hint: "Create it first (genexus_create type=Folder name=" + destination + " or type=Module), or check the name.",
+                        target: target);
+
+                string containerType = null;
+                try { containerType = container.TypeDescriptor?.Name; } catch { }
+
+                if (container.Guid == obj.Guid)
+                    return McpResponse.Err(code: "BadArgs", message: "Cannot move an object into itself.", target: target);
+
+                string from = ImmediateParentName(obj);
+
+                if (dryRun)
+                {
+                    return McpResponse.Ok(target: target, code: "DryRun", result: new JObject
+                    {
+                        ["move"] = target,
+                        ["from"] = from,
+                        ["to"] = destination,
+                        ["containerType"] = containerType,
+                        ["hint"] = "Re-run without dryRun to persist the move."
+                    });
+                }
+
+                var res = Helpers.ObjectMover.SetParentAndSave(obj, container);
+                if (!res.Ok)
+                    return McpResponse.Err(code: "MoveFailed",
+                        message: "Could not persist the move of '" + target + "' into '" + destination + "': " + res.Error,
+                        target: target);
+
+                // Verify against a freshly-fetched instance — a Save that "succeeds" but
+                // leaves the parent unchanged must be reported as a failure, not success.
+                KBObject fresh = obj;
+                try { var f = kb.DesignModel.Objects.Get(obj.Guid); if (f != null) fresh = f; } catch { }
+                string to = ImmediateParentName(fresh);
+                bool moved = string.Equals(to, destination, StringComparison.OrdinalIgnoreCase);
+
+                try
+                {
+                    var idx = _kbService?.GetIndexCache();
+                    if (idx != null)
+                    {
+                        // Drop the stale (old-parent) hierarchy cache + child slot first, else
+                        // UpdateEntry reuses the cached parent and list/inspect keep showing the
+                        // old folder (the object moved on disk but the index would lie).
+                        idx.InvalidateHierarchy(fresh.Guid);
+                        idx.UpdateEntry(fresh);
+                    }
+                }
+                catch (Exception ex) { Logger.Error("MoveObject: index refresh failed for " + target + ": " + ex.Message); }
+
+                if (!moved)
+                    return McpResponse.Err(code: "MoveNotPersisted",
+                        message: "Save reported success via '" + res.Strategy + "' but '" + target +
+                                 "' still reads parent '" + to + "', not '" + destination + "'.",
+                        hint: "The parent write did not stick. Report this — the persist path may need a different SDK call for this object type.",
+                        target: target);
+
+                Logger.Info(string.Format("Moved '{0}' from '{1}' to '{2}' via {3} in {4}ms", target, from, to, res.Strategy, sw.ElapsedMilliseconds));
+                return McpResponse.Ok(target: target, code: "Moved", result: new JObject
+                {
+                    ["moved"] = target,
+                    ["from"] = from,
+                    ["to"] = to,
+                    ["containerType"] = containerType,
+                    ["strategy"] = res.Strategy
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("MoveObject failed for '" + target + "': " + ex.Message);
+                return McpResponse.Err(code: "MoveError", message: ex.Message, target: target);
+            }
         }
 
         public KBObject FindObject(string target, string typeFilter = null)

@@ -1714,6 +1714,21 @@ namespace GxMcp.Worker.Services
         private string Handle_Property(JObject request, string method, string action, string target, string payload, JObject args)
         {
             var propType = args?["type"]?.ToString();
+            if (string.Equals(action, "Move", StringComparison.OrdinalIgnoreCase))
+            {
+                // NOTE: args["module"] is the routing key ("Property"), NOT a destination —
+                // the router passes a module destination as "module_"/"destModule".
+                string destFolder = args?["folder"]?.ToString();
+                string destModule = args?["destModule"]?.ToString() ?? args?["module_"]?.ToString();
+                string destination = args?["destination"]?.ToString()
+                    ?? (!string.IsNullOrWhiteSpace(destFolder) ? destFolder : destModule)
+                    ?? args?["value"]?.ToString();
+                string destKind = args?["destKind"]?.ToString()
+                    ?? (!string.IsNullOrWhiteSpace(destFolder) ? "Folder"
+                        : !string.IsNullOrWhiteSpace(destModule) ? "Module" : null);
+                bool moveDry = args?["dryRun"]?.ToObject<bool?>() ?? false;
+                return _objectService.MoveObject(target, destination, propType, destKind, moveDry);
+            }
             if (action == "Set")
             {
                 return _propertyService.SetProperty(

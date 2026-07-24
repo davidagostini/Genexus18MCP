@@ -778,6 +778,28 @@ namespace GxMcp.Worker.Services
         // Fase 2: remove an object by its (stable) Guid — used by the warm-start deletion
         // sweep when an object that was in the persisted index no longer exists in the KB.
         // Resolves the storage key via GuidToKey so renames don't strand it.
+        // Called after an object's folder/module parent changes (genexus_properties
+        // action=move / create-with-folder). The per-Guid hierarchy cache and the object's
+        // ChildrenByParent slot are keyed on the OLD parent; the move leaves the Type:Name
+        // storage key unchanged, so a plain UpdateEntry would reuse the cached (stale) parent
+        // and never drop the old-parent child entry. Drop both here so the following
+        // UpdateEntry re-walks the parent chain and re-files the entry under the new parent.
+        public void InvalidateHierarchy(Guid guid)
+        {
+            _hierarchyCache.TryRemove(guid, out _);
+            var index = _index;
+            if (index?.GuidToKey == null || index.Objects == null) return;
+            lock (_lock)
+            {
+                if (index.GuidToKey.TryGetValue(guid.ToString(), out var key)
+                    && index.Objects.TryGetValue(key, out var existing)
+                    && index.ChildrenByParent != null)
+                {
+                    RemoveEntryFromParentIndex(index, existing);
+                }
+            }
+        }
+
         public void RemoveEntryByGuid(string guid)
         {
             if (string.IsNullOrEmpty(guid)) return;

@@ -454,7 +454,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers but objects CANNOT be moved into them via the tools (SDK folder/module placement is read-only); SDT takes optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog).",
+      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers, and folder=<name>/module=<name> place the new object there (created in Root, then moved+verified); SDT takes optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog).",
       "inputSchema": {
         "examples": [
           {
@@ -539,7 +539,7 @@
             "type": "string"
           },
           "folder": {
-            "description": "object: requested Folder destination. Rejected with FolderPlacementUnsupported — SDK cannot place objects; create then move in the IDE.",
+            "description": "object: Folder destination (created in Root, then moved+verified).",
             "type": "string"
           },
           "includePatternInstance": {
@@ -555,7 +555,7 @@
             "type": "integer"
           },
           "module": {
-            "description": "object: requested Module destination. Rejected with FolderPlacementUnsupported (see folder).",
+            "description": "object: Module destination (created in Root, then moved+verified).",
             "type": "string"
           },
           "name": {
@@ -570,7 +570,7 @@
             "type": "boolean"
           },
           "parentPath": {
-            "description": "object: requested folder/module path. Rejected with FolderPlacementUnsupported (see folder).",
+            "description": "object: folder/module destination (fallback when folder/module absent).",
             "type": "string"
           },
           "part": {
@@ -2307,7 +2307,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or update GeneXus object properties. Note: Description is the title-bar text shown when a WebPanel/Popup is opened via .Popup(). Uncertain a property exists or what values it takes? → resources/read uri=genexus://kb/skills/navigation (CallProtocol does NOT apply to Web/SD Panels and 'Modal' is not a value). Use genexus_layout set_property for layout control properties.",
+      "description": "Read or update GeneXus object properties. action=get|set|move. move places the object into a Folder or Module — pass destination=<Folder or Module name> (add destKind=Folder|Module only to disambiguate a shared name); re-read to confirm, so a no-op returns MoveNotPersisted not a false success. (To create an object directly in a folder, use genexus_create folder=/module=.) Description is the title-bar text when a WebPanel/Popup opens via .Popup(). Uncertain a property exists or its values? → resources/read uri=genexus://kb/skills/navigation (CallProtocol does NOT apply to Web/SD Panels; 'Modal' is not a value). Use genexus_layout set_property for layout control properties.",
       "inputSchema": {
         "examples": [
           {
@@ -2315,23 +2315,39 @@
             "name": "MyPanel"
           },
           {
-            "action": "set",
-            "name": "MyPanel",
-            "propertyName": "Description",
-            "value": "Customer Details"
+            "action": "move",
+            "destination": "Lixeira",
+            "name": "ZeferinoMonstrao"
           }
         ],
         "properties": {
           "action": {
             "enum": [
               "get",
-              "set"
+              "set",
+              "move"
             ],
             "type": "string"
           },
           "control": {
             "description": "Optional. Layout control name (e.g. BtnConfirmar), variable name with & prefix (e.g. &Alu2RegProf), or attribute name.",
             "type": "string"
+          },
+          "destKind": {
+            "description": "move: disambiguate when a Folder and Module share a name.",
+            "enum": [
+              "Folder",
+              "Module"
+            ],
+            "type": "string"
+          },
+          "destination": {
+            "description": "move: target Folder/Module name (auto-detects kind).",
+            "type": "string"
+          },
+          "dryRun": {
+            "description": "move: preview from/to without persisting.",
+            "type": "boolean"
           },
           "kb": {
             "description": "KB alias.",
