@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { GxFileSystemProvider } from "../gxFileSystem";
 import { formatMcpErrorMessage } from "../utils/McpErrorFormatter";
 import { GxUriParser } from "../utils/GxUriParser";
+import { escapeHtml } from "../utils/htmlEscape";
 
 export class HistoryView {
   private static panels = new Map<string, vscode.WebviewPanel>();
@@ -57,12 +58,12 @@ export class HistoryView {
             .map(
               (rev: any) => `
                 <tr>
-                    <td style="padding: 10px; border-bottom: 1px solid #333; font-weight: bold; color: #007acc;">#${rev.version || rev.Id || ""}</td>
-                    <td style="padding: 10px; border-bottom: 1px solid #333; white-space: nowrap;">${rev.date || rev.Date || ""}</td>
-                    <td style="padding: 10px; border-bottom: 1px solid #333;">${rev.user || rev.User || ""}</td>
-                    <td style="padding: 10px; border-bottom: 1px solid #333; font-style: italic; color: #aaa;">${rev.comment || rev.Comment || '<span style="opacity: 0.5;">Sem comentario</span>'}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid #333; font-weight: bold; color: #007acc;">#${escapeHtml(rev.version || rev.Id || "")}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid #333; white-space: nowrap;">${escapeHtml(rev.date || rev.Date || "")}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid #333;">${escapeHtml(rev.user || rev.User || "")}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid #333; font-style: italic; color: #aaa;">${rev.comment || rev.Comment ? escapeHtml(rev.comment || rev.Comment) : '<span style="opacity: 0.5;">Sem comentario</span>'}</td>
                     <td style="padding: 10px; border-bottom: 1px solid #333; text-align: center;">
-                        <button onclick="viewDiff(${rev.version || rev.Id})" style="background: #007acc; color: white; border: none; padding: 4px 8px; cursor: pointer; border-radius: 2px;">Comparar (Diff)</button>
+                        <button onclick="viewDiff(${Number(rev.version ?? rev.Id) || 0})" style="background: #007acc; color: white; border: none; padding: 4px 8px; cursor: pointer; border-radius: 2px;">Comparar (Diff)</button>
                     </td>
                 </tr>
             `,
@@ -141,7 +142,7 @@ export class HistoryView {
           </style>
       </head>
       <body>
-          <h2>Historico de revisoes: ${objName} <span class="badge">SDK Nativo</span></h2>
+          <h2>Historico de revisoes: ${escapeHtml(objName)} <span class="badge">SDK Nativo</span></h2>
           <table>
               <thead>
                   <tr>
@@ -157,7 +158,7 @@ export class HistoryView {
           <script>
               const vscode = acquireVsCodeApi();
               function viewDiff(vId) {
-                  vscode.postMessage({ command: 'viewDiff', versionId: vId, objName: '${objName}' });
+                  vscode.postMessage({ command: 'viewDiff', versionId: vId, objName: ${JSON.stringify(objName)} });
               }
           </script>
       </body>

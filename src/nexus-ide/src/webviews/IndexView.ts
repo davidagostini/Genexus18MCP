@@ -93,13 +93,19 @@ export class IndexView {
 
         <script>
           const vscode = acquireVsCodeApi();
-          
+
+          function esc(v) {
+            return String(v == null ? '' : v)
+              .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+          }
+
           window.addEventListener('message', event => {
             const data = event.data;
             if (data.type === 'update') {
               renderIndexes(data.data);
             } else if (data.type === 'error') {
-              document.getElementById('content').innerHTML = '<h2 style="color:#f44; padding: 20px;">Error: ' + data.message + '</h2>';
+              document.getElementById('content').innerHTML = '<h2 style="color:#f44; padding: 20px;">Error: ' + esc(data.message) + '</h2>';
             }
           });
 
@@ -121,11 +127,11 @@ export class IndexView {
             data.indexes.forEach(idx => {
               const rowClass = idx.isPrimary ? 'primary-key' : '';
               html += '<tr>';
-              html += '<td class="index-name ' + rowClass + '">' + (idx.isPrimary ? icons.key : icons.file) + ' ' + idx.name + '</td>';
-              
+              html += '<td class="index-name ' + rowClass + '">' + (idx.isPrimary ? icons.key : icons.file) + ' ' + esc(idx.name) + '</td>';
+
               html += '<td><ul class="attr-list">';
               idx.attributes.forEach(attr => {
-                html += '<li class="attr-item"><span>' + attr.name + '</span> <span class="order-tag">' + (attr.isAscending ? 'ASC' : 'DESC') + '</span></li>';
+                html += '<li class="attr-item"><span>' + esc(attr.name) + '</span> <span class="order-tag">' + (attr.isAscending ? 'ASC' : 'DESC') + '</span></li>';
               });
               html += '</ul></td>';
 

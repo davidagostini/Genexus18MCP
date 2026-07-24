@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { GxFileSystemProvider } from "../gxFileSystem";
 import { GxUriParser } from "../utils/GxUriParser";
+import { escapeHtml } from "../utils/htmlEscape";
 
 export class StructureView {
   private static panels = new Map<string, vscode.WebviewPanel>();
@@ -41,7 +42,7 @@ export class StructureView {
       if (result && !result.error) {
         panel.webview.postMessage({ type: "update", structure: result });
       } else {
-        panel.webview.html = `<h1>Error: ${result?.error || "Unknown error"}</h1>`;
+        panel.webview.html = `<h1>Error: ${escapeHtml(result?.error || "Unknown error")}</h1>`;
       }
 
       panel.webview.onDidReceiveMessage(async (message) => {
@@ -71,7 +72,7 @@ export class StructureView {
         }
       });
     } catch (e) {
-      panel.webview.html = `<h1>Critical Error: ${e}</h1>`;
+      panel.webview.html = `<h1>Critical Error: ${escapeHtml(String(e))}</h1>`;
     }
   }
 
@@ -196,6 +197,12 @@ export class StructureView {
           const isReadOnly = ${isReadOnly};
           let currentData = null;
           let filterText = "";
+
+          function esc(v) {
+            return String(v == null ? '' : v)
+              .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+          }
           
           window.onerror = function(msg, url, line, col, error) {
             const errStr = msg + " at " + line + ":" + col;
@@ -263,16 +270,16 @@ export class StructureView {
                 let iconClass = item.isLevel ? 'level-icon' : (item.isKey ? 'key-icon' : 'attr-icon');
 
                 const nameEditable = !isReadOnly ? 'contenteditable="true"' : '';
-                html += '<td class="item-name-cell">' + indentSpace + '<span class="icon ' + iconClass + '" onclick="toggleKey(\'' + id + '\')">' + iconHtml + '</span><span class="editable" ' + nameEditable + ' onblur="updateLocalData(\'' + id + '\', \'name\', this.innerText)">' + item.name + '</span></td>';
-                
+                html += '<td class="item-name-cell">' + indentSpace + '<span class="icon ' + iconClass + '" onclick="toggleKey(\'' + id + '\')">' + iconHtml + '</span><span class="editable" ' + nameEditable + ' onblur="updateLocalData(\'' + id + '\', \'name\', this.innerText)">' + esc(item.name) + '</span></td>';
+
                 const typeDisabled = isReadOnly || item.isLevel ? "readonly" : "";
-                html += '<td style="position: relative"><input type="text" list="gx-types" class="type-input" value="' + (item.type || '') + '" onchange="updateLocalData(\'' + id + '\', \'type\', this.value)" ' + typeDisabled + ' autocomplete="off"/></td>';
-                
+                html += '<td style="position: relative"><input type="text" list="gx-types" class="type-input" value="' + esc(item.type || '') + '" onchange="updateLocalData(\'' + id + '\', \'type\', this.value)" ' + typeDisabled + ' autocomplete="off"/></td>';
+
                 const descEditable = !isReadOnly && !item.isLevel;
-                html += '<td class="editable" contenteditable="' + descEditable + '" onblur="updateLocalData(\'' + id + '\', \'description\', this.innerText)">' + (item.description || '') + '</td>';
-                
+                html += '<td class="editable" contenteditable="' + descEditable + '" onblur="updateLocalData(\'' + id + '\', \'description\', this.innerText)">' + esc(item.description || '') + '</td>';
+
                 const formulaEditable = !isReadOnly && !item.isLevel;
-                html += '<td class="editable formula-text" contenteditable="' + formulaEditable + '" onblur="updateLocalData(\'' + id + '\', \'formula\', this.innerText)">' + (item.formula || '') + '</td>';
+                html += '<td class="editable formula-text" contenteditable="' + formulaEditable + '" onblur="updateLocalData(\'' + id + '\', \'formula\', this.innerText)">' + esc(item.formula || '') + '</td>';
                 
                 if (item.isLevel) {
                   html += '<td></td>';
