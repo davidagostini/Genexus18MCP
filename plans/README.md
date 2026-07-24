@@ -11,6 +11,45 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
 
+## Eighth-pass audit (2026-07-23, against `98b9a7d` / v2.33.0) — first independent cold audit of `src/nexus-ide`
+
+The C# MCP core is exhaustively covered by passes 1–7 (its "considered/rejected"
+ledger stands and was NOT re-audited). The only un-independently-audited surface is
+the `src/nexus-ide` VS Code extension (~8.6k TS lines from plans 051–061 — those were
+executor-written and reviewed only by the *executing* advisor, never given a fresh
+cold audit). Two parallel read-only Explore subagents (security; correctness) swept it;
+every finding was vetted against live code by the advisor before planning. **Not
+executed** — read-only handoffs awaiting go-ahead. Verification for all: run from
+`src/nexus-ide/` — `npm run check` (compile + eslint + `@vscode/test-electron`).
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 062 | Escape KB-derived strings in Structure/Index/History webviews (close stored-XSS under `unsafe-inline` CSP) | P1 | S-M | LOW | — | TODO |
+| 063 | Give the `&var.` member cache a TTL (completions frozen for the whole session today) | P2 | S | LOW | — | TODO |
+| 064 | Guard rename against unsaved edits before the KB-side rename (stale rename shown as success) | P2 | S | LOW | — | TODO |
+| 065 | Contain gxkb18-URI-derived paths inside the shadow root (path-traversal; `file:` branch already guards, gxkb18 doesn't) | P2 | M | MED | — | TODO |
+| 066 | Abort in-flight AI inline-completion HTTP requests on cancel/timeout (leak + pinned status bar) | P2 | M | MED | — | TODO |
+| 067 | Two papercuts — guard `variable.type.endsWith` + honor `ReferenceProvider` `includeDeclaration` | P3 | S | LOW | — | TODO |
+
+Recommended order: **062** (security, P1, HIGH-confidence, clean verification) →
+**063, 064** (P2 LOW-risk user-visible correctness, clean tests) → **065, 066** (P2
+MED-risk — 065 must not reject legitimate nested-module paths; 066 touches the shared
+HTTP client) → **067** (P3 quick wins). All six touch disjoint files and can run in
+parallel worktrees, **except** 063 and 067 both edit `gxMemberResolver.ts` (disjoint
+lines — caching vs the `variable.type` guard); if run in parallel, merge 063 first and
+re-check 067's drift excerpt. Grounding evidence:
+- 062: `StructureView.ts:266-299`, `IndexView.ts:124-141`, `HistoryView.ts:60-73` interpolate KB fields into `innerHTML`/`webview.html` unescaped under `script-src 'unsafe-inline'`; `PropertiesView.ts` is the safe in-repo reference.
+- 063: `gxMemberResolver.ts:41` caches with no expiry; `hoverProvider.ts:8-9,25-29` is the TTL pattern to reuse.
+- 064: `renameProvider.ts:14-56` issues `refactor` with no `document.isDirty` guard (the l.107 check only guards post-rename refresh).
+- 065: `GxUriParser.ts:168-193` (gxkb18 parse) has no `..`/absolute rejection vs `:122` (file branch) which does; sinks `gxFileSystem.ts:297`, `gxShadowService.ts:126,258,563`.
+- 066: `inlineCompletionProvider.ts:91` races a timeout but never aborts the request in `GxGatewayClient.postRawJsonRpc:249-320`.
+- 067: `gxMemberResolver.ts:74-75` unguarded `variable.type.endsWith`; `referenceProvider.ts:22` `context.includeDeclaration` never read.
+
+Considered and rejected / downgraded this pass (so nobody re-audits):
+- **SEC-03 — DiagramView mermaid `securityLevel` unset** (`DiagramView.ts:36`): INVESTIGATE-ONLY, not planned. Its CSP is nonce-only (no `'unsafe-inline'`), so inline-handler injection is already blocked, and vendored `mermaid@11.16.0` defaults to `securityLevel: 'strict'`. At most a one-line defense-in-depth (`securityLevel:'strict'` + escape `mermaidSource`); revisit only if the mermaid default changes or a click/link-directive vector is confirmed against the vendored bundle.
+- **SEC-04 / BUG-06 — unauthenticated localhost gateway + `static activeRequests` fragility**: NOT WORTH A STANDALONE PLAN. Localhost-only unauthenticated dev tooling is by-design (matches the MCP core's documented `Server.HttpPort` loopback contract); the finding is only an *amplifier* to 062, which the escaping fix neutralizes. The `finished`-flag bookkeeping duplication is a smell noted in plan 066's maintenance notes, not a demonstrated bug.
+- **BackendManager spawn**: reviewed clean — argument-array `cp.spawn` (no `shell:true`), command/args from fixed extension-relative paths, not KB/request data. Not command-injection.
+
 ## Nexus IDE elevation (2026-07-23, against `52e66f1`) — awaiting approval
 
 Bring the `src/nexus-ide` VS Code extension (it has real users) up to the MCP server's
@@ -49,10 +88,15 @@ advisor-reviewed, cherry-picked to `main` (`4b6b115` 051, `ce10e5c`+`414c005` 05
 
 | Plan | Title | Priority | Effort | Risk | Depends on | Status |
 |------|-------|----------|--------|------|------------|--------|
-| 054 | Structured, level-gated logging (Logger + migrate ~110 `console.*` + consolidate channels) | P2 | M-L | LOW | 051 | TODO |
-| 055 | Audit ~31 bare `catch {}` — stop swallowing real failures (log via 054) | P2 | M | LOW-MED | 054 | TODO |
-| 056 | Harden webviews — CSP + local mermaid (DiagramView loads CDN, no CSP) | P2 | S-M | LOW-MED | — | TODO |
-| 057 | Fix dev-tree path assumptions in packaged resolution (BackendManager/gxShadowService) | P3 | M | MED | 051 | TODO |
+| 054 | Structured, level-gated logging (Logger + migrate ~110 `console.*` + consolidate channels) | P2 | M-L | LOW | 051 | DONE |
+| 055 | Audit ~31 bare `catch {}` — stop swallowing real failures (log via 054) | P2 | M | LOW-MED | 054 | DONE |
+| 056 | Harden webviews — CSP + local mermaid (DiagramView loads CDN, no CSP) | P2 | S-M | LOW-MED | — | DONE |
+| 057 | Fix dev-tree path assumptions in packaged resolution (BackendManager/gxShadowService) | P3 | M | MED | 051 | DONE |
+
+**Phases 2–4 (054–061) applied & released in v2.33.0** (reconciled 2026-07-23 from git:
+commits `5b28899` 054, `d90e6ab` 055, `f9dd16c` 056, `30d808f` 057, `d90871e` 058,
+`d512694` 059, `d6c2bd4` 060, `e4e66a0` 061; `a92502a` "phases 0-4 complete"). Rows below
+kept for provenance.
 
 **Corrected scope** (current-code grep, larger than the recon estimate): ~110 `console.*`
 calls across 17 files (recon said 49); ~31 bare `catch {}` (recon said 11); OutputChannel
@@ -64,15 +108,15 @@ worktrees would conflict.
 
 | Plan | Title | Priority | Effort | Risk | Depends on | Status |
 |------|-------|----------|--------|------|------------|--------|
-| 058 | Real, context-aware inline completion (real `&var.` members + optional AI, drop hardcoded ghost text) | P2 | M | LOW-MED | 051 | TODO |
-| 059 | Diagnostics-driven code actions (fix from real diagnostics, not any `&word`) | P2 | M | LOW | 051 | TODO |
-| 060 | LayoutView — honest read-only label + sandboxed rendering under a strict CSP | P3 | S-M | LOW-MED | 051 | TODO |
+| 058 | Real, context-aware inline completion (real `&var.` members + optional AI, drop hardcoded ghost text) | P2 | M | LOW-MED | 051 | DONE |
+| 059 | Diagnostics-driven code actions (fix from real diagnostics, not any `&word`) | P2 | M | LOW | 051 | DONE |
+| 060 | LayoutView — honest read-only label + sandboxed rendering under a strict CSP | P3 | S-M | LOW-MED | 051 | DONE |
 
 ### Phase 4 — release discipline (written 2026-07-23, awaiting execution)
 
 | Plan | Title | Priority | Effort | Risk | Depends on | Status |
 |------|-------|----------|--------|------|------------|--------|
-| 061 | Fold the Nexus IDE VSIX into `release.ps1` (version lockstep + build + attach to GH release) | P3 | M | MED-HIGH | 051 | TODO |
+| 061 | Fold the Nexus IDE VSIX into `release.ps1` (version lockstep + build + attach to GH release) | P3 | M | MED-HIGH | 051 | DONE |
 
 Phase 3 plans are largely independent (different provider files) but should run after Phase 2
 lands (they touch files Phase 2 modified). 061 (Phase 4) touches `release.ps1` — verify via
