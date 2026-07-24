@@ -52,6 +52,12 @@ namespace GxMcp.Worker.Tests
         // is KB-blind — WriteService returns UnknownType if SDK can't find it.
         [InlineData("SdtAluUniGraInfo", "SdtAluUniGraInfo")]
         [InlineData("SdtFoo.Item", "SdtFoo.Item")]
+        // SDT item / level type: a single element of a collection SDT (e.g. GeneXusCommon's
+        // Messages). The dotted name must survive the resolver intact so the write path reaches
+        // the item-aware bind (VariableInjector.TryBindSdtItemType → DataTypeProvider.GetTypeByName),
+        // which types the variable as the item — NOT the whole collection SDT. Live-verified in PR:
+        // "&Message : Messages.Message" now persists as the item, no longer collapsing to "Messages".
+        [InlineData("Messages.Message", "Messages.Message")]
         [InlineData("MyBusinessComponent", "MyBusinessComponent")]
         public void Resolve_BareObjectName_AcceptsAsDomainReference(string input, string expectedName)
         {

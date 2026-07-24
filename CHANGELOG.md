@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Typing a variable as an SDT *item* now works — `&Message : Messages.Message` no longer collapses to the collection.** Declaring a variable as a single element of a collection SDT (the dotted `SDT.Item` form, e.g. GeneXusCommon's `Messages.Message`) persisted as the whole `Messages` collection instead, so `&Messages.Add(&Message)` was impossible and callers fell back to ad-hoc `VarChar` collections. `genexus_variable action=add` and `action=modify` now resolve the dotted item form through the SDK's own type-picker resolver — the same path the GeneXus IDE uses — so the variable is typed as the item. Verified end-to-end: `&Message.Id` / `.Type` / `.Description` member access and `&Messages.Add(&Message)` compile. Plain SDT, Business Component, and Domain types are unaffected.
+
+### Internal
+
+- `VariableInjector.TryBindSdtItemType` (thin wrapper over `TryBindGenexusDataType` → `DataTypeProvider.GetTypeByName`) is attempted before the strip-to-parent `ResolveTypeObject` bind for dotted names, in both `WriteService.BuildResolvedVariableInto` (add/batch) and `ModifyVariableInternal`. The DSL path (`SetVariablesFromText`) already tried the type-picker resolver first, so it was unaffected. Added a `Messages.Message` resolver case; live-verified over HTTP against a real KB (AcademicoHomolog1) with a hot-swapped worker.
+
 ## v2.34.0 — 2026-07-24
 
 Correctness fixes for reading and writing SDT / Data Provider objects, plus an explicit failure for folder/module placement.

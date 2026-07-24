@@ -625,6 +625,24 @@ namespace GxMcp.Worker.Helpers
             catch (Exception ex) { Logger.Warn("[TryBindGenexusDataType] " + ex.Message); return false; }
         }
 
+        // Bind a variable to an SDT ITEM / level type such as "Messages.Message" — a single element
+        // of a collection SDT — rather than the whole SDT. BindVariableToSdt references the SDT
+        // object (category 254), which for a Collection SDT yields the COLLECTION, so both
+        // "Messages" and "Messages.Message" collapsed to the same collection variable (the reported
+        // "&Message insists on becoming Messages" bug). The dotted item form is exactly what the
+        // IDE's variable "Type" field accepts, and DataTypeProvider.GetTypeByName resolves it to the
+        // SDTItemTypeInfo's AttCustomType — a reference to the item level, distinct from the root.
+        // Only attempts dotted names; returns false otherwise so the caller falls back to the
+        // whole-SDT / Domain / BC path. DataTypeString is set to the dotted name so read-back
+        // round-trips the item form instead of the bare SDT name.
+        public static bool TryBindSdtItemType(global::Artech.Genexus.Common.Variable v, string typeName)
+        {
+            if (v == null || string.IsNullOrWhiteSpace(typeName) || typeName.IndexOf('.') <= 0) return false;
+            bool ok = TryBindGenexusDataType(v, typeName);
+            if (ok) Logger.Info($"[TryBindSdtItemType] Bound {v.Name} -> SDT item type {typeName}");
+            return ok;
+        }
+
         // GX_USRDEFTYP = user-defined effective type (AttCustomType category 255). The concrete
         // type (WebSession, ...) is identified by ATTCUSTOMTYPE where guid=<subtype id> and
         // description=<type name>; DataTypeString mirrors the name for read-back.

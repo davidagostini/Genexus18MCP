@@ -332,7 +332,15 @@ namespace GxMcp.Worker.Services
                 }
 
                 var targetObj = VariableInjector.ResolveTypeObject(varPart.Model, resolvedTypeForSdk);
-                if (targetObj != null)
+                // Dotted SDT-item type (e.g. "Messages.Message") — a single element of a collection
+                // SDT. Tried BEFORE the ResolveTypeObject binding, which strips ".Message" and binds
+                // the whole (collection) SDT, collapsing item and collection to the same variable.
+                // The SDK's type-picker resolver returns the item-level AttCustomType for the dotted
+                // form. Only fires for dotted names, so the plain-SDT path below is unaffected.
+                if (VariableInjector.TryBindSdtItemType(newVar, resolvedTypeForSdk))
+                {
+                }
+                else if (targetObj != null)
                 {
                     if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
                         newVar.DomainBasedOn = dom;
@@ -926,7 +934,14 @@ namespace GxMcp.Worker.Services
                     else
                     {
                         var targetObj = VariableInjector.ResolveTypeObject(varPart.Model, resolvedTypeForSdk);
-                        if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
+                        // Dotted SDT-item type (e.g. "Messages.Message") — bind the item level, not the
+                        // whole (collection) SDT ResolveTypeObject strips down to. Tried first; only
+                        // fires for dotted names so plain-SDT/Domain/BC retypes are unaffected.
+                        if (VariableInjector.TryBindSdtItemType(newVar, resolvedTypeForSdk))
+                        {
+                            boundTypeName = resolvedTypeForSdk;
+                        }
+                        else if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
                         {
                             newVar.DomainBasedOn = dom;
                             boundTypeName = dom.Name;
