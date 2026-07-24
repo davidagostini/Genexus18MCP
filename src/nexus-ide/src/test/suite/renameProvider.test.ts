@@ -102,22 +102,26 @@ suite("GxRenameProvider - editor refresh on rename", () => {
   });
 
   test("skips refreshing a dirty document and warns the user instead of hydrating it", async () => {
-    // Same shadow-root-backed 'file' document as the success test, but with an unsaved
-    // in-editor edit applied so isDirty is true — this is exactly what the dirty-doc guard
-    // (mirroring SyncManager.handleUpdateNotification) must skip.
+    // Same shadow-root-backed 'file' document as the success test, but the document goes
+    // dirty *while the refactor call is in flight* (a concurrent edit), so it is clean at
+    // entry (the pre-rename dirty guard added in provideRenameEdits does not intercept it)
+    // and only dirty by the time refreshAffectedEditors runs — this is exactly what that
+    // post-rename skip (mirroring SyncManager.handleUpdateNotification) must catch.
     const shadowRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ide-rename-shadow-dirty-"));
     const shadowService = new GxShadowService("http://127.0.0.1:1", shadowRoot);
     const filePath = path.join(shadowRoot, "Total.gx");
     fs.writeFileSync(filePath, "&Total = 1");
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
-
-    const edit = new vscode.WorkspaceEdit();
-    edit.insert(doc.uri, new vscode.Position(0, 0), "// dirty\n");
-    await vscode.workspace.applyEdit(edit);
-    assert.strictEqual(doc.isDirty, true, "precondition: the document must be dirty after an unsaved edit");
+    assert.strictEqual(doc.isDirty, false, "precondition: freshly opened file must not be dirty at entry");
 
     const fsProvider = new GxFileSystemProvider();
-    (fsProvider as any).refactor = async () => ({ message: "Renamed OK" });
+    (fsProvider as any).refactor = async () => {
+      // Simulate a concurrent edit landing while the KB-side rename is in flight.
+      const dirtyEdit = new vscode.WorkspaceEdit();
+      dirtyEdit.insert(doc.uri, new vscode.Position(0, 0), "// dirty\n");
+      await vscode.workspace.applyEdit(dirtyEdit);
+      return { message: "Renamed OK" };
+    };
 
     let hydrateCalled = false;
     (shadowService as any).hydrateOpenedFile = async () => {
@@ -150,6 +154,124 @@ suite("GxRenameProvider - editor refresh on rename", () => {
       assert.strictEqual(hydrateCalled, false, "hydrateOpenedFile must NOT be invoked for a dirty document");
       assert.strictEqual(fireFileChangeCalled, false, "fireFileChange must NOT be invoked for a dirty document");
       assert.ok(warnedAboutDirty, "expected the user to be warned that the dirty document was skipped");
+    } finally {
+      (vscode.window as any).showWarningMessage = originalShowWarning;
+    }
+  });
+});
+
+suite("GxRenameProvider - pre-rename dirty document guard", () => {
+  test("clean document: proceeds straight to refactor without prompting", async () => {
+    const shadowRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ide-rename-guard-clean-"));
+    const shadowService = new GxShadowService("http://127.0.0.1:1", shadowRoot);
+    const filePath = path.join(shadowRoot, "Total.gx");
+    fs.writeFileSync(filePath, "&Total = 1");
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+    assert.strictEqual(doc.isDirty, false, "precondition: freshly opened file must not be dirty");
+
+    const fsProvider = new GxFileSystemProvider();
+    let refactorCalled = false;
+    (fsProvider as any).refactor = async () => {
+      refactorCalled = true;
+      return { message: "Renamed OK" };
+    };
+    (fsProvider as any).fireFileChange = () => {};
+    (shadowService as any).hydrateOpenedFile = async () => true;
+
+    let warningShown = false;
+    const originalShowWarning = vscode.window.showWarningMessage;
+    (vscode.window as any).showWarningMessage = async () => {
+      warningShown = true;
+      return undefined;
+    };
+
+    try {
+      const provider = new GxRenameProvider(fsProvider, shadowService);
+      const wordStart = doc.getText().indexOf("Total");
+      const position = new vscode.Position(0, wordStart + 1);
+
+      const edit = await provider.provideRenameEdits(doc, position, "NewTotal", NO_TOKEN);
+
+      assert.ok(edit, "expected a WorkspaceEdit to be returned on success");
+      assert.strictEqual(refactorCalled, true, "expected refactor to be called for a clean document");
+      assert.strictEqual(warningShown, false, "expected no prompt for a clean document");
+    } finally {
+      (vscode.window as any).showWarningMessage = originalShowWarning;
+    }
+  });
+
+  test("dirty document + user cancels: refactor is never called and undefined is returned", async () => {
+    const shadowRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ide-rename-guard-cancel-"));
+    const shadowService = new GxShadowService("http://127.0.0.1:1", shadowRoot);
+    const filePath = path.join(shadowRoot, "Total.gx");
+    fs.writeFileSync(filePath, "&Total = 1");
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(doc.uri, new vscode.Position(0, 0), "// dirty\n");
+    await vscode.workspace.applyEdit(edit);
+    assert.strictEqual(doc.isDirty, true, "precondition: the document must be dirty after an unsaved edit");
+
+    const fsProvider = new GxFileSystemProvider();
+    let refactorCalled = false;
+    (fsProvider as any).refactor = async () => {
+      refactorCalled = true;
+      return { message: "Renamed OK" };
+    };
+    (fsProvider as any).fireFileChange = () => {};
+    (shadowService as any).hydrateOpenedFile = async () => true;
+
+    const originalShowWarning = vscode.window.showWarningMessage;
+    (vscode.window as any).showWarningMessage = async () => undefined; // simulates dismiss/cancel
+
+    try {
+      const provider = new GxRenameProvider(fsProvider, shadowService);
+      const wordStart = doc.getText().indexOf("Total");
+      const position = new vscode.Position(0, wordStart + 1);
+
+      const result = await provider.provideRenameEdits(doc, position, "NewTotal", NO_TOKEN);
+
+      assert.strictEqual(result, undefined, "expected undefined to be returned when the user cancels");
+      assert.strictEqual(refactorCalled, false, "expected refactor NOT to be called when the user cancels");
+    } finally {
+      (vscode.window as any).showWarningMessage = originalShowWarning;
+    }
+  });
+
+  test("dirty document + user saves: document.save() is called before refactor, then refactor proceeds", async () => {
+    const shadowRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nexus-ide-rename-guard-save-"));
+    const shadowService = new GxShadowService("http://127.0.0.1:1", shadowRoot);
+    const filePath = path.join(shadowRoot, "Total.gx");
+    fs.writeFileSync(filePath, "&Total = 1");
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(doc.uri, new vscode.Position(0, 0), "// dirty\n");
+    await vscode.workspace.applyEdit(edit);
+    assert.strictEqual(doc.isDirty, true, "precondition: the document must be dirty after an unsaved edit");
+
+    const fsProvider = new GxFileSystemProvider();
+    const callOrder: string[] = [];
+    (fsProvider as any).refactor = async () => {
+      callOrder.push("refactor");
+      return { message: "Renamed OK" };
+    };
+    (fsProvider as any).fireFileChange = () => {};
+    (shadowService as any).hydrateOpenedFile = async () => true;
+
+    const originalShowWarning = vscode.window.showWarningMessage;
+    (vscode.window as any).showWarningMessage = async () => "Save and Rename";
+
+    try {
+      const provider = new GxRenameProvider(fsProvider, shadowService);
+      const wordStart = doc.getText().indexOf("Total");
+      const position = new vscode.Position(0, wordStart + 1);
+
+      const result = await provider.provideRenameEdits(doc, position, "NewTotal", NO_TOKEN);
+
+      assert.ok(result, "expected a WorkspaceEdit to be returned once the save+rename proceeds");
+      assert.strictEqual(doc.isDirty, false, "expected document.save() to have persisted the edit");
+      assert.deepStrictEqual(callOrder, ["refactor"], "expected refactor to be called after the save");
     } finally {
       (vscode.window as any).showWarningMessage = originalShowWarning;
     }

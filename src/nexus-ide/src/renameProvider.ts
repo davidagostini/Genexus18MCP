@@ -23,7 +23,23 @@ export class GxRenameProvider implements vscode.RenameProvider {
         const oldName = document.getText(range);
         const objName = this.getObjName(document);
         const isVariable = isVariableToken(document, range, oldName);
-        
+
+        if (document.isDirty) {
+            const choice = await vscode.window.showWarningMessage(
+                `'${document.fileName.split(/[\\/]/).pop()}' has unsaved changes. The rename runs against the saved Knowledge Base, so it would miss unsaved edits. Save and rename?`,
+                { modal: true },
+                'Save and Rename',
+            );
+            if (choice !== 'Save and Rename') {
+                return undefined; // user cancelled — no rename issued
+            }
+            const saved = await document.save();
+            if (!saved) {
+                vscode.window.showErrorMessage('Nexus IDE: could not save the document; rename aborted.');
+                return undefined;
+            }
+        }
+
         try {
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
