@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`genexus_analyze mode=linter` router action.** Previously routed to `action = "Analyze"` instead of `action = "linter"`, which fell through `AnalyzeService` without reaching `LinterService.Lint`. `AnalyzeRouter.cs` now emits `action = "linter"`.
+
 ## v2.36.0 — 2026-07-27
 
 Full-fidelity SDT structure & lifecycle rebuild target scoping: cloning and authoring a collection SDT now preserve the collection flag, the item level, Domain-based members and SDT references (#51, #52). `genexus_lifecycle action=rebuild` with a target now scopes execution to the requested object instead of triggering a full KB rebuild (#53).
