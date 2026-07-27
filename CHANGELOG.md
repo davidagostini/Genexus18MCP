@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v2.36.1 — 2026-07-27
+
+Patch release: fixed router action dispatch for `genexus_analyze mode=linter` and ensured `FindObject` falls back to SDK lookup when search index misses newly created objects.
 
 ### Fixed
 
