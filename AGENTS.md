@@ -95,6 +95,14 @@ the HTTP path is the default way to live-iterate.
 - **No gateway up?** Launch one: `publish/start_mcp.bat` (or the client's own). On stdin EOF
   a detached gateway stays alive (`Program.cs` falls into `Task.Delay(-1)`), so the HTTP
   endpoint keeps serving. Then open a KB with `genexus_kb action=open path=<kb>`.
+- After editing Worker code, hot-swap via `genexus_worker_reload` (above); over HTTP the
+  reload survives even when the stdio `/mcp` link would need a reconnect.
+
+## Continuous CHANGELOG maintenance (Mandatory)
+
+- **Immediate Unreleased logging:** Every completed bugfix, feature, performance improvement, or architectural change MUST immediately be added to `CHANGELOG.md` under the `## Unreleased` section as soon as implementation is verified.
+- **Format:** Group entries under `### Added`, `### Changed`, `### Fixed`, or `### Internal` with clear descriptions of what was improved/fixed and why.
+
 ## Release protocol (Mandatory on user release request)
 
 Whenever the user requests a release (e.g. "cria release", "corta release", "faz release"):
