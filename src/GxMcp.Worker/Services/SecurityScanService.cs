@@ -5,8 +5,10 @@ using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
+#if HAS_SECURITY_SCANNER
 using Scanner = GeneXus.SecurityScanner.Common;
 using ScannerServices = GeneXus.SecurityScanner.Common.Services;
+#endif
 
 namespace GxMcp.Worker.Services
 {
@@ -15,12 +17,6 @@ namespace GxMcp.Worker.Services
     /// Read-only. Distinct from action=audit_gam (env-prop scan) and action=scan_secrets
     /// (regex over Source): this drives the SDK's own <c>ISecurityScannerService.Scan</c>,
     /// the same engine the IDE's Security Scanner runs.
-    ///
-    /// Flow: <c>SecurityScanPlan.GetForModel(model)</c> gives the plan (whitelist +
-    /// authorization procedure); a <c>KBObjectQuery</c> is built from it and passed with a
-    /// worker-side <see cref="Collector"/> implementing <c>IScannerOuput</c> that accumulates
-    /// findings. <c>ISecurityScannerService</c> is non-<c>IGxService</c> → resolved via
-    /// <see cref="SdkServiceLocator"/> (interface-GUID locator).
     /// </summary>
     public class SecurityScanService
     {
@@ -33,6 +29,7 @@ namespace GxMcp.Worker.Services
 
         public string Run(JObject args)
         {
+#if HAS_SECURITY_SCANNER
             if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
                 return kbErr;
 
@@ -94,8 +91,15 @@ namespace GxMcp.Worker.Services
             {
                 return McpResponse.Err(code: "SecurityScanFailed", message: ex.Message, hint: "Check the worker log for the full stack trace.");
             }
+#else
+            return McpResponse.Err(
+                code: "SecurityScannerServiceUnavailable",
+                message: "GeneXus.SecurityScanner.Common.dll was not found in the GeneXus installation.",
+                hint: "Install the Security Scanner extension for GeneXus 18 to enable native security scans.");
+#endif
         }
 
+#if HAS_SECURITY_SCANNER
         private static string SafeStr(Func<string> f) { try { return f(); } catch { return null; } }
 
         // <gxInstall>\Security\Commands holds the scanner's command plugins. Try GX_PATH env,
@@ -166,5 +170,6 @@ namespace GxMcp.Worker.Services
                 };
             }
         }
+#endif
     }
 }

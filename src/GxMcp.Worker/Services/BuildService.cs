@@ -1821,14 +1821,54 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            var degradedUserControls = new JArray();
+            try
+            {
+                foreach (JObject item in filesWritten)
+                {
+                    string csPath = item["path"]?.ToString();
+                    if (string.IsNullOrEmpty(csPath)) continue;
+                    string dir = Path.GetDirectoryName(csPath);
+                    string objName = item["object"]?.ToString();
+                    if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(objName)) continue;
+                    string jsPath = Path.Combine(dir, objName.ToLowerInvariant() + ".js");
+                    if (File.Exists(jsPath) && File.GetLastWriteTimeUtc(jsPath) >= status.StartedAt)
+                    {
+                        string jsText = File.ReadAllText(jsPath);
+                        if (jsText.Contains("gx.uc.getNew") && !jsText.Contains("setProp("))
+                        {
+                            degradedUserControls.Add(new JObject
+                            {
+                                ["object"] = objName,
+                                ["jsPath"] = jsPath,
+                                ["reason"] = "User Control instantiated via gx.uc.getNew but missing setProp property bindings."
+                            });
+                        }
+                    }
+                }
+            }
+            catch { }
+
             var evidence = new JObject
             {
-                ["ok"] = staleOrMissing.Count == 0,
+                ["ok"] = staleOrMissing.Count == 0 && degradedUserControls.Count == 0,
                 ["objectsChecked"] = checkList.Count,
                 ["objectsBuilt"] = emittedCount,
                 ["filesWritten"] = filesWritten,
                 ["staleOrMissing"] = staleOrMissing
             };
+            if (degradedUserControls.Count > 0)
+            {
+                evidence["degradedUserControls"] = degradedUserControls;
+                lock (status._lock)
+                {
+                    var names = string.Join(", ", degradedUserControls.Select(x => (string)x["object"]));
+                    status.Warnings.Add("[user-control-degraded] User Control JS generated without setProp for: " + names);
+                    status.WarningCount++;
+                    if (string.IsNullOrEmpty(status.Hint))
+                        status.Hint = "User Control degradation detected: generated JS for " + names + " missing setProp bindings. Verify UserControls directory.";
+                }
+            }
             if (upToDate.Count > 0)
                 evidence["upToDate"] = upToDate;
             if (unreachable.Count > 0)
@@ -2217,29 +2257,21 @@ namespace GxMcp.Worker.Services
                 // inside the deploy/IIS step ("Atualização de configuração da web").
                 sb.AppendLine("    <OpenKnowledgeBase Directory=\"" + kbPathEsc + "\" Output=\"IDE\" />");
 
-                if (action.Equals("Build", StringComparison.OrdinalIgnoreCase) && targets != null && targets.Count > 0)
+                if (targets != null && targets.Count > 0 &&
+                    (action.Equals("Build", StringComparison.OrdinalIgnoreCase) ||
+                     action.Equals("Rebuild", StringComparison.OrdinalIgnoreCase) ||
+                     action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase)))
                 {
                     status.TargetsTotal = targets.Count;
                     status.TargetsDone = 0;
-                    // IDE-parity build pipeline. The IDE's "Build With This Only" runs
-                    // Spec → Gen → .NET compile → Web-app config registration through
-                    // <IdeWebBuildAndDeploy> with Output="IDE" + EventsSuspended=true.
-                    // We mirror that here for targeted builds so the produced .dll +
-                    // HandlerFactory registration land in the same state the IDE leaves
-                    // the KB in. SpecifyOneOnly first scopes the work to the requested
-                    // targets; IdeWebBuildAndDeploy then completes the chain.
-                    //
-                    // Why not <BuildOne>? <BuildOne> bundles the same sub-steps but the
-                    // IIS-config sub-step inside it explodes with an opaque
-                    // "O sistema não pode encontrar o arquivo especificado" when run
-                    // from a standalone msbuild process. <IdeWebBuildAndDeploy>
-                    // routes the same work through the IDE-style entry point that
-                    // resolves correctly.
+                    // issue #53: Honor target parameter for rebuilds so specifying a target
+                    // rebuilds ONLY the target instead of forcing a full KB rebuild.
                     string joined = string.Join(";", targets.Select(t => SecurityElement.Escape(t)));
                     sb.AppendLine("    <SpecifyOneOnly ObjectNames=\"" + joined + "\" />");
-                    sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"false\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
+                    bool force = action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase) || action.Equals("Rebuild", StringComparison.OrdinalIgnoreCase);
+                    sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"" + (force ? "true" : "false") + "\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
                 }
-                else if (action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase))
+                else if (action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase) || action.Equals("Rebuild", StringComparison.OrdinalIgnoreCase))
                 {
                     // Full force-rebuild — same task the IDE's "Rebuild All" fires.
                     sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"true\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
@@ -2281,6 +2313,17 @@ namespace GxMcp.Worker.Services
                     StandardOutputEncoding = ResolveMsbuildEncoding(),
                     StandardErrorEncoding = ResolveMsbuildEncoding()
                 };
+
+                if (!string.IsNullOrEmpty(_gxDir))
+                {
+                    try
+                    {
+                        psi.EnvironmentVariables["GX_PATH"] = _gxDir;
+                        psi.EnvironmentVariables["GX_PROGRAM_DIR"] = _gxDir;
+                        psi.EnvironmentVariables["GeneXusPath"] = _gxDir;
+                    }
+                    catch { }
+                }
 
                 using (var process = new Process { StartInfo = psi, EnableRaisingEvents = true })
                 {

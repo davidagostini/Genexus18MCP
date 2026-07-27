@@ -62,6 +62,41 @@ namespace GxMcp.Worker.Helpers
             catch { return false; }
         }
 
+        public static string GetDomainBasedOnName(object target)
+        {
+            if (target == null) return null;
+            try
+            {
+                dynamic d = target;
+                object dbo = d.DomainBasedOn;
+                if (dbo != null)
+                {
+                    dynamic dom = dbo;
+                    string name = (string)dom.Name;
+                    if (!string.IsNullOrEmpty(name)) return name;
+                }
+            }
+            catch { }
+            try
+            {
+                var p = AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "DomainBasedOn");
+                if (p != null)
+                {
+                    var val = p.GetValue(target, null);
+                    if (val != null)
+                    {
+                        var nameProp = val.GetType().GetProperty("Name");
+                        if (nameProp != null)
+                        {
+                            return (string)nameProp.GetValue(val, null);
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
         /// <summary>
         /// Returns count of enum values applied, or -1 if the SDK helper / types could not be
         /// resolved (caller decides whether that's fatal).

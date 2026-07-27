@@ -152,6 +152,18 @@ namespace GxMcp.Worker.Tests
 
         // ── FR#13 follow-up — validate=only honored in mode=patch ────────────
 
+        private static string FindWorkerServiceFile(string fileName)
+        {
+            var dir = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
+            while (dir != null)
+            {
+                string candidate = Path.Combine(dir.FullName, "src", "GxMcp.Worker", "Services", fileName);
+                if (File.Exists(candidate)) return candidate;
+                dir = dir.Parent;
+            }
+            throw new FileNotFoundException("Could not locate " + fileName + " starting from " + AppDomain.CurrentDomain.BaseDirectory);
+        }
+
         [Fact]
         public void Dispatcher_PatchApply_ValidateOnly_MapsToDryRun_ViaConvention()
         {
@@ -161,11 +173,7 @@ namespace GxMcp.Worker.Tests
             // We assert the mapping convention exists in source so a future refactor
             // can't silently regress to the v2.6.6-pre behaviour that persisted under
             // validate=only.
-            string dispatcherSrc = System.IO.File.ReadAllText(
-                System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "CommandDispatcher.cs"));
+            string dispatcherSrc = System.IO.File.ReadAllText(FindWorkerServiceFile("CommandDispatcher.cs"));
             Assert.Contains("validateMode", dispatcherSrc);
             Assert.Contains("dryRunArg || validateOnly", dispatcherSrc);
         }
@@ -179,11 +187,7 @@ namespace GxMcp.Worker.Tests
             // dryRun=true so PatternInstance / WebForm full-XML writes can
             // probe SDK validation without touching disk. Source-level
             // assertion mirrors the patch-path convention test above.
-            string dispatcherSrc = System.IO.File.ReadAllText(
-                System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "CommandDispatcher.cs"));
+            string dispatcherSrc = System.IO.File.ReadAllText(FindWorkerServiceFile("CommandDispatcher.cs"));
             Assert.Contains("writeValidate", dispatcherSrc);
             Assert.Contains("string.Equals(writeValidate, \"only\"", dispatcherSrc);
         }
@@ -233,11 +237,7 @@ namespace GxMcp.Worker.Tests
             // without parsing the human message. Source-level convention test
             // because the producing method is private and the path needs a
             // live KB to exercise end-to-end.
-            string writeSrc = System.IO.File.ReadAllText(
-                System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "WriteService.PatternWrite.cs"));
+            string writeSrc = System.IO.File.ReadAllText(FindWorkerServiceFile("WriteService.PatternWrite.cs"));
             Assert.Contains("code: \"PatternInvalidXml\"", writeSrc);
             Assert.Contains("code: \"PatternPartNotFound\"", writeSrc);
             Assert.Contains("code: \"PatternVerificationMismatch\"", writeSrc);
@@ -251,11 +251,7 @@ namespace GxMcp.Worker.Tests
             // empty `catch { }`; it's now captured into `sdkSaveError` and
             // attached to the verify-failed envelope. Convention test
             // because exercising the path needs a real WWP host.
-            string writeSrc = System.IO.File.ReadAllText(
-                System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "WriteService.PatternWrite.cs"));
+            string writeSrc = System.IO.File.ReadAllText(FindWorkerServiceFile("WriteService.PatternWrite.cs"));
             Assert.Contains("JObject sdkSaveError = null", writeSrc);
             Assert.Contains("catch (Exception partSaveEx)", writeSrc);
             Assert.Contains("verifyJobj[\"sdkSaveError\"] = sdkSaveError", writeSrc);
@@ -270,11 +266,7 @@ namespace GxMcp.Worker.Tests
             // helper must run so the IDE's "Apply this pattern on save"
             // checkbox stays on. Surface on the response as
             // applyOnSaveReenabled so callers can verify.
-            string writeSrc = System.IO.File.ReadAllText(
-                System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services",
-                    "WriteService.PatternWrite.cs"));
+            string writeSrc = System.IO.File.ReadAllText(FindWorkerServiceFile("WriteService.PatternWrite.cs"));
             Assert.Contains("WwpApplyOnSaveHelper.TryEnable(resolvedObject)", writeSrc);
             Assert.Contains("success[\"applyOnSaveReenabled\"] = applyOnSaveReenabled", writeSrc);
         }

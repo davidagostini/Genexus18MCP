@@ -33,14 +33,17 @@ namespace GxMcp.Gateway
                 if (!string.IsNullOrWhiteSpace(explicitConfigPath))
                 {
                     string fullPath = Path.GetFullPath(explicitConfigPath);
-                    if (!File.Exists(fullPath))
+                    if (File.Exists(fullPath))
                     {
-                        throw new FileNotFoundException($"GX_CONFIG_PATH points to a missing config.json: {fullPath}");
+                        CurrentConfigPath = fullPath;
                     }
-
-                    CurrentConfigPath = fullPath;
+                    else
+                    {
+                        Program.Log($"[Gateway] WARNING: GX_CONFIG_PATH points to non-existent file '{fullPath}'. Falling back to default config discovery.");
+                    }
                 }
-                else
+
+                if (CurrentConfigPath == null)
                 {
                     // Reliable path discovery: look for config.json starting from .exe up to root
                     string? currentDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
@@ -55,7 +58,7 @@ namespace GxMcp.Gateway
                     if (CurrentConfigPath == null)
                     {
                         if (File.Exists("config.json")) CurrentConfigPath = Path.GetFullPath("config.json");
-                        else throw new FileNotFoundException("Could not find config.json in any parent directory.");
+                        else throw new FileNotFoundException($"Could not find config.json in any parent directory (explicit GX_CONFIG_PATH '{explicitConfigPath}' was missing).");
                     }
                 }
             }

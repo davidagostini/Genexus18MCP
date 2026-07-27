@@ -1,21 +1,19 @@
 # Changelog
 
-## Unreleased
+## v2.36.0 — 2026-07-27
 
-Full-fidelity SDT structure: cloning and authoring a collection SDT now preserve the collection flag, the item level, Domain-based members and SDT references — none of which the flat text projection could carry.
+Full-fidelity SDT structure & lifecycle rebuild target scoping: cloning and authoring a collection SDT now preserve the collection flag, the item level, Domain-based members and SDT references (#51, #52). `genexus_lifecycle action=rebuild` with a target now scopes execution to the requested object instead of triggering a full KB rebuild (#53).
 
 ### Added
 
-- **Author an SDT's structure with `genexus_structure action=update_visual`.** Previously `update_visual` only accepted Transactions (an SDT returned `NotATransaction`) and `genexus_create type=SDT` could seed just one flat member, so a collection SDT with an item level and Domain-typed members could only be built in the GeneXus IDE. `update_visual` on an SDT now takes a structured payload — `{ isCollection, collectionItemName, children:[…] }` — where each child is a primitive member (`type` + `length`/`decimals`), a Domain-based member (`basedOnDomain:"<Domain>"`), an SDT reference (`type:"<OtherSdt>"`, optionally `isCollection:true`), or a nested level (`isLevel:true` with its own `children`). Members absent from the payload are removed, matching the Transaction path.
+- **Author an SDT's structure with `genexus_structure action=update_visual`.** Previously `update_visual` only accepted Transactions (an SDT returned `NotATransaction`) and `genexus_create type=SDT` could seed just one flat member, so a collection SDT with an item level and Domain-typed members could only be built in the GeneXus IDE. `update_visual` on an SDT now takes a structured payload — `{ isCollection, collectionItemName, children:[…] }` — where each child is a primitive member (`type` + `length`/`decimals`), a Domain-based member (`basedOnDomain:"<Domain>"`), an SDT reference (`type:"<OtherSdt>"`, optionally `isCollection:true`), or a nested level (`isLevel:true` with its own `children`). Members absent from the payload are removed, matching the Transaction path (#52).
 
 ### Fixed
 
-- **Cloning a collection SDT via `genexus_create action=save_as` no longer flattens it.** The clone was rebuilt from the SDT's flat textual structure, which encodes neither the root collection flag, the collection item name, nor Domain/SDT-typed members — so a collection SDT was cloned as a flat, non-collection SDT with every Domain member collapsed to its base type. The SDT structure is now copied at the model level, so the clone preserves the collection flag and item name, each member's type/length/decimals, per-member collection flags, nested levels, Domain links (`basedOnDomain`), and SDT references.
-- **A Domain-based SDT member now reads back with its Domain.** `genexus_structure action=get_visual` reported a member based on a Domain only by its underlying base type (e.g. a Domain over `Numeric(2)` read as bare `NUMERIC`), hiding the Domain link. The read now includes `basedOnDomain` with the Domain's name.
-
-### Internal
-
-- `ObjectService.CloneSdtStructurePart` (object-model copy: root collection metadata + recursive item/level copy incl. `DomainBasedOn` and `SdtMemberResolver`/`BindSdtItemToSdt` re-bind for GX_SDT members) is invoked from `SdkObjectCloner.ClonePart` for the structure part — SerializeToXml/DeserializeFromXml on the SDTStructure part only round-trips the `<Properties>` bag, not the items (measured), so the native-XML path was abandoned. `SDTService.UpdateSDTStructure` + `SyncSdtJsonNodes` drive the JSON authoring path; `StructureService.UpdateVisualStructure` routes SDTs there. `SdtDslParser.MarkPartDirty` widened to `internal`. Tool-schema token budget 16700 → 16900. Both fixes live-verified over HTTP against a real KB (collection clone, Domain member, SDT-reference member, nested level round-trip).
+- **Cloning a collection SDT via `genexus_create action=save_as` no longer flattens it.** The clone was rebuilt from the SDT's flat textual structure, which encodes neither the root collection flag, the collection item name, nor Domain/SDT-typed members — so a collection SDT was cloned as a flat, non-collection SDT with every Domain member collapsed to its base type. The SDT structure is now copied at the model level, so the clone preserves the collection flag and item name, each member's type/length/decimals, per-member collection flags, nested levels, Domain links (`basedOnDomain`), and SDT references (#51).
+- **A Domain-based SDT member now reads back with its Domain.** `genexus_structure action=get_visual`, `genexus_inspect`, and `genexus_read` (part `SDTStructure`) reported a member based on a Domain only by its underlying base type, hiding the Domain link. Reads now include `basedOnDomain` with the Domain's name (#51).
+- **`genexus_lifecycle action=rebuild` now honors `target` parameter.** Scopes execution to `<SpecifyOneOnly>` when `targets` are supplied instead of rebuilding the entire KB (#53).
+- **User Control generation environment & post-build guardrail.** MSBuild child process now inherits `GX_PATH` and `GX_PROGRAM_DIR` so User Control catalog resolves properly. Post-build evidence check scans generated `.js` files for `gx.uc.getNew` without property bindings (`setProp`) and flags `[user-control-degraded]` warnings with `SucceededWithGaps` status (#53).
 
 ## v2.35.0 — 2026-07-24
 

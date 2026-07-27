@@ -11,14 +11,18 @@
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
     <NoWarn>$(NoWarn);MSB3277</NoWarn>
-    <Version>2.35.0</Version>
-    <AssemblyVersion>2.35.0.0</AssemblyVersion>
-    <FileVersion>2.35.0.0</FileVersion>
-    <InformationalVersion>2.35.0</InformationalVersion>
+    <Version>2.36.0</Version>
+    <AssemblyVersion>2.36.0.0</AssemblyVersion>
+    <FileVersion>2.36.0.0</FileVersion>
+    <InformationalVersion>2.36.0</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup>
     <GX_PATH Condition="'$(GX_PATH)' == ''">C:\Program Files (x86)\GeneXus\GeneXus18</GX_PATH>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="Exists('$(GX_PATH)\GeneXus.SecurityScanner.Common.dll')">
+    <DefineConstants>$(DefineConstants);HAS_SECURITY_SCANNER</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,7 +32,7 @@
     </Reference>
     <Reference Include="Microsoft.Build.Framework" />
     <Reference Include="Microsoft.Build.Utilities.v4.0" />
-    <Reference Include="Microsoft.Build.Utilities.Core">
+    <Reference Include="Microsoft.Build.Utilities.Core" Condition="Exists('$(GX_PATH)\Microsoft.Build.Utilities.Core.dll')">
       <HintPath>$(GX_PATH)\Microsoft.Build.Utilities.Core.dll</HintPath>
       <Private>False</Private>
     </Reference>
@@ -95,7 +99,7 @@
     </Reference>
     <!-- genexus_security action=scan_native: the native GeneXus Security Scanner
          (ISecurityScannerService.Scan) + its query/plan/output types. -->
-    <Reference Include="GeneXus.SecurityScanner.Common">
+    <Reference Include="GeneXus.SecurityScanner.Common" Condition="Exists('$(GX_PATH)\GeneXus.SecurityScanner.Common.dll')">
       <HintPath>$(GX_PATH)\GeneXus.SecurityScanner.Common.dll</HintPath>
       <Private>False</Private>
     </Reference>

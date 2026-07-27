@@ -346,12 +346,8 @@ namespace GxMcp.Worker.Services
                 // visible (and round-trips through update_visual's basedOnDomain).
                 try
                 {
-                    var dbo = level.DomainBasedOn;
-                    if (dbo != null)
-                    {
-                        string domName = (string)dbo.Name;
-                        if (!string.IsNullOrEmpty(domName)) res["basedOnDomain"] = domName;
-                    }
+                    string domName = GxMcp.Worker.Helpers.DomainPropertyApplier.GetDomainBasedOnName((object)level);
+                    if (!string.IsNullOrEmpty(domName)) res["basedOnDomain"] = domName;
                 }
                 catch { }
                 // issue #47: surface the referenced SDT/type name for reference-typed members

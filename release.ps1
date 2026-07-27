@@ -355,7 +355,15 @@ if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 $shaPath = "$zipPath.sha256"
 if (Test-Path $shaPath) { Remove-Item $shaPath -Force }
 if (-not $DryRun) {
-    Compress-Archive -Path (Join-Path $publishDir '*') -DestinationPath $zipPath -Force
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+    $pubPath = Convert-Path $publishDir
+    Get-ChildItem -Path $pubPath -Recurse | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
+        $relPath = $_.FullName.Substring($pubPath.Length + 1).Replace('\', '/')
+        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $relPath) | Out-Null
+    }
+    $archive.Dispose()
     $sizeMb = [Math]::Round((Get-Item $zipPath).Length / 1MB, 2)
     Ok "publish.zip created ($sizeMb MB)."
     # SHA-256 sidecar — the gateway's self-updater verifies the downloaded zip

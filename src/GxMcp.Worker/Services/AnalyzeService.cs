@@ -2083,6 +2083,14 @@ namespace GxMcp.Worker.Services
                 try { typeStr = item.Type != null ? item.Type.ToString() : null; } catch { }
                 if (!string.IsNullOrEmpty(typeStr)) node["type"] = typeStr;
 
+                // issue #51: surface basedOnDomain if member is based on a Domain.
+                try
+                {
+                    string domName = GxMcp.Worker.Helpers.DomainPropertyApplier.GetDomainBasedOnName((object)item);
+                    if (!string.IsNullOrEmpty(domName)) node["basedOnDomain"] = domName;
+                }
+                catch { }
+
                 // issue #47: a reference-typed member (GX_SDT / user-defined type) reads back as
                 // the raw enum ("GX_SDT"); surface the referenced object's name so callers see the
                 // SDT/type the IDE shows instead of an opaque primitive-looking token.
@@ -2106,7 +2114,7 @@ namespace GxMcp.Worker.Services
                 {
                     foreach (dynamic c in item.Items)
                     {
-                        var sub = BuildSdtItemNode(c);
+                        var sub = BuildSdtItemNode(c, model);
                         if (sub != null) children.Add(sub);
                     }
                 }

@@ -292,6 +292,14 @@ namespace GxMcp.Worker.Parsers
                     }
                 }
 
+                // issue #51: surface Domain-based member names so domain typing survives text reads
+                string domName = GxMcp.Worker.Helpers.DomainPropertyApplier.GetDomainBasedOnName((object)level);
+                if (!string.IsNullOrEmpty(domName))
+                {
+                    sb.AppendLine($"{indentStr}{level.Name} : {domName}{collectionMarker}");
+                    return;
+                }
+
                 // issue #31.1: surface Length/Decimals so the reader can see (and round-trip)
                 // the element size, e.g. "Numeric(9)" / "Numeric(9,2)". Without this a numeric
                 // element read back as bare "NUMERIC" (default Numeric(4) → xsd:short, silent
@@ -448,11 +456,18 @@ namespace GxMcp.Worker.Parsers
 
             foreach (var pNode in parsedNodes)
             {
-                // issue #33: a member whose type token names an SDT must persist as GX_SDT +
-                // ATTCUSTOMTYPE (a typed collection/reference), not fall through to VARCHAR.
+                // issue #33 & issue #51: resolve SDT or Domain references
                 KBObject sdtMemberObj = null;
+                KBObject domainMemberObj = null;
                 if (!pNode.IsCompound && _model != null && !LooksLikePrimitive(pNode.TypeStr))
-                    sdtMemberObj = ResolveSdtType(_model, pNode.TypeStr);
+                {
+                    var resolved = VariableInjector.ResolveTypeObject(_model, pNode.TypeStr);
+                    if (resolved != null)
+                    {
+                        if (resolved.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)) sdtMemberObj = resolved;
+                        else if (resolved is Artech.Genexus.Common.Objects.Domain || resolved.TypeDescriptor.Name.Equals("Domain", StringComparison.OrdinalIgnoreCase)) domainMemberObj = resolved;
+                    }
+                }
 
                 dynamic targetChild = null;
                 if (existingItems.TryGetValue(pNode.Name, out var existing)) targetChild = existing;
@@ -523,6 +538,11 @@ namespace GxMcp.Worker.Parsers
                         // ATTCUSTOMTYPE). IsCollection above already carries the "Collection" marker.
                         if (!VariableInjector.BindSdtItemToSdt((object)targetChild, sdtMemberObj))
                             Logger.Error($"[SDT PARSE] Failed to bind member '{pNode.Name}' to SDT '{sdtMemberObj.Name}'");
+                    }
+                    else if (domainMemberObj != null)
+                    {
+                        // issue #51: bind domain reference to SDT member
+                        DomainPropertyApplier.ApplyDomainBasedOn((object)targetChild, domainMemberObj);
                     }
                     else
                     {
