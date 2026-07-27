@@ -5,6 +5,7 @@
 ### Fixed
 
 - **`genexus_analyze mode=linter` router action.** Previously routed to `action = "Analyze"` instead of `action = "linter"`, which fell through `AnalyzeService` without reaching `LinterService.Lint`. `AnalyzeRouter.cs` now emits `action = "linter"`.
+- **`FindObject` SDK fallback when search index misses newly created objects.** `ObjectService.FindObject` previously skipped the SDK `Objects.GetByName` fallback whenever a search index was loaded in memory. If an object was created after index load, tools like `genexus_analyze`, `genexus_inspect`, and `genexus_read` returned `ObjectNotFound` until a full index rebuild ran. `FindObject` now falls through to the SDK fallback when the index lookup misses.
 
 ## v2.36.0 — 2026-07-27
 
