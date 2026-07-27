@@ -12,9 +12,14 @@ namespace GxMcp.Worker.Tests
         public void WriteService_AttachReconcileReport_IsWired_ViaConvention()
         {
             // Definition + call sites now live in split partial files (plan 007).
-            string servicesDir = System.IO.Path.Combine(
-                System.AppDomain.CurrentDomain.BaseDirectory,
-                "..", "..", "..", "..", "GxMcp.Worker", "Services");
+            System.IO.DirectoryInfo dir = new System.IO.DirectoryInfo(System.AppDomain.CurrentDomain.BaseDirectory);
+            string servicesDir = null;
+            while (dir != null)
+            {
+                string candidate = System.IO.Path.Combine(dir.FullName, "src", "GxMcp.Worker", "Services");
+                if (System.IO.Directory.Exists(candidate)) { servicesDir = candidate; break; }
+                dir = dir.Parent;
+            }
             string writeSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(servicesDir, "WriteService.VisualWrite.cs"))
                 + System.IO.File.ReadAllText(System.IO.Path.Combine(servicesDir, "WriteService.PatternWrite.cs"));
 

@@ -25,7 +25,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         case "linter":
                             bool linterFix = args?["fix"]?.ToObject<bool?>() ?? false;
-                            return new { module = "Linter", action = "Analyze", target = target, type = type, @params = new JObject { ["fix"] = linterFix } };
+                            return new { module = "Linter", action = "linter", target = target, type = type, @params = new JObject { ["fix"] = linterFix } };
                         case "navigation":
                             return new { module = "Analyze", action = "GetNavigation", target = target, type = type };
                         case "hierarchy":
@@ -109,7 +109,7 @@ namespace GxMcp.Gateway.Routers
                 case "genexus_get_signature":
                     return new { module = "Analyze", action = "GetParameters", target = target, type = type };
                 case "genexus_linter":
-                    return new { module = "Linter", action = "Analyze", target = target, type = type };
+                    return new { module = "Linter", action = "linter", target = target, type = type };
                 case "genexus_get_navigation":
                     return new { module = "Analyze", action = "GetNavigation", target = target, type = type };
 

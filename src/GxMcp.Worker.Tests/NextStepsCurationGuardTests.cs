@@ -37,10 +37,20 @@ namespace GxMcp.Worker.Tests
             "UnknownMethodOrAction",
         };
 
-        private static readonly string WorkerServicesDir = Path.GetFullPath(
-            Path.Combine(
-                System.AppDomain.CurrentDomain.BaseDirectory,
-                "..", "..", "..", "..", "GxMcp.Worker", "Services"));
+        private static string FindWorkerDirectory(params string[] subPaths)
+        {
+            var dir = new DirectoryInfo(System.AppDomain.CurrentDomain.BaseDirectory);
+            while (dir != null)
+            {
+                string parts = Path.Combine(subPaths);
+                string candidate = Path.Combine(dir.FullName, "src", "GxMcp.Worker", parts);
+                if (Directory.Exists(candidate) || File.Exists(candidate)) return candidate;
+                dir = dir.Parent;
+            }
+            throw new FileNotFoundException("Could not locate Worker subpath starting from " + System.AppDomain.CurrentDomain.BaseDirectory);
+        }
+
+        private static readonly string WorkerServicesDir = FindWorkerDirectory("Services");
 
         public static System.Collections.Generic.IEnumerable<object[]> Codes() =>
             CuratedErrorCodes.Select(c => new object[] { c });
@@ -225,9 +235,7 @@ namespace GxMcp.Worker.Tests
             // `new JObject { ["tool"] = ..., ["args"] = ..., ["why"] = ... }`
             // bypass the helper and risk drifting from the canonical
             // {tool, args, why} keys (e.g. typoed "reason" instead of "why").
-            string modelsPath = Path.GetFullPath(Path.Combine(
-                System.AppDomain.CurrentDomain.BaseDirectory,
-                "..", "..", "..", "..", "GxMcp.Worker", "Models", "McpResponse.cs"));
+            string modelsPath = FindWorkerDirectory("Models", "McpResponse.cs");
             string src = File.ReadAllText(modelsPath);
 
             // The helper signature is part of the public contract.
