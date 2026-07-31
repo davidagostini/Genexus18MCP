@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — 2026-07-31
+
+### Added
+
+- **Typed WorkWithPlus actions and Action Groups (`genexus_apply_pattern mode=actions`).** Lists, adds, updates, moves, and removes grid actions; supports Procedure association, row-selection mode, conditions, icon, description, confirmation, ordering, and `dryRun` semantic diffs. The PatternInstance is saved and re-read, and action editing never opts into automatic security-permission creation (#58).
+- **Caller-atomic object authoring (`genexus_create action=object_atomic`).** Creates or updates an object's definition, variables, Rules, properties, and Source through one preflighted request, with optimistic `baseVersion`, `dryRun`, optional specification, structured diagnostics, and compensating rollback when any phase fails (#62).
+- **Non-mutating reorganization preview (`genexus_db action=reorg_preview`).** Runs Impact Analysis only when `deep=true`, reports affected tables/columns/indexes and destructive conversions, and exposes exact effective DDL only when a SQL artifact produced by the current analysis can be identified (#61).
+
+### Changed
+
+- **Validated edits can specify before caller builds.** `genexus_edit_and_build` accepts `validate=true`, `validationMode=specify`, and `rollbackOnFailure`; specification diagnostics are returned with explicit `saved`, `specified`, `generated`, and rollback state (#60).
+- **Mutable operations verify read-back persistence.** Source/Rules writes, variable add/modify/batch operations, object properties, Transaction structure updates, and Domain updates now re-read the persisted state and return requested-versus-persisted evidence. A mismatch is an explicit `*NotPersisted` failure instead of a false success (#59).
+
+### Fixed
+
+- **Persistence checks now cover Domain bindings and Transaction nullability.** Domain-based variables retain both SDK references, and Transaction attributes use the typed SDK nullable value; both are re-read after saving before success is reported (#59).
+
+### Internal
+
+- `build.ps1` now honors an explicit `GX_PATH`, allowing clean worktrees to build against the selected GeneXus installation without a local connection/configuration file. The `genexus_inspect` schema guidance was aligned with its CLI contract test, and the schema budget was raised from 16,900 to 17,700 tokens for the new #58–#62 contracts (measured at about 17,567).
+
 ## v2.37.0 — 2026-07-31
 
 ### Added

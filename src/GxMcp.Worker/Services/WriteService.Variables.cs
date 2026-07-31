@@ -344,7 +344,7 @@ namespace GxMcp.Worker.Services
                 else if (targetObj != null)
                 {
                     if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
-                        newVar.DomainBasedOn = dom;
+                        VariableInjector.BindVariableToDomain(newVar, dom);
                     else if (targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
                         VariableInjector.BindVariableToSdt(newVar, targetObj);
                     else if (targetObj is global::Artech.Genexus.Common.Objects.Transaction trn && trn.IsBusinessComponent)
@@ -541,16 +541,44 @@ namespace GxMcp.Worker.Services
 
                 if (added > 0)
                 {
-                    obj.EnsureSave();
-                    ScheduleFlush();
+                    ForceSaveVariableOwner(obj);
+                    ScheduleFlush(force: true);
 
-                    // issue #56: the SDK silently drops DomainBasedOn on some 18.0.16 builds
-                    // (variable persists with an empty BasedOnReference and spec fails with
-                    // spc0056). Re-read the persisted Variables part and confirm every
-                    // Domain-bound variable kept its reference; fail loudly if not.
+                    // Keep the v2.37.0 Domain-specific contract before applying the broader
+                    // typed reload verification below.
                     var verifyErr = VerifyDomainReferencesPersisted(target, domainBound);
                     if (verifyErr != null) return verifyErr;
+
+                    // Re-resolve after the synchronous flush. Per-item outcomes are the
+                    // contract: a variable that vanished or lost its Domain binding is a
+                    // failed persistence, never an Added success.
+                    string refreshName = "_";
+                    ResolveVariableTarget(target, ref refreshName, out var refreshedObject, out var persistedPart, out _);
+                    foreach (JObject outcome in outcomes.OfType<JObject>().Where(o => string.Equals(o["status"]?.ToString(), "Added", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        string persistedName = outcome["name"]?.ToString();
+                        JObject requestItem = variables.OfType<JObject>().FirstOrDefault(v =>
+                            string.Equals((v["varName"] ?? v["name"])?.ToString()?.TrimStart('&'), persistedName, StringComparison.OrdinalIgnoreCase));
+                        string requestedType = (requestItem?["basedOn"] ?? requestItem?["typeName"])?.ToString();
+                        string verifyError = VerifyPersistedVariable(persistedPart, persistedName, requestedType);
+                        if (verifyError != null)
+                        {
+                            outcome["status"] = "NotPersisted";
+                            outcome["reason"] = verifyError;
+                            added--; failed++;
+                        }
+                        else outcome["persisted"] = true;
+                    }
                 }
+
+                if (outcomes.OfType<JObject>().Any(o => string.Equals(o["status"]?.ToString(), "NotPersisted", StringComparison.OrdinalIgnoreCase)))
+                    return McpResponse.Err(code: "VariableNotPersisted",
+                        message: "One or more variables did not survive the save/reload cycle.", target: target,
+                        extra: new JObject
+                        {
+                            ["counts"] = new JObject { ["added"] = added, ["existed"] = existed, ["failed"] = failed },
+                            ["outcomes"] = outcomes, ["saved"] = false
+                        });
 
                 return McpResponse.Ok(
                     target: target,
@@ -703,15 +731,23 @@ namespace GxMcp.Worker.Services
                     AddInferredVariableInto(varPart, varName, length, decimals, collection);
                 }
 
-                obj.EnsureSave();
-                ScheduleFlush();
+                ForceSaveVariableOwner(obj);
+                ScheduleFlush(force: true);
 
                 // issue #56: read back the persisted Variables part and confirm every
                 // Domain-bound variable kept its reference (see VerifyDomainReferencesPersisted).
                 var verifyErr = VerifyDomainReferencesPersisted(target, domainBound);
                 if (verifyErr != null) return verifyErr;
 
-                return McpResponse.Ok(target: target, code: "VariableAdded");
+                string verifyName = varName;
+                ResolveVariableTarget(target, ref verifyName, out _, out var persistedPart, out _);
+                string persistError = VerifyPersistedVariable(persistedPart, varName, typeName);
+                if (persistError != null)
+                    return McpResponse.Err(code: "VariableNotPersisted", message: persistError, target: target,
+                        extra: new JObject { ["variable"] = varName, ["requestedType"] = typeName, ["saved"] = false });
+
+                return McpResponse.Ok(target: target, code: "VariableAdded", result: new JObject
+                { ["variable"] = varName, ["requestedType"] = typeName, ["persisted"] = true, ["saved"] = true });
             }
             catch (Exception ex)
             {
@@ -1028,7 +1064,7 @@ namespace GxMcp.Worker.Services
                         }
                         else if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
                         {
-                            newVar.DomainBasedOn = dom;
+                            VariableInjector.BindVariableToDomain(newVar, dom);
                             boundTypeName = dom.Name;
                         }
                         else if (targetObj != null && targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
@@ -1066,8 +1102,14 @@ namespace GxMcp.Worker.Services
                     if (collection.HasValue) { try { newVar.IsCollection = collection.Value; } catch { } }
                     varPart.Variables.Add(newVar);
 
-                    obj.EnsureSave();
-                    ScheduleFlush();
+                    ForceSaveVariableOwner(obj);
+                    ScheduleFlush(force: true);
+
+                    string verifyName = varName;
+                    ResolveVariableTarget(target, ref verifyName, out _, out var persistedPart, out _);
+                    string persistError = VerifyPersistedVariable(persistedPart, varName, newTypeName);
+                    if (persistError != null)
+                        throw new InvalidOperationException(persistError);
 
                     // issue #36.2 — report the ACTUAL persisted type. For a primitive, read the
                     // eDBType the SDK stored (Blob/Binary persist as BINARY) plus the effective
@@ -1125,7 +1167,12 @@ namespace GxMcp.Worker.Services
                             try { restored.Type = originalSnapshot.Type; } catch { }
                             try { restored.Length = originalSnapshot.Length; } catch { }
                             try { restored.Decimals = originalSnapshot.Decimals; } catch { }
-                            try { if (originalSnapshot.DomainBasedOn != null) restored.DomainBasedOn = originalSnapshot.DomainBasedOn; } catch { }
+                            try
+                            {
+                                if (originalSnapshot.DomainBasedOn != null)
+                                    VariableInjector.BindVariableToDomain(restored, originalSnapshot.DomainBasedOn);
+                            }
+                            catch { }
 
                             // issue #47 — best-effort re-bind of the original SDT/BC/built-in GeneXus
                             // data type binding, mirroring the forward bind path above. A plain
@@ -1202,6 +1249,36 @@ namespace GxMcp.Worker.Services
                         why: "Lists current variables to confirm state.")),
                     target: target);
             }
+        }
+
+        private static void ForceSaveVariableOwner(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            obj.Save(new global::Artech.Architecture.Common.Objects.KBObjectSavePreferences
+            {
+                ForceSave = true,
+                ForceSaveDefaultParts = true,
+                SkipValidation = false
+            });
+        }
+
+        private string VerifyPersistedVariable(global::Artech.Genexus.Common.Parts.VariablesPart part,
+            string variableName, string requestedType)
+        {
+            if (part == null) return "The Variables part could not be reloaded after save.";
+            var variable = part.Variables.FirstOrDefault(v => string.Equals(v.Name, variableName, StringComparison.OrdinalIgnoreCase));
+            if (variable == null) return "Variable '&" + variableName + "' was not present after reload.";
+            if (!string.IsNullOrWhiteSpace(requestedType))
+            {
+                var referenced = _objectService.FindObject(requestedType.TrimStart('&'));
+                if (referenced is global::Artech.Genexus.Common.Objects.Domain requestedDomain)
+                {
+                    string persistedDomain = null;
+                    try { persistedDomain = variable.DomainBasedOn?.Name; } catch { }
+                    if (!string.Equals(persistedDomain, requestedDomain.Name, StringComparison.OrdinalIgnoreCase))
+                        return "Variable '&" + variableName + "' reloaded without the requested Domain '" + requestedDomain.Name + "'.";
+                }
+            }
+            return null;
         }
 
         // issue #47 — pure helper: given the "&Name : TypeRepr [Collection]" text

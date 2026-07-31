@@ -15,5 +15,6 @@ namespace GxMcp.Worker.Services
     public interface IBuildServiceFacade
     {
         string Build(string action, string target, string includeCallees, int buildPlanCap);
+        string Specify(string target);
     }
 }

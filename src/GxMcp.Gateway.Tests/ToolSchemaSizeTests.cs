@@ -94,9 +94,11 @@ namespace GxMcp.Gateway.Tests
             //   + reworked genexus_create folder/module copy (now creates-then-moves
             //   instead of rejecting). Measured ~16629; ~71 headroom.
             //   2026-07-24 (issue #52): 16700 → 16900 for genexus_structure update_visual
+            //   2026-07-31 (issues #58-#62): 16900 → 17700 for WorkWithPlus actions,
+            //   atomic authoring, validated edit persistence, and reorg-preview schemas.
             //   SDT support (description + payload docs for isCollection/collectionItemName/
             //   basedOnDomain + an SDT example). Measured ~16760; ~140 headroom.
-            Assert.True(approxTokens < 16900, $"tool_definitions.json is ~{approxTokens} tokens; budget 16900.");
+            Assert.True(approxTokens < 17700, $"tool_definitions.json is ~{approxTokens} tokens; budget 17700.");
         }
     }
 }

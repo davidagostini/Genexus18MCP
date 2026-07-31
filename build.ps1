@@ -52,6 +52,11 @@ if (Test-Path (Join-Path $root "config.json")) {
         $gxPath = $configData.GeneXus.InstallationPath
     }
 }
+if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) {
+    # An explicit environment value is the build-time source of truth. This
+    # keeps clean worktrees and CI jobs independent from a local config.json.
+    $gxPath = $env:GX_PATH
+}
 
 if (-not (Test-Path $gatewayProject)) {
     Fail-Build "Gateway project file was not found at $gatewayProject."

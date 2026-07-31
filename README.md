@@ -252,10 +252,10 @@ The worker exposes **46 tools** to the MCP router, grouped by capability below. 
 
 **Editing**
 - `genexus_edit` — edit any object part; modes `full` / `patch` / `ops`
-- `genexus_edit_and_build` — edit + rebuild callers in one call
+- `genexus_edit_and_build` — edit + optional specification + rebuild callers in one call, with compensating rollback on validation failure
 - `genexus_edit_form` — semantic WebForm edits
 - `genexus_variable` — Variables-part CRUD
-- `genexus_create` — creation umbrella (Transaction, Procedure, Domain, SDT, API, Folder, Module, `curl_procedure` = scaffold a Procedure from a curl command, …)
+- `genexus_create` — creation umbrella (Transaction, Procedure, Domain, SDT, API, Folder, Module, `curl_procedure` = scaffold a Procedure from a curl command, …); `object_atomic` authors definition + variables + Rules + properties + Source with preflight/read-back/rollback
 - `genexus_delete_object` — delete an object
 - `genexus_format` — format a code snippet with the worker's rules
 
@@ -266,7 +266,7 @@ The worker exposes **46 tools** to the MCP router, grouped by capability below. 
 
 **Refactor, patterns & compare**
 - `genexus_refactor` — rename, extract procedure, WWP condition set
-- `genexus_apply_pattern` — apply a GeneXus pattern (WorkWith, WorkWithPlus, …)
+- `genexus_apply_pattern` — apply a GeneXus pattern (WorkWith, WorkWithPlus, …); `mode=actions` manages typed WorkWithPlus grid actions and Action Groups
 - `genexus_compare` — IDE "Compare Objects" parity (`IComparerService`)
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
 
@@ -279,7 +279,7 @@ The worker exposes **46 tools** to the MCP router, grouped by capability below. 
 **Lifecycle, build, test & DB**
 - `genexus_lifecycle` — build (incl. `compile_check`), validate, index, reorg, poll status
 - `genexus_test` — run native GXtest tests
-- `genexus_db` — DB umbrella: schema-drift, `sql_ddl`/`sql_navigation`, static index advisor, `sample_data`, Domain/SDT type introspection, translation import, `reorg_impact` (reorg/DDL impact preview; `deep=true` runs specification)
+- `genexus_db` — DB umbrella: schema-drift, `sql_ddl`/`sql_navigation`, static index advisor, `sample_data`, Domain/SDT type introspection, translation import, `reorg_impact`, and non-mutating `reorg_preview` with exact DDL only from a current Impact Analysis artifact
 - `genexus_deploy` — deploy application (`IDeploymentService`): `list_targets` (read) / `deploy` (destructive, `confirm=true`)
 - `genexus_run_object` / `genexus_browser` — resolve runtime URL and headless-browser verification
 

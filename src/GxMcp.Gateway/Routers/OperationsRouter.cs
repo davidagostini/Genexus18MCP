@@ -136,11 +136,12 @@ namespace GxMcp.Gateway.Routers
                     // — both return the same read-only findings without mutating the KB.
                     string apPatMode = args?["mode"]?.ToString();
                     bool isDiagnose = string.Equals(apPatMode, "diagnose", System.StringComparison.OrdinalIgnoreCase);
+                    bool isActions = string.Equals(apPatMode, "actions", System.StringComparison.OrdinalIgnoreCase);
                     bool isDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
                     return new
                     {
                         module = "Pattern",
-                        action = (isDiagnose || isDryRun) ? "Diagnose" : "Apply",
+                        action = isActions ? "ManageActions" : (isDiagnose || isDryRun) ? "Diagnose" : "Apply",
                         target = args?["name"]?.ToString(),
                         @params = args
                     };
@@ -533,6 +534,9 @@ namespace GxMcp.Gateway.Routers
                         dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
                     };
 
+                case "object_atomic":
+                    return new { module = "AtomicAuthoring", action = "Run", target = name, @params = args };
+
                 case "popup":
                     return new
                     {
@@ -616,7 +620,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_create: unknown action '{action}'. Valid: object|popup|sd_panel_create|sd_panel_inspect|sd_panel_edit|save_as|scaffold|translate|sample|template."
+                        error = $"genexus_create: unknown action '{action}'. Valid: object|object_atomic|popup|sd_panel_create|sd_panel_inspect|sd_panel_edit|save_as|scaffold|translate|sample|template."
                     };
             }
         }
@@ -926,6 +930,8 @@ namespace GxMcp.Gateway.Routers
                 // P1 #5: reorg / DDL impact preview. Cheap timestamp heuristic by default;
                 // deep=true runs ISpecifierService.ImpactDatabase (specification, build-heavy).
                 case "reorg_impact":
+                    return new { module = "ReorgImpact", action = "Run", @params = args };
+                case "reorg_preview":
                     return new { module = "ReorgImpact", action = "Run", @params = args };
 
                 // SDK translations import — was genexus_translations action=import.

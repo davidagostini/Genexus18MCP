@@ -61,15 +61,36 @@ namespace GxMcp.Worker.Services
                             message: "The payload must contain a 'children' array for visual structure updates.",
                             hint: "Pass a JSON object with a 'children' array describing the Transaction structure.",
                             target: targetName);
+                        JArray before = _visualStructureService.SerializeVisualLevel(trn.Structure.Root);
                         
                         // Chamada otimizada com Batch Save interno
                         _visualStructureService.SyncVisualStructure(trn, children);
                         
-                        trn.EnsureSave();
+                        trn.Save(new Artech.Architecture.Common.Objects.KBObjectSavePreferences
+                        {
+                            ForceSave = true,
+                            ForceSaveDefaultParts = true,
+                            SkipValidation = false
+                        });
                         sdkTrans.Commit();
-                        
-                        _objectService.GetKbService().GetIndexCache().UpdateEntry(trn);
-                        return Models.McpResponse.Ok(target: targetName, code: "StructureUpdated");
+
+                        var persistedTrn = _objectService.FindObject(targetName, "Transaction") as Transaction;
+                        JArray persisted = persistedTrn == null ? new JArray() : _visualStructureService.SerializeVisualLevel(persistedTrn.Structure.Root);
+                        JArray diff = CompareRequestedStructure(children, persisted, "children");
+                        _objectService.GetKbService().GetIndexCache().UpdateEntry(persistedTrn ?? trn);
+                        if (diff.Count > 0)
+                            return Models.McpResponse.Err(code: "StructureUpdateNotPersisted",
+                                message: "The structure save completed, but the persisted Transaction does not match the requested fields.",
+                                target: targetName, extra: new JObject
+                                {
+                                    ["before"] = before, ["requested"] = children.DeepClone(),
+                                    ["persisted"] = persisted, ["diff"] = diff, ["saved"] = false
+                                });
+                        return Models.McpResponse.Ok(target: targetName, code: "StructureUpdated", result: new JObject
+                        {
+                            ["before"] = before, ["requested"] = children.DeepClone(),
+                            ["persisted"] = persisted, ["diff"] = diff, ["saved"] = true
+                        });
                     } catch (Exception ex) {
                         sdkTrans.Rollback();
                         return Models.McpResponse.Err(
@@ -147,6 +168,29 @@ namespace GxMcp.Worker.Services
                     hint: "Ensure the target is a Transaction, Table, or SDT.",
                     target: targetName);
             }
+        }
+
+        private static JArray CompareRequestedStructure(JArray requested, JArray persisted, string path)
+        {
+            var diff = new JArray();
+            foreach (JObject wanted in (requested ?? new JArray()).OfType<JObject>())
+            {
+                string name = wanted["name"]?.ToString();
+                JObject actual = (persisted ?? new JArray()).OfType<JObject>()
+                    .FirstOrDefault(x => string.Equals(x["name"]?.ToString(), name, StringComparison.OrdinalIgnoreCase));
+                string itemPath = path + "/" + (name ?? "?");
+                if (actual == null)
+                {
+                    diff.Add(new JObject { ["path"] = itemPath, ["requested"] = wanted.DeepClone(), ["persisted"] = JValue.CreateNull() });
+                    continue;
+                }
+                foreach (string property in new[] { "nullable", "type", "description", "formula", "isKey" })
+                    if (wanted[property] != null && !string.Equals(wanted[property].ToString().Trim(), actual[property]?.ToString().Trim(), StringComparison.OrdinalIgnoreCase))
+                        diff.Add(new JObject { ["path"] = itemPath + "/" + property, ["requested"] = wanted[property].DeepClone(), ["persisted"] = actual[property]?.DeepClone() ?? JValue.CreateNull() });
+                if (wanted["children"] is JArray requestedChildren)
+                    foreach (JToken item in CompareRequestedStructure(requestedChildren, actual["children"] as JArray, itemPath + "/children")) diff.Add(item);
+            }
+            return diff;
         }
 
         public string GetVisualIndexes(string targetName) => _indexService.GetVisualIndexes(targetName);
