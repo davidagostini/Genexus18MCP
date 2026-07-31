@@ -2846,7 +2846,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable). Write: update_visual (structure DSL for a Transaction; for an SDT it sets the root isCollection/collectionItemName and adds primitive, Domain-based (basedOnDomain) and SDT-reference members plus nested levels); create_index/drop_index (unique/non-unique indexes — the GeneXus way to enforce uniqueness, there is no Unique() rule); set_attribute (Formula, subtype, Title/ColumnTitle, IsCollection, basedOnDomain on a KB-global attribute); set_level (Transaction level DescriptionAttribute/ImageAttribute); set_domain (edit an existing Domain's enumValues/dataType). After index/type changes run genexus_lifecycle action=reorg. For layout control trees use genexus_layout.",
+      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable). Write: update_visual (structure DSL for a Transaction; for an SDT it sets the root isCollection/collectionItemName and adds primitive, Domain-based (basedOnDomain) and SDT-reference members plus nested levels); update_group (SubType Group membership — each member {name, subtypeOf} registers the subtype attribute in the Group and asserts its SuperType link, IDE Group-editor parity; remove:[names] detaches); create_index/drop_index (unique/non-unique indexes — the GeneXus way to enforce uniqueness, there is no Unique() rule); set_attribute (Formula, subtype, Title/ColumnTitle, IsCollection, basedOnDomain on a KB-global attribute); set_level (Transaction level DescriptionAttribute/ImageAttribute); set_domain (edit an existing Domain's enumValues/dataType). After index/type changes run genexus_lifecycle action=reorg. For layout control trees use genexus_layout.",
       "inputSchema": {
         "examples": [
           {
@@ -2895,6 +2895,22 @@
               "collectionItemName": "MySdtItem",
               "isCollection": true
             }
+          },
+          {
+            "action": "update_group",
+            "name": "gst_orgao_exercicio",
+            "payload": {
+              "members": [
+                {
+                  "name": "orgao_exercicio_id",
+                  "subtypeOf": "exercicio_id"
+                },
+                {
+                  "name": "orgao_exercicio",
+                  "subtypeOf": "exercicio"
+                }
+              ]
+            }
           }
         ],
         "properties": {
@@ -2908,7 +2924,8 @@
               "set_attribute",
               "set_level",
               "set_domain",
-              "get_logic"
+              "get_logic",
+              "update_group"
             ],
             "type": "string"
           },
@@ -2921,7 +2938,7 @@
             "type": "string"
           },
           "payload": {
-            "description": "update_visual (Transaction):{children:[...]}; update_visual (SDT):{isCollection?,collectionItemName?,children:[{name,type?,length?,decimals?,basedOnDomain?,isCollection?,isLevel?,children?}]}. create_index:{attributes:[\"Attr\"],unique?:true,name?,order?}. drop_index:{indexName}. set_attribute:{formula?,subtypeOf?,title?,columnTitle?,contextualTitle?,isCollection?,basedOnDomain?}. set_level:{level?,descriptionAttribute?,imageAttribute?}. set_domain:{enumValues:[{name,value,description?}],dataType?,length?,decimals?,signed?}.",
+            "description": "update_visual (Transaction):{children:[...]}; update_visual (SDT):{isCollection?,collectionItemName?,children:[{name,type?,length?,decimals?,basedOnDomain?,isCollection?,isLevel?,children?}]}. update_group:{members:[{name,subtypeOf}],remove?:[name]}. create_index:{attributes:[\"Attr\"],unique?:true,name?,order?}. drop_index:{indexName}. set_attribute:{formula?,subtypeOf?,title?,columnTitle?,contextualTitle?,isCollection?,basedOnDomain?}. set_level:{level?,descriptionAttribute?,imageAttribute?}. set_domain:{enumValues:[{name,value,description?}],dataType?,length?,decimals?,signed?}.",
             "type": "object"
           }
         },

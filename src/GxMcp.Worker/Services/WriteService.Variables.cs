@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
@@ -432,6 +433,7 @@ namespace GxMcp.Worker.Services
 
                 var outcomes = new JArray();
                 int added = 0, existed = 0, failed = 0;
+                var domainBound = new System.Collections.Generic.List<(string VarName, string DomainName)>();
 
                 foreach (var item in variables)
                 {
@@ -484,7 +486,10 @@ namespace GxMcp.Worker.Services
                             continue;
                         }
                         if (res.CanonicalType == "DomainReference" && !string.IsNullOrEmpty(res.DomainName))
+                        {
                             rSdk = res.DomainName;
+                            domainBound.Add((vName, res.DomainName));
+                        }
                         else { rLen = res.Length; rDec = res.Decimals; rSdk = res.CanonicalType; }
                     }
 
@@ -538,6 +543,13 @@ namespace GxMcp.Worker.Services
                 {
                     obj.EnsureSave();
                     ScheduleFlush();
+
+                    // issue #56: the SDK silently drops DomainBasedOn on some 18.0.16 builds
+                    // (variable persists with an empty BasedOnReference and spec fails with
+                    // spc0056). Re-read the persisted Variables part and confirm every
+                    // Domain-bound variable kept its reference; fail loudly if not.
+                    var verifyErr = VerifyDomainReferencesPersisted(target, domainBound);
+                    if (verifyErr != null) return verifyErr;
                 }
 
                 return McpResponse.Ok(
@@ -608,6 +620,7 @@ namespace GxMcp.Worker.Services
                 string resolvedTypeForSdk = typeName;
                 int? resolvedLength = null;
                 int? resolvedDecimals = null;
+                var domainBound = new System.Collections.Generic.List<(string VarName, string DomainName)>();
                 if (!string.IsNullOrEmpty(typeName))
                 {
                     resolution = GxMcp.Worker.Helpers.VariableTypeResolver.Resolve(typeName);
@@ -631,6 +644,7 @@ namespace GxMcp.Worker.Services
                     {
                         // Pass the raw name to the existing ResolveTypeObject path (SDT / BC / Domain).
                         resolvedTypeForSdk = resolution.DomainName;
+                        domainBound.Add((varName, resolution.DomainName));
                     }
                     else
                     {
@@ -692,6 +706,11 @@ namespace GxMcp.Worker.Services
                 obj.EnsureSave();
                 ScheduleFlush();
 
+                // issue #56: read back the persisted Variables part and confirm every
+                // Domain-bound variable kept its reference (see VerifyDomainReferencesPersisted).
+                var verifyErr = VerifyDomainReferencesPersisted(target, domainBound);
+                if (verifyErr != null) return verifyErr;
+
                 return McpResponse.Ok(target: target, code: "VariableAdded");
             }
             catch (Exception ex)
@@ -706,6 +725,72 @@ namespace GxMcp.Worker.Services
                         why: "Lists current variables to confirm state.")),
                     target: target);
             }
+        }
+
+        // issue #56 — post-save read-back for Domain-based variable types. On some
+        // GeneXus 18.0.16 builds the SDK accepts DomainBasedOn but drops it at save,
+        // leaving the variable with an empty BasedOnReference — the persisted variable
+        // then fails spec with spc0056 (Data:249,...,[]). Returns a serialized error
+        // envelope (code VariableDomainReferenceNotPersisted) listing every binding the
+        // re-read no longer shows, or null when all Domain references persisted.
+        private string VerifyDomainReferencesPersisted(string target,
+            System.Collections.Generic.List<(string VarName, string DomainName)> expected)
+        {
+            if (expected == null || expected.Count == 0) return null;
+
+            string text = "";
+            try
+            {
+                string readJson = _objectService.ReadObjectSource(target, "Variables", null, null, "mcp", true, null);
+                if (!string.IsNullOrWhiteSpace(readJson))
+                {
+                    var readObj = JObject.Parse(readJson);
+                    text = readObj["source"]?.ToString()
+                        ?? readObj["content"]?.ToString()
+                        ?? readObj["parts"]?["Variables"]?.ToString()
+                        ?? "";
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[VARIABLES-POST-CHECK] Re-read failed for " + target + ": " + ex.Message);
+                return null;
+            }
+            if (string.IsNullOrWhiteSpace(text)) return null;
+
+            var dropped = new JArray();
+            foreach (var (vName, domain) in DroppedDomainBindings(text, expected))
+                dropped.Add(new JObject { ["name"] = vName, ["domain"] = domain });
+            if (dropped.Count == 0) return null;
+
+            return McpResponse.Err(
+                code: "VariableDomainReferenceNotPersisted",
+                message: $"The SDK saved the variable(s) but dropped their Domain type reference (BasedOnReference is empty) — spec would fail with spc0056. Re-create the variable from the GeneXus IDE.",
+                hint: "On this GeneXus build, Domain-based variable types written through the SDK do not persist their reference. Create the variable in the IDE (right-click object → Properties → Variables → New), or add it with a primitive type.",
+                nextSteps: new JArray(McpResponse.NextStep(
+                    tool: "genexus_read",
+                    args: new JObject { ["name"] = target, ["part"] = "Variables" },
+                    why: "Shows the persisted state; the listed variables exist but without their Domain type.")),
+                target: target,
+                extra: new JObject { ["variables"] = dropped });
+        }
+
+        // Static matcher: which of the expected (varName, domain) bindings are absent from
+        // the persisted Variables text? The text format is one `&Name : Type` per line.
+        internal static System.Collections.Generic.List<(string VarName, string DomainName)> DroppedDomainBindings(
+            string variablesText, System.Collections.Generic.IEnumerable<(string VarName, string DomainName)> expected)
+        {
+            var dropped = new System.Collections.Generic.List<(string, string)>();
+            if (string.IsNullOrEmpty(variablesText) || expected == null) return dropped;
+            foreach (var (vName, domain) in expected)
+            {
+                // Optional module qualifier (e.g. RootModule.IDManual) is a valid
+                // persisted form of the same reference.
+                string pattern = @"&\b" + Regex.Escape(vName.TrimStart('&')) + @"\b\s*:\s*(?:\w+\.)*" + Regex.Escape(domain) + @"\b";
+                if (!Regex.IsMatch(variablesText, pattern, RegexOptions.IgnoreCase))
+                    dropped.Add((vName, domain));
+            }
+            return dropped;
         }
 
         // ── Task 4.3 (v2.3.8) — genexus_modify_variable ──────────────────────────

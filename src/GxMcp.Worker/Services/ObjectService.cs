@@ -1388,29 +1388,14 @@ namespace GxMcp.Worker.Services
 
                 if (enumArr != null && enumArr.Count > 0)
                 {
-                    // GeneXus stores enum values for character-family domains as QUOTED string
-                    // literals (e.g. "A"). A raw unquoted value ("A") produces a broken enum the
-                    // IDE renders as an empty combobox — the #1 cause of "can't create combobox
-                    // domain with options". Auto-quote for string domains so callers can pass the
-                    // bare value. Numeric/Date/etc. stay unquoted. When basedOn was applied we
-                    // resolve the base domain's family; otherwise dataType (defaulted to Character)
-                    // decides.
-                    bool isStringDomain = basedOnApplied
-                        ? IsStringDomainByName(kb, basedOnName)
-                        : IsStringDataType(dataType);
-
-                    var specs = new List<DomainEnumValueSpec>();
-                    foreach (var item in enumArr)
-                    {
-                        if (!(item is JObject jo)) continue;
-                        var ev = new DomainEnumValueSpec
-                        {
-                            Name = jo["name"]?.ToString(),
-                            Value = isStringDomain ? QuoteCharEnumValue(jo["value"]?.ToString()) : jo["value"]?.ToString(),
-                            Description = jo["description"]?.ToString()
-                        };
-                        if (!string.IsNullOrEmpty(ev.Name)) specs.Add(ev);
-                    }
+                    // ISSUE-55 ground truth (2026-07-31, GeneXus 18.0.10): the SDK persists
+                    // enum values in the stored XML as RAW literals for every family —
+                    // verified against the template's own character enum (HttpMethod stores
+                    // <Value>GET</Value>, no quotes). Quoted values ("R") are silently dropped
+                    // by the property bag write (post-apply bag read-back is null), which is
+                    // exactly the "empty combobox / enum not persisted" report. Values pass
+                    // through verbatim regardless of family.
+                    var specs = DomainEnumValues.FromJson(enumArr);
 
                     int applied = DomainPropertyApplier.ApplyEnumValues(domainObj, specs);
                     if (applied < 0)
@@ -1422,7 +1407,7 @@ namespace GxMcp.Worker.Services
                         var arr = new JArray();
                         foreach (var s in specs.Take(applied)) arr.Add(new JObject { ["name"] = s.Name, ["value"] = s.Value });
                         meta["enumValues"] = arr;
-                        meta["enumHint"] = "Enum values applied (character-family values are auto-quoted; the 'value' shown above is what was stored). Verify via genexus_types action=describe name=" + domainName + ".";
+                        meta["enumHint"] = "Enum values applied verbatim. Verify via genexus_types action=describe name=" + domainName + ".";
                     }
                 }
             }
@@ -1432,57 +1417,6 @@ namespace GxMcp.Worker.Services
                 meta["initError"] = ex.Message;
             }
             return meta;
-        }
-
-        // Character-family GeneXus data types whose enum values are stored as quoted literals.
-        internal static bool IsStringDataType(string dataType)
-        {
-            if (string.IsNullOrEmpty(dataType)) return false;
-            switch (dataType.Trim().ToLowerInvariant())
-            {
-                case "character":
-                case "char":
-                case "varchar":
-                case "varcharacter":
-                case "longvarchar":
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        // Best-effort: is the named domain (a basedOn target) a character-family domain?
-        private static bool IsStringDomainByName(Artech.Architecture.Common.Objects.KnowledgeBase kb, string name)
-        {
-            if (kb == null || string.IsNullOrEmpty(name)) return false;
-            try
-            {
-                foreach (var obj in kb.DesignModel.Objects.GetByName(null, null, name))
-                {
-                    if (obj is Artech.Genexus.Common.Objects.Domain d)
-                    {
-                        // Domain.Type is an eDBType enum; its name carries the family (Char/VarChar/…).
-                        var tp = AttributeTypeApplier.GetPropertyUnambiguous(d.GetType(), "Type");
-                        var val = tp?.GetValue(d, null)?.ToString();
-                        return IsStringDataType(val) || (val != null && val.IndexOf("char", StringComparison.OrdinalIgnoreCase) >= 0);
-                    }
-                }
-            }
-            catch { }
-            return false;
-        }
-
-        // Wrap a character enum value in double quotes unless it's already quoted.
-        // GeneXus stores char-family enum values as quoted literals ("A"); a raw value
-        // renders as a broken/empty combobox in the IDE.
-        internal static string QuoteCharEnumValue(string v)
-        {
-            if (string.IsNullOrEmpty(v)) return v;
-            var t = v.Trim();
-            if (t.Length >= 2 &&
-                ((t[0] == '"' && t[t.Length - 1] == '"') || (t[0] == '\'' && t[t.Length - 1] == '\'')))
-                return v; // already quoted
-            return "\"" + v.Replace("\"", "\\\"") + "\"";
         }
 
         // v2.8.5: deterministic ambiguous-name resolution. When a bare name matches

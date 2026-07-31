@@ -1162,6 +1162,7 @@ namespace GxMcp.Gateway.Routers
                 "set_level" => "SetLevelProperties",
                 "set_domain" => "SetDomainProperties",
                 "get_logic" => "GetLogicStructure",
+                "update_group" => "UpdateGroupStructure",
                 _ => null
             };
 
@@ -1172,9 +1173,7 @@ namespace GxMcp.Gateway.Routers
                 module = "Structure",
                 action = mappedAction,
                 target = args?["name"]?.ToString(),
-                payload = args?["payload"]?.Type == JTokenType.Object || args?["payload"]?.Type == JTokenType.Array
-                    ? args?["payload"]?.ToString()
-                    : args?["payload"]?.ToString()
+                payload = args?["payload"]?.ToString()
             };
         }
 

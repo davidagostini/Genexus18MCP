@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using Newtonsoft.Json.Linq;
 using Artech.Genexus.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -66,21 +64,11 @@ namespace GxMcp.Worker.Services.Structure
                         var enumArr = json["enumValues"] as JArray;
                         if (enumArr != null)
                         {
-                            bool isStringFamily = IsStringDomain(domain);
-                            var specs = new List<DomainEnumValueSpec>();
-                            foreach (var item in enumArr)
-                            {
-                                if (!(item is JObject jo)) continue;
-                                string name = jo["name"]?.ToString();
-                                if (string.IsNullOrEmpty(name)) continue;
-                                string val = jo["value"]?.ToString();
-                                specs.Add(new DomainEnumValueSpec
-                                {
-                                    Name = name,
-                                    Value = isStringFamily ? QuoteCharEnumValue(val) : val,
-                                    Description = jo["description"]?.ToString()
-                                });
-                            }
+                            // ISSUE-55 ground truth (2026-07-31, GeneXus 18.0.10): enum values
+                            // are stored RAW in the version XML for every family (the template's
+                            // own HttpMethod char enum stores <Value>GET</Value>). Quoted values
+                            // are silently dropped by the bag write, so values pass verbatim.
+                            var specs = DomainEnumValues.FromJson(enumArr);
                             int n = DomainPropertyApplier.ApplyEnumValues(domain, specs);
                             if (n < 0) { try { sdkTrans.Rollback(); } catch { } return Models.McpResponse.Err(
                                 code: "EnumWriteFailed",
@@ -122,26 +110,6 @@ namespace GxMcp.Worker.Services.Structure
                     hint: "Ensure the domain exists and payload is valid JSON.",
                     target: domainName);
             }
-        }
-
-        // Character-family domains store enum values as quoted literals ("A"); numeric/date stay bare.
-        private static bool IsStringDomain(Domain domain)
-        {
-            try
-            {
-                string t = domain.Type.ToString();
-                return t.IndexOf("Char", StringComparison.OrdinalIgnoreCase) >= 0
-                    || t.IndexOf("VarChar", StringComparison.OrdinalIgnoreCase) >= 0;
-            }
-            catch { return false; }
-        }
-
-        private static string QuoteCharEnumValue(string v)
-        {
-            if (v == null) return null;
-            v = v.Trim();
-            if (v.Length >= 2 && v.StartsWith("\"") && v.EndsWith("\"")) return v; // already quoted
-            return "\"" + v.Trim('"') + "\"";
         }
     }
 }

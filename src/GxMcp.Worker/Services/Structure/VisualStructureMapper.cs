@@ -116,11 +116,24 @@ namespace GxMcp.Worker.Services.Structure
                 }
             }
 
-            if (nullable != null) {
-                int val = nullable.Equals("Yes", StringComparison.OrdinalIgnoreCase) ? 1 : (nullable.Equals("Managed", StringComparison.OrdinalIgnoreCase) ? 2 : 0);
-                if (Convert.ToInt32(targetAttr.IsNullable) != val) {
-                    targetAttr.IsNullable = val;
-                    try { attrObj.SetPropertyValue("Nullable", val); } catch { }
+            if (nullable != null)
+            {
+                // Same accepted forms as genexus_properties (issue #57): canonical strings
+                // ("Yes"/"No"/"Managed"), the JSON-boolean forms Newtonsoft renders as
+                // "True"/"False" (previously fell through to 0 and silently no-oped), and
+                // the numeric enum values ("1"/"2"). Single source of truth:
+                // PropertyService.ParseIsNullableValue.
+                int val = GxMcp.Worker.Services.PropertyService.ParseIsNullableValue(nullable);
+                int current = 0;
+                try { current = Convert.ToInt32(targetAttr.IsNullable); } catch { }
+                if (current != val)
+                {
+                    // TableAttribute.IsNullableValue: False=0, True=1, Compatible=2. The
+                    // direct `IsNullable = val` int assignment throws a runtime binder error
+                    // ("Cannot implicitly convert type 'int' to
+                    // 'Artech.Genexus.Common.Parts.TableAttribute.IsNullableValue'"), so the
+                    // value is cast to the enum explicitly.
+                    targetAttr.IsNullable = (Artech.Genexus.Common.Parts.TableAttribute.IsNullableValue)val;
                     isModified = true;
                 }
             }

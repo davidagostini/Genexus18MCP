@@ -362,6 +362,21 @@ namespace GxMcp.Worker.Services
         {
             Exception lastError = null;
 
+            // issue #57: Nullable / ALLOWNULL on a Transaction or Table attribute occurrence
+            // is the typed TableAttribute.IsNullableValue (False/True/Compatible). The generic
+            // string setter can't represent the enum ("Yes" is the converter's display string,
+            // not an enum member) and an int assignment to the dynamic property throws a
+            // runtime binder error — write the typed value directly. The ALLOWNULL alias is
+            // accepted for IDE parity (the KB's own DDL-driven property name).
+            if (IsNullablePropertyName(propName)
+                && (container is Artech.Genexus.Common.Parts.TableAttribute
+                    || container is Artech.Genexus.Common.Parts.TransactionAttribute))
+            {
+                // TableAttribute.IsNullableValue: False=0, True=1, Compatible=2.
+                container.IsNullable = (Artech.Genexus.Common.Parts.TableAttribute.IsNullableValue)ParseIsNullableValue(rawValue);
+                return;
+            }
+
             // 1) Try a coerced typed value via SetPropertyValue(string, object).
             object coerced;
             if (TryCoercePropertyValue(container, propName, rawValue, out coerced))
@@ -403,6 +418,31 @@ namespace GxMcp.Worker.Services
             catch (Exception ex) { lastError = ex; }
 
             throw new Exception($"Property '{propName}' not found or not writable on {controlName ?? obj.Name}. Underlying error: {lastError?.Message}");
+        }
+
+        internal static bool IsNullablePropertyName(string propName)
+        {
+            if (string.IsNullOrEmpty(propName)) return false;
+            return propName.Equals("ALLOWNULL", StringComparison.OrdinalIgnoreCase)
+                || propName.Equals("Nullable", StringComparison.OrdinalIgnoreCase)
+                || propName.Equals("IsNullable", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // TableAttribute.IsNullableValue: False=0, True=1, Compatible=2. Accepts the
+        // canonical strings, the JSON-boolean forms, and numeric values.
+        internal static int ParseIsNullableValue(string rawValue)
+        {
+            string norm = (rawValue ?? "").Trim();
+            if (norm.Equals("Yes", StringComparison.OrdinalIgnoreCase)
+                || norm.Equals("True", StringComparison.OrdinalIgnoreCase)
+                || norm.Equals("Y", StringComparison.OrdinalIgnoreCase)
+                || norm == "1")
+                return 1;
+            if (norm.Equals("Managed", StringComparison.OrdinalIgnoreCase)
+                || norm.Equals("Compatible", StringComparison.OrdinalIgnoreCase)
+                || norm == "2")
+                return 2;
+            return 0;
         }
 
         private static bool TryCoercePropertyValue(dynamic container, string propName, string rawValue, out object coerced)
@@ -559,6 +599,39 @@ namespace GxMcp.Worker.Services
             var fallbackVar = FindVariable(obj, leaf);
             if (fallbackVar != null) return fallbackVar;
 
+            // issue #57: a Transaction structure attribute ("ProcessamentoQtd") is not a
+            // layout control or variable — resolve it from the Transaction's structure so
+            // its occurrence properties (IsNullable, …) are reachable via genexus_properties.
+            var trn = obj as Artech.Genexus.Common.Objects.Transaction;
+            if (trn != null)
+            {
+                var structureAttr = FindStructureAttribute(trn.Structure.Root, leaf);
+                if (structureAttr != null) return structureAttr;
+            }
+
+            return null;
+        }
+
+        // issue #57: recursive name lookup of a TransactionAttribute occurrence in the
+        // Transaction structure (all levels).
+        private dynamic FindStructureAttribute(Artech.Genexus.Common.Parts.TransactionLevel level, string attrName)
+        {
+            if (level == null) return null;
+            try
+            {
+                foreach (dynamic attr in level.Attributes)
+                {
+                    string n = null;
+                    try { n = (string)attr.Name; } catch { }
+                    if (!string.IsNullOrEmpty(n) && string.Equals(n, attrName, StringComparison.OrdinalIgnoreCase)) return attr;
+                }
+                foreach (dynamic sub in level.Levels)
+                {
+                    var hit = FindStructureAttribute(sub, attrName);
+                    if (hit != null) return hit;
+                }
+            }
+            catch (Exception ex) { Logger.Debug("FindStructureAttribute: " + ex.Message); }
             return null;
         }
 

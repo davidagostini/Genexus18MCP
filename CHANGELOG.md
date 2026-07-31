@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.37.0 — 2026-07-31
+
+### Added
+
+- **`genexus_structure action=update_group` — populate SubType Group members through the MCP.** A Group created with `genexus_create type=Group` used to come out as an empty shell: `set_attribute subtypeOf` correctly set each attribute's SuperType, but nothing attached those subtype attributes to the Group itself, so the Group's member list stayed empty and `genexus_analyze` / FK inference saw none of the subtype relationships. `update_group` now accepts `{ members: [{ name, subtypeOf }], remove?: [names] }` — each member registers the subtype attribute in the Group and asserts its SuperType link in one call, exactly like the IDE's Group editor — and `genexus_structure action=get_visual` on a Group reads the members back as `children: [{ name, subtypeOf }]` for a write-verify-read round trip.
+
+### Fixed
+
+- **`Nullable=Yes` on a Transaction attribute now actually persists.** `genexus_structure action=update_visual` with `nullable:"Yes"` crashed with a runtime binder error (`Cannot implicitly convert type 'int' to 'Artech.Genexus.Common.Parts.TableAttribute.IsNullableValue'`), and the JSON-boolean form (`nullable:true`) silently no-oped — either way the DDL kept generating `NOT NULL`. The value is now written as the SDK's typed `IsNullableValue`, the boolean forms are accepted, and the generated table DDL follows the value (verified end-to-end: the column loses `NOT NULL` with `Yes`, regains it with `No`).
+- **`genexus_properties` on a Transaction attribute now applies `ALLOWNULL` / `Nullable` / `IsNullable`.** These names previously fell into the generic string setter, which cannot represent the enum — the call reported `PropertyApplied` while nothing changed. `control=<attribute>` now resolves the attribute occurrence from the Transaction's structure (previously only layout controls and variables were reachable), and those property names write the typed nullable value.
+- **Domain-based procedure variables now verify their type reference after saving.** On some GeneXus 18 builds the SDK accepts a Domain-typed variable but drops the Domain reference when persisting — the variable saves with an empty `BasedOnReference` and fails specification with `spc0056` ("Variable definition is incorrect"). `genexus_add_variable` (single and batch) now re-reads the persisted variable list after saving and, when a Domain reference did not survive, fails with `VariableDomainReferenceNotPersisted` naming the affected variables instead of reporting a success that spec can never accept.
+- **Domains created or updated with enum values no longer silently lose the value list.** `genexus_create type=Domain` and `genexus_structure action=set_domain` could persist a Domain whose enum values were never written: when two values shared a description (an empty one included), the SDK's `EnumValuesValidResolver` rejects the set and the property write silently no-ops — leaving the Domain with no combobox options in the IDE. Enum values now pass through verbatim (raw literals, the canonical stored form for every data family — the template's own `HttpMethod` enum stores `<Value>GET</Value>` unquoted), and a value without a description inherits its name, matching the IDE convention, so the write always survives. The old auto-quoting of character-family values has been removed — it never reached the XML and produced the same silent drop. Verified against a real KB: enums now appear in the stored version XML for both the create and update paths.
+
 ## v2.36.1 — 2026-07-27
 
 Patch release: fixed router action dispatch for `genexus_analyze mode=linter` and ensured `FindObject` falls back to SDK lookup when search index misses newly created objects.

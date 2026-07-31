@@ -16,6 +16,7 @@ namespace GxMcp.Worker.Services
         private readonly AttributeWriteService _attributeWriteService;
         private readonly DomainWriteService _domainWriteService;
         private readonly SDTService _sdtService;
+        private readonly GroupStructureService _groupStructureService;
 
         public StructureService(ObjectService objectService)
         {
@@ -25,6 +26,7 @@ namespace GxMcp.Worker.Services
             _attributeWriteService = new AttributeWriteService(objectService);
             _domainWriteService = new DomainWriteService(objectService);
             _sdtService = new SDTService(objectService);
+            _groupStructureService = new GroupStructureService(objectService);
         }
 
         public string UpdateVisualStructure(string targetName, string payload)
@@ -105,6 +107,10 @@ namespace GxMcp.Worker.Services
                     Logger.Info($"[StructureService] Serializing Transaction Level: {trn.Name}");
                     result["children"] = _visualStructureService.SerializeVisualLevel(trn.Structure.Root);
                 }
+                else if (obj is Artech.Genexus.Common.Objects.Group grp) {
+                    Logger.Info($"[StructureService] Serializing SubType Group: {grp.Name}");
+                    return _groupStructureService.GetGroupStructure(targetName);
+                }
                 else if (obj is Table tbl) {
                     Logger.Info($"[StructureService] Serializing Table Structure: {tbl.Name}");
                     result["children"] = SerializeTableStructure(tbl);
@@ -113,7 +119,7 @@ namespace GxMcp.Worker.Services
                     Logger.Error($"[StructureService] Invalid object type for visual structure: {obj.TypeDescriptor.Name}");
                     return Models.McpResponse.Err(
                         code: "UnsupportedObjectType",
-                        message: "Visual structure is available only for Transaction, Table, or SDT objects.",
+                        message: "Visual structure is available only for Transaction, Table, Group, or SDT objects.",
                         hint: "Use genexus_analyze to inspect this object type.",
                         target: targetName,
                         nextSteps: new Newtonsoft.Json.Linq.JArray(Models.McpResponse.NextStep(
@@ -148,6 +154,8 @@ namespace GxMcp.Worker.Services
         public string CreateIndex(string targetName, string payload) => _indexService.CreateIndex(targetName, payload);
 
         public string DropIndex(string targetName, string payload) => _indexService.DropIndex(targetName, payload);
+
+        public string UpdateGroupStructure(string groupName, string payload) => _groupStructureService.UpdateGroupStructure(groupName, payload);
 
         public string SetAttributeProperties(string attrName, string payload) => _attributeWriteService.SetAttributeProperties(attrName, payload);
 

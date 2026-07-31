@@ -1551,6 +1551,7 @@ namespace GxMcp.Worker.Services
             if (action == "SetLevelProperties") return _structureService.SetLevelProperties(target, payload);
             if (action == "SetDomainProperties") return _structureService.SetDomainProperties(target, payload);
             if (action == "GetLogicStructure") return _structureService.GetLogicStructure(target);
+            if (action == "UpdateGroupStructure") return _structureService.UpdateGroupStructure(target, payload);
             return null;
         }
 
