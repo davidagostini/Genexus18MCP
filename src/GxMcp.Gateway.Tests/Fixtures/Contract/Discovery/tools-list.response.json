@@ -3328,7 +3328,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Variables part CRUD. action: add | delete (idempotent; refuses GAM/WWP+ framework-managed vars) | modify (atomically change type; preserves name+description). For add, pass EITHER varName (single) OR variables:[{varName,typeName,length,decimals,collection},...] to add many in one call (one save; per-item Added/Exists/Failed outcomes). length/decimals override the type-embedded size (e.g. long API-key strings); collection=true declares a collection var; add with no typeName inherits a same-named attribute's type. VarChar persists as VARCHAR (not CHARACTER). async=true returns an operationId for lifecycle polling. dryRun=true previews the change without persisting. typeName required for modify.",
+      "description": "Variables CRUD. add accepts varName or a variables[] batch; modify changes type atomically. basedOn binds a Domain by native SDK identity for add/modify. length/decimals override size; collection=true declares a collection; untyped add inherits a same-named attribute. VarChar stays VARCHAR. dryRun previews; async returns an operationId.",
       "inputSchema": {
         "examples": [
           {
@@ -3336,6 +3336,15 @@
             "name": "MyPanel",
             "typeName": "Numeric",
             "varName": "&Choice"
+          },
+          {
+            "action": "add",
+            "basedOn": "CompanyId",
+            "decimals": 0,
+            "length": 4,
+            "name": "MyProc",
+            "typeName": "Numeric",
+            "varName": "&CompanyId"
           },
           {
             "action": "add",
@@ -3369,28 +3378,28 @@
             "type": "string"
           },
           "async": {
-            "description": "Run as a background job. Result returns operationId/job_id for genexus_lifecycle polling.",
+            "description": "Run as background job.",
             "type": "boolean"
           },
           "basedOn": {
-            "description": "modify optional: Domain.",
+            "description": "add/modify: Domain name; native SDK reference.",
             "type": "string"
           },
           "collection": {
-            "description": "add/modify optional: declare the variable as a collection.",
+            "description": "add/modify: collection variable.",
             "type": "boolean"
           },
           "decimals": {
-            "description": "add/modify optional: overrides decimals parsed from typeName.",
+            "description": "add/modify: override parsed decimals.",
             "type": "integer"
           },
           "dryRun": {
             "default": false,
-            "description": "When true, returns what would change without persisting.",
+            "description": "Preview without persisting.",
             "type": "boolean"
           },
           "estimated_seconds": {
-            "description": "When async=true, expected runtime used for progress/job metadata (default 30).",
+            "description": "Async estimate; default 30.",
             "type": "integer"
           },
           "kb": {
@@ -3398,14 +3407,14 @@
             "type": "string"
           },
           "length": {
-            "description": "add/modify optional: overrides the length parsed from typeName (fixes the Character(20) default).",
+            "description": "add/modify: override parsed length.",
             "type": "integer"
           },
           "name": {
             "type": "string"
           },
           "typeName": {
-            "description": "Primitive (Character/Numeric/VarChar/Date/...), SDT/BC/Domain name, or WebSession. VarChar keeps VARCHAR semantics.",
+            "description": "Primitive, SDT, BC, Domain, or GeneXus built-in type.",
             "type": "string"
           },
           "varName": {
@@ -3413,9 +3422,13 @@
             "type": "string"
           },
           "variables": {
-            "description": "Batch add only: one object per variable — {varName, typeName?, length?, decimals?, collection?}. Added before a single save.",
+            "description": "Batch add: {varName,typeName?,basedOn?,length?,decimals?,collection?}; one save.",
             "items": {
               "properties": {
+                "basedOn": {
+                  "description": "Domain name; native SDK reference.",
+                  "type": "string"
+                },
                 "collection": {
                   "type": "boolean"
                 },

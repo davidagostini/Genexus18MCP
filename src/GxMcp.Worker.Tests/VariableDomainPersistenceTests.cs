@@ -1,88 +1,39 @@
-using System.Collections.Generic;
 using Xunit;
-using GxMcp.Worker.Services;
+using GxMcp.Worker.Helpers;
 
 namespace GxMcp.Worker.Tests
 {
-    // issue #56 — post-save Domain-reference verification on the add-variable path.
-    // DroppedDomainBindings decides whether a persisted Variables part still carries
-    // the Domain type of every variable the write bound to a Domain.
+    // A Variables text projection is not proof of persistence: these tests exercise the
+    // raw DomainKey/custom-type gate used before and after Save.
     public class VariableDomainPersistenceTests
     {
-        private static List<(string VarName, string DomainName)> Bindings(params (string, string)[] pairs)
-            => new List<(string, string)>(pairs);
-
         [Fact]
-        public void DroppedDomainBindings_EmptyExpected_ReturnsEmpty()
+        public void NativeDomainReference_MatchingEntityKey_IsAccepted()
         {
-            var dropped = WriteService.DroppedDomainBindings("&EmpresaID : IDManual", Bindings());
-            Assert.Empty(dropped);
+            var type = System.Guid.NewGuid();
+            Assert.True(VariableInjector.IsNativeDomainReferenceParts(
+                type, 17, type, 17, "1", out var failure));
+            Assert.Null(failure);
         }
 
         [Fact]
-        public void DroppedDomainBindings_AllBindingsPresent_ReturnsEmpty()
+        public void NativeDomainReference_DifferentEntityKey_IsRejected()
         {
-            string text = "&EmpresaID : IDManual\n&ClienteID : IDManual\n&DataLimite : Data";
-            var dropped = WriteService.DroppedDomainBindings(text,
-                Bindings(("EmpresaID", "IDManual"), ("DataLimite", "Data")));
-            Assert.Empty(dropped);
+            var type = System.Guid.NewGuid();
+            Assert.False(VariableInjector.IsNativeDomainReferenceParts(
+                type, 17, type, 18, "1", out var failure));
+            Assert.Contains("DomainKey", failure);
         }
 
-        [Fact]
-        public void DroppedDomainBindings_BindingLost_ReportsIt()
+        [Theory]
+        [InlineData("dom:IDAutomatico")]
+        [InlineData("domain:RootModule.IDManual")]
+        public void NativeDomainReference_DisplayOnlyCustomType_IsRejected(string token)
         {
-            // The reported 18.0.16 symptom: variable persists without its Domain
-            // reference, so the line shows the base type instead of the Domain name.
-            string text = "&EmpresaID : NUMERIC(18)\n&ClienteID : IDManual";
-            var dropped = WriteService.DroppedDomainBindings(text,
-                Bindings(("EmpresaID", "IDManual"), ("ClienteID", "IDManual")));
-            Assert.Single(dropped);
-            Assert.Equal("EmpresaID", dropped[0].VarName);
-            Assert.Equal("IDManual", dropped[0].DomainName);
-        }
-
-        [Fact]
-        public void DroppedDomainBindings_MatchesNamesWhitespaceInsensitively()
-        {
-            string text = "&EmpresaID :   IDManual";
-            var dropped = WriteService.DroppedDomainBindings(text, Bindings(("EmpresaID", "IDManual")));
-            Assert.Empty(dropped);
-        }
-
-        [Fact]
-        public void DroppedDomainBindings_CaseInsensitiveMatch()
-        {
-            string text = "&empresaID : idmanual";
-            var dropped = WriteService.DroppedDomainBindings(text, Bindings(("EmpresaID", "IDManual")));
-            Assert.Empty(dropped);
-        }
-
-        [Fact]
-        public void DroppedDomainBindings_DoesNotMatchVariablePrefix()
-        {
-            // &EmpresaID2 must not satisfy the binding for &EmpresaID.
-            string text = "&EmpresaID2 : IDManual";
-            var dropped = WriteService.DroppedDomainBindings(text, Bindings(("EmpresaID", "IDManual")));
-            Assert.Single(dropped);
-            Assert.Equal("EmpresaID", dropped[0].VarName);
-        }
-
-        [Fact]
-        public void DroppedDomainBindings_QualifiedDomainStillMatches()
-        {
-            // SDK may persist a fully-qualified domain name (e.g. RootModule.IDManual).
-            string text = "&EmpresaID : RootModule.IDManual";
-            var dropped = WriteService.DroppedDomainBindings(text, Bindings(("EmpresaID", "IDManual")));
-            Assert.Empty(dropped);
-        }
-
-        [Fact]
-        public void DroppedDomainBindings_VariableMissingEntirely_ReportsIt()
-        {
-            string text = "&ClienteID : IDManual";
-            var dropped = WriteService.DroppedDomainBindings(text, Bindings(("EmpresaID", "IDManual")));
-            Assert.Single(dropped);
-            Assert.Equal("EmpresaID", dropped[0].VarName);
+            var type = System.Guid.NewGuid();
+            Assert.False(VariableInjector.IsNativeDomainReferenceParts(
+                type, 17, type, 17, token, out var failure));
+            Assert.Contains("display-only", failure);
         }
     }
 }

@@ -166,6 +166,8 @@ namespace GxMcp.Worker.Services
 
                 KBObject newObj = KBObject.Create(kb.DesignModel, typeGuid);
                 newObj.Name = name;
+                if (newObj is Artech.Architecture.Common.Objects.Module)
+                    newObj.Module = kb.DesignModel.RootModule;
 
                 // Initialize with some default content if possible
                 if (newObj.GetType().Name == "Procedure")
@@ -1241,6 +1243,7 @@ namespace GxMcp.Worker.Services
         {
             try
             {
+                if (type.Equals("Module", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Architecture.Common.Objects.Module>().Id;
                 if (type.Equals("Procedure", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Procedure>().Id;
                 if (type.Equals("Transaction", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Transaction>().Id;
                 if (type.Equals("WebPanel", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.WebPanel>().Id;
