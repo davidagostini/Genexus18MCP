@@ -1141,7 +1141,8 @@ namespace GxMcp.Worker.Services
                     varDryRun,
                     args?["length"]?.ToObject<int?>(),
                     args?["decimals"]?.ToObject<int?>(),
-                    args?["collection"]?.ToObject<bool?>());
+                    args?["collection"]?.ToObject<bool?>(),
+                    args?["basedOn"]?.ToString());
             }
             if (action == "DeleteVariable")
             {
