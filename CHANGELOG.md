@@ -2,12 +2,25 @@
 
 ## Unreleased
 
+### Added
+
+- **Typed WorkWithPlus actions and Action Groups (`genexus_apply_pattern mode=actions`).** Lists, adds, updates, moves, and removes grid actions; supports Procedure association, row-selection mode, conditions, icon, description, confirmation, ordering, and `dryRun` semantic diffs. The PatternInstance is saved and re-read, and action editing never opts into automatic security-permission creation (#58).
+- **Caller-atomic object authoring (`genexus_create action=object_atomic`).** Creates or updates an object's definition, variables, Rules, properties, and Source through one preflighted request, with optimistic `baseVersion`, `dryRun`, optional specification, structured diagnostics, and compensating rollback when any phase fails (#62).
+- **Non-mutating reorganization preview (`genexus_db action=reorg_preview`).** Runs Impact Analysis only when `deep=true`, reports affected tables/columns/indexes and destructive conversions, and exposes exact effective DDL only when a SQL artifact produced by the current analysis can be identified (#61).
+
+### Changed
+
+- **Validated edits can specify before caller builds.** `genexus_edit_and_build` accepts `validate=true`, `validationMode=specify`, and `rollbackOnFailure`; specification diagnostics are returned with explicit `saved`, `specified`, `generated`, and rollback state (#60).
+- **Mutable operations verify read-back persistence.** Source/Rules writes, variable add/modify/batch operations, object properties, Transaction structure updates, and Domain updates now re-read the persisted state and return requested-versus-persisted evidence. A mismatch is an explicit `*NotPersisted` failure instead of a false success (#59).
+
 ### Fixed
 
-- **Domain-based variables now persist a native Domain identity instead of a display token.** `genexus_variable action=add|modify` resolves Root Module and module-qualified Domains before the generic GeneXus data-type registry, binds the SDK `DomainKey`, and refuses the registry's `GX_DOM_REF`/`dom:<name>` representation so it can never be written to `ATTCUSTOMTYPE`. After saving, the writer reopens the Variables part and compares the Domain entity key and inherited primitive shape; a mismatch returns `VariableTypeNotPersisted` and restores the object instead of reporting a false success. Direct `add` now accepts `basedOn`, matching `modify` and batch add.
+- **Persistence checks now cover Domain bindings and Transaction nullability.** Domain-based variables retain both SDK references, and Transaction attributes use the typed SDK nullable value; both are re-read after saving before success is reported (#59).
+- **Domain-based variables now reject display-only type tokens.** `genexus_variable action=add|modify` resolves Root Module and module-qualified Domains before the generic GeneXus data-type registry, binds the SDK `DomainKey`, and refuses the registry's `GX_DOM_REF`/`dom:<name>` representation so it cannot produce an invalid persisted reference. After saving, the writer compares the Domain entity key and inherited primitive shape; a mismatch returns `VariableTypeNotPersisted` and restores the variable instead of reporting a false success. Direct `add` also accepts `basedOn`, matching `modify` and batch add.
 
 ### Internal
 
+- `build.ps1` now honors an explicit `GX_PATH`, allowing clean worktrees to build against the selected GeneXus installation without a local connection/configuration file. The `genexus_inspect` schema guidance was aligned with its CLI contract test, and the schema budget was raised from 16,900 to 17,700 tokens for the new #58–#62 contracts (measured at about 17,567).
 - Added a guarded U16 integration regression for `add/modify → save → reopen → XPZ export → importer → read`, including `parm(...)`, Root Module and named-Module Domains, and an assertion that exported XML contains native `Domain:<name>` references and no `ATTCUSTOMTYPE` `dom:` token. Module creation now initializes its Root Module parent, matching the already-advertised `genexus_create type=Module` contract and enabling isolated fixtures.
 
 ## v2.37.0 — 2026-07-31

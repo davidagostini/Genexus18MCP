@@ -574,12 +574,12 @@ namespace GxMcp.Worker.Helpers
             else Logger.Error("[BindVariableToSdt] Could not construct AttCustomType for " + sdtObj.Name);
         }
 
-        // Bind a variable to a Domain using the SDK's entity-key representation.
+        // Bind a variable to a Domain using both SDK references.
         //
-        // DomainKey stores the requested Domain identity as an EntityKey and lets the SDK
-        // inherit its primitive shape. This must stay separate from DataTypeProvider:
-        // that provider returns a GX_DOM_REF AttCustomType whose parser/display form is
-        // dom:<name>; persisting it as ATTCUSTOMTYPE produces a non-importable XPZ.
+        // DomainBasedOn is the IDE-facing relationship, while DomainKey is the stable
+        // entity identity required by some GX18 builds. The generic data-type provider
+        // returns a GX_DOM_REF AttCustomType whose parser/display form is dom:<name>;
+        // persisting that token in ATTCUSTOMTYPE produces a non-importable XPZ.
         public static bool BindVariableToDomain(global::Artech.Genexus.Common.Variable v,
             global::Artech.Genexus.Common.Objects.Domain domain, out string failure)
         {
@@ -592,12 +592,14 @@ namespace GxMcp.Worker.Helpers
 
             try
             {
+                v.DomainBasedOn = domain;
                 v.DomainKey = domain.Key;
                 string customTypeToken = null;
                 try { customTypeToken = v.GetPropertyValue("ATTCUSTOMTYPE")?.ToString(); } catch { }
 
                 if (!IsNativeDomainReference(domain.Key, v.DomainKey, customTypeToken, out failure))
                 {
+                    try { v.DomainBasedOn = null; } catch { }
                     try { v.DomainKey = null; } catch { }
                     return false;
                 }
@@ -609,6 +611,7 @@ namespace GxMcp.Worker.Helpers
             {
                 failure = ex.InnerException?.Message ?? ex.Message;
                 Logger.Warn("[BindVariableToDomain] " + failure);
+                try { v.DomainBasedOn = null; } catch { }
                 try { v.DomainKey = null; } catch { }
                 return false;
             }

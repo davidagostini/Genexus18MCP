@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 using Artech.Genexus.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -41,6 +42,7 @@ namespace GxMcp.Worker.Services.Structure
 
                 var json = JObject.Parse(payload);
                 var applied = new JArray();
+                var before = SnapshotDomain(domain);
 
                 using (var sdkTrans = model.KB.BeginTransaction())
                 {
@@ -83,12 +85,49 @@ namespace GxMcp.Worker.Services.Structure
                             hint: "Recognized: enumValues, dataType (+length/decimals/signed).",
                             target: domainName); }
 
-                        domain.EnsureSave();
+                        // Property-bag updates (notably EnumValues) do not always mark the
+                        // object dirty. ForceSave makes the persisted record, not the in-memory
+                        // instance, the source of truth.
+                        domain.Save(new Artech.Architecture.Common.Objects.KBObjectSavePreferences
+                        {
+                            ForceSave = true,
+                            ForceSaveDefaultParts = true,
+                            SkipValidation = false
+                        });
                         sdkTrans.Commit();
+
+                        var persistedDomain = _objectService.FindObject(domainName, "Domain") as Domain;
+                        var persisted = SnapshotDomain(persistedDomain);
+                        var requested = BuildRequestedSnapshot(json, persistedDomain ?? domain);
+                        var diff = BuildDiff(requested, persisted);
+                        if (diff.Count > 0)
+                        {
+                            return Models.McpResponse.Err(
+                                code: "DomainUpdateNotPersisted",
+                                message: "The SDK save completed, but the persisted Domain does not match the requested values.",
+                                target: domainName,
+                                extra: new JObject
+                                {
+                                    ["before"] = before,
+                                    ["requested"] = requested,
+                                    ["persisted"] = persisted,
+                                    ["diff"] = diff,
+                                    ["saved"] = false
+                                });
+                        }
                         return Models.McpResponse.Ok(
                             target: domainName,
                             code: "DomainUpdated",
-                            result: new JObject { ["domain"] = domain.Name, ["applied"] = applied });
+                            result: new JObject
+                            {
+                                ["domain"] = domain.Name,
+                                ["applied"] = applied,
+                                ["before"] = before,
+                                ["requested"] = requested,
+                                ["persisted"] = persisted,
+                                ["diff"] = diff,
+                                ["saved"] = true
+                            });
                     }
                     catch (Exception ex)
                     {
@@ -110,6 +149,62 @@ namespace GxMcp.Worker.Services.Structure
                     hint: "Ensure the domain exists and payload is valid JSON.",
                     target: domainName);
             }
+        }
+        private static JObject SnapshotDomain(Domain domain)
+        {
+            if (domain == null) return new JObject();
+            var snapshot = new JObject { ["name"] = domain.Name };
+            try { snapshot["dataType"] = domain.Type.ToString(); } catch { }
+            try { snapshot["length"] = Convert.ToInt32(domain.Length); } catch { }
+            try { snapshot["decimals"] = Convert.ToInt32(domain.Decimals); } catch { }
+            try { snapshot["signed"] = Convert.ToBoolean(domain.Signed); } catch { }
+            snapshot["enumValues"] = DomainPropertyApplier.ReadEnumValues(domain);
+            return snapshot;
+        }
+
+        private static JObject BuildRequestedSnapshot(JObject input, Domain domain)
+        {
+            var requested = new JObject();
+            foreach (string name in new[] { "dataType", "length", "decimals", "signed" })
+                if (input[name] != null) requested[name] = input[name].DeepClone();
+            if (input["enumValues"] is JArray values)
+            {
+                var normalized = new JArray();
+                foreach (var value in DomainEnumValues.FromJson(values))
+                {
+                    normalized.Add(new JObject
+                    {
+                        ["name"] = value.Name,
+                        ["value"] = value.Value,
+                        ["description"] = value.Description
+                    });
+                }
+                requested["enumValues"] = normalized;
+            }
+            return requested;
+        }
+
+        private static JArray BuildDiff(JObject requested, JObject persisted)
+        {
+            var diff = new JArray();
+            foreach (var property in requested.Properties())
+            {
+                JToken actual = persisted[property.Name];
+                if (!JToken.DeepEquals(Normalize(property.Value), Normalize(actual)))
+                    diff.Add(new JObject { ["path"] = "/" + property.Name, ["requested"] = property.Value.DeepClone(), ["persisted"] = actual?.DeepClone() ?? JValue.CreateNull() });
+            }
+            return diff;
+        }
+
+        private static JToken Normalize(JToken token)
+        {
+            if (token == null) return JValue.CreateNull();
+            if (token.Type == JTokenType.String) return token.ToString().Trim();
+            if (token is JArray array)
+                return new JArray(array.OfType<JObject>().OrderBy(v => v["name"]?.ToString(), StringComparer.OrdinalIgnoreCase)
+                    .Select(v => new JObject(v.Properties().Where(p => p.Value.Type != JTokenType.Null && p.Value.ToString() != string.Empty)
+                        .Select(p => new JProperty(p.Name, Normalize(p.Value))))));
+            return token.DeepClone();
         }
     }
 }

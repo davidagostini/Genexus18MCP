@@ -217,6 +217,49 @@ namespace GxMcp.Worker.Services
             int? editLine = priorSource != null ? (int?)FirstDiffLine(priorSource, finalSource) : null;
             AppendPersistedState(parsed, finalSource, editLine);
 
+            // #59: every textual mutation exposes the requested/persisted comparison,
+            // including SDK normalization, and a successful full write may not claim
+            // success unless the re-read state satisfies the request.
+            if (requestedContent != null)
+            {
+                bool requestedMatches = WhitespaceInsensitiveEquals(finalSource, requestedContent);
+                parsed["mutation"] = new JObject
+                {
+                    ["before"] = DescribeContent(priorSource),
+                    ["requested"] = DescribeContent(requestedContent),
+                    ["persisted"] = DescribeContent(finalSource),
+                    ["diff"] = new JObject
+                    {
+                        ["matches"] = requestedMatches,
+                        ["firstDifferentLine"] = FirstDiffLine(requestedContent, finalSource)
+                    },
+                    ["saved"] = requestedMatches
+                };
+
+                string responseStatus = parsed["status"]?.ToString();
+                bool successful = string.Equals(responseStatus, "ok", StringComparison.OrdinalIgnoreCase)
+                               || string.Equals(responseStatus, "success", StringComparison.OrdinalIgnoreCase);
+                string responseCode = parsed["code"]?.ToString();
+                bool applied = string.Equals(responseCode, "WriteApplied", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(responseCode, "WriteNoChange", StringComparison.OrdinalIgnoreCase);
+                if (successful && applied && !requestedMatches)
+                {
+                    JObject mutation = (JObject)parsed["mutation"].DeepClone();
+                    return Models.McpResponse.Err(
+                        code: "WriteNotPersisted",
+                        message: "The SDK save completed, but the persisted part does not match the requested content.",
+                        hint: "Inspect mutation.diff and retry from the persisted state; SDK normalization is shown explicitly.",
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["part"] = partName,
+                            ["mutation"] = mutation,
+                            ["persistedHash"] = parsed["persistedHash"]?.DeepClone(),
+                            ["persistedSnippet"] = parsed["persistedSnippet"]?.DeepClone()
+                        });
+                }
+            }
+
             // issue #31.2: when the write left the persisted content byte-identical to the
             // prior content, this was a no-op — surface WriteNoChange instead of WriteApplied
             // so callers don't have to diff the hash themselves.
@@ -264,6 +307,19 @@ namespace GxMcp.Worker.Services
             string na = System.Text.RegularExpressions.Regex.Replace(a, @"\s+", "");
             string nb = System.Text.RegularExpressions.Regex.Replace(b, @"\s+", "");
             return string.Equals(na, nb, StringComparison.Ordinal);
+        }
+
+        private static JObject DescribeContent(string content)
+        {
+            if (content == null) return null;
+            const int cap = 1200;
+            string snippet = content.Length > cap ? content.Substring(0, cap) + "…[truncated]" : content;
+            return new JObject
+            {
+                ["hash"] = ComputeSha256(content),
+                ["length"] = content.Length,
+                ["snippet"] = snippet
+            };
         }
     }
 }

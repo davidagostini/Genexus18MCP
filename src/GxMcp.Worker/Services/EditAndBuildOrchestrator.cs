@@ -110,6 +110,56 @@ namespace GxMcp.Worker.Services
                 });
             }
 
+            // Optional validated edit (#60): save, specify the target and compensate from
+            // the pre-write snapshot when specification fails.  This deliberately runs
+            // before caller impact/build so a broken object never triggers downstream work.
+            JObject validation = null;
+            bool validate = args?["validate"]?.ToObject<bool?>() ?? false;
+            if (validate)
+            {
+                string validationMode = args?["validationMode"]?.ToString() ?? "specify";
+                if (!validationMode.Equals("specify", StringComparison.OrdinalIgnoreCase))
+                    return McpResponse.Err(code: "UnsupportedValidationMode",
+                        message: "validationMode must be 'specify'.", target: target,
+                        extra: new JObject { ["edit"] = edit, ["saved"] = true, ["specified"] = false });
+
+                validation = JObject.Parse(_build.Specify(target));
+                if (string.Equals(validation["status"]?.ToString(), "accepted", StringComparison.OrdinalIgnoreCase))
+                {
+                    string taskId = validation["taskId"]?.ToString();
+                    return McpResponse.Ok(target: target, code: "EditValidationAccepted", result: new JObject
+                    {
+                        ["edit"] = edit,
+                        ["validation"] = validation,
+                        ["saved"] = true,
+                        ["specified"] = false,
+                        ["generated"] = false,
+                        ["taskId"] = taskId,
+                        ["pollTarget"] = string.IsNullOrWhiteSpace(taskId) ? null : "op:" + taskId,
+                        ["build"] = new JObject
+                        {
+                            ["skipped"] = true,
+                            ["reason"] = "Caller impact/build waits for the asynchronous specification result."
+                        }
+                    });
+                }
+                if (string.Equals(validation["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase))
+                {
+                    JObject rollback = TryRollback(edit, target, args);
+                    return McpResponse.Err(code: "ValidationPhaseFailed",
+                        message: validation["error"]?["message"]?.ToString() ?? "Specification failed after the edit.",
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["phase"] = "specify", ["edit"] = edit, ["validation"] = validation,
+                            ["saved"] = false, ["specified"] = false, ["generated"] = false,
+                            ["rolledBack"] = rollback["succeeded"]?.ToObject<bool?>() == true,
+                            ["rollback"] = rollback,
+                            ["diagnostics"] = validation["error"]?["diagnostics"]?.DeepClone() ?? validation["error"]?.DeepClone()
+                        });
+                }
+            }
+
             string impactRaw = _analyze.ImpactAnalysis(target, waitForIndex, waitTimeoutMs);
             var impact = JObject.Parse(impactRaw);
             var callers = impact["callers"] as JArray ?? new JArray();
@@ -129,9 +179,42 @@ namespace GxMcp.Worker.Services
             return McpResponse.Ok(target: target, code: "EditAndBuildCompleted", result: new JObject
             {
                 ["edit"] = edit,
+                ["validation"] = validation,
+                ["saved"] = true,
+                ["specified"] = validation != null && !string.Equals(validation["status"]?.ToString(), "accepted", StringComparison.OrdinalIgnoreCase),
+                ["generated"] = validation != null && !string.Equals(validation["status"]?.ToString(), "accepted", StringComparison.OrdinalIgnoreCase),
                 ["impact"] = impact,
                 ["build"] = buildResult
             });
+        }
+
+        private JObject TryRollback(JObject edit, string target, JObject args)
+        {
+            if (args?["rollbackOnFailure"]?.ToObject<bool?>() == false)
+                return new JObject { ["attempted"] = false, ["succeeded"] = false };
+            string path = edit?["snapshot"]?["path"]?.ToString();
+            string prior = GxMcp.Worker.Helpers.EditSnapshotStore.ReadSnapshot(path);
+            if (prior == null)
+                return new JObject { ["attempted"] = true, ["succeeded"] = false, ["error"] = "Pre-write snapshot was unavailable." };
+            try
+            {
+                JObject restoreArgs = new JObject
+                {
+                    ["part"] = args?["part"]?.ToString() ?? "Source",
+                    ["mode"] = "full",
+                    ["content"] = prior,
+                    ["type"] = args?["type"]?.ToString()
+                };
+                JObject response = JObject.Parse(_write.WriteObject(target, restoreArgs));
+                string status = response["status"]?.ToString();
+                bool ok = string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(status, "success", StringComparison.OrdinalIgnoreCase);
+                return new JObject { ["attempted"] = true, ["succeeded"] = ok, ["response"] = response };
+            }
+            catch (Exception ex)
+            {
+                return new JObject { ["attempted"] = true, ["succeeded"] = false, ["error"] = ex.Message };
+            }
         }
 
         internal static JObject NormalizeToolArgs(JObject args)

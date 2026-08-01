@@ -41,14 +41,12 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void ReorgPreview_ReportsReorgEnabledKey_EvenWithoutKb()
+        public void ReorgPreview_RequiresAnOpenKb()
         {
             var svc = new BuildService();
             var jo = JObject.Parse(svc.ReorgPreview("MyTrn"));
-            // No KB wired → reorg mode unresolved → reorgEnabled is present but null.
-            Assert.True(jo.ContainsKey("reorgEnabled"));
-            Assert.Equal(JTokenType.Null, jo["reorgEnabled"].Type);
-            Assert.False(string.IsNullOrEmpty(jo["note"]?.ToString()));
+            Assert.Equal("error", jo["status"]?.ToString());
+            Assert.Equal("NoKbOpen", jo["error"]?["code"]?.ToString());
         }
 
         [Fact]

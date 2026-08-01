@@ -131,7 +131,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent (IDE Right-click → Apply Pattern). Transaction=family-gen; WebPanel/SDPanel=direct-attach (pass settings.template). mode=diagnose (or dryRun=true) returns findings without mutating. Working on Smart Devices? → resources/read uri=genexus://kb/skills/sd-panel-mobile for Main object semantics.",
+      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent (IDE Right-click → Apply Pattern). Transaction=family-gen; WebPanel/SDPanel=direct-attach (pass settings.template). mode=diagnose (or dryRun=true) returns findings without mutating. Working on Smart Devices? → resources/read uri=genexus://kb/skills/sd-panel-mobile for Main object semantics. mode=actions manages typed grid actions and Action Groups, persists and re-reads PatternInstance, supports dryRun diff, and never adds security permissions automatically.",
       "inputSchema": {
         "examples": [
           {
@@ -142,23 +142,66 @@
             "mode": "diagnose",
             "name": "Customer",
             "pattern": "WorkWithPlus"
+          },
+          {
+            "action": "add_grid_action",
+            "actionName": "Approve",
+            "dryRun": true,
+            "group": "Actions",
+            "mode": "actions",
+            "name": "Customer",
+            "pattern": "WorkWithPlus",
+            "procedure": "ApproveCustomer"
           }
         ],
         "properties": {
+          "action": {
+            "description": "mode=actions operation.",
+            "enum": [
+              "list_actions",
+              "add_grid_action",
+              "update_action",
+              "move_action",
+              "remove_action"
+            ],
+            "type": "string"
+          },
+          "actionName": {
+            "type": "string"
+          },
+          "confirmTitle": {
+            "type": "string"
+          },
+          "confirmation": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
           "dryRun": {
             "default": false,
-            "description": "Alias for mode=diagnose. When true, returns pattern findings without mutating.",
+            "description": "Alias for mode=diagnose. When true, returns pattern findings without mutating. With mode=actions it previews the typed action diff.",
             "type": "boolean"
+          },
+          "enabledWhen": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          },
+          "icon": {
+            "type": "string"
           },
           "kb": {
             "description": "KB alias.",
             "type": "string"
           },
           "mode": {
-            "description": "apply (default) mutates; diagnose returns reasons without applying.",
+            "description": "apply (default) mutates; diagnose returns reasons without applying. actions exposes typed WWP action-group editing.",
             "enum": [
               "apply",
-              "diagnose"
+              "diagnose",
+              "actions"
             ],
             "type": "string"
           },
@@ -166,14 +209,31 @@
             "description": "Target KBObject name.",
             "type": "string"
           },
+          "newGroup": {
+            "type": "string"
+          },
           "pattern": {
             "description": "Pattern key ('WorkWithPlus') or GUID.",
+            "type": "string"
+          },
+          "position": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "procedure": {
             "type": "string"
           },
           "reapply": {
             "default": false,
             "description": "Re-run on existing instance.",
             "type": "boolean"
+          },
+          "selection": {
+            "enum": [
+              "current",
+              "multiple"
+            ],
+            "type": "string"
           },
           "settings": {
             "description": "Pattern-instance settings tree.",
@@ -183,6 +243,9 @@
             "default": false,
             "description": "After apply, build the generated host. Adds validation block (60-180s). Catches binding errors.",
             "type": "boolean"
+          },
+          "visibleWhen": {
+            "type": "string"
           }
         },
         "required": [
@@ -454,7 +517,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers, and folder=<name>/module=<name> place the new object there (created in Root, then moved+verified); SDT takes optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog).",
+      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers, and folder=<name>/module=<name> place the new object there (created in Root, then moved+verified); SDT takes optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog). action=object_atomic creates or updates definition, variables, rules, properties, and Source as one caller-atomic operation with preflight, persistence verification, optional specification, and compensating rollback.",
       "inputSchema": {
         "examples": [
           {
@@ -473,12 +536,30 @@
             "spec": {
               "host": "Customer"
             }
+          },
+          {
+            "action": "object_atomic",
+            "name": "ApproveOrder",
+            "rollbackOnFailure": true,
+            "rules": [
+              "parm(in:&OrderId);"
+            ],
+            "source": "// implementation",
+            "type": "Procedure",
+            "validate": true,
+            "variables": [
+              {
+                "name": "OrderId",
+                "typeName": "OrderId"
+              }
+            ]
           }
         ],
         "properties": {
           "action": {
             "enum": [
               "object",
+              "object_atomic",
               "popup",
               "sd_panel_create",
               "sd_panel_inspect",
@@ -495,6 +576,9 @@
           "args": {
             "description": "template.",
             "type": "object"
+          },
+          "baseVersion": {
+            "type": "string"
           },
           "basedOn": {
             "description": "object Domain.",
@@ -577,9 +661,23 @@
             "description": "sd_panel_edit/template.",
             "type": "string"
           },
+          "properties": {
+            "description": "object_atomic scalar object properties.",
+            "type": "object"
+          },
+          "rollbackOnFailure": {
+            "default": true,
+            "type": "boolean"
+          },
+          "rules": {
+            "description": "object_atomic Rules text or array of rule lines."
+          },
           "signed": {
             "description": "object Domain.",
             "type": "boolean"
+          },
+          "source": {
+            "description": "object_atomic Source text or array of lines."
           },
           "spec": {
             "description": "popup.",
@@ -596,6 +694,51 @@
           },
           "type": {
             "type": "string"
+          },
+          "updateExisting": {
+            "default": false,
+            "type": "boolean"
+          },
+          "validate": {
+            "default": false,
+            "type": "boolean"
+          },
+          "validationMode": {
+            "default": "specify",
+            "enum": [
+              "specify"
+            ],
+            "type": "string"
+          },
+          "variables": {
+            "description": "object_atomic variables.",
+            "items": {
+              "properties": {
+                "basedOn": {
+                  "type": "string"
+                },
+                "collection": {
+                  "type": "boolean"
+                },
+                "decimals": {
+                  "type": "integer"
+                },
+                "length": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "typeName": {
+                  "type": "string"
+                },
+                "varName": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -612,7 +755,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Database umbrella. action: drift_check|drift_report (Transaction↔DB schema drift) | optimize_analyze|optimize_suggest|optimize_report (static index advisor) | sql_ddl|sql_navigation (SQL for Transaction/Procedure) | sample_data (fake INSERTs) | types_list|types_describe|types_validate (Domains/SDT constraints) | translations_import.",
+      "description": "Database umbrella. action: drift_check|drift_report (Transaction↔DB schema drift) | optimize_analyze|optimize_suggest|optimize_report (static index advisor) | sql_ddl|sql_navigation (SQL for Transaction/Procedure) | sample_data (fake INSERTs) | types_list|types_describe|types_validate (Domains/SDT constraints) | translations_import. reorg_preview with deep=true runs non-mutating Impact Analysis and returns exact DDL only when a current SQL artifact is available.",
       "inputSchema": {
         "examples": [
           {
@@ -621,6 +764,10 @@
           {
             "action": "sql_ddl",
             "name": "Customer"
+          },
+          {
+            "action": "reorg_preview",
+            "deep": true
           }
         ],
         "properties": {
@@ -638,12 +785,13 @@
               "types_describe",
               "types_validate",
               "translations_import",
-              "reorg_impact"
+              "reorg_impact",
+              "reorg_preview"
             ],
             "type": "string"
           },
           "deep": {
-            "description": "reorg_impact only: run ISpecifierService.ImpactDatabase (specification, build-heavy) for the authoritative AnalysisResult. Default false (cheap timestamp heuristic).",
+            "description": "reorg_impact/reorg_preview: run non-mutating ISpecifierService.ImpactDatabase and capture a current SQL artifact when available.",
             "type": "boolean"
           },
           "format": {
@@ -1043,7 +1191,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Edit + rebuild callers in one call. Returns edit diff + impact + a build block that may include taskId/pollTarget for lifecycle follow-up.",
+      "description": "Edit + rebuild callers in one call. Returns edit diff + impact + a build block that may include taskId/pollTarget for lifecycle follow-up. validate=true/validationMode=specify validates the saved object; rollbackOnFailure restores its pre-write snapshot on specification failure.",
       "inputSchema": {
         "examples": [
           {
@@ -1052,7 +1200,8 @@
             "patch": {
               "find": "oldValue",
               "replace": "newValue"
-            }
+            },
+            "validate": true
           },
           {
             "dryRun": true,
@@ -1106,8 +1255,23 @@
           "patch": {
             "description": "Same shape as genexus_edit.patch. Auto-sets mode=patch."
           },
+          "rollbackOnFailure": {
+            "default": true,
+            "type": "boolean"
+          },
           "type": {
             "description": "Disambiguates ambiguous names.",
+            "type": "string"
+          },
+          "validate": {
+            "default": false,
+            "type": "boolean"
+          },
+          "validationMode": {
+            "default": "specify",
+            "enum": [
+              "specify"
+            ],
             "type": "string"
           },
           "visualVerify": {
@@ -1433,7 +1597,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Snapshot an object: metadata, variables, structure, signature. runtimeIds needs a prior build; use genexus_read for full source.",
+      "description": "Use this to snapshot an object: metadata, variables, structure, signature. runtimeIds needs a prior build; use genexus_read for full source.",
       "inputSchema": {
         "examples": [
           {
