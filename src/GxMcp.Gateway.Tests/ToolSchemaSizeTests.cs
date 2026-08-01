@@ -98,7 +98,26 @@ namespace GxMcp.Gateway.Tests
             //   atomic authoring, validated edit persistence, and reorg-preview schemas.
             //   SDT support (description + payload docs for isCollection/collectionItemName/
             //   basedOnDomain + an SDT example). Measured ~16760; ~140 headroom.
-            Assert.True(approxTokens < 17700, $"tool_definitions.json is ~{approxTokens} tokens; budget 17700.");
+            //   2026-07-31 (issues #59/#60): 16900 → 17700 for the validationMode=
+            //   "specify"/rollbackOnFailure params added to genexus_edit,
+            //   genexus_variable, genexus_properties, genexus_structure and
+            //   genexus_create. Measured ~17572; ~128 headroom.
+            //   2026-07-31 (issue #62): 17700 → 18200 for the genexus_create
+            //   action=object_atomic params (mode/variables/rules/parms/source/
+            //   properties/expectedVersion/validate) + the new action enum value and
+            //   description copy. Measured ~18077; ~123 headroom.
+            //   2026-07-31 (issue #58): 18200 → 19000 for the new genexus_wwp tool
+            //   (WorkWithPlus action groups: list/add_action/update_action/
+            //   move_action/remove_action + group/position/confirm/selection/
+            //   enabledWhen/procedure/dryRun params). Measured ~18938; ~62 headroom.
+            //   2026-08-01 (search-source continuation): 19000 → 19100 for the
+            //   opaque cursor parameter that resumes pages ending inside an object.
+            //   Measured ~19002; ~98 headroom.
+            //   2026-08-01 (merged atomic-authoring contracts): 19100 → 19500 for
+            //   the compatible mode/baseVersion and expectedVersion/updateExisting
+            //   aliases plus native Domain-binding guidance. Measured ~19350; ~150
+            //   headroom.
+            Assert.True(approxTokens < 19500, $"tool_definitions.json is ~{approxTokens} tokens; budget 19500.");
         }
     }
 }

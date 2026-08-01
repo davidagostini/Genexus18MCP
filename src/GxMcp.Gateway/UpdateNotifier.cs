@@ -25,12 +25,49 @@ namespace GxMcp.Gateway
 
         private static int _triggered;
 
+        // PERFORMANCE (perf round 5): whoami calls GetCachedStatusSync TWICE per
+        // invocation, and ReadCache() reads update-check.json off disk every time.
+        // The on-disk cache is only rewritten by background refresh runs (hours
+        // apart), so an in-memory layer with a short TTL removes the per-whoami
+        // disk reads entirely; staleness is bounded by the TTL.
+        private static readonly object _statusSyncLock = new object();
+        private static JObject? _statusSyncCache;
+        private static DateTime _statusSyncAtUtc = DateTime.MinValue;
+        private static readonly TimeSpan StatusSyncCacheTtl = TimeSpan.FromSeconds(10);
+
         /// <summary>
         /// Read-only snapshot of the last update check (cache only — does not trigger a fetch).
         /// Surfaced via <c>genexus_whoami.update</c> so the LLM can detect update availability
         /// as structured data, not just as a stderr notification the user might miss.
         /// </summary>
         public static JObject? GetCachedStatusSync()
+        {
+            try
+            {
+                lock (_statusSyncLock)
+                {
+                    if (_statusSyncCache != null
+                        && (DateTime.UtcNow - _statusSyncAtUtc) < StatusSyncCacheTtl)
+                    {
+                        return (JObject)_statusSyncCache.DeepClone();
+                    }
+                }
+                JObject? built = BuildCachedStatusSync();
+                lock (_statusSyncLock)
+                {
+                    _statusSyncCache = built != null ? (JObject)built.DeepClone() : null;
+                    _statusSyncAtUtc = DateTime.UtcNow;
+                }
+                return built;
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"[UpdateCheck] GetCachedStatusSync: {ex.GetType().Name}: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static JObject? BuildCachedStatusSync()
         {
             try
             {
@@ -88,7 +125,7 @@ namespace GxMcp.Gateway
             }
             catch (Exception ex)
             {
-                Program.Log($"[UpdateCheck] GetCachedStatusSync: {ex.GetType().Name}: {ex.Message}");
+                Program.Log($"[UpdateCheck] BuildCachedStatusSync: {ex.GetType().Name}: {ex.Message}");
                 return null;
             }
         }

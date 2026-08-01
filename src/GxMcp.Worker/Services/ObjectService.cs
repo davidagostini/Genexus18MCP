@@ -1863,6 +1863,88 @@ namespace GxMcp.Worker.Services
             InvalidateCache(obj);
         }
 
+        // PERFORMANCE (perf round 1): raw part-source getter used by SourceSearchService's
+        // full-KB scans. Routes through the SAME _readCache the JSON read path uses, so the
+        // existing write-invalidation above (which removes every "<guid>|…" key) invalidates
+        // these entries for free — a full source scan never re-reads unchanged parts from
+        // the SDK on repeat searches. Key format: "<guid>|<part>|raw" (3 segments, distinct
+        // from BuildReadCacheKey's 6-segment JSON keys, and matched by the same guid prefix).
+        // Returns empty string when the part has no source (also not cached — SetReadCache
+        // skips empty payloads, so a genuinely empty object is re-probed, which is cheap).
+        // Oversized sources (> 256 KB) are deliberately NOT cached: _readCache is a TTL-only
+        // unbounded dictionary, and a single huge WebForm/layout XML would occupy it for the
+        // full 60s TTL while contributing nothing to repeat-hit rate. The limit is compared
+        // against string.Length (UTF-16 code units, ~bytes for the ASCII-heavy GeneXus
+        // sources); only caching is skipped, never the returned source.
+        private const int RawSourceCacheMaxBytes = 256 * 1024;
+
+        public string ReadPartSourceRaw(KBObject obj, string partName)
+        {
+            if (obj == null) return string.Empty;
+            string normalizedPart = string.IsNullOrWhiteSpace(partName) ? "source" : partName.Trim().ToLowerInvariant();
+            string key = obj.Guid.ToString("N").ToLowerInvariant() + "|" + normalizedPart + "|raw";
+            if (TryGetReadCache(key, out string cached)) return cached;
+
+            string src = ReadPartSourceUncached(obj, normalizedPart);
+            if (src != null && src.Length <= RawSourceCacheMaxBytes) SetReadCache(key, src);
+            return src ?? string.Empty;
+        }
+
+        // PERFORMANCE (perf round 2): cache-only probe used by SourceSearchService's scan
+        // loop to skip the FindObject SDK call entirely when the part source for this index
+        // entry is already cached. The index entry carries the object's guid, so the cache
+        // key is computed without touching the SDK — a full-KB source scan becomes dictionary
+        // lookups + regex over cached text on repeat searches instead of one COM round-trip
+        // per candidate. Returns false when the guid/part isn't cached (caller then does the
+        // normal FindObject + ReadPartSourceRaw path). Same key format as ReadPartSourceRaw.
+        public bool TryGetPartSourceRaw(string guid, string partName, out string src)
+        {
+            src = string.Empty;
+            if (string.IsNullOrEmpty(guid)) return false;
+            // The index stores Guid as Guid.ToString() (format "D": 36 chars with hyphens),
+            // while ReadPartSourceRaw writes cache keys from obj.Guid.ToString("N") (32 chars,
+            // no hyphens). Normalize here so the probe key ALWAYS matches the writer key —
+            // otherwise the round-2 cache-first fast path would silently miss on every call.
+            string normalizedGuid;
+            try { normalizedGuid = Guid.Parse(guid).ToString("N").ToLowerInvariant(); }
+            catch { normalizedGuid = guid.Trim().ToLowerInvariant(); }
+            string normalizedPart = string.IsNullOrWhiteSpace(partName) ? "source" : partName.Trim().ToLowerInvariant();
+            string key = normalizedGuid + "|" + normalizedPart + "|raw";
+            return TryGetReadCache(key, out src);
+        }
+
+        // The actual SDK read for ReadPartSourceRaw — mirrors SourceSearchService's legacy
+        // TryGetPartSource so the cache layer can live here without changing semantics.
+        private static string ReadPartSourceUncached(KBObject obj, string normalizedPart)
+        {
+            try
+            {
+                if (normalizedPart == "source")
+                {
+                    dynamic sp = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is ISource);
+                    return sp?.Source ?? "";
+                }
+                if (normalizedPart == "rules")
+                {
+                    try { return ((dynamic)obj).Rules?.Source ?? ""; } catch { return ""; }
+                }
+                if (normalizedPart == "conditions")
+                {
+                    try { return ((dynamic)obj).Conditions?.Source ?? ""; } catch { return ""; }
+                }
+                if (normalizedPart == "events")
+                {
+                    try { return ((dynamic)obj).Events?.Source ?? ""; } catch { return ""; }
+                }
+                if (normalizedPart == "webform" || normalizedPart == "layout")
+                {
+                    try { return GxMcp.Worker.Helpers.WebFormXmlHelper.ReadEditableXml(obj) ?? ""; } catch { return ""; }
+                }
+            }
+            catch { }
+            return "";
+        }
+
         public string ExportObjectToText(string target, string outputPath, string partName = null, string typeFilter = null, bool overwrite = false)
         {
             try

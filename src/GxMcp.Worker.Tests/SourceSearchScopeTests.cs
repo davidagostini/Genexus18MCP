@@ -107,7 +107,12 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("Cancelled", obj["code"]?.ToString());
             // Pre-cancelled trips on the first iteration at the resume index, so the
             // cursor to resume from equals the StartIndex we passed in.
-            Assert.Equal(250, obj["result"]!["nextCursor"]!.Value<int>());
+            string nextCursor = obj["result"]!["nextCursor"]!.ToString();
+            Assert.True(SourceSearchService.TryParseResumeCursor(
+                nextCursor, out int entryIndex, out int skippedHits, out bool metadata));
+            Assert.Equal(250, entryIndex);
+            Assert.Equal(0, skippedHits);
+            Assert.False(metadata);
             Assert.NotNull(obj["result"]!["resumeHint"]);
         }
 

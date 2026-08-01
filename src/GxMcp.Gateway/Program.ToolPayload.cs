@@ -298,19 +298,37 @@ namespace GxMcp.Gateway
             }
         }
 
-        private static JObject BuildToolTextResponse(JToken? idToken, JToken payload, bool isError, string? toolName = null, JObject? toolArgs = null)
+        internal static JObject BuildToolTextResponse(JToken? idToken, JToken payload, bool isError, string? toolName = null, JObject? toolArgs = null)
         {
-            JToken axiPayload = NormalizeToolPayloadForAxi(payload, toolName ?? "unknown", toolArgs, isError);
             return new JObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = idToken?.DeepClone(),
-                ["result"] = JToken.FromObject(new
-                {
-                    content = new[] { new { type = "text", text = axiPayload.ToString(Formatting.None) } },
-                    isError
-                })
+                ["result"] = BuildToolResultContent(payload, isError, toolName, toolArgs)
             };
+        }
+
+        internal static JObject BuildToolResultContent(JToken payload, bool isError, string? toolName = null, JObject? toolArgs = null)
+        {
+            JToken axiPayload = NormalizeToolPayloadForAxi(payload, toolName ?? "unknown", toolArgs, isError);
+            var result = new JObject
+            {
+                ["resultType"] = "complete",
+                ["isError"] = isError,
+                ["content"] = new JArray { new JObject
+                {
+                    ["type"] = "text",
+                    ["text"] = axiPayload.ToString(Formatting.None)
+                } }
+            };
+            // MCP's structuredContent lets modern clients consume the JSON result
+            // without reparsing the text content. Keep the text representation for
+            // legacy clients and omit structuredContent on tool errors.
+            if (!isError && (axiPayload.Type == JTokenType.Object || axiPayload.Type == JTokenType.Array))
+            {
+                result["structuredContent"] = axiPayload.DeepClone();
+            }
+            return result;
         }
 
         private static JToken NormalizeToolPayloadForAxi(JToken? payload, string toolName, JObject? toolArgs, bool isError)

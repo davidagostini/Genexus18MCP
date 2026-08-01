@@ -1,11 +1,20 @@
 using Newtonsoft.Json.Linq;
 using Xunit;
 using System;
+using System.Threading.Tasks;
 
 namespace GxMcp.Gateway.Tests
 {
     public class McpRouterTests
     {
+        [Fact]
+        public void IsJsonRpcNotification_ShouldSuppressMissingOrNullIds()
+        {
+            Assert.True(Program.IsJsonRpcNotification(JObject.Parse("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}")));
+            Assert.True(Program.IsJsonRpcNotification(JObject.Parse("{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}")));
+            Assert.False(Program.IsJsonRpcNotification(JObject.Parse("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}")));
+        }
+
         [Fact]
         public void Handle_Initialize_ShouldExposeCurrentProtocolVersion()
         {
@@ -15,6 +24,41 @@ namespace GxMcp.Gateway.Tests
 
             var json = JObject.FromObject(result!);
             Assert.Equal(McpRouter.SupportedProtocolVersion, json["protocolVersion"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_Initialize_ShouldEchoKnownRequestedProtocolVersion()
+        {
+            var request = JObject.Parse("""{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-03-26"}}""");
+
+            var result = McpRouter.Handle(request);
+
+            Assert.Equal("2025-03-26", JObject.FromObject(result!)["protocolVersion"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_Initialize_ShouldNotAcceptModernPerRequestVersion()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2026-07-28"}}"""
+            );
+
+            Assert.Null(McpRouter.Handle(request));
+        }
+
+        [Fact]
+        public void Handle_ServerDiscover_ShouldAdvertiseModernAndLegacyVersions()
+        {
+            var request = JObject.Parse("""{"jsonrpc":"2.0","id":"discover","method":"server/discover"}""");
+
+            var result = JObject.FromObject(McpRouter.Handle(request)!);
+
+            var versions = result["supportedVersions"] as JArray;
+            Assert.NotNull(versions);
+            Assert.Contains(McpRouter.ModernProtocolVersion, versions!.Values<string>());
+            Assert.Contains(McpRouter.SupportedProtocolVersion, versions.Values<string>());
+            Assert.Equal("genexus-mcp-server", result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.ToString());
+            Assert.True(result["ttlMs"]!.Value<int>() > 0);
         }
 
         [Fact]
@@ -58,10 +102,22 @@ namespace GxMcp.Gateway.Tests
 
             var result = McpRouter.Handle(request);
 
-            var json = JObject.FromObject(result!);
-            Assert.Equal("Invalid prompt arguments.", json["description"]?.ToString());
-            var text = json["messages"]![0]!["content"]?["text"]?.ToString() ?? string.Empty;
-            Assert.Contains("Missing required argument 'goal'", text);
+            var error = Assert.IsType<McpRouterError>(result);
+            Assert.Equal(-32602, error.Code);
+            Assert.Contains("Missing required argument 'goal'", error.Message);
+        }
+
+        [Fact]
+        public async Task ProcessMcpRequest_PromptsGetInvalidArguments_ShouldReturnJsonRpcError()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"prompts/get","params":{"name":"gx_agent_ship_change","arguments":{"objectName":"InvoiceEntry"}}}"""
+            );
+
+            var response = await Program.ProcessMcpRequest(request);
+
+            Assert.Equal(-32602, response?["error"]?["code"]?.Value<int>());
+            Assert.Contains("Missing required argument 'goal'", response?["error"]?["message"]?.ToString());
         }
 
         [Fact]
@@ -85,6 +141,9 @@ namespace GxMcp.Gateway.Tests
             var result = McpRouter.Handle(request);
 
             var json = JObject.FromObject(result!);
+            Assert.Equal("complete", json["resultType"]?.ToString());
+            Assert.True(json["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", json["cacheScope"]?.ToString());
             var contents = (JArray)json["contents"]!;
             var first = (JObject)contents[0]!;
             Assert.Equal("genexus://kb/agent-playbook", first["uri"]?.ToString());
@@ -101,6 +160,9 @@ namespace GxMcp.Gateway.Tests
             var result = McpRouter.Handle(request);
 
             var json = JObject.FromObject(result!);
+            Assert.Equal("complete", json["resultType"]?.ToString());
+            Assert.True(json["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", json["cacheScope"]?.ToString());
             var contents = (JArray)json["contents"]!;
             var first = (JObject)contents[0]!;
             Assert.Equal("genexus://kb/llm-playbook", first["uri"]?.ToString());

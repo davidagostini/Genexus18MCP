@@ -1,4 +1,5 @@
 {
+  "cacheScope": "public",
   "resources": [
     {
       "description": "Browsable list of all attributes.",
@@ -54,5 +55,7 @@
       "name": "GeneXus Objects Index",
       "uri": "genexus://objects"
     }
-  ]
+  ],
+  "resultType": "complete",
+  "ttlMs": 3600000
 }

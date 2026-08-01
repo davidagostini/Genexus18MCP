@@ -99,6 +99,7 @@ namespace GxMcp.Gateway
     internal sealed class HttpSessionState
     {
         public string Id { get; set; } = "";
+        public string ProtocolVersion { get; set; } = McpRouter.SupportedProtocolVersion;
         public DateTime CreatedUtc { get; set; }
         public DateTime LastSeenUtc { get; set; }
         public Queue<string> PendingMessages { get; } = new Queue<string>();

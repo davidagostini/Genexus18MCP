@@ -155,7 +155,11 @@ namespace GxMcp.Gateway.Routers
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
                             return_post_state = returnPostState,
                             verbose = verbose,
-                            visualVerify = visualVerify
+                            visualVerify = visualVerify,
+                            // issue #60 — save+specify: run the inline Specify pass after the
+                            // write when validationMode="specify" (rollback on spec errors).
+                            validationMode = args?["validationMode"]?.ToString(),
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                         };
                     }
                     if (mode == "patch")
@@ -190,7 +194,11 @@ namespace GxMcp.Gateway.Routers
                                 dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
                                 return_post_state = returnPostState,
                                 verbose = verbose,
-                                visualVerify = visualVerify
+                                visualVerify = visualVerify,
+                                // issue #60 — save+specify: run the inline Specify pass after the
+                                // write when validationMode="specify" (rollback on spec errors).
+                                validationMode = args?["validationMode"]?.ToString(),
+                                rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                             };
                         }
 
@@ -245,11 +253,19 @@ namespace GxMcp.Gateway.Routers
                             // Item 9 (friction 2026-05-22): replaceAll=true applies patch to all
                             // occurrences instead of requiring expectedCount to match exactly.
                             replaceAll = args?["replaceAll"]?.ToObject<bool?>() ?? false,
-                            visualVerify = visualVerify
+                            visualVerify = visualVerify,
+                            // issue #60 — save+specify: run the inline Specify pass after the
+                            // write when validationMode="specify" (rollback on spec errors).
+                            validationMode = args?["validationMode"]?.ToString(),
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                         };
                     }
                     else
                     {
+                        // issue #60 — forward validationMode/rollbackOnFailure so the worker's
+                        // SaveSpecifyOrchestrator can run the inline Specify pass after the
+                        // write (see CommandDispatcher.Handle_Write). Also pass `validate`
+                        // (strict|best-effort|only) which the schema already advertised.
                         return new {
                             module = "Write",
                             action = part,
@@ -257,7 +273,10 @@ namespace GxMcp.Gateway.Routers
                             payload = args?["content"]?.ToString(),
                             type = args?["type"]?.ToString(),
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
-                            visualVerify = visualVerify
+                            visualVerify = visualVerify,
+                            validate = args?["validate"]?.ToString(),
+                            validationMode = args?["validationMode"]?.ToString(),
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                         };
                     }
                 }

@@ -45,6 +45,8 @@ namespace GxMcp.Worker.Services
         private readonly Structure.AuthoringService _authoringService;
         private readonly FormatService _formatService;
         private readonly PropertyService _propertyService;
+        // Issue #62 — atomic create/update (variables + rules + parms + properties + source in one validated op).
+        private readonly AtomicCreateService _atomicCreateService;
         private readonly AssetService _assetService;
         private readonly VersionControlService _versionControlService;
         private readonly ConversionService _conversionService;
@@ -154,6 +156,10 @@ namespace GxMcp.Worker.Services
         private readonly ApiIntrospectService _apiIntrospectService;
         // genexus_profile: runtime profiler XML bridge (file-only ingest v1).
         private readonly ProfileService _profileService;
+        // issue #60 — save+specify in one call. Runs the inline Specify pass after a
+        // successful write when validationMode="specify", surfacing structured diagnostics
+        // and (optionally) rolling back on failure.
+        private readonly SaveSpecifyOrchestrator _saveSpecifyOrchestrator;
 
         private readonly Dictionary<string, CommandHandler> _commandTable;
 
@@ -196,6 +202,7 @@ namespace GxMcp.Worker.Services
             _testService = new TestService(_kbService, _buildService);
             _wikiService = new WikiService(_objectService, _searchService);
             _historyService = new HistoryService(_objectService, _writeService);
+            _saveSpecifyOrchestrator = new SaveSpecifyOrchestrator(_buildService, _historyService);
             _linterService = new LinterService(_objectService, _navigationService);
             _patternService = new PatternService(_indexCacheService, _objectService);
             _patternApplyService = new PatternApplyService(_objectService);
@@ -204,6 +211,7 @@ namespace GxMcp.Worker.Services
             _authoringService = new Structure.AuthoringService(_objectService);
             _propertyService = new PropertyService(_objectService);
             _atomicAuthoringService = new AtomicAuthoringService(_objectService, _writeService, _propertyService, _buildService);
+            _atomicCreateService = new AtomicCreateService(_objectService, _writeService, _propertyService, _saveSpecifyOrchestrator, _historyService);
             _conversionService = new ConversionService(_objectService);
             _selfTestService = new SelfTestService(_kbService, _searchService, _linterService);
             _kbValidationService = new KbValidationService(_indexCacheService, _objectService, _patternAnalysisService);
@@ -240,7 +248,7 @@ namespace GxMcp.Worker.Services
             _kbVersionService = new KbVersionService(_kbService);
             _transferService = new TransferService(_kbService, _objectService);
             _deployService = new DeployService(_kbService);
-            _reorgImpactService = new ReorgImpactService(_kbService);
+            _reorgImpactService = new ReorgImpactService(_kbService, _objectService);
             // B15: give drift_check the authoritative reorg-needed signal.
             _dbDriftService.SetReorgImpact(_reorgImpactService);
             _kbStatsService = new KbStatsService(_kbService);
@@ -379,6 +387,10 @@ namespace GxMcp.Worker.Services
                     return true;
                 // v2.3.8 Task 1.2: GetIndexState reads in-memory IndexCacheService snapshot only – no SDK access
                 if (method == "kb" && action == "GetIndexState")
+                    return true;
+                // Root-cause fix (Table-shadow auto-injection): GetNameTypeMap scans the
+                // in-memory index only – no SDK access (see the action body below).
+                if (method == "kb" && action == "GetNameTypeMap")
                     return true;
 
                 // D21: health/status polls must never be starved behind an in-flight
@@ -546,6 +558,7 @@ namespace GxMcp.Worker.Services
                 ["list"] = Handle_List,
                 ["read"] = Handle_Read,
                 ["object"] = Handle_Object,
+                ["atomiccreate"] = Handle_AtomicCreate,
                 ["write"] = Handle_Write,
                 ["editandbuild"] = Handle_EditAndBuild,
                 ["semanticops"] = Handle_SemanticOps,
@@ -607,6 +620,7 @@ namespace GxMcp.Worker.Services
                 ["kbstats"] = Handle_KbStats,
                 ["tablerelations"] = Handle_TableRelations,
                 ["usercontrols"] = Handle_UserControls,
+                ["wwpaction"] = Handle_WwpAction,
                 ["curlproc"] = Handle_CurlProc,
                 ["designsystem"] = Handle_DesignSystem,
                 ["sdpanel"] = Handle_SdPanel,
@@ -888,6 +902,48 @@ namespace GxMcp.Worker.Services
 
                 return Models.McpResponse.Ok(code: "IndexState", result: j);
             }
+
+            if (action == "GetNameTypeMap")
+            {
+                // Root-cause fix for the gateway's auto-type-injection Table shadow: the
+                // gateway primed its name→type map from the top-5 RecentlyChanged window,
+                // which cannot establish real uniqueness — a Transaction's physical Table
+                // shadow can win that window without the sibling Transaction ever appearing
+                // (the design model indexes BOTH under the same name). Expose the FULL
+                // name→[distinct types] map from the in-memory index so the gateway can
+                // resolve Transaction+Table → Transaction deterministically.
+                // O(n) scan of the in-memory dictionary, no SDK access (STA-exempt).
+                try { _indexCacheService.GetIndex(); } catch { /* best-effort: empty map below */ }
+                var nameTypeMap = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                try
+                {
+                    var idx = _indexCacheService.GetIndex();
+                    if (idx != null)
+                    {
+                        foreach (var e in idx.Objects.Values)
+                        {
+                            if (string.IsNullOrWhiteSpace(e.Name) || string.IsNullOrWhiteSpace(e.Type)) continue;
+                            if (!nameTypeMap.TryGetValue(e.Name, out var types))
+                                nameTypeMap[e.Name] = types = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            types.Add(e.Type);
+                        }
+                    }
+                }
+                catch (Exception ex) { Logger.Debug("[GetNameTypeMap] scan failed: " + ex.Message); }
+
+                var map = new JObject();
+                foreach (var kv in nameTypeMap)
+                {
+                    var arr = new JArray();
+                    foreach (var t in kv.Value) arr.Add(t);
+                    map[kv.Key] = arr;
+                }
+                return Models.McpResponse.Ok(code: "NameTypeMap", result: new JObject
+                {
+                    ["nameTypeMap"] = map,
+                    ["totalNames"] = nameTypeMap.Count
+                });
+            }
             if (action == "ValidateConditions") return _kbValidationService.ValidateConditions(args?["limit"]?.ToObject<int?>() ?? 0);
             if (action == "ListPatternSnapshots") return _kbValidationService.ListPatternSnapshots(target);
             if (action == "RestorePatternSnapshot") return _kbValidationService.RestorePatternSnapshot(target, args?["snapshotPath"]?.ToString(), _writeService);
@@ -945,6 +1001,7 @@ namespace GxMcp.Worker.Services
                     // Issue #27 item 4: object scope + tunable timeout + resume cursor.
                     ObjectName = args?["objectName"]?.ToString(),
                     StartIndex = args?["startIndex"]?.ToObject<int?>() ?? 0,
+                    Cursor = args?["cursor"]?.ToString(),
                     TimeoutMs = args?["timeoutMs"]?.ToObject<int?>() ?? 30000
                 };
                 if (args?["scope"] is JArray scopeArr)
@@ -1053,6 +1110,14 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
+        private string Handle_AtomicCreate(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // Issue #62 — genexus_create action=object_atomic (module AtomicCreate).
+            // The service validates the whole definition (variables/rules/parms/properties/source)
+            // before the first save, composes the SDK write primitives, and compensates on failure.
+            return _atomicCreateService.Run(args ?? new JObject());
+        }
+
         private string Handle_Object(JObject request, string method, string action, string target, string payload, JObject args)
         {
             if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString());
@@ -1060,7 +1125,12 @@ namespace GxMcp.Worker.Services
             {
                 // Item 21 (friction 2026-05-22): dryRun=true returns the planned
                 // shape without calling newObj.Save(). args carries the flag.
-                return _objectService.CreateObject(args?["type"]?.ToString(), target, args);
+                var createResp = _objectService.CreateObject(args?["type"]?.ToString(), target, args);
+                // issue #60 — validationMode="specify" runs the inline Specify pass against
+                // the created object and surfaces structured diagnostics (or rolls back).
+                // A new object has no pre-write snapshot, so rollbackOnFailure reports
+                // rolledBack=false with a note (delete the object via genexus_delete_object).
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(createResp, target, args, "Source");
             }
             if (action == "Delete") return _objectService.DeleteObject(target, args?["type"]?.ToString(), args?["confirm"]?.ToObject<bool?>() ?? false, args?["dryRun"]?.ToObject<bool?>() ?? false);
             if (action == "SaveAs") return _saveAsService.SaveAs(args ?? new JObject());
@@ -1137,9 +1207,10 @@ namespace GxMcp.Worker.Services
                 var varBatch = (args?["variables"] ?? request["variables"]) as JArray;
                 if (varBatch != null)
                 {
-                    return _writeService.AddVariables(target, varBatch, varDryRun);
+                    var batchResp = _writeService.AddVariables(target, varBatch, varDryRun);
+                    return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(batchResp, target, args, "Variables");
                 }
-                return _writeService.AddVariable(
+                var addResp = _writeService.AddVariable(
                     target,
                     args?["varName"]?.ToString(),
                     args?["typeName"]?.ToString(),
@@ -1148,19 +1219,21 @@ namespace GxMcp.Worker.Services
                     args?["decimals"]?.ToObject<int?>(),
                     args?["collection"]?.ToObject<bool?>(),
                     args?["basedOn"]?.ToString());
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(addResp, target, args, "Variables");
             }
             if (action == "DeleteVariable")
             {
                 bool varDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
-                return _writeService.DeleteVariable(
+                var delResp = _writeService.DeleteVariable(
                     target,
                     args?["varName"]?.ToString(),
                     varDryRun);
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(delResp, target, args, "Variables");
             }
             if (action == "ModifyVariable")
             {
                 bool varDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
-                return _writeService.ModifyVariable(
+                var modResp = _writeService.ModifyVariable(
                     target,
                     args?["varName"]?.ToString(),
                     args?["typeName"]?.ToString(),
@@ -1169,6 +1242,7 @@ namespace GxMcp.Worker.Services
                     args?["length"]?.ToObject<int?>(),
                     args?["decimals"]?.ToObject<int?>(),
                     args?["collection"]?.ToObject<bool?>());
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(modResp, target, args, "Variables");
             }
             if (action == "ValidatePayload")
             {
@@ -1211,6 +1285,9 @@ namespace GxMcp.Worker.Services
                     false,
                     true,
                     writeDryRun);
+                // issue #60 — validationMode="specify" runs the inline Specify pass against
+                // the written object and surfaces structured diagnostics (or rolls back).
+                writeResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(writeResp, target, args, args?["part"]?.ToString());
                 return VisualVerifyResponseHook.MaybeAttach(args, writeResp, _visualVerifyService);
             }
         }
@@ -1230,6 +1307,9 @@ namespace GxMcp.Worker.Services
             if (action == "Apply")
             {
                 var soResp = _writeService.ApplySemanticOps(args ?? request);
+                // issue #60 — validationMode="specify" runs the inline Specify pass after the
+                // write and surfaces structured diagnostics (or rolls back).
+                soResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(soResp, target, args ?? request, args?["part"]?.ToString());
                 return VisualVerifyResponseHook.MaybeAttach(args ?? request, soResp, _visualVerifyService);
             }
             return null;
@@ -1240,6 +1320,9 @@ namespace GxMcp.Worker.Services
             if (action == "Apply")
             {
                 var jpResp = _writeService.ApplyJsonPatch(args ?? request);
+                // issue #60 — validationMode="specify" runs the inline Specify pass after the
+                // write and surfaces structured diagnostics (or rolls back).
+                jpResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(jpResp, target, args ?? request, args?["part"]?.ToString());
                 return VisualVerifyResponseHook.MaybeAttach(args ?? request, jpResp, _visualVerifyService);
             }
             return null;
@@ -1278,6 +1361,9 @@ namespace GxMcp.Worker.Services
                     args?["return_post_state"]?.ToObject<bool?>() ?? true,
                     args?["verbose"]?.ToObject<bool?>() ?? false,
                     args?["replaceAll"]?.ToObject<bool?>() ?? false);
+                // issue #60 — validationMode="specify" runs the inline Specify pass after the
+                // write and surfaces structured diagnostics (or rolls back).
+                patchResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(patchResp, target, args, args?["part"]?.ToString());
                 return VisualVerifyResponseHook.MaybeAttach(args, patchResp, _visualVerifyService);
             }
             return null;
@@ -1556,7 +1642,13 @@ namespace GxMcp.Worker.Services
         private string Handle_Structure(JObject request, string method, string action, string target, string payload, JObject args)
         {
             if (action == "GetVisualStructure") return _structureService.GetVisualStructure(target);
-            if (action == "UpdateVisualStructure") return _structureService.UpdateVisualStructure(target, payload);
+            if (action == "UpdateVisualStructure")
+            {
+                var structResp = _structureService.UpdateVisualStructure(target, payload);
+                // issue #60 — validationMode="specify" runs the inline Specify pass against
+                // the edited object and surfaces structured diagnostics (or rolls back).
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(structResp, target, args, "Structure");
+            }
             if (action == "GetVisualIndexes") return _structureService.GetVisualIndexes(target);
             if (action == "CreateIndex") return _structureService.CreateIndex(target, payload);
             if (action == "DropIndex") return _structureService.DropIndex(target, payload);
@@ -1745,12 +1837,15 @@ namespace GxMcp.Worker.Services
             }
             if (action == "Set")
             {
-                return _propertyService.SetProperty(
+                var propResp = _propertyService.SetProperty(
                     target,
                     args?["propertyName"]?.ToString(),
                     args?["value"]?.ToString(),
                     args?["control"]?.ToString(),
                     propType);
+                // issue #60 — validationMode="specify" runs the inline Specify pass against
+                // the edited object and surfaces structured diagnostics (or rolls back).
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(propResp, target, args);
             }
             return _propertyService.GetProperties(target, args?["control"]?.ToString(), propType);
         }
@@ -2036,8 +2131,11 @@ namespace GxMcp.Worker.Services
 
         private string Handle_ReorgImpact(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            // genexus_db action=reorg_impact — reorg/DDL impact preview.
-            // Cheap timestamp heuristic default; deep=true runs specification.
+            // genexus_db action=reorg_impact / action=reorg_preview (issue #61).
+            // reorg_impact: cheap timestamp heuristic default; deep=true runs specification.
+            // reorg_preview: model-level before/after diff + proposed DDL + warnings.
+            if (string.Equals(action, "Preview", StringComparison.OrdinalIgnoreCase))
+                return _reorgImpactService.Preview(args ?? new JObject());
             return _reorgImpactService.Run(args ?? new JObject());
         }
 
@@ -2057,6 +2155,14 @@ namespace GxMcp.Worker.Services
         {
             // genexus_layout action=list_controls — control/theme catalog (read-only).
             return _userControlsListService.Run(args ?? new JObject());
+        }
+
+        private string Handle_WwpAction(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_wwp — WorkWithPlus Action Group / grid-action editing (issue #58).
+            // list|add_action|update_action|move_action|remove_action over the host's
+            // PatternInstance XML; dryRun supported; no Security permissions created.
+            return _wwpActionService.Run(target, args ?? new JObject());
         }
 
         private string Handle_CurlProc(JObject request, string method, string action, string target, string payload, JObject args)

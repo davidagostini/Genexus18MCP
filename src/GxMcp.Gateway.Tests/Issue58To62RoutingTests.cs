@@ -26,7 +26,7 @@ namespace GxMcp.Gateway.Tests
                 ["action"] = "object_atomic", ["name"] = "P", ["type"] = "Procedure",
                 ["validate"] = true
             }));
-            Assert.Equal("AtomicAuthoring", (string)routed["module"]);
+            Assert.Equal("AtomicCreate", (string)routed["module"]);
             Assert.Equal("P", (string)routed["params"]?["name"]);
             Assert.True((bool)routed["params"]?["validate"]);
         }

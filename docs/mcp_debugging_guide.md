@@ -17,6 +17,8 @@ Validate against `/mcp`.
 Required baseline:
 
 - `MCP-Protocol-Version: 2025-11-25`
+- POST `Content-Type: application/json` and `Accept: application/json, text/event-stream`
+- SSE `GET` requests must include `Accept: text/event-stream`
 - `initialize` before other MCP requests
 - `MCP-Session-Id` reused after initialization
 

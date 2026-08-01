@@ -150,7 +150,7 @@ namespace GxMcp.Worker.Services
                     if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
                 }
 
-                string persistedBefore = TryReadPropertyString(container, propName);
+                string beforeVal = null;
                 using (var trans = obj.Model.KB.BeginTransaction())
                 {
                     bool committed = false;
@@ -159,7 +159,7 @@ namespace GxMcp.Worker.Services
                         // issue #41 (general safety net): capture the prior value so a silent
                         // wipe (non-empty → empty for a non-empty request) is caught even for
                         // properties not on the explicit non-scalar list, and rolled back.
-                        string beforeVal = persistedBefore;
+                        beforeVal = TryReadPropertyString(container, propName);
 
                         ApplyPropertyValue(container, propName, value, controlName, obj);
 
@@ -186,28 +186,15 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                var refreshedObject = _objectService.FindObject(target, typeFilter);
-                dynamic refreshedContainer = refreshedObject;
-                if (!string.IsNullOrEmpty(controlName)) refreshedContainer = FindControl(refreshedObject, controlName);
-                string persistedValue = TryReadPropertyString(refreshedContainer, propName);
-                bool matches = string.Equals((value ?? string.Empty).Trim(), (persistedValue ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase);
-                var mutation = new JObject
-                {
-                    ["before"] = persistedBefore,
-                    ["requested"] = value,
-                    ["persisted"] = persistedValue,
-                    ["diff"] = new JObject { ["matches"] = matches },
-                    ["saved"] = matches
-                };
-                if (!matches)
-                    return Models.McpResponse.Err(code: "PropertyNotPersisted",
-                        message: "The property save completed, but the persisted value does not match the request.",
-                        target: target, extra: new JObject { ["property"] = propName, ["mutation"] = mutation });
+                // issue #59 — post-save persistence verification. Re-resolve the object and
+                // the target container FRESH (not the mutated in-memory instance) and compare
+                // the persisted value against what was requested. A mismatch returns the
+                // structured PropertyNotPersisted envelope; a confirmed match attaches the
+                // before/requested/persisted diff block to the success response.
+                string verified = VerifyPropertyPersisted(target, propName, value, controlName, typeFilter, beforeVal, obj);
+                if (verified != null) return verified;
 
-                return Models.McpResponse.Ok(target: target, code: "PropertyApplied", result: new JObject
-                {
-                    ["property"] = propName, ["value"] = value, ["mutation"] = mutation
-                });
+                return Models.McpResponse.Ok(target: target, code: "PropertyApplied", result: new JObject { ["property"] = propName, ["value"] = value });
             }
             catch (PropertyWipeException pwe)
             {
@@ -221,6 +208,71 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+            }
+        }
+
+        // issue #59 — re-read the property from a freshly-resolved object after the SDK
+        // commit and confirm the requested value persisted. Returns either:
+        //   - an error envelope (PropertyNotPersisted) when the re-read disagrees,
+        //   - the success envelope decorated with before/requested/persisted when confirmed,
+        //   - null when the fresh re-read is impossible (unverifiable → keep the original
+        //     response; never falsely accuse a write that can't be checked).
+        private string VerifyPropertyPersisted(string target, string propName, string requested, string controlName, string typeFilter, string beforeVal, KBObject original)
+        {
+            try
+            {
+                var fresh = _objectService.FindObject(target, typeFilter);
+                if (fresh == null) return null;
+
+                // Circularity guard: if the SDK hands back the SAME in-memory instance we
+                // just mutated (rather than a fresh object from the KB store), a re-read
+                // trivially matches the requested value and proves nothing. Treat identity
+                // as "unverifiable" — never claim a confirmation we didn't obtain.
+                if (original != null && object.ReferenceEquals(fresh, original)) return null;
+
+                dynamic container = fresh;
+                if (!string.IsNullOrEmpty(controlName))
+                {
+                    container = FindControl(fresh, controlName);
+                    if (container == null) return null;
+                }
+
+                string persisted = null;
+                // Nullable/ALLOWNULL family (issue #57): the property-bag entry may be named
+                // IsNullable even when the caller used Nullable — read the typed getter.
+                if (IsNullablePropertyName(propName))
+                {
+                    try
+                    {
+                        dynamic inl = container.IsNullable;
+                        if (inl != null) persisted = inl.ToString();
+                    }
+                    catch { /* fall through to the bag read */ }
+                }
+                if (persisted == null) persisted = TryReadPropertyString(container, propName);
+                if (persisted == null) return null; // unverifiable
+
+                if (!PersistenceVerifier.ValuesMatch(requested, persisted, IsNullablePropertyName(propName)))
+                {
+                    return PersistenceVerifier.BuildNotPersistedError(
+                        code: "PropertyNotPersisted",
+                        target: target,
+                        property: propName,
+                        requestedValue: requested,
+                        previousValue: beforeVal ?? string.Empty,
+                        persistedValue: persisted);
+                }
+
+                string success = Models.McpResponse.Ok(
+                    target: target,
+                    code: "PropertyApplied",
+                    result: new JObject { ["property"] = propName, ["value"] = requested });
+                return PersistenceVerifier.AttachPersistedDiff(success, beforeVal ?? string.Empty, requested, persisted);
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[PROPERTY-VERIFY] " + ex.Message);
+                return null;
             }
         }
 

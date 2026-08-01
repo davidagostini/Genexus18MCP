@@ -9,9 +9,28 @@ using GxMcp.Gateway.Routers;
 
 namespace GxMcp.Gateway
 {
+    internal sealed class McpRouterError
+    {
+        public McpRouterError(int code, string message, JObject? data = null)
+        {
+            Code = code;
+            Message = message;
+            Data = data;
+        }
+
+        public int Code { get; }
+        public string Message { get; }
+        public JObject? Data { get; }
+    }
+
     public class McpRouter
     {
         public static readonly string ServerVersion = ResolveServerVersion();
+        // Keep the legacy default for initialize-based clients while also serving
+        // the sessionless per-request metadata protocol. A client that explicitly
+        // asks for the modern revision is negotiated onto it; old clients continue
+        // to receive the 2025-11-25 handshake shape.
+        public const string ModernProtocolVersion = "2026-07-28";
         public const string SupportedProtocolVersion = "2025-11-25";
 
         private static string ResolveServerVersion()
@@ -165,7 +184,12 @@ namespace GxMcp.Gateway
                 if (File.Exists(defPath))
                 {
                     string json = File.ReadAllText(defPath);
-                    _toolDefinitions = JArray.Parse(json);
+                    var parsed = JArray.Parse(json);
+                    // MCP clients cache tools/list aggressively; deterministic ordering
+                    // keeps discovery diffs stable and avoids model-visible churn when
+                    // the source JSON is edited in a different order.
+                    _toolDefinitions = new JArray(parsed.OfType<JObject>()
+                        .OrderBy(definition => definition["name"]?.ToString() ?? string.Empty, StringComparer.Ordinal));
                     Program.Log($"[McpRouter] Loaded {_toolDefinitions.Count} tool definitions from JSON.");
                 }
                 else
@@ -230,19 +254,41 @@ namespace GxMcp.Gateway
             "2024-11-05",
             "2025-03-26",
             "2025-06-18",
-            "2025-11-25"
+            "2025-11-25",
+            ModernProtocolVersion
         };
+
+        internal static bool IsModernProtocolVersion(string? version)
+        {
+            return string.Equals(version, ModernProtocolVersion, StringComparison.Ordinal);
+        }
+
+        internal static string? GetRequestProtocolVersion(JObject request)
+        {
+            var parameters = request["params"] as JObject;
+            return parameters?["protocolVersion"]?.ToString()
+                ?? (parameters?["_meta"] as JObject)?["io.modelcontextprotocol/protocolVersion"]?.ToString();
+        }
+
+        internal static bool IsModernRequest(JObject request)
+        {
+            return IsModernProtocolVersion(GetRequestProtocolVersion(request));
+        }
+
+        internal static string NegotiateProtocolVersion(string? clientRequestedVersion)
+        {
+            return !string.IsNullOrEmpty(clientRequestedVersion)
+                && Array.IndexOf(KnownProtocolVersions, clientRequestedVersion) >= 0
+                ? clientRequestedVersion
+                : SupportedProtocolVersion;
+        }
 
         private static JObject BuildInitializeResponse(string? clientRequestedVersion = null)
         {
             // Echo the client's requested version if it is one we support; otherwise
-            // fall back to the highest version we know about (SupportedProtocolVersion).
-            string negotiatedVersion = SupportedProtocolVersion;
-            if (!string.IsNullOrEmpty(clientRequestedVersion)
-                && Array.IndexOf(KnownProtocolVersions, clientRequestedVersion) >= 0)
-            {
-                negotiatedVersion = clientRequestedVersion;
-            }
+            // keep initialize-based clients on the legacy session protocol. The modern
+            // HTTP revision is discovered through server/discover instead.
+            string negotiatedVersion = NegotiateProtocolVersion(clientRequestedVersion);
 
             var removed = new JArray();
             foreach (var kvp in RemovedToolsRegistry.Map)
@@ -278,6 +324,33 @@ namespace GxMcp.Gateway
             };
         }
 
+        private static JObject BuildServerDiscoverResponse()
+        {
+            return new JObject
+            {
+                ["resultType"] = "complete",
+                ["supportedVersions"] = new JArray(KnownProtocolVersions),
+                ["capabilities"] = new JObject
+                {
+                    ["tools"] = new JObject(),
+                    ["resources"] = new JObject(),
+                    ["prompts"] = new JObject(),
+                    ["completion"] = new JObject()
+                },
+                ["_meta"] = new JObject
+                {
+                    ["io.modelcontextprotocol/serverInfo"] = new JObject
+                    {
+                        ["name"] = "genexus-mcp-server",
+                        ["version"] = ServerVersion
+                    }
+                },
+                ["instructions"] = "Use genexus_whoami first, then discover and operate on the active GeneXus Knowledge Base with the narrowest read or write tool that fits.",
+                ["ttlMs"] = 3600000,
+                ["cacheScope"] = "public"
+            };
+        }
+
         public static object? Handle(JObject request)
         {
             string? method = request["method"]?.ToString();
@@ -285,11 +358,25 @@ namespace GxMcp.Gateway
             {
                 case "initialize":
                     {
+                        // Modern protocol revisions replaced the initialize/session
+                        // handshake with per-request metadata and server/discover.
+                        // Returning null lets the normal JSON-RPC method-not-found path
+                        // produce the deterministic stdio error; HTTP applies its 404
+                        // binding-specific status before dispatching here.
+                        if (IsModernRequest(request)) return null;
                         string? clientVersion = (request["params"] as JObject)?["protocolVersion"]?.ToString();
                         return BuildInitializeResponse(clientVersion);
                     }
+                case "server/discover":
+                    return BuildServerDiscoverResponse();
                 case "tools/list":
-                    return new { tools = _toolDefinitions };
+                    return new JObject
+                    {
+                        ["resultType"] = "complete",
+                        ["tools"] = _toolDefinitions.DeepClone(),
+                        ["ttlMs"] = 3600000,
+                        ["cacheScope"] = "public"
+                    };
                 case "resources/list":
                     {
                         // v2.8.0 — also surface curated, source-verified GeneXus
@@ -316,13 +403,20 @@ namespace GxMcp.Gateway
                                 mimeType = "text/markdown"
                             });
                         }
-                        return new { resources = baseResources };
+                        return new
+                        {
+                            resultType = "complete",
+                            resources = baseResources,
+                            ttlMs = 3600000,
+                            cacheScope = "public"
+                        };
                     }
                 case "resources/read":
                     return BuildStaticResourceResponse(request);
                 case "resources/templates/list":
                     return new
                     {
+                        resultType = "complete",
                         resourceTemplates = new[]
                         {
                             new
@@ -403,16 +497,24 @@ namespace GxMcp.Gateway
                                 name = "GeneXus Tool Help",
                                 description = "Long-form help for a single MCP tool: prefixes, modes, examples, defaults."
                             }
-                        }
+                        },
+                        ttlMs = 3600000,
+                        cacheScope = "public"
                     };
                 case "completion/complete":
                     return HandleCompletion(request);
                 case "prompts/list":
-                    return new { prompts = BuildPromptCatalog() };
+                    return new
+                    {
+                        resultType = "complete",
+                        prompts = BuildPromptCatalog(),
+                        ttlMs = 3600000,
+                        cacheScope = "public"
+                    };
                 case "prompts/get":
                     return BuildPromptResponse(request);
                 case "ping":
-                    return new { };
+                    return new { resultType = "complete" };
                 default:
                     return null;
             }
@@ -504,6 +606,7 @@ namespace GxMcp.Gateway
 
             return new
             {
+                resultType = "complete",
                 completion = new
                 {
                     values = filteredValues
@@ -537,31 +640,24 @@ namespace GxMcp.Gateway
             var args = paramsObj?["arguments"] as JObject ?? new JObject();
             if (!_promptDefinitions.TryGetValue(promptName, out var prompt))
             {
-                return new
-                {
-                    description = "Unknown prompt.",
-                    messages = new[]
-                    {
-                        CreatePromptMessage($"Prompt '{promptName}' is not defined by this server.")
-                    }
-                };
+                return new McpRouterError(
+                    -32602,
+                    $"Prompt '{promptName}' is not defined by this server.",
+                    new JObject { ["prompt"] = promptName });
             }
 
             string? validationError = ValidatePromptArguments(prompt, args);
             if (!string.IsNullOrWhiteSpace(validationError))
             {
-                return new
-                {
-                    description = "Invalid prompt arguments.",
-                    messages = new[]
-                    {
-                        CreatePromptMessage(validationError)
-                    }
-                };
+                return new McpRouterError(
+                    -32602,
+                    validationError,
+                    new JObject { ["prompt"] = prompt.Name });
             }
 
             return new
             {
+                resultType = "complete",
                 description = prompt.Description,
                 messages = new[]
                 {
@@ -804,6 +900,9 @@ namespace GxMcp.Gateway
             {
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 1000,
+                    cacheScope = "private",
                     contents = new[]
                     {
                         new
@@ -820,6 +919,9 @@ namespace GxMcp.Gateway
             {
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new
@@ -836,6 +938,9 @@ namespace GxMcp.Gateway
             {
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new
@@ -861,6 +966,9 @@ namespace GxMcp.Gateway
                 if (skill == null) return null;
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new
@@ -884,6 +992,9 @@ namespace GxMcp.Gateway
                 string text = ToolHelpCatalog.GetGotchaHelp(code);
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new
@@ -905,6 +1016,9 @@ namespace GxMcp.Gateway
 
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new

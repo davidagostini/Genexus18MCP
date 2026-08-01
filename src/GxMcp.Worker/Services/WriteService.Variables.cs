@@ -634,6 +634,11 @@ namespace GxMcp.Worker.Services
                         }
                         else outcome["persisted"] = true;
                     }
+                    // issue #59: verify EVERY added variable (not just Domain-bound ones)
+                    // actually landed in the persisted Variables part. A silent drop is
+                    // reported as VariableAddNotPersisted instead of a false VariableAdded.
+                    var perItemErr = VerifyVariablesPersisted(target, addedNames);
+                    if (perItemErr != null) return perItemErr;
                 }
 
                 if (outcomes.OfType<JObject>().Any(o => string.Equals(o["status"]?.ToString(), "NotPersisted", StringComparison.OrdinalIgnoreCase)))
@@ -841,6 +846,11 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Err(code: "VariableNotPersisted", message: persistError, target: target,
                         extra: new JObject { ["variable"] = varName, ["requestedType"] = typeName, ["saved"] = false });
 
+                // issue #59: confirm the single added variable actually landed in the
+                // persisted part (see VerifyVariablesPersisted).
+                var singleVerify = VerifyVariablesPersisted(target, new System.Collections.Generic.List<string> { varName });
+                if (singleVerify != null) return singleVerify;
+
                 return McpResponse.Ok(target: target, code: "VariableAdded", result: new JObject
                 { ["variable"] = varName, ["requestedType"] = typeName, ["persisted"] = true, ["saved"] = true });
             }
@@ -862,6 +872,73 @@ namespace GxMcp.Worker.Services
         // text is deliberately NOT used here: it can project "IDManual" while the raw
         // metadata contains the non-importable token "dom:IDManual". Re-resolve the
         // object through the SDK and compare the persisted DomainKey plus ATTCUSTOMTYPE.
+        // issue #59 — post-save read-back confirming EVERY requested variable name is present
+        // in the persisted Variables part (catches SDK silent drops beyond the Domain ref case
+        // #56 already covers). Returns a serialized error envelope (code VariableAddNotPersisted)
+        // listing the missing names, or null when all landed (or the re-read is unverifiable).
+        private string VerifyVariablesPersisted(string target,
+            System.Collections.Generic.List<string> addedNames)
+        {
+            if (addedNames == null || addedNames.Count == 0) return null;
+
+            string text = "";
+            try
+            {
+                string readJson = _objectService.ReadObjectSource(target, "Variables", null, null, "mcp", true, null);
+                if (!string.IsNullOrWhiteSpace(readJson))
+                {
+                    var readObj = JObject.Parse(readJson);
+                    text = readObj["source"]?.ToString()
+                        ?? readObj["content"]?.ToString()
+                        ?? readObj["parts"]?["Variables"]?.ToString()
+                        ?? "";
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[VARIABLES-POST-CHECK] Re-read failed for " + target + ": " + ex.Message);
+                return null;
+            }
+            if (string.IsNullOrWhiteSpace(text)) return null;
+
+            var missing = MissingVariableNames(text, addedNames);
+            if (missing.Count == 0) return null;
+
+            return McpResponse.Err(
+                code: "VariableAddNotPersisted",
+                message: $"The SDK saved the object but the re-read of the Variables part did not confirm {missing.Count} of {addedNames.Count} added variable(s).",
+                hint: "On this GeneXus build the variable write may not have fully survived. Re-read with genexus_read part=Variables and re-add the missing variables if they recur.",
+                nextSteps: new JArray(McpResponse.NextStep(
+                    tool: "genexus_read",
+                    args: new JObject { ["name"] = target, ["part"] = "Variables" },
+                    why: "Shows the persisted variables so you can see exactly which ones landed.")),
+                target: target,
+                extra: new JObject { ["variables"] = new JArray(missing) });
+        }
+
+        // Pure matcher: which of the expected variable names are absent from the persisted
+        // Variables text (format: one `&Name : Type` per line)? Unit-testable without a KB.
+        internal static System.Collections.Generic.List<string> MissingVariableNames(
+            string variablesText, System.Collections.Generic.IEnumerable<string> expectedNames)
+        {
+            var missing = new System.Collections.Generic.List<string>();
+            if (string.IsNullOrEmpty(variablesText) || expectedNames == null) return missing;
+            foreach (var name in expectedNames)
+            {
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                string pattern = @"^&\b" + Regex.Escape(name.TrimStart('&')) + @"\b\s*:";
+                if (!Regex.IsMatch(variablesText, pattern, RegexOptions.IgnoreCase | RegexOptions.Multiline))
+                    missing.Add(name.TrimStart('&'));
+            }
+            return missing;
+        }
+
+        // issue #56 — post-save read-back for Domain-based variable types. On some
+        // GeneXus 18.0.16 builds the SDK accepts DomainBasedOn but drops it at save,
+        // leaving the variable with an empty BasedOnReference — the persisted variable
+        // then fails spec with spc0056 (Data:249,...,[]). Returns a serialized error
+        // envelope (code VariableDomainReferenceNotPersisted) listing every binding the
+        // re-read no longer shows, or null when all Domain references persisted.
         private string VerifyDomainReferencesPersisted(string target,
             System.Collections.Generic.List<ExpectedDomainBinding> expected)
         {

@@ -47,9 +47,15 @@ namespace GxMcp.Gateway
 
         private static async Task<IResult> HandleMcpSseStream(HttpContext context)
         {
-            var protocolError = McpHttpProtocol.TryApplyProtocol(context.Request, context.Response.Headers);
-            if (protocolError != null)
-                return Results.Json(new { error = protocolError.Value.Message }, statusCode: protocolError.Value.StatusCode);
+            if (McpRouter.IsModernProtocolVersion(context.Request.Headers["MCP-Protocol-Version"].FirstOrDefault()))
+            {
+                context.Response.Headers["Allow"] = "POST";
+                return Results.StatusCode(StatusCodes.Status405MethodNotAllowed);
+            }
+
+            var headerError = McpHttpProtocol.ValidateSseHeaders(context.Request);
+            if (headerError != null)
+                return Results.Json(new { error = headerError.Value.Message }, statusCode: headerError.Value.StatusCode);
 
             string? sessionId = context.Request.Headers["MCP-Session-Id"].FirstOrDefault();
             if (string.IsNullOrWhiteSpace(sessionId))
@@ -61,10 +67,15 @@ namespace GxMcp.Gateway
             if (session == null)
                 return Results.NotFound(new { error = "Unknown or expired MCP session." });
 
+            var protocolError = McpHttpProtocol.TryApplyProtocol(context.Request, context.Response.Headers, session.ProtocolVersion);
+            if (protocolError != null)
+                return Results.Json(new { error = protocolError.Value.Message }, statusCode: protocolError.Value.StatusCode);
+
             context.Response.StatusCode = StatusCodes.Status200OK;
             context.Response.Headers["Content-Type"] = "text/event-stream";
             context.Response.Headers["Cache-Control"] = "no-cache";
             context.Response.Headers["Connection"] = "keep-alive";
+            context.Response.Headers["X-Accel-Buffering"] = "no";
             context.Response.Headers["MCP-Session-Id"] = session.Id;
 
             await context.Response.WriteAsync("retry: 5000\n");
@@ -135,8 +146,29 @@ namespace GxMcp.Gateway
 
         private static string Truncate(string s, int n) => s == null ? "" : (s.Length > n ? s.Substring(0, n) + "…" : s);
 
+        private static IResult JsonRpcHttpError(JObject requestObj, McpHttpError error)
+        {
+            var errorObj = new JObject
+            {
+                ["code"] = error.JsonRpcCode,
+                ["message"] = error.Message
+            };
+            if (error.Data != null) errorObj["data"] = error.Data.DeepClone();
+
+            return Results.Json(new JObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = requestObj["id"]?.DeepClone() ?? JValue.CreateNull(),
+                ["error"] = errorObj
+            }, statusCode: error.StatusCode);
+        }
+
         private static async Task<IResult> HandleJsonRpcHttpRequest(HttpRequest request)
         {
+            var headerError = McpHttpProtocol.ValidatePostHeaders(request);
+            if (headerError != null)
+                return Results.Json(new { error = headerError.Value.Message }, statusCode: headerError.Value.StatusCode);
+
             using (var reader = new StreamReader(request.Body))
             {
                 string body = await reader.ReadToEndAsync();
@@ -148,24 +180,74 @@ namespace GxMcp.Gateway
                     if (requestObj == null) return Results.Json(new { jsonrpc = "2.0", id = (string?)null, error = new { code = -32700, message = "Invalid JSON" } }, statusCode: 400);
 
                     id = requestObj["id"]?.ToString() ?? "no-id";
-                    var sessionError = McpHttpProtocol.TryGetValidSession(_httpSessions, request, requestObj, out var session);
+                    bool modern = McpHttpProtocol.IsModernRequest(request, requestObj);
+                    if (modern)
+                    {
+                        var modernHeaderError = McpHttpProtocol.ValidateModernRequest(request, requestObj);
+                        if (modernHeaderError != null)
+                            return JsonRpcHttpError(requestObj, modernHeaderError.Value);
+
+                        if (McpHttpProtocol.IsInitializeRequest(requestObj))
+                        {
+                            return Results.Json(new JObject
+                            {
+                                ["jsonrpc"] = "2.0",
+                                ["id"] = requestObj["id"]?.DeepClone() ?? JValue.CreateNull(),
+                                ["error"] = new JObject
+                                {
+                                    ["code"] = -32601,
+                                    ["message"] = "Method not found: initialize is not part of the 2026-07-28 sessionless protocol. Use server/discover."
+                                }
+                            }, statusCode: StatusCodes.Status404NotFound);
+                        }
+                    }
+
+                    var sessionError = McpHttpProtocol.TryGetValidSession(_httpSessions, request, requestObj, out var session, modern);
                     if (sessionError != null)
                         return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32001, message = sessionError.Value.Message } }, statusCode: sessionError.Value.StatusCode);
 
-                    var protocolError = McpHttpProtocol.TryApplyProtocol(request, request.HttpContext.Response.Headers);
+                    string expectedProtocolVersion = modern
+                        ? McpRouter.ModernProtocolVersion
+                        : McpHttpProtocol.IsInitializeRequest(requestObj)
+                        ? McpRouter.NegotiateProtocolVersion((requestObj["params"] as JObject)?["protocolVersion"]?.ToString())
+                        : session?.ProtocolVersion ?? McpRouter.SupportedProtocolVersion;
+                    var protocolError = McpHttpProtocol.TryApplyProtocol(request, request.HttpContext.Response.Headers, expectedProtocolVersion);
                     if (protocolError != null)
-                        return Results.Json(new { jsonrpc = "2.0", id = id, error = new { code = -32002, message = protocolError.Value.Message } }, statusCode: protocolError.Value.StatusCode);
+                        return JsonRpcHttpError(requestObj, protocolError.Value);
 
                     id = requestObj["id"]?.ToString() ?? "no-id";
                     string method = requestObj["method"]?.ToString() ?? "unknown";
                     Log($"[HTTP] Received {method} (ID: {id}) - Args: {RedactBodyForLog(requestObj)}");
 
-                    string httpSessionId = session?.Id ?? request.Headers["MCP-Session-Id"].FirstOrDefault() ?? "http";
+                    string httpSessionId = modern
+                        ? "http-modern"
+                        : session?.Id ?? request.Headers["MCP-Session-Id"].FirstOrDefault() ?? "http";
                     var response = await ProcessMcpRequest(requestObj, httpSessionId);
 
-                    if (McpHttpProtocol.IsInitializeRequest(requestObj))
+                    bool notification = requestObj["id"] == null
+                        || requestObj["id"]!.Type == JTokenType.Null;
+                    if (notification)
+                    {
+                        if (modern && response?["error"] != null)
+                        {
+                            // A rejected modern notification may carry a JSON-RPC
+                            // error body, but it must still be an HTTP error rather
+                            // than a successful 202 acknowledgement.
+                            request.HttpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
+                            return Results.Content(
+                                response.ToString(Formatting.None),
+                                "application/json; charset=utf-8",
+                                Encoding.UTF8);
+                        }
+
+                        Log($"[HTTP] Notification {method} completed without response body.");
+                        return modern ? Results.StatusCode(StatusCodes.Status202Accepted) : Results.NoContent();
+                    }
+
+                    if (!modern && McpHttpProtocol.IsInitializeRequest(requestObj))
                     {
                         var newSession = CreateHttpSession();
+                        newSession.ProtocolVersion = expectedProtocolVersion;
                         request.HttpContext.Response.Headers["MCP-Session-Id"] = newSession.Id;
                         QueueSessionMessage(newSession, JsonConvert.SerializeObject(new
                         {
@@ -185,13 +267,11 @@ namespace GxMcp.Gateway
                         Log($"[HTTP] Serializing response for {id}...");
                         string jsonResponse = response.ToString(Formatting.None);
                         Log($"[HTTP] Sending {jsonResponse.Length} bytes to {id}");
+                        if (modern && response["error"]?["code"]?.ToObject<int?>() == -32601)
+                        {
+                            request.HttpContext.Response.StatusCode = StatusCodes.Status404NotFound;
+                        }
                         return Results.Content(jsonResponse, "application/json; charset=utf-8", Encoding.UTF8);
-                    }
-
-                    if (requestObj["id"] == null)
-                    {
-                        Log($"[HTTP] Notification {method} completed without response body.");
-                        return Results.NoContent();
                     }
 
                     return Results.BadRequest(new { error = "No response generated" });
@@ -309,16 +389,24 @@ namespace GxMcp.Gateway
             app.MapGet("/mcp", async (HttpContext context) => await HandleMcpSseStream(context));
             app.MapDelete("/mcp", (HttpRequest request) =>
             {
-                var protocolError = McpHttpProtocol.TryApplyProtocol(request, request.HttpContext.Response.Headers);
-                if (protocolError != null)
-                    return Results.Json(new { error = protocolError.Value.Message }, statusCode: protocolError.Value.StatusCode);
+                if (McpRouter.IsModernProtocolVersion(request.Headers["MCP-Protocol-Version"].FirstOrDefault()))
+                {
+                    request.HttpContext.Response.Headers["Allow"] = "POST";
+                    return Results.StatusCode(StatusCodes.Status405MethodNotAllowed);
+                }
 
                 string? sessionId = request.Headers["MCP-Session-Id"].FirstOrDefault();
                 if (string.IsNullOrWhiteSpace(sessionId))
                     return Results.BadRequest(new { error = "Missing MCP-Session-Id header." });
 
-                if (!_httpSessions.Remove(sessionId))
+                if (!_httpSessions.TryGet(sessionId, out var session) || session == null)
                     return Results.NotFound(new { error = "Unknown or expired MCP session." });
+
+                var protocolError = McpHttpProtocol.TryApplyProtocol(request, request.HttpContext.Response.Headers, session.ProtocolVersion);
+                if (protocolError != null)
+                    return Results.Json(new { error = protocolError.Value.Message }, statusCode: protocolError.Value.StatusCode);
+
+                _httpSessions.Remove(sessionId);
 
                 Log($"[HTTP] Session {sessionId} terminated by client.");
                 return Results.NoContent();

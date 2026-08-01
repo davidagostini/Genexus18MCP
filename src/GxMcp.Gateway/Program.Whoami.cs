@@ -109,12 +109,62 @@ namespace GxMcp.Gateway
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JObject> _databaseInfoByKb
             = new System.Collections.Concurrent.ConcurrentDictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
 
+        // PERFORMANCE (perf round 5): whoami is the most-called first-turn tool, and
+        // DetectGeneXusVersion hits the disk on EVERY call (up to 3 version.txt probes
+        // plus FileVersionInfo on GeneXus.exe). The GeneXus install version is stable
+        // across a gateway session, so memoize per install path with a 60s TTL.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string? Version, DateTime AtUtc)> _gxVersionCache
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, (string?, DateTime)>(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan GxVersionCacheTtl = TimeSpan.FromSeconds(60);
+
+        // PERFORMANCE (perf round 5): kbValid walks the KB root directory (EnumerateFiles)
+        // on every whoami. KB validity is stable across a session — memoize per path with
+        // a 15s TTL so a tight whoami retry loop stops paying the directory walk.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Valid, DateTime AtUtc)> _kbValidCache
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, (bool, DateTime)>(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan KbValidCacheTtl = TimeSpan.FromSeconds(15);
+
+        private static string? GetCachedGxVersion(string? gxPath)
+        {
+            if (string.IsNullOrWhiteSpace(gxPath)) return null;
+            if (_gxVersionCache.TryGetValue(gxPath!, out var cached)
+                && (DateTime.UtcNow - cached.AtUtc) < GxVersionCacheTtl)
+            {
+                return cached.Version;
+            }
+            string? fresh = DetectGeneXusVersion(gxPath);
+            _gxVersionCache[gxPath!] = (fresh, DateTime.UtcNow);
+            return fresh;
+        }
+
+        private static bool IsKbPathValid(string kbPath)
+        {
+            if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) return false;
+            if (_kbValidCache.TryGetValue(kbPath, out var cached)
+                && (DateTime.UtcNow - cached.AtUtc) < KbValidCacheTtl)
+            {
+                return cached.Valid;
+            }
+            bool valid = false;
+            try
+            {
+                valid = Directory.EnumerateFiles(kbPath).Any(f =>
+                    f.EndsWith(".gxw", StringComparison.OrdinalIgnoreCase) ||
+                    Path.GetFileName(f).Equals("KnowledgeBase.Connection", StringComparison.OrdinalIgnoreCase));
+            }
+            catch { }
+            _kbValidCache[kbPath] = (valid, DateTime.UtcNow);
+            return valid;
+        }
+
         internal static void UpdateLastKnownIndexState(string status, int totalObjects, DateTime? lastIndexedAt, double? progress, int? etaMs,
             int flushFailuresConsecutive = 0, DateTime? flushLastSuccessUtc = null, string? flushLastError = null,
             JArray? recentlyChanged = null)
         {
+            IndexStateSnapshot? previous;
             lock (_lastKnownIndexStateLock)
             {
+                previous = _lastKnownIndexState;
                 _lastKnownIndexState = new IndexStateSnapshot
                 {
                     Status = string.IsNullOrEmpty(status) ? "Cold" : status,
@@ -142,6 +192,35 @@ namespace GxMcp.Gateway
                 if (!string.IsNullOrEmpty(alias))
                     AutoTypeInjector.RefreshFromRecentlyChanged(alias!, recentlyChanged);
             }
+
+            // Root-cause fix (Table-shadow auto-injection): the top-5 RecentlyChanged
+            // window cannot establish real uniqueness — a Transaction's physical Table
+            // shadow can win the window without the sibling Transaction ever appearing.
+            // Once the index reaches a usable state, fetch the FULL name→[types] map
+            // once per KB alias (fire-and-forget; the per-alias gate keeps it to one
+            // fetch per gateway process) and rebuild the injector from it, so
+            // Transaction+Table → Transaction resolves deterministically.
+            try
+            {
+                string? mapAlias = ResolveKbAliasForIndexRefresh();
+                if (!string.IsNullOrEmpty(mapAlias))
+                {
+                    // A new index pass invalidates both the full map and the recent
+                    // window. Without this reset, rename/delete/retype changes remain
+                    // hidden behind the once-per-alias fetch gate until gateway restart.
+                    bool indexWasInvalidated = previous != null
+                        && IndexStatusUsable(previous.Status)
+                        && !IndexStatusUsable(status);
+                    if (indexWasInvalidated)
+                    {
+                        InvalidateFullNameTypeMap(mapAlias!);
+                    }
+
+                    if (IndexStatusUsable(status))
+                        MaybeFetchFullNameTypeMap(mapAlias!);
+                }
+            }
+            catch { /* never break the telemetry update over a background fetch */ }
         }
 
         // Plan 038: same fallback pattern as TryRefreshDatabaseInfoFromWorkerAsync — try the
@@ -161,6 +240,155 @@ namespace GxMcp.Gateway
             return null;
         }
 
+        // Root-cause fix: name→type map fed from the FULL index. The top-5
+        // RecentlyChanged window cannot establish real uniqueness (a Transaction's
+        // Table shadow can win the window without its sibling Transaction appearing),
+        // so once the index reaches a usable state we fetch the complete map once per
+        // KB alias and rebuild the injector from it (Transaction+Table → Transaction is
+        // now resolved deterministically instead of just refused).
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _fullNameTypeMapFetched
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _fullNameTypeMapGeneration
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private static readonly object _fullNameTypeMapStateLock = new object();
+
+        // Deliberately EXCLUDES UltraLiteReady: the lite pass streams partial
+        // snapshots every 500-1000 objects, so a full map fetched at that point would
+        // be incomplete — and the once-per-KB gate would pin the partial map forever.
+        // Fetch only once the lite pass COMPLETED (LiteReady/Enriching/Ready).
+        private static bool IndexStatusUsable(string status) =>
+            string.Equals(status, "Ready", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "LiteReady", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "Enriching", StringComparison.OrdinalIgnoreCase);
+
+        // Fire-and-forget fetch of the worker's full name→[types] map, applied to the
+        // AutoTypeInjector's per-KB map. Never blocks whoami; best-effort (any failure
+        // leaves the recentlyChanged-primed map in place).
+        private static void MaybeFetchFullNameTypeMap(string alias)
+        {
+            if (_workerPool == null) return;
+            if (!TryArmFullNameTypeMapFetch(alias, out int generation)) return; // once per KB per process
+            _ = Task.Run(async () =>
+            {
+                bool applied = false;
+                try
+                {
+                    var cmd = new JObject { ["module"] = "kb", ["action"] = "GetNameTypeMap" };
+                    JObject? env = await SendWorkerCommandAsync(
+                        cmd,
+                        4000,
+                        "Timeout fetching full name→type map for auto-injection",
+                        e => e,
+                        (_, correlationId) => new JObject { ["__timeout"] = true, ["correlationId"] = correlationId },
+                        toolName: "genexus_whoami",
+                        toolArgs: null,
+                        trackOperation: false);
+                    if (env == null || env["__timeout"] != null) return;
+                    JObject? result = env["result"] as JObject;
+                    if (result == null) return;
+
+                    // A reindex or close/reopen can invalidate this request while the
+                    // worker is still answering. Never let an older map overwrite the
+                    // new KB generation.
+                    applied = ApplyNameTypeMapFromWorkerResultIfCurrent(alias, result, generation);
+                }
+                catch (Exception ex)
+                {
+                    Log($"[Whoami] full name→type map fetch failed: {ex.Message}");
+                }
+                finally
+                {
+                    // Re-arm the once-per-KB gate on any failure so the next whoami
+                    // push retries — a one-shot timeout would otherwise regress this
+                    // KB to window-only injection for the whole process lifetime.
+                    if (!applied)
+                        ReleaseFullNameTypeMapGate(alias, generation);
+                }
+            });
+        }
+
+        // Once-per-KB gate: mark this alias as fetched. Returns true only for the
+        // first caller; every later whoami push for the same alias no-ops here.
+        internal static bool TryArmFullNameTypeMapFetch(string alias) =>
+            TryArmFullNameTypeMapFetch(alias, out _);
+
+        private static bool TryArmFullNameTypeMapFetch(string alias, out int generation)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                generation = _fullNameTypeMapGeneration.GetOrAdd(alias, 0);
+                return _fullNameTypeMapFetched.TryAdd(alias, 0);
+            }
+        }
+
+        // Re-arm the once-per-KB gate (call on fetch failure) so the next whoami
+        // push retries instead of permanently regressing to window-only injection.
+        internal static void ReleaseFullNameTypeMapGate(string alias) =>
+            ReleaseFullNameTypeMapGate(alias, GetFullNameTypeMapGeneration(alias));
+
+        private static void ReleaseFullNameTypeMapGate(string alias, int generation)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                if (_fullNameTypeMapGeneration.TryGetValue(alias, out int current) && current == generation)
+                    _fullNameTypeMapFetched.TryRemove(alias, out _);
+            }
+        }
+
+        internal static int GetFullNameTypeMapGeneration(string alias)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                return _fullNameTypeMapGeneration.GetOrAdd(alias, 0);
+            }
+        }
+
+        internal static void InvalidateFullNameTypeMap(string alias)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                _fullNameTypeMapGeneration.AddOrUpdate(alias, 1, (_, current) => unchecked(current + 1));
+                AutoTypeInjector.ClearAll(alias);
+                _fullNameTypeMapFetched.TryRemove(alias, out _);
+            }
+        }
+
+        internal static bool ApplyNameTypeMapFromWorkerResultIfCurrent(string alias, JObject? workerResult, int expectedGeneration)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                if (!_fullNameTypeMapGeneration.TryGetValue(alias, out int current) || current != expectedGeneration)
+                    return false;
+
+                return ApplyNameTypeMapFromWorkerResult(alias, workerResult);
+            }
+        }
+
+        // Parses the worker's GetNameTypeMap reply and rebuilds the AutoTypeInjector
+        // name→type map for `alias`. Extracted from MaybeFetchFullNameTypeMap so the
+        // envelope-shape handling is unit-testable without a worker (mirrors
+        // ApplyIndexStateFromWorkerResult). `workerResult` is env["result"] — the
+        // JSON-RPC result the worker returned for the GetNameTypeMap command.
+        // Returns true when a map was applied.
+        internal static bool ApplyNameTypeMapFromWorkerResult(string alias, JObject? workerResult)
+        {
+            if (workerResult == null) return false;
+
+            // v2.8.1 canonical envelope: { status:"ok", code:"NameTypeMap",
+            // result:{ nameTypeMap, totalNames } } — descend into result when the
+            // current level lacks nameTypeMap.
+            JObject payload = workerResult;
+            if (payload["nameTypeMap"] == null && payload["result"] is JObject canonicalInner && canonicalInner["nameTypeMap"] != null)
+                payload = canonicalInner;
+
+            var nameTypeMap = payload["nameTypeMap"] as JObject;
+            if (nameTypeMap == null) return false;
+
+            AutoTypeInjector.ApplyFullNameTypeMap(alias, nameTypeMap);
+            Log($"[Whoami] applied full name→type map for '{alias}' ({nameTypeMap.Count} names).");
+            return true;
+        }
+
         // True when the index has enough populated entries for SDK-bound reads/edits.
         // v2.6.9 perf: accept UltraLiteReady + LiteReady + Enriching as usable too. The lite
         // pass streams partial snapshots every 500-1000 objects (UltraLiteReady), then completes
@@ -171,7 +399,14 @@ namespace GxMcp.Gateway
         // publishes "Ready" here when indexing finishes; the two must not be conflated.)
         private static bool IsIndexUsableForReads(IndexStateSnapshot snap)
         {
-            if (snap == null || snap.TotalObjects <= 0) return false;
+            // Usability is decided by the index STATUS alone, not the object count. A
+            // Ready/LiteReady/Enriching index with 0 objects is a legitimately-built EMPTY
+            // KB (the lite walk completed and found no model objects — e.g. a KB whose
+            // LocalDB model is missing): the worker's ListService/SearchService return an
+            // honest empty listing there, so reads must be forwarded, not fast-failed with
+            // IndexNotReady (which left agents looping `lifecycle action=index force=true`
+            // on empty KBs forever). Only Cold / Reindexing / unknown states block.
+            if (snap == null) return false;
             string s = snap.Status ?? string.Empty;
             return string.Equals(s, "Ready", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(s, "LiteReady", StringComparison.OrdinalIgnoreCase)
@@ -586,6 +821,16 @@ namespace GxMcp.Gateway
             }
         }
 
+        // PERFORMANCE (perf round 5): CrashLedger.Summarize reads the ledger file on
+        // every call; whoami is the most-called first-turn tool. Cache the summary with
+        // a 10s TTL — a stale-by-seconds death count is far better than a disk read per
+        // whoami. Invalidated implicitly by the TTL; writes to the ledger go through
+        // CrashLedger.Record which does NOT touch this cache (staleness bounded at 10s).
+        private static readonly object _crashSummaryLock = new object();
+        private static JObject _crashSummary = new JObject();
+        private static DateTime _crashSummaryAtUtc = DateTime.MinValue;
+        private static readonly TimeSpan CrashSummaryCacheTtl = TimeSpan.FromSeconds(10);
+
         internal static JObject BuildWhoamiPayload() => BuildWhoamiPayload(false);
 
         // issue #25 #5: whoami defaulted to dumping ~3k tokens of STATIC content
@@ -631,18 +876,8 @@ namespace GxMcp.Gateway
             if (string.IsNullOrEmpty(kbPath)) kbPath = cfg?.Environment?.KBPath;
             string? kbName = !string.IsNullOrEmpty(kbPath) ? Path.GetFileName(kbPath!.TrimEnd('\\', '/')) : null;
             bool kbExists = !string.IsNullOrEmpty(kbPath) && Directory.Exists(kbPath);
-            bool kbValid = false;
-            if (kbExists)
-            {
-                try
-                {
-                    kbValid = Directory.EnumerateFiles(kbPath!).Any(f =>
-                        f.EndsWith(".gxw", StringComparison.OrdinalIgnoreCase) ||
-                        Path.GetFileName(f).Equals("KnowledgeBase.Connection", StringComparison.OrdinalIgnoreCase));
-                }
-                catch { }
-            }
-            string? gxVersion = DetectGeneXusVersion(gxPath);
+            bool kbValid = kbExists && IsKbPathValid(kbPath!);
+            string? gxVersion = GetCachedGxVersion(gxPath);
 
             var payload = new JObject
             {
@@ -850,21 +1085,13 @@ namespace GxMcp.Gateway
                 }
 
                 // Index state drives discovery tools. Cold / 0 objects means
-                // search / list / impact will all return empty until indexed.
+                // search / list / impact will all return empty until indexed — but a
+                // BUILT index with 0 objects is a genuinely empty KB, so the nudge must
+                // not loop force=true reindexing forever (there is nothing to index).
                 IndexStateSnapshot snap;
                 lock (_lastKnownIndexStateLock) { snap = _lastKnownIndexState; }
-                bool indexEmpty = snap.TotalObjects == 0;
-                bool indexCold = string.Equals(snap.Status, "Cold", StringComparison.OrdinalIgnoreCase)
-                                 || string.Equals(snap.Status, "Unknown", StringComparison.OrdinalIgnoreCase);
-                if (indexCold || indexEmpty)
-                {
-                    arr.Add(new JObject
-                    {
-                        ["tool"] = "genexus_lifecycle",
-                        ["args"] = new JObject { ["action"] = "index", ["force"] = true },
-                        ["why"] = "Index is " + (indexEmpty ? "empty" : "cold") + ". Run a full index so list_objects / query / impact return real data."
-                    });
-                }
+                var indexSuggestion = BuildIndexSuggestion(snap.Status, snap.TotalObjects);
+                if (indexSuggestion != null) arr.Add(indexSuggestion);
 
                 // Update available — surface as a soft hint, not blocking.
                 try
@@ -944,6 +1171,54 @@ namespace GxMcp.Gateway
             }
             catch { /* never let suggestion logic break whoami */ }
             return arr;
+        }
+
+        // Index-state → suggested next action for whoami. Returns null when the index is
+        // healthy (built and non-empty) and no index-related nudge applies. This is the
+        // single decision point that keeps agents from looping `lifecycle action=index
+        // force=true` on a genuinely-empty KB: a BUILT index with 0 objects (Ready /
+        // LiteReady / Enriching — e.g. a KB whose LocalDB model is missing) means the walk
+        // already completed and found nothing, so re-running the reindex cannot help.
+        // Only a Cold/Unknown (never-built) index gets the force=true nudge.
+        internal static JObject BuildIndexSuggestion(string status, int totalObjects)
+        {
+            string s = status ?? string.Empty;
+            bool indexCold = string.Equals(s, "Cold", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(s, "Unknown", StringComparison.OrdinalIgnoreCase);
+            if (indexCold)
+            {
+                return new JObject
+                {
+                    ["tool"] = "genexus_lifecycle",
+                    ["args"] = new JObject { ["action"] = "index", ["force"] = true },
+                    ["why"] = "Index is cold. Run a full index so list_objects / query / impact return real data."
+                };
+            }
+            if (totalObjects == 0)
+            {
+                // A walk/rebuild is still in progress (nothing has landed yet) — nudge the
+                // agent to observe progress, never to create objects or re-trigger the index.
+                bool walkInProgress = string.Equals(s, "UltraLiteReady", StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(s, "Reindexing", StringComparison.OrdinalIgnoreCase);
+                if (walkInProgress)
+                {
+                    return new JObject
+                    {
+                        ["tool"] = "genexus_whoami",
+                        ["args"] = new JObject(),
+                        ["why"] = "Index build is still in progress — poll whoami until indexStatus reaches Ready before listing objects."
+                    };
+                }
+                // Ready / LiteReady / Enriching with 0 objects: the walk completed and found
+                // no model objects. force=true reindexing cannot change that.
+                return new JObject
+                {
+                    ["tool"] = "genexus_create",
+                    ["args"] = new JObject { ["action"] = "object", ["type"] = "Transaction" },
+                    ["why"] = "This KB's model is empty (0 objects indexed after a completed build — e.g. a missing LocalDB model). Create an object or open a different KB; force=true reindexing cannot populate it."
+                };
+            }
+            return null;
         }
 
         // Friction 2026-05-22: which worker exe is actually running was opaque —
@@ -1031,9 +1306,22 @@ namespace GxMcp.Gateway
                 // Durable death history (survives worker log rotation). Lets the agent —
                 // and support — see how often the worker actually dies and why, instead of
                 // guessing. Only attached when at least one death has been recorded.
+                // PERFORMANCE (perf round 5): CrashLedger.Summarize reads the ledger file
+                // on every call — memoize per whoami with a 10s TTL (deaths are rare; a
+                // stale-by-seconds count is far better than a disk read per whoami).
                 try
                 {
-                    var deaths = CrashLedger.Summarize(recentN: 3);
+                    JObject deaths;
+                    lock (_crashSummaryLock)
+                    {
+                        if (_crashSummaryAtUtc == DateTime.MinValue
+                            || (DateTime.UtcNow - _crashSummaryAtUtc) > CrashSummaryCacheTtl)
+                        {
+                            _crashSummary = CrashLedger.Summarize(recentN: 3);
+                            _crashSummaryAtUtc = DateTime.UtcNow;
+                        }
+                        deaths = _crashSummary;
+                    }
                     if ((deaths["total"]?.ToObject<int?>() ?? 0) > 0)
                         workerBlock["deaths"] = deaths;
                 }

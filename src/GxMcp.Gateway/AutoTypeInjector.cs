@@ -36,6 +36,38 @@ namespace GxMcp.Gateway
             "genexus_ai_complete",
         };
 
+        // ── Types that must never be auto-injected ───────────────────────────
+        // Physical shadows / model artifacts of source-bearing objects — types
+        // whose index entries exist in the design model but expose no
+        // Source/Rules/Events part (Injecting them makes object tools
+        // (genexus_edit/read/analyze/...) resolve to a part-less object —
+        // PatchReadFailed: "The object does not expose the requested part.").
+        //
+        //  - "Table": every Transaction generates a Table model object; the
+        //    design model indexes BOTH under the same name. The full-map
+        //    collapse ({Transaction,Table} → Transaction) handles the paired
+        //    case; the guard catches Table-only names.
+        //  - "Attribute": a Transaction's attributes are indexed as physical
+        //    "Attribute" model objects under their own (usually unique) names
+        //    — confirmed live: a type-less genexus_edit on "GpBaseId"
+        //    auto-injected type=Attribute and resolved to the part-less
+        //    artifact. IndexCacheService treats Attribute/Table identically as
+        //    physical targets (reference scan → AddTableCow).
+        //
+        // Skipping leaves the call type-less; the worker's global name
+        // resolution then picks the source-bearing object. Callers that
+        // genuinely target a Table/Attribute pass the type explicitly (an
+        // explicit type is never overridden). Deliberately NOT here: "Domain"
+        // is a real source-bearing object type — its one observed collision
+        // (Geolocation: Domain + ExternalObject) is genuine ambiguity, already
+        // handled by the map's ambiguous→null rule.
+        private static readonly HashSet<string> _shadowTypesNoInject =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "Table",
+                "Attribute",
+            };
+
         // ── Name → type lookup cache, populated from index snapshots ─────────
         // Plan 038: keyed by normalized KB alias (outer) so two KBs open in the same
         // gateway can't leak each other's name→type resolutions (e.g. "Customer" =
@@ -100,6 +132,11 @@ namespace GxMcp.Gateway
             if (resolvedType == null)
                 return false;           // ambiguous (multiple objects with this name)
 
+            // Never inject a physical shadow type (see _shadowTypesNoInject) —
+            // it would resolve object tools to a part-less shadow object.
+            if (_shadowTypesNoInject.Contains(resolvedType))
+                return false;
+
             // Inject!
             arguments["type"] = resolvedType;
             injectedType = resolvedType;
@@ -126,6 +163,15 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(type))
                     continue;
 
+                // The recent-window feed must never poison the full-map resolution: a
+                // Table shadow surfacing here for a name that ApplyFullNameTypeMap
+                // collapsed to "Transaction" would flip it to ambiguous (null), silently
+                // undoing the root-cause fix. Shadow types are resolved by the full map
+                // and refused by the inject guard anyway, so never feed them from the
+                // window.
+                if (_shadowTypesNoInject.Contains(type))
+                    continue;
+
                 nameLookup.AddOrUpdate(
                     name,
                     addValue: type,
@@ -134,6 +180,54 @@ namespace GxMcp.Gateway
                         existing != null && !string.Equals(existing, type, StringComparison.OrdinalIgnoreCase)
                             ? null
                             : type);
+            }
+        }
+
+        /// <summary>
+        /// Root-cause fix: replace <paramref name="kbAlias"/>'s entire name→type map
+        /// with the FULL index name→[types] map (as produced by the worker's
+        /// <c>kb/GetNameTypeMap</c> action). Unlike <see cref="RefreshFromRecentlyChanged"/>
+        /// — which only ever sees the top-5 RecentlyChanged window and therefore cannot
+        /// establish real uniqueness — this sees every object of every type, so a name
+        /// whose types are exactly { Transaction, Table } is the Transaction (the Table
+        /// is its physical shadow) and resolves to "Transaction"; a name with 2+ distinct
+        /// source-bearing types is marked ambiguous (null) and won't be injected.
+        /// The map is rebuilt wholesale: names that were only present in the recent
+        /// window and are not in the full index disappear.
+        /// </summary>
+        public static void ApplyFullNameTypeMap(string kbAlias, JObject? nameTypeMap)
+        {
+            var nameLookup = GetOrCreateKbMap(kbAlias);
+            // Null map = no-op, NOT a wipe: clearing here would discard the
+            // recentlyChanged-primed fallback on a failed fetch.
+            if (nameTypeMap == null) return;
+            nameLookup.Clear();
+
+            foreach (var prop in nameTypeMap.Properties())
+            {
+                string name = prop.Name;
+                if (prop.Value is not JArray types || types.Count == 0) continue;
+
+                // Distinct types under this name (case-insensitive).
+                var distinct = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var t in types)
+                {
+                    string? ts = t?.ToString();
+                    if (!string.IsNullOrWhiteSpace(ts)) distinct.Add(ts!);
+                }
+                if (distinct.Count == 0) continue;
+
+                // Shadow resolution: a Transaction's physical Table is not a second
+                // meaning — collapse { Transaction, Table } to Transaction. A name that
+                // is ONLY a Table stays "Table" in the map and is then refused by the
+                // _shadowTypesNoInject guard in TryInject (left type-less, so the
+                // worker's global resolution picks the object).
+                if (distinct.Contains("Transaction"))
+                    distinct.Remove("Table");
+
+                nameLookup[name] = distinct.Count == 1
+                    ? distinct.First()
+                    : null; // genuinely ambiguous (2+ source-bearing types)
             }
         }
 
@@ -170,10 +264,9 @@ namespace GxMcp.Gateway
         }
 
         /// <summary>
-        /// Test-only: clear internal state. With <paramref name="kbAlias"/> omitted,
-        /// wipes every KB's name→type map plus the (global, non-KB-specific)
-        /// tool-schema cache — the full reset tests rely on for isolation. With an
-        /// alias, clears only that KB's inner map and leaves other KBs untouched.
+        /// Clear internal state. With <paramref name="kbAlias"/> omitted, wipes every
+        /// KB's name→type map plus the (global, non-KB-specific) tool-schema cache.
+        /// With an alias, clears only that KB's inner map and leaves other KBs untouched.
         /// </summary>
         internal static void ClearAll(string? kbAlias = null)
         {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Parts;
@@ -41,12 +42,115 @@ namespace GxMcp.Worker.Services
         // nextCursor; passing it back as StartIndex resumes the scan where it
         // stopped instead of rescanning from the top.
         public int StartIndex { get; set; } = 0;
+
+        // Preferred opaque continuation token. StartIndex remains accepted for
+        // compatibility with callers that only need object-boundary paging.
+        public string Cursor { get; set; }
     }
 
     public class SourceSearchService
     {
         private readonly IndexCacheService _index;
         private readonly ObjectService _objectService;
+
+        // PERFORMANCE (perf round 4): compiled-regex cache. On net48,
+        // RegexOptions.Compiled emits + JITs IL on EVERY new Regex(pattern,
+        // Compiled) call — a flat ~15ms floor per search_source that no source
+        // cache can remove (the benchmark showed 8/12 samples within 0.4ms of
+        // 15.4ms regardless of hit rate). Bounded to the handful of patterns an
+        // LLM session actually repeats; overflow simply stops caching new ones.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Regex> _compiledRegexCache =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, Regex>(StringComparer.Ordinal);
+        private const int CompiledRegexCacheMaxEntries = 16;
+
+        private static Regex GetCachedRegex(string pattern, RegexOptions opts)
+        {
+            string key = pattern + "\u0001" + ((int)opts).ToString();
+            if (_compiledRegexCache.TryGetValue(key, out var cached)) return cached;
+            var fresh = new Regex(pattern, opts);
+            if (_compiledRegexCache.Count < CompiledRegexCacheMaxEntries)
+            {
+                _compiledRegexCache.TryAdd(key, fresh);
+            }
+            return fresh;
+        }
+
+        // Keep the fast MatchCollection path semantically equivalent to the legacy
+        // per-line path: search_source returns one hit per matching line, not one hit
+        // per regex match on that line.
+        internal static bool ShouldEmitRegexHitLine(int lineNo, ref int lastHitLine)
+        {
+            if (lineNo == lastHitLine) return false;
+            lastHitLine = lineNo;
+            return true;
+        }
+
+        private static bool AddSourceHit(JArray hits, JObject hit, ref int produced,
+            ref int skipped, ref int consumed, int maxResults)
+        {
+            consumed++;
+            if (skipped > 0)
+            {
+                skipped--;
+                return false;
+            }
+
+            hits.Add(hit);
+            produced++;
+            return produced >= maxResults;
+        }
+
+        internal static string BuildResumeCursor(int entryIndex, int skippedHits, bool metadata)
+        {
+            var state = new JObject
+            {
+                ["v"] = 1,
+                ["entry"] = Math.Max(0, entryIndex),
+                ["skip"] = Math.Max(0, skippedHits),
+                ["phase"] = metadata ? "metadata" : "source"
+            };
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes(state.ToString(Newtonsoft.Json.Formatting.None)))
+                .TrimEnd('=')
+                .Replace('+', '-')
+                .Replace('/', '_');
+        }
+
+        internal static bool TryParseResumeCursor(string cursor, out int entryIndex,
+            out int skippedHits, out bool metadata)
+        {
+            entryIndex = 0;
+            skippedHits = 0;
+            metadata = false;
+            if (string.IsNullOrWhiteSpace(cursor)) return false;
+
+            try
+            {
+                string padded = cursor.Trim().Replace('-', '+').Replace('_', '/');
+                switch (padded.Length % 4)
+                {
+                    case 2: padded += "=="; break;
+                    case 3: padded += "="; break;
+                    case 1: return false;
+                }
+
+                var state = JObject.Parse(Encoding.UTF8.GetString(Convert.FromBase64String(padded)));
+                if (state["v"]?.Value<int>() != 1) return false;
+                string phase = state["phase"]?.ToString() ?? string.Empty;
+                if (!string.Equals(phase, "source", StringComparison.Ordinal)
+                    && !string.Equals(phase, "metadata", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+                entryIndex = state["entry"]?.Value<int>() ?? 0;
+                skippedHits = state["skip"]?.Value<int>() ?? 0;
+                metadata = string.Equals(phase, "metadata", StringComparison.Ordinal);
+                return entryIndex >= 0 && skippedHits >= 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         public SourceSearchService(IndexCacheService index, ObjectService objectService)
         {
@@ -109,7 +213,7 @@ namespace GxMcp.Worker.Services
                 {
                     var opts = RegexOptions.Compiled;
                     if (!c.CaseSensitive) opts |= RegexOptions.IgnoreCase;
-                    rx = new Regex(c.Pattern, opts);
+                    rx = GetCachedRegex(c.Pattern, opts);
                 }
 
                 var hits = new JArray();
@@ -175,12 +279,29 @@ namespace GxMcp.Worker.Services
                 int scanned = 0;
                 // Issue #27 item 4: index-addressable loop so a Timeout/Cancel can report a
                 // resumable nextCursor (the absolute entry index reached).
+                int resumeEntry = -1;
+                int resumeSkipped = 0;
+                bool resumeMetadata = false;
+                if (!string.IsNullOrWhiteSpace(c.Cursor)
+                    && !TryParseResumeCursor(c.Cursor, out resumeEntry, out resumeSkipped, out resumeMetadata))
+                {
+                    return Models.McpResponse.Err(code: "InvalidCursor",
+                        message: "cursor is not a valid genexus_search_source continuation token.");
+                }
                 int startIndex = c.StartIndex > 0 ? c.StartIndex : 0;
-                int cursor = startIndex;
+                if (resumeEntry >= 0) startIndex = resumeEntry;
+                int cursor = resumeMetadata ? entries.Count : startIndex;
+                bool sourcePageStoppedInsideEntry = false;
+                int sourceNextEntry = -1;
+                int sourceNextSkip = 0;
                 for (cursor = startIndex; cursor < entries.Count; cursor++)
                 {
+                    if (resumeMetadata) break;
                     var e = entries[cursor];
                     if (produced >= c.MaxResults) break;
+                    int skippedHits = resumeEntry == cursor ? resumeSkipped : 0;
+                    int consumedHits = skippedHits;
+                    bool entryReachedLimit = false;
                     if (ct.IsCancellationRequested)
                     {
                         return Models.McpResponse.Ok(code: "Cancelled", result: new JObject
@@ -188,11 +309,12 @@ namespace GxMcp.Worker.Services
                             ["partialHits"] = hits,
                             ["totalScanned"] = scanned,
                             ["totalObjects"] = entries.Count,
-                            ["nextCursor"] = cursor,
-                            ["resumeHint"] = "Pass startIndex=nextCursor to resume this scan where it stopped."
+                            ["nextCursor"] = BuildResumeCursor(cursor, 0, metadata: false),
+                            ["nextOffset"] = cursor,
+                            ["resumeHint"] = "Pass cursor=nextCursor to resume this scan; legacy callers may pass startIndex=nextOffset."
                         });
                     }
-                    if (swBudget.ElapsedMilliseconds > timeoutMs)
+                    if (timeoutMs == 0 || swBudget.ElapsedMilliseconds > timeoutMs)
                     {
                         int pct = entries.Count > 0 ? (int)(100L * cursor / entries.Count) : 100;
                         return Models.McpResponse.Ok(code: "Timeout", result: new JObject
@@ -202,31 +324,57 @@ namespace GxMcp.Worker.Services
                             ["totalObjects"] = entries.Count,
                             ["coveragePercent"] = pct,
                             ["timeoutMs"] = timeoutMs,
-                            ["nextCursor"] = cursor,
+                            ["nextCursor"] = BuildResumeCursor(cursor, 0, metadata: false),
+                            ["nextOffset"] = cursor,
                             // Full-source scan reads each object's source via the SDK (~tens of ms
                             // each), so a whole-KB scan spans many budget windows. Prefer scoping
                             // for an instant search; resume only for an exhaustive sweep.
-                            ["resumeHint"] = $"Scanned {pct}% ({cursor}/{entries.Count}). FASTEST: narrow the scan — objectName=\"A,B\" (searches only those, O(objects)), or typeFilter / pathPrefix. To keep sweeping the whole KB, resume with startIndex={cursor} (optionally a larger timeoutMs)."
+                            ["resumeHint"] = $"Scanned {pct}% ({cursor}/{entries.Count}). FASTEST: narrow the scan — objectName=\"A,B\" (searches only those, O(objects)), or typeFilter / pathPrefix. To keep sweeping the whole KB, resume with cursor=nextCursor (legacy: startIndex={cursor}); optionally use a larger timeoutMs."
                         });
                     }
                     scanned++;
-                    KBObject obj;
-                    // Pass the type so FindObject takes the O(1) typed fast path (Type:Name index
-                    // hit → Objects.Get(guid)) instead of the global, type-iterating search — the
-                    // scan already has the entry's exact type, so re-resolving by bare name per
-                    // object was needless overhead across thousands of objects.
-                    try { obj = _objectService.FindObject(e.Name, e.Type); } catch { continue; }
-                    if (obj == null) continue;
-
+                    // PERFORMANCE (perf round 2): cache-first, per-part. The index entry
+                    // carries the object's guid, so before paying the FindObject SDK call we
+                    // probe the raw part-source cache by guid alone (TryGetPartSourceRaw). On a
+                    // repeat search most candidates' source text is already cached (round 1), so
+                    // this loop becomes dictionary lookups + regex over cached text with ZERO
+                    // SDK round-trips. FindObject runs lazily only on the first cache miss and
+                    // is reused for subsequent parts of the same candidate; the type is passed
+                    // so it takes the O(1) typed fast path (Type:Name index hit →
+                    // Objects.Get(guid)) instead of the global type-iterating search. The null
+                    // service seam (unit tests) falls straight through to the local reader.
+                    KBObject obj = null;
+                    bool resolutionFailed = false;
                     foreach (var part in c.Scope ?? new List<string> { "source" })
                     {
-                        if (produced >= c.MaxResults) break;
-                        string src = TryGetPartSource(obj, part);
+                        if (produced >= c.MaxResults || resolutionFailed) break;
+                        string src = null;
+                        bool haveSrc = false;
+                        if (_objectService != null && !string.IsNullOrEmpty(e.Guid)
+                            && _objectService.TryGetPartSourceRaw(e.Guid, part, out src))
+                        {
+                            haveSrc = true;
+                        }
+                        if (!haveSrc)
+                        {
+                            if (obj == null)
+                            {
+                                // Resolve the object ONCE per candidate; on failure bail the whole
+                                // candidate (review nit: a per-part `continue` here would re-attempt
+                                // FindObject for every remaining part of the same candidate).
+                                try { obj = _objectService.FindObject(e.Name, e.Type); }
+                                catch { obj = null; }
+                                if (obj == null) { resolutionFailed = true; break; }
+                            }
+                            src = _objectService != null
+                                ? _objectService.ReadPartSourceRaw(obj, part)
+                                : TryGetPartSource(obj, part);
+                        }
                         if (string.IsNullOrEmpty(src)) continue;
-                        var lines = src.Split('\n');
 
                         if (!string.IsNullOrEmpty(c.Callee))
                         {
+                            var lines = src.Split('\n');
                             foreach (var call in SourceParser.ParseCalls(src, c.IncludeComments))
                             {
                                 if (!CalleeMatches(call.Callee, c.Callee)) continue;
@@ -236,27 +384,89 @@ namespace GxMcp.Worker.Services
                                     string ln = call.LineNumber - 1 < lines.Length ? lines[call.LineNumber - 1] : "";
                                     if (!rx.IsMatch(ln)) continue;
                                 }
-                                hits.Add(BuildHit(e, part, lines, call.LineNumber, call));
-                                produced++;
-                                if (produced >= c.MaxResults) break;
+                                if (AddSourceHit(hits, BuildHit(e, part, lines, call.LineNumber, call),
+                                    ref produced, ref skippedHits, ref consumedHits, c.MaxResults))
+                                {
+                                    entryReachedLimit = true;
+                                    break;
+                                }
                             }
                         }
                         else if (rx != null)
                         {
-                            for (int li = 0; li < lines.Length && produced < c.MaxResults; li++)
+                            // PERFORMANCE (perf round 3): single-pass regex over the whole source
+                            // when the pattern has no line anchors AND no newline-capable atoms —
+                            // semantics identical to per-line IsMatch, but avoids the full
+                            // line-array allocation + N regex calls for every scanned object
+                            // (the common non-match case). Line numbers come from counting
+                            // newlines up to each match index; the lines array is built lazily
+                            // only on the first match (BuildHit needs it for context).
+                            // Guarded fast path: HasLineAnchors keeps ^ $ \A \Z \z patterns on
+                            // the legacy per-line loop (they anchor per line, not per file), and
+                            // MayMatchAcrossLines keeps patterns whose atoms can match a newline
+                            // (\s \S \n \r \v \f \D \W \p.., negated classes, (?s), literal
+                            // newlines) on it too — those COULD match across lines, and the
+                            // per-line loop is the only exact semantic for them. Both guards are
+                            // conservative (a false positive only costs speed, never correctness).
+                            if (HasLineAnchors(c.Pattern) || MayMatchAcrossLines(c.Pattern))
                             {
-                                if (rx.IsMatch(lines[li]))
+                                var lines = src.Split('\n');
+                                for (int li = 0; li < lines.Length && produced < c.MaxResults; li++)
                                 {
-                                    hits.Add(BuildHit(e, part, lines, li + 1, null));
-                                    produced++;
+                                    if (rx.IsMatch(lines[li]))
+                                    {
+                                        if (AddSourceHit(hits, BuildHit(e, part, lines, li + 1, null),
+                                            ref produced, ref skippedHits, ref consumedHits, c.MaxResults))
+                                        {
+                                            entryReachedLimit = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                // Lazy single-pass: iterate the MatchCollection (net48 computes it
+                                // lazily on enumeration), stop at MaxResults, and split the line
+                                // array only when the first match actually exists.
+                                var matches = rx.Matches(src);
+                                string[] hitLines = null;
+                                int pos = 0, lineNo = 1, lastHitLine = -1;
+                                foreach (Match m in matches)
+                                {
+                                    if (produced >= c.MaxResults) break;
+                                    if (hitLines == null) hitLines = src.Split('\n');
+                                    int idx = m.Index;
+                                    while (pos < idx)
+                                    {
+                                        if (src[pos] == '\n') lineNo++;
+                                        pos++;
+                                    }
+                                    if (!ShouldEmitRegexHitLine(lineNo, ref lastHitLine)) continue;
+                                    if (AddSourceHit(hits, BuildHit(e, part, hitLines, lineNo, null),
+                                        ref produced, ref skippedHits, ref consumedHits, c.MaxResults))
+                                    {
+                                        entryReachedLimit = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
+                    }
+                    if (entryReachedLimit)
+                    {
+                        sourcePageStoppedInsideEntry = true;
+                        sourceNextEntry = cursor;
+                        sourceNextSkip = consumedHits;
+                        break;
                     }
                 }
 
                 // Item 22: fields=[caption,description,parmNames] — metadata-only search.
                 // Only runs when Fields contains non-source values AND a pattern is supplied.
+                bool metadataPageStoppedInsideEntry = false;
+                int metadataNextEntry = -1;
+                int metadataNextSkip = 0;
                 var extraFields = c.Fields != null
                     ? c.Fields.Where(f => !string.Equals(f, "source", StringComparison.OrdinalIgnoreCase)).ToList()
                     : new List<string>();
@@ -266,11 +476,16 @@ namespace GxMcp.Worker.Services
                         .Where(e => objectNameSet == null || ObjectNameMatches(objectNameSet, e.Name))
                         .Where(e => string.IsNullOrEmpty(c.TypeFilter) || string.Equals(e.Type, c.TypeFilter, StringComparison.OrdinalIgnoreCase))
                         .ToList();
-                    foreach (var e in allEntries)
+                    int metadataStart = resumeMetadata ? Math.Max(0, resumeEntry) : 0;
+                    for (int metadataCursor = metadataStart; metadataCursor < allEntries.Count; metadataCursor++)
                     {
+                        var e = allEntries[metadataCursor];
                         if (produced >= c.MaxResults) break;
                         if (ct.IsCancellationRequested) break;
                         if (swBudget.ElapsedMilliseconds > timeoutMs) break;
+                        int metadataSkipped = resumeMetadata && metadataCursor == resumeEntry ? resumeSkipped : 0;
+                        int metadataConsumed = metadataSkipped;
+                        bool entryReachedLimit = false;
 
                         foreach (var field in extraFields)
                         {
@@ -309,7 +524,11 @@ namespace GxMcp.Worker.Services
                                 {
                                     try
                                     {
-                                        string rulesSrc = TryGetPartSource(obj2, "rules");
+                                        // PERFORMANCE (perf round 1): same cached accessor as the
+                                        // main scan so the parmNames path doesn't re-read the SDK.
+                                        string rulesSrc = _objectService != null
+                                            ? _objectService.ReadPartSourceRaw(obj2, "rules")
+                                            : TryGetPartSource(obj2, "rules");
                                         if (!string.IsNullOrEmpty(rulesSrc))
                                         {
                                             var parmMatch = System.Text.RegularExpressions.Regex.Match(
@@ -323,23 +542,46 @@ namespace GxMcp.Worker.Services
                             if (string.IsNullOrEmpty(fieldValue)) continue;
                             if (rx.IsMatch(fieldValue))
                             {
-                                hits.Add(new JObject
+                                var metadataHit = new JObject
                                 {
                                     ["objectName"] = e.Name,
                                     ["type"] = e.Type,
                                     ["field"] = field,
                                     ["matchedValue"] = fieldValue
-                                });
-                                produced++;
+                                };
+                                if (AddSourceHit(hits, metadataHit, ref produced, ref metadataSkipped,
+                                    ref metadataConsumed, c.MaxResults))
+                                {
+                                    entryReachedLimit = true;
+                                    break;
+                                }
                             }
+                        }
+                        if (entryReachedLimit)
+                        {
+                            metadataPageStoppedInsideEntry = true;
+                            metadataNextEntry = metadataCursor;
+                            metadataNextSkip = metadataConsumed;
+                            break;
                         }
                     }
                 }
 
                 bool truncated = produced >= c.MaxResults;
-                // Issue #27 item 4: when maxResults truncated the scan mid-list, expose the
-                // entry cursor so the caller can page forward through the same object set.
-                bool hasMoreEntries = truncated && cursor < entries.Count;
+                // Issue #27 item 4: when maxResults truncated the scan mid-object, expose an
+                // opaque cursor carrying the number of already-consumed hits. Replaying the
+                // object and skipping that exact prefix prevents both duplicate and lost hits.
+                bool hasMoreEntries = sourcePageStoppedInsideEntry
+                    || metadataPageStoppedInsideEntry
+                    || (truncated && cursor < entries.Count);
+                int nextOffset = sourcePageStoppedInsideEntry ? sourceNextEntry
+                    : metadataPageStoppedInsideEntry ? metadataNextEntry
+                    : cursor;
+                string nextCursor = sourcePageStoppedInsideEntry
+                    ? BuildResumeCursor(sourceNextEntry, sourceNextSkip, metadata: false)
+                    : metadataPageStoppedInsideEntry
+                        ? BuildResumeCursor(metadataNextEntry, metadataNextSkip, metadata: true)
+                        : null;
                 var resultPayload = new JObject
                 {
                     ["count"] = produced,
@@ -359,10 +601,15 @@ namespace GxMcp.Worker.Services
                         ["returned"]   = produced,
                         ["total"]      = entries.Count,
                         ["hasMore"]    = hasMoreEntries,
-                        ["nextOffset"] = hasMoreEntries ? (JToken)cursor : JValue.CreateNull()
+                        ["nextOffset"] = hasMoreEntries ? (JToken)nextOffset : JValue.CreateNull()
                     }
                 };
-                if (hasMoreEntries) resultPayload["nextCursor"] = cursor;
+                if (hasMoreEntries)
+                {
+                    resultPayload["nextCursor"] = nextCursor != null
+                        ? (JToken)nextCursor
+                        : (JToken)nextOffset;
+                }
                 if (partialIndex)
                 {
                     resultPayload["partialHint"] = "Index walk is still in progress; this scan covered only the objects walked so far. A zero or small count does NOT mean the token is absent — re-run when whoami reports indexStatus=Ready.";
@@ -392,6 +639,96 @@ namespace GxMcp.Worker.Services
             {
                 return Models.McpResponse.Err(code: "SourceSearchFailed", message: ex.Message);
             }
+        }
+
+        // PERFORMANCE (perf round 3): true when the pattern contains a line anchor
+        // (^ $ \A \Z \z) outside a character class or escape sequence, in which case
+        // the legacy per-line loop is kept (^/$ must anchor per line, not per file).
+        // A false positive here only falls back to the slower per-line path — never
+        // a wrong result — so a simple conservative scan is sufficient.
+        private static bool HasLineAnchors(string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return false;
+            bool inClass = false;
+            for (int i = 0; i < pattern.Length; i++)
+            {
+                char ch = pattern[i];
+                if (ch == '\\')
+                {
+                    // Escaped: \A \Z \z are anchors; \^ \$ \\ are literals.
+                    if (i + 1 < pattern.Length)
+                    {
+                        char n = pattern[i + 1];
+                        if (n == 'A' || n == 'Z' || n == 'z') return true;
+                    }
+                    i++;
+                    continue;
+                }
+                if (ch == '[') inClass = true;
+                else if (ch == ']') inClass = false;
+                else if (!inClass && (ch == '^' || ch == '$')) return true;
+            }
+            return false;
+        }
+
+        // PERFORMANCE (perf round 3): conservative detector for regex atoms that can
+        // match a newline. If ANY is present the pattern could match across line
+        // boundaries, where the single-pass fast path would produce different results
+        // than the legacy per-line loop — so such patterns fall back to per-line.
+        // False positives only cost speed (per-line path), never correctness.
+        private static bool MayMatchAcrossLines(string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern)) return false;
+            // Literal newline/CR characters embedded in the pattern can match across lines.
+            for (int i = 0; i < pattern.Length; i++)
+            {
+                if (pattern[i] == '\n' || pattern[i] == '\r') return true;
+            }
+            bool inClass = false;
+            for (int i = 0; i < pattern.Length; i++)
+            {
+                char ch = pattern[i];
+                if (ch == '\\')
+                {
+                    if (i + 1 >= pattern.Length) break;
+                    char n = pattern[i + 1];
+                    // \s \S \n \r \v \f \D \W can match a newline (\D/\W are
+                    // negations that include it); \p{...}/\P{...} categories may too;
+                    // \xNN/\uNNNN ranges could cover 0x0A; \cJ/\cM are LF/CR — all
+                    // conservative.
+                    if (n == 's' || n == 'S' || n == 'n' || n == 'r' || n == 'v' || n == 'f'
+                        || n == 'D' || n == 'W' || n == 'p' || n == 'P' || n == 'x' || n == 'u'
+                        || n == 'c')
+                        return true;
+                    i++;
+                    continue;
+                }
+                if (ch == '[')
+                {
+                    // A negated class [^...] matches a newline (anything but the listed
+                    // chars) — conservative fallback.
+                    if (i + 1 < pattern.Length && pattern[i + 1] == '^') return true;
+                    inClass = true;
+                }
+                else if (ch == ']') inClass = false;
+                else if (!inClass && ch == '(' && i + 1 < pattern.Length && pattern[i + 1] == '?'
+                         && i + 2 < pattern.Length)
+                {
+                    // Inline option group: (?s), (?is:...), (?i-s:...). If ANY option
+                    // letter is 's', Singleline is active and '.' can match a newline.
+                    // Scan the full option run (review nit: (?is)/(?si)/(?ms) put a
+                    // non-'s' char at i+2 and used to slip past as a false negative).
+                    for (int k = i + 2; k < pattern.Length; k++)
+                    {
+                        char oc = pattern[k];
+                        if (oc == ')' || oc == ':') break;
+                        if (oc == 's') return true;
+                        if (oc != 'i' && oc != 'm' && oc != 'n' && oc != 'x' && oc != '-')
+                            break; // not an option run; stop scanning
+                    }
+                }
+            }
+            return false;
         }
 
         // Alphanumeric runs >=3 chars; final regex.IsMatch still gates output so a

@@ -54,6 +54,7 @@ namespace GxMcp.Gateway.Tests
         {
             var response = Dispatch("tools/list");
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
             var tools = response["tools"] as JArray;
             Assert.NotNull(tools);
 
@@ -77,10 +78,23 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ToolsList_ShouldBeDeterministicallySortedByName()
+        {
+            var tools = Dispatch("tools/list")["tools"] as JArray;
+            Assert.NotNull(tools);
+
+            var names = tools!.Select(tool => tool["name"]?.ToString() ?? string.Empty).ToList();
+            Assert.Equal(names.OrderBy(name => name, System.StringComparer.Ordinal), names);
+        }
+
+        [Fact]
         public void ResourcesList_ShouldExposeRequiredPlaybookUris()
         {
             var response = Dispatch("resources/list");
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
+            Assert.True(response["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", response["cacheScope"]?.ToString());
             var resources = response["resources"] as JArray;
             Assert.NotNull(resources);
 
@@ -96,6 +110,9 @@ namespace GxMcp.Gateway.Tests
         {
             var response = Dispatch("resources/templates/list");
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
+            Assert.True(response["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", response["cacheScope"]?.ToString());
             var templates = response["resourceTemplates"] as JArray;
             Assert.NotNull(templates);
             Assert.NotEmpty(templates!);
@@ -114,6 +131,9 @@ namespace GxMcp.Gateway.Tests
         {
             var response = Dispatch("prompts/list");
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
+            Assert.True(response["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", response["cacheScope"]?.ToString());
             var prompts = response["prompts"] as JArray;
             Assert.NotNull(prompts);
 
@@ -130,6 +150,9 @@ namespace GxMcp.Gateway.Tests
             var parameters = new JObject { ["uri"] = "genexus://kb/agent-playbook" };
             var response = Dispatch("resources/read", parameters: parameters);
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
+            Assert.True(response["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", response["cacheScope"]?.ToString());
             var contents = response["contents"] as JArray;
             Assert.NotNull(contents);
             Assert.NotEmpty(contents!);
@@ -138,6 +161,23 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(entry);
             Assert.Equal("genexus://kb/agent-playbook", entry!["uri"]?.ToString());
             Assert.False(string.IsNullOrWhiteSpace(entry["text"]?.ToString()));
+        }
+
+        [Fact]
+        public void ToolResult_ShouldExposeStructuredContentAlongsideText()
+        {
+            var response = Program.BuildToolTextResponse(
+                new JValue("1"),
+                new JObject { ["status"] = "ok", ["count"] = 1 },
+                isError: false,
+                toolName: "genexus_read");
+
+            var result = response["result"] as JObject;
+            Assert.NotNull(result);
+            Assert.Equal("complete", result!["resultType"]?.ToString());
+            Assert.Equal("ok", result!["structuredContent"]?["status"]?.ToString());
+            Assert.Equal("{\"status\":\"ok\",\"count\":1}",
+                result["content"]?[0]?["text"]?.ToString());
         }
     }
 }

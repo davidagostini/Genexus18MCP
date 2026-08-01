@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 using Artech.Genexus.Common.Objects;
@@ -62,7 +63,13 @@ namespace GxMcp.Worker.Services
                             hint: "Pass a JSON object with a 'children' array describing the Transaction structure.",
                             target: targetName);
                         JArray before = _visualStructureService.SerializeVisualLevel(trn.Structure.Root);
-                        
+                        // issue #59 — capture the pre-write top-level structure names so the
+                        // success envelope can surface a before/requested/persisted diff.
+                        var beforeNames = before
+                            .OfType<JObject>()
+                            .Select(c => c["name"]?.ToString() ?? string.Empty)
+                            .Where(n => n.Length > 0)
+                            .ToList();
                         // Chamada otimizada com Batch Save interno
                         _visualStructureService.SyncVisualStructure(trn, children);
                         
@@ -73,7 +80,6 @@ namespace GxMcp.Worker.Services
                             SkipValidation = false
                         });
                         sdkTrans.Commit();
-
                         var persistedTrn = _objectService.FindObject(targetName, "Transaction") as Transaction;
                         JArray persisted = persistedTrn == null ? new JArray() : _visualStructureService.SerializeVisualLevel(persistedTrn.Structure.Root);
                         JArray diff = CompareRequestedStructure(children, persisted, "children");
@@ -86,10 +92,25 @@ namespace GxMcp.Worker.Services
                                     ["before"] = before, ["requested"] = children.DeepClone(),
                                     ["persisted"] = persisted, ["diff"] = diff, ["saved"] = false
                                 });
+                        // issue #59 — post-save persistence verification. Re-find the
+                        // Transaction (fresh instance, not the mutated one) and confirm every
+                        // requested top-level name is present in the persisted structure. A
+                        // missing name returns StructureUpdateNotPersisted instead of a false
+                        // StructureUpdated success.
+                        var requestedNames = children.Select(c => c["name"]?.ToString() ?? string.Empty)
+                            .Where(n => n.Length > 0)
+                            .ToList();
+                        var verifyErr = VerifyStructurePersisted(targetName, requestedNames, beforeNames, trn);
+                        if (verifyErr != null) return verifyErr;
+
                         return Models.McpResponse.Ok(target: targetName, code: "StructureUpdated", result: new JObject
                         {
-                            ["before"] = before, ["requested"] = children.DeepClone(),
-                            ["persisted"] = persisted, ["diff"] = diff, ["saved"] = true
+                            ["before"] = before,
+                            ["requested"] = children.DeepClone(),
+                            ["persisted"] = persisted,
+                            ["diff"] = diff,
+                            ["saved"] = true,
+                            ["persistedVerified"] = true
                         });
                     } catch (Exception ex) {
                         sdkTrans.Rollback();
@@ -106,6 +127,85 @@ namespace GxMcp.Worker.Services
                     message: ex.Message,
                     hint: "Ensure the target Transaction exists and the payload is valid JSON.",
                     target: targetName);
+            }
+        }
+
+        // Compare the complete top-level name set, including removals. A visual structure
+        // payload is replacement-shaped: names omitted from children are removed by
+        // SyncVisualLevel, so checking only requested additions would report a false
+        // success when the SDK silently kept an old item.
+        internal static JObject CompareStructureNames(
+            IEnumerable<string> requestedNames,
+            IEnumerable<string> persistedNames)
+        {
+            var requested = (requestedNames ?? Enumerable.Empty<string>())
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var persisted = (persistedNames ?? Enumerable.Empty<string>())
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return new JObject
+            {
+                ["missing"] = new JArray(requested.Where(r =>
+                    !persisted.Any(p => string.Equals(p, r, StringComparison.OrdinalIgnoreCase)))),
+                ["unexpected"] = new JArray(persisted.Where(p =>
+                    !requested.Any(r => string.Equals(r, p, StringComparison.OrdinalIgnoreCase))))
+            };
+        }
+
+        // issue #59 — post-save re-read of a Transaction's top-level structure names. Returns
+        // a StructureUpdateNotPersisted envelope when the complete requested set differs from
+        // the persisted structure, or null when the write is confirmed (or unverifiable).
+        private string VerifyStructurePersisted(string targetName,
+            System.Collections.Generic.List<string> requestedNames,
+            System.Collections.Generic.List<string> beforeNames,
+            Transaction original)
+        {
+            if (requestedNames == null) return null;
+            try
+            {
+                var fresh = _objectService.FindObject(targetName) as Transaction;
+                if (fresh == null) return null; // unverifiable
+
+                // Circularity guard: same in-memory instance back from FindObject means the
+                // re-read would trivially mirror the mutated structure — treat as unverifiable.
+                if (original != null && object.ReferenceEquals(fresh, original)) return null;
+                var persistedNames = _visualStructureService.SerializeVisualLevel(fresh.Structure.Root)
+                    .Select(c => c["name"]?.ToString() ?? string.Empty)
+                    .Where(n => n.Length > 0)
+                    .ToList();
+
+                var diff = CompareStructureNames(requestedNames, persistedNames);
+                var missing = diff["missing"] as JArray ?? new JArray();
+                var unexpected = diff["unexpected"] as JArray ?? new JArray();
+                if (missing.Count == 0 && unexpected.Count == 0) return null;
+
+                return Models.McpResponse.Err(
+                    code: "StructureUpdateNotPersisted",
+                    message: $"The SDK saved the Transaction but the re-read did not confirm the requested top-level structure set ({missing.Count} missing, {unexpected.Count} unexpected).",
+                    hint: "On this GeneXus build the structure write may not have fully survived. Re-read with genexus_structure action=get_visual and fix the missing items in the GeneXus IDE structure editor if they recur.",
+                    nextSteps: new JArray(Models.McpResponse.NextStep(
+                        tool: "genexus_structure",
+                        args: new JObject { ["action"] = "get_visual", ["name"] = targetName },
+                        why: "Shows the persisted structure so you can see exactly which items landed.")),
+                    target: targetName,
+                    extra: new JObject
+                    {
+                        ["missing"] = missing,
+                        ["unexpected"] = unexpected,
+                        ["requested"] = new JArray(requestedNames),
+                        ["persisted"] = new JArray(persistedNames),
+                        ["before"] = new JArray(beforeNames ?? new System.Collections.Generic.List<string>()),
+                        ["saved"] = false
+                    });
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[STRUCTURE-VERIFY] " + ex.Message);
+                return null;
             }
         }
 

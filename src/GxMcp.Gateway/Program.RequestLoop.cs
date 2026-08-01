@@ -26,6 +26,65 @@ namespace GxMcp.Gateway
         {
             string? method = request["method"]?.ToString();
             var idToken = request["id"];
+            _currentKb.Value = null;
+
+            // Protocol-level methods and gateway-owned resources must not depend on
+            // KB resolution. This keeps initialize/discovery usable before any KB
+            // is opened and avoids turning a static resource read into KB_AMBIGUOUS.
+            var mcpResponse = McpRouter.Handle(request);
+            if (mcpResponse is McpRouterError routerError)
+            {
+                var error = new JObject
+                {
+                    ["code"] = routerError.Code,
+                    ["message"] = routerError.Message
+                };
+                if (routerError.Data != null) error["data"] = routerError.Data.DeepClone();
+
+                return new JObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = idToken?.DeepClone(),
+                    ["error"] = error
+                };
+            }
+            if (mcpResponse != null)
+            {
+                if (string.Equals(method, "initialize", StringComparison.OrdinalIgnoreCase))
+                {
+                    TriggerWorkerWarmupOnce();
+                    TriggerIndexBootstrapOnce();
+                    UpdateNotifier.TriggerOnce();
+                }
+                return new JObject { ["jsonrpc"] = "2.0", ["id"] = idToken?.DeepClone(), ["result"] = JToken.FromObject(mcpResponse) };
+            }
+
+            // Reject removed tools early with JSON-RPC -32601 + structured `data`.
+            // This is gateway-owned and must not require a KB just to explain that
+            // the client should use the replacement tool.
+            if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase))
+            {
+                string? earlyToolName = (request["params"] as JObject)?["name"]?.ToString();
+                if (!string.IsNullOrEmpty(earlyToolName) &&
+                    RemovedToolsRegistry.Map.TryGetValue(earlyToolName, out var removedInfo))
+                {
+                    return new JObject
+                    {
+                        ["jsonrpc"] = "2.0",
+                        ["id"] = idToken?.DeepClone(),
+                        ["error"] = new JObject
+                        {
+                            ["code"] = -32601,
+                            ["message"] = $"Method not found: {earlyToolName}",
+                            ["data"] = new JObject
+                            {
+                                ["replacedBy"] = removedInfo.ReplacedBy,
+                                ["argHint"] = removedInfo.ArgHint
+                            }
+                        }
+                    };
+                }
+            }
 
             // Resolve KB once per request and stash in AsyncLocal so SendWorkerCommandAsync routes correctly.
             // Meta-tools (whoami, logs, doc, worker_reload, kb) don't address a specific KB and
@@ -40,7 +99,12 @@ namespace GxMcp.Gateway
                     isMetaTool = !string.IsNullOrEmpty(toolNameForResolver) && IsMetaTool(toolNameForResolver);
                 }
 
-                if (!isMetaTool)
+                bool needsKbResolution =
+                    (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase) && !isMetaTool)
+                    || (string.Equals(method, "resources/read", StringComparison.OrdinalIgnoreCase)
+                        && McpRouter.ConvertResourceCall(request) != null);
+
+                if (needsKbResolution)
                 {
                     try
                     {
@@ -87,44 +151,6 @@ namespace GxMcp.Gateway
                     argsObj?.Remove("kb");
                     _currentKb.Value = null;
                 }
-            }
-
-            // Reject removed tools early with JSON-RPC -32601 + structured `data`
-            if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase))
-            {
-                string? earlyToolName = (request["params"] as JObject)?["name"]?.ToString();
-                if (!string.IsNullOrEmpty(earlyToolName) &&
-                    RemovedToolsRegistry.Map.TryGetValue(earlyToolName, out var removedInfo))
-                {
-                    return new JObject
-                    {
-                        ["jsonrpc"] = "2.0",
-                        ["id"] = idToken?.DeepClone(),
-                        ["error"] = new JObject
-                        {
-                            ["code"] = -32601,
-                            ["message"] = $"Method not found: {earlyToolName}",
-                            ["data"] = new JObject
-                            {
-                                ["replacedBy"] = removedInfo.ReplacedBy,
-                                ["argHint"] = removedInfo.ArgHint
-                            }
-                        }
-                    };
-                }
-            }
-
-            // Protocol level
-            var mcpResponse = McpRouter.Handle(request);
-            if (mcpResponse != null)
-            {
-                if (string.Equals(method, "initialize", StringComparison.OrdinalIgnoreCase))
-                {
-                    TriggerWorkerWarmupOnce();
-                    TriggerIndexBootstrapOnce();
-                    UpdateNotifier.TriggerOnce();
-                }
-                return new JObject { ["jsonrpc"] = "2.0", ["id"] = idToken?.DeepClone(), ["result"] = JToken.FromObject(mcpResponse) };
             }
 
             // Tool Calls
@@ -180,10 +206,16 @@ namespace GxMcp.Gateway
                             {
                                 ["jsonrpc"] = "2.0",
                                 ["id"] = idToken?.DeepClone(),
-                                ["result"] = JToken.FromObject(new
-                                {
-                                    contents = new[]
+                                    ["result"] = JToken.FromObject(new
                                     {
+                                        resultType = "complete",
+                                        // Object parts are KB-local and can change after any
+                                        // write; advertise a non-cacheable private resource
+                                        // response instead of letting clients retain stale text.
+                                        ttlMs = 0,
+                                        cacheScope = "private",
+                                        contents = new[]
+                                        {
                                         new
                                         {
                                             uri = request["params"]?["uri"]?.ToString(),
@@ -204,6 +236,22 @@ namespace GxMcp.Gateway
                         toolArgs: request["params"] as JObject,
                         trackOperation: false);
                 }
+
+                // A resource URI is a valid MCP method even when it is not backed
+                // by a worker command. Return the protocol's invalid-params error
+                // instead of falling through to the generic method-not-found path.
+                string missingResourceUri = request["params"]?["uri"]?.ToString() ?? string.Empty;
+                return new JObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = idToken?.DeepClone(),
+                    ["error"] = new JObject
+                    {
+                        ["code"] = -32602,
+                        ["message"] = "Resource not found.",
+                        ["data"] = new JObject { ["uri"] = missingResourceUri }
+                    }
+                };
             }
 
             // Tool Calls (Actual logic)
@@ -336,17 +384,15 @@ namespace GxMcp.Gateway
                         {
                             ["jsonrpc"] = "2.0",
                             ["id"] = idToken?.DeepClone(),
-                            ["result"] = new JObject
-                            {
-                                ["content"] = new JArray
+                            ["result"] = BuildToolResultContent(
+                                new JObject
                                 {
-                                    new JObject
-                                    {
-                                        ["type"] = "text",
-                                        ["text"] = "{\"status\":\"Forced\",\"detail\":\"Worker process(es) killed by gateway and respawned. Any in-flight worker job was abandoned.\"}"
-                                    }
-                                }
-                            }
+                                    ["status"] = "Forced",
+                                    ["detail"] = "Worker process(es) killed by gateway and respawned. Any in-flight worker job was abandoned."
+                                },
+                                isError: false,
+                                toolName: toolName,
+                                toolArgs: args)
                         };
                         return ok;
                     }
@@ -660,6 +706,9 @@ namespace GxMcp.Gateway
                                     throw new ArgumentException("Missing 'alias' for action=close.");
                                 }
                                 bool closed = _workerPool.Close(alias!);
+                                // The alias may be reopened against a different KB later;
+                                // never let cached name/type resolutions cross that boundary.
+                                InvalidateFullNameTypeMap(alias!);
                                 payload = new JObject { ["closed"] = closed, ["alias"] = alias };
                                 break;
                             }
@@ -1281,11 +1330,7 @@ namespace GxMcp.Gateway
                             };
                             if (idxSnap?.Progress != null) indexingEnvelope["progress"] = idxSnap.Progress.Value;
                             if (idxSnap?.EtaMs != null) indexingEnvelope["etaMs"] = idxSnap.EtaMs.Value;
-                            return new JObject
-                            {
-                                ["isError"] = false,
-                                ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = indexingEnvelope.ToString(Formatting.None) } }
-                            };
+                            return BuildToolResultContent(indexingEnvelope, false, tName, tArgs);
                         }
                     }
 
@@ -1294,11 +1339,7 @@ namespace GxMcp.Gateway
                     {
                         bool whoamiVerbose = tArgs?["verbose"]?.ToObject<bool>() ?? false;
                         JObject whoami = await BuildWhoamiPayloadAsync(whoamiVerbose);
-                        return new JObject
-                        {
-                            ["isError"] = false,
-                            ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = whoami.ToString(Formatting.None) } }
-                        };
+                        return BuildToolResultContent(whoami, false, tName, tArgs);
                     }
 
                     if (string.Equals(tName, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
@@ -1372,11 +1413,7 @@ namespace GxMcp.Gateway
                             isErr = payload?["error"] != null || string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
                         }
 
-                        return new JObject
-                        {
-                            ["isError"] = isErr,
-                            ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = payload.ToString(Formatting.None) } }
-                        };
+                        return BuildToolResultContent(payload, isErr, tName, tArgs);
                     }
 
                     // Async build intercept (Tasks 4.3 + 4.4):
@@ -1593,20 +1630,12 @@ namespace GxMcp.Gateway
                                     try { pollResult["result"] = JObject.Parse(compactJson); }
                                     catch { /* shaper passthrough on non-JSON */ }
                                 }
-                                return new JObject
-                                {
-                                    ["isError"] = isErr,
-                                    ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = pollResult.ToString(Newtonsoft.Json.Formatting.None) } }
-                                };
+                                return BuildToolResultContent(pollResult, isErr, tName, tArgs);
                             }
 
                             // Return immediately with job_id
                             var asyncResponse = BuildAsyncLifecycleAcceptedPayload(job, lcAction);
-                            return new JObject
-                            {
-                                ["isError"] = false,
-                                ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = asyncResponse.ToString(Newtonsoft.Json.Formatting.None) } }
-                            };
+                            return BuildToolResultContent(asyncResponse, false, tName, tArgs);
                         }
                         // else: UseSync == true → fall through to the normal synchronous dispatch below
                         Log($"[AsyncBuild] Short build (estimated={estimatedSeconds}s < threshold={threshold}s): using sync fast-path");
@@ -1659,7 +1688,11 @@ namespace GxMcp.Gateway
                     var workerCmd = rawWorkerCmd != null ? JObject.FromObject(rawWorkerCmd) : null;
                     if (workerCmd == null)
                     {
-                        return new JObject { ["isError"] = true, ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = "{}" } } };
+                        return BuildToolResultContent(
+                            new JObject { ["error"] = "Tool conversion produced no worker command." },
+                            isError: true,
+                            toolName: tName,
+                            toolArgs: tArgs);
                     }
 
                     workerCmd["client"] = "mcp";
@@ -1715,11 +1748,7 @@ namespace GxMcp.Gateway
                                                 || string.Equals(tName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase)
                             ? BuildAsyncVariableAcceptedPayload(editJob)
                             : BuildAsyncEditAcceptedPayload(editJob));
-                        return new JObject
-                        {
-                            ["isError"] = false,
-                            ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = asyncEditResponse.ToString(Formatting.None) } }
-                        };
+                        return BuildToolResultContent(asyncEditResponse, false, tName, tArgs);
                     }
 
                     JObject? innerResult = null;
@@ -1815,13 +1844,7 @@ namespace GxMcp.Gateway
                                 catch { /* shaper passed through non-JSON; keep original */ }
                             }
 
-                            JToken axiPayload = NormalizeToolPayloadForAxi(finalResult, tName, tArgs, isErr);
-
-                            var toolResult = new JObject
-                            {
-                                ["isError"] = isErr,
-                                ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = axiPayload.ToString(Formatting.None) } }
-                            };
+                            var toolResult = BuildToolResultContent(finalResult, isErr, tName, tArgs);
 
                             // v2.3.8 (post-self-review) — don't cache transient envelopes.
                             // A "Reindexing"/"IndexCold"/"Timeout"/"Cancelled"/"BuildPlanTooLarge"
@@ -1884,12 +1907,7 @@ namespace GxMcp.Gateway
                             }
                             timeoutPayload["help"] = help;
 
-                            JToken axiPayload = NormalizeToolPayloadForAxi(timeoutPayload, tName, tArgs, true);
-                            return new JObject
-                            {
-                                ["isError"] = true,
-                                ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = axiPayload.ToString(Formatting.None) } }
-                            };
+                            return BuildToolResultContent(timeoutPayload, isError: true, toolName: tName, toolArgs: tArgs);
                         },
                         toolName: tName,
                         toolArgs: tArgs,
@@ -2036,7 +2054,11 @@ namespace GxMcp.Gateway
                         }
                     }
 
-                    return innerResult ?? new JObject { ["isError"] = true };
+                    return innerResult ?? BuildToolResultContent(
+                        new JObject { ["error"] = "Tool did not produce a result." },
+                        isError: true,
+                        toolName: tName,
+                        toolArgs: tArgs);
                 }
 
                 JObject toolInnerResult;

@@ -121,8 +121,12 @@ namespace GxMcp.Worker.Services
                 // (total/hasMore/pagination/empty-page hints) must key off this
                 // flag rather than assuming non-UltraLite == complete.
                 bool indexPartial = string.Equals(indexStatusUpper, "UltraLiteReady", StringComparison.OrdinalIgnoreCase);
+                // Built-and-empty is a LEGITIMATELY empty KB (the lite walk completed and
+                // found no model objects — e.g. a KB whose LocalDB model is missing), NOT
+                // a build in progress. Only a null index or a not-yet-built status is
+                // "not ready"; count==0 with Ready/LiteReady/Enriching falls through to
+                // the honest empty-listing branch below instead of looping IndexNotReady.
                 bool indexNotReady = index == null
-                    || index.Objects.Count == 0
                     || !(string.Equals(indexStatusUpper, "Ready", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(indexStatusUpper, "LiteReady", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(indexStatusUpper, "Enriching", StringComparison.OrdinalIgnoreCase)
@@ -142,6 +146,22 @@ namespace GxMcp.Worker.Services
                     if (indexState?.Progress != null) envelope["progress"] = indexState.Progress.Value;
                     if (indexState?.EtaMs != null) envelope["etaMs"] = indexState.EtaMs.Value;
                     return Finalize(envelope.ToString(Newtonsoft.Json.Formatting.None));
+                }
+                if (index.Objects.Count == 0 && !indexPartial)
+                {
+                    // Built-and-empty (Ready / LiteReady / Enriching with 0 entries): the
+                    // walk completed and the KB has no model objects. Return an honest
+                    // empty listing tagged kb_has_no_objects instead of an eternal
+                    // IndexNotReady (which left agents looping `lifecycle action=index
+                    // force=true` on empty KBs forever — there is nothing to index).
+                    // UltraLiteReady/0 is excluded: the walk is still streaming and
+                    // nothing has landed yet, so it must not claim the KB is empty.
+                    var empty = BuildPagedResponseInternal(new JArray(), 0, 0, limit <= 0 ? int.MaxValue : limit);
+                    var meta = empty["_meta"] as JObject ?? new JObject();
+                    meta["empty_reason"] = "kb_has_no_objects";
+                    meta["emptyHint"] = "This KB's model reports no objects (empty KB — e.g. a missing LocalDB model). Create objects with genexus_create or open a different KB; re-running lifecycle action=index cannot populate it.";
+                    empty["_meta"] = meta;
+                    return Finalize(empty.ToString(Newtonsoft.Json.Formatting.None));
                 }
                 if (index.Objects.Count > 0)
                 {
@@ -421,6 +441,12 @@ namespace GxMcp.Worker.Services
                     return Finalize(paged.ToString());
                 }
 
+                // Defensive fallback for exotic states only (e.g. UltraLiteReady with 0
+                // entries — the walk is streaming but nothing has landed yet): the built-
+                // empty branch above already owns Ready/LiteReady/Enriching with 0 entries,
+                // and a null/cold index fast-fails at the gate, so this path is effectively
+                // unreachable today. Kept as ground-truth SDK enumeration for future index-
+                // loading changes rather than deleted.
                 source = "runtime-sdk";
                 var kb = _kbService.GetKB();
                 if (kb == null) return Finalize("{\"status\":\"Error\",\"message\":\"KB not open\"}");

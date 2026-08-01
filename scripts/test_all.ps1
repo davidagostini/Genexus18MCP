@@ -26,7 +26,8 @@ Start-Sleep -Seconds 15
 
 try {
     $initializeBody = "{""jsonrpc"":""2.0"",""id"":""init"",""method"":""initialize"",""params"":{""protocolVersion"":""$protocolVersion"",""capabilities"":{},""clientInfo"":{""name"":""test-runner"",""version"":""1.0.0""}}}"
-    $initResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "http://127.0.0.1:5000/mcp" -Body $initializeBody -ContentType "application/json" -Headers @{ "MCP-Protocol-Version" = $protocolVersion } -TimeoutSec 60
+    $mcpHeaders = @{ "MCP-Protocol-Version" = $protocolVersion; "Accept" = "application/json, text/event-stream" }
+    $initResponse = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "http://127.0.0.1:5000/mcp" -Body $initializeBody -ContentType "application/json" -Headers $mcpHeaders -TimeoutSec 60
     $sessionId = $null
     if ($initResponse -and $initResponse.Headers) {
         $rawSessionHeader = $initResponse.Headers["MCP-Session-Id"]
@@ -44,7 +45,8 @@ try {
     }
 
     $toolsBody = '{"jsonrpc":"2.0","id":"tools","method":"tools/list"}'
-    $toolsResponse = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/mcp" -Body $toolsBody -ContentType "application/json" -Headers @{ "MCP-Protocol-Version" = $protocolVersion; "MCP-Session-Id" = $sessionId } -TimeoutSec 60
+    $mcpHeaders["MCP-Session-Id"] = $sessionId
+    $toolsResponse = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/mcp" -Body $toolsBody -ContentType "application/json" -Headers $mcpHeaders -TimeoutSec 60
     if (-not $toolsResponse -or -not $toolsResponse.result -or -not $toolsResponse.result.tools) {
         throw "tools/list did not return a tool catalog."
     }
@@ -52,7 +54,7 @@ try {
     if (-not ($toolNames -contains "genexus_doc")) { throw "Expected tool genexus_doc not found in tools/list." }
 
     $healthBody = '{"jsonrpc":"2.0","id":"health","method":"tools/call","params":{"name":"genexus_doc","arguments":{"action":"health"}}}'
-    $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/mcp" -Body $healthBody -ContentType "application/json" -Headers @{ "MCP-Protocol-Version" = $protocolVersion; "MCP-Session-Id" = $sessionId } -TimeoutSec 60
+    $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:5000/mcp" -Body $healthBody -ContentType "application/json" -Headers $mcpHeaders -TimeoutSec 60
 
     if ($response.error) {
         Write-Host "Gateway Error: $($response.error.message)" -ForegroundColor Red

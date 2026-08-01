@@ -50,15 +50,30 @@ namespace GxMcp.Worker.Services
                 var index = _indexCacheService.GetIndex();
                 bool indexEmpty = index == null || index.Objects.Count == 0;
 
-                // If we genuinely have nothing yet, return progress info — but DON'T pretend
-                // it's a "zero results" search. _meta.indexStatus = "warming" tells the agent
-                // to retry once indexing progresses, while still reporting the (zero) snapshot.
-                if (indexEmpty && scanning)
-                {
-                    return BuildPartialResponse(query, new object[0], 0, scanning: true);
-                }
                 if (indexEmpty)
                 {
+                    // Distinguish a genuinely-empty KB (index built — the walk completed and
+                    // found no model objects, e.g. a KB whose LocalDB model is missing) from a
+                    // build still in progress. The former must return a plain zero-result
+                    // response; the latter keeps the "warming" partial + BulkIndex kick below
+                    // (which would otherwise loop forever on an empty KB).
+                    var st = _indexCacheService.GetState();
+                    bool indexBuilt = st != null
+                        && (string.Equals(st.Status, "Ready", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(st.Status, "LiteReady", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(st.Status, "Enriching", StringComparison.OrdinalIgnoreCase));
+                    if (indexBuilt)
+                    {
+                        return BuildEmptyKbResponse(limit);
+                    }
+
+                    // If we genuinely have nothing yet, return progress info — but DON'T pretend
+                    // it's a "zero results" search. _meta.indexStatus = "warming" tells the agent
+                    // to retry once indexing progresses, while still reporting the (zero) snapshot.
+                    if (scanning)
+                    {
+                        return BuildPartialResponse(query, new object[0], 0, scanning: true);
+                    }
                     try { _indexCacheService.KbService?.BulkIndex(); } catch { }
                     return BuildPartialResponse(query, new object[0], 0, scanning: true);
                 }
@@ -603,6 +618,36 @@ namespace GxMcp.Worker.Services
                 Logger.Debug("Direct lookup failed (" + trimmed + "): " + ex.Message);
                 return null;
             }
+        }
+
+        // Build a plain zero-result payload for a built-and-empty index (the KB genuinely
+        // has no model objects). Mirrors the canonical search response shape so callers can
+        // branch uniformly; _meta.empty_reason = "kb_has_no_objects" makes it unambiguous
+        // versus the "warming" partial responses (and stops the redundant BulkIndex kick).
+        private string BuildEmptyKbResponse(int limit)
+        {
+            var resp = new JObject
+            {
+                ["count"] = 0,
+                ["total"] = 0,
+                ["hasMore"] = false,
+                ["results"] = new JArray(),
+                ["pagination"] = new JObject
+                {
+                    ["offset"]     = 0,
+                    ["limit"]      = limit,
+                    ["returned"]   = 0,
+                    ["total"]      = 0,
+                    ["hasMore"]    = false,
+                    ["nextOffset"] = JValue.CreateNull()
+                },
+                ["_meta"] = new JObject
+                {
+                    ["empty_reason"] = "kb_has_no_objects",
+                    ["emptyHint"] = "This KB's model reports no objects (empty KB — e.g. a missing LocalDB model). Create objects with genexus_create or open a different KB; re-running lifecycle action=index cannot populate it."
+                }
+            };
+            return resp.ToString(Newtonsoft.Json.Formatting.None);
         }
 
         // Build a zero/partial-result payload that signals indexing is still running,

@@ -53,6 +53,11 @@ namespace GxMcp.Gateway
             "genexus_kb", "genexus_whoami", "genexus_logs", "genexus_doc", "genexus_worker_reload", "genexus_recipe"
         };
         private static bool IsMetaTool(string name) => _metaTools.Contains(name);
+
+        internal static bool IsJsonRpcNotification(JObject request)
+        {
+            return request["id"] == null || request["id"]!.Type == JTokenType.Null;
+        }
         private sealed class PendingWorkerRequest
         {
             public TaskCompletionSource<string> CompletionSource { get; init; } = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -541,7 +546,8 @@ namespace GxMcp.Gateway
                         {
                             var req = JObject.Parse(replayLine);
                             var resp = await ProcessMcpRequest(req);
-                            if (resp != null) await TryWriteStdout(resp.ToString(Formatting.None));
+                            if (resp != null && !IsJsonRpcNotification(req))
+                                await TryWriteStdout(resp.ToString(Formatting.None));
                         }
                         catch (Exception ex) { Log("[Gateway] Promotion replay failed: " + ex.Message); }
                     });
@@ -599,8 +605,9 @@ namespace GxMcp.Gateway
                                 return;
                             }
                             capturedId = request["id"];
+                            bool notification = IsJsonRpcNotification(request);
                             var response = await ProcessMcpRequest(request);
-                            if (response != null)
+                            if (response != null && !notification)
                             {
                                 await TryWriteStdout(response.ToString(Formatting.None));
                             }
@@ -614,12 +621,13 @@ namespace GxMcp.Gateway
                                 ["id"] = capturedId?.DeepClone() ?? JValue.CreateNull(),
                                 ["error"] = new JObject { ["code"] = -32000, ["message"] = poolEx.Message }
                             };
-                            await TryWriteStdout(errResp.ToString(Formatting.None));
+                            if (capturedId != null && capturedId.Type != JTokenType.Null)
+                                await TryWriteStdout(errResp.ToString(Formatting.None));
                         }
                         catch (Exception ex)
                         {
                             Log("MCP Error: " + ex.Message);
-                            if (capturedId != null)
+                            if (capturedId != null && capturedId.Type != JTokenType.Null)
                             {
                                 var errResp = new JObject
                                 {
@@ -671,7 +679,8 @@ namespace GxMcp.Gateway
             string baseUrl = $"http://localhost:{master.HttpPort}/mcp";
             using var httpClient = new HttpClient();
             httpClient.Timeout = TimeSpan.FromSeconds(30); // Do not let proxy hang forever if master is dead
-            httpClient.DefaultRequestHeaders.Add("MCP-Protocol-Version", McpRouter.SupportedProtocolVersion);
+            httpClient.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+            httpClient.DefaultRequestHeaders.Accept.ParseAdd("text/event-stream");
             
             string? sessionId = null;
             // issue #38 defect #3: cache the client's `initialize` line so a dropped/expired
@@ -684,6 +693,7 @@ namespace GxMcp.Gateway
             // initialize — without the persisted copy we could never re-handshake and every call
             // 400'd ("Missing MCP-Session-Id") forever until a full client restart.
             string? cachedInitializeLine = _proxyCachedInitializeLine;
+            string negotiatedProtocolVersion = ResolveProxyProtocolVersion(cachedInitializeLine);
             var reader = Console.In;
             var cts = new CancellationTokenSource();
             var ct = cts.Token;
@@ -705,26 +715,41 @@ namespace GxMcp.Gateway
                         string body = line;
                         var request = JObject.Parse(body);
                         string requestId = request["id"]?.ToString() ?? "unknown";
+                        bool isInitialize = string.Equals(request["method"]?.ToString(), "initialize", StringComparison.Ordinal);
+                        bool isModern = McpRouter.IsModernRequest(request);
+                        string requestProtocolVersion = McpHttpProtocol.GetRequestProtocolVersion(request)
+                            ?? negotiatedProtocolVersion;
                         // A JSON-RPC notification has no id and expects NO response — the
                         // master answers it with HTTP 204/empty, which is correct, not a fault.
                         bool isNotification = request["id"] == null || request["id"]!.Type == JTokenType.Null;
                         // Remember the initialize handshake so we can replay it if the master
                         // session later expires (issue #38 defect #3).
-                        if (string.Equals(request["method"]?.ToString(), "initialize", StringComparison.Ordinal))
+                        if (isInitialize && !isModern)
                         {
                             cachedInitializeLine = line;
                             _proxyCachedInitializeLine = line; // survive proxy re-entry (issue #43 #6)
+                            negotiatedProtocolVersion = McpRouter.NegotiateProtocolVersion(
+                                (request["params"] as JObject)?["protocolVersion"]?.ToString());
                         }
                         var content = new StringContent(body, Encoding.UTF8, "application/json");
                         
-                        if (sessionId != null) content.Headers.Add("MCP-Session-Id", sessionId);
+                        if (!isModern && sessionId != null) content.Headers.Add("MCP-Session-Id", sessionId);
 
                         using var requestMessage = new HttpRequestMessage(HttpMethod.Post, baseUrl) { Content = content };
-                        if (sessionId != null) requestMessage.Headers.Add("MCP-Session-Id", sessionId);
+                        requestMessage.Headers.Add("MCP-Protocol-Version", requestProtocolVersion);
+                        if (!isModern && sessionId != null) requestMessage.Headers.Add("MCP-Session-Id", sessionId);
+                        if (isModern)
+                        {
+                            string method = request["method"]?.ToString() ?? string.Empty;
+                            requestMessage.Headers.Add("Mcp-Method", method);
+                            string? headerName = McpHttpProtocol.GetStandardHeaderName(request);
+                            if (headerName != null)
+                                requestMessage.Headers.Add("Mcp-Name", McpHttpProtocol.EncodeHeaderValue(headerName));
+                        }
 
                         var response = await httpClient.SendAsync(requestMessage, ct);
                         
-                        if (sessionId == null && response.Headers.TryGetValues("MCP-Session-Id", out var values))
+                        if (!isModern && sessionId == null && response.Headers.TryGetValues("MCP-Session-Id", out var values))
                         {
                             sessionId = values.FirstOrDefault();
                             if (sessionId != null)
@@ -732,7 +757,7 @@ namespace GxMcp.Gateway
                                 Log($"[Proxy] Handshake complete. ID: {sessionId}");
                                 // Wait a moment for master to stabilize before streaming notifications
                                 await Task.Delay(2000);
-                                _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, cts.Token));
+                                _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, negotiatedProtocolVersion, cts.Token));
                             }
                         }
 
@@ -782,17 +807,17 @@ namespace GxMcp.Gateway
                             // included). Re-establish a session by replaying the cached initialize, then
                             // resend the original request. This is distinct from the connection-failure
                             // promotion path below, which must NOT fire while the master is alive.
-                            if (response.StatusCode == System.Net.HttpStatusCode.NotFound
+                            if (!isModern && response.StatusCode == System.Net.HttpStatusCode.NotFound
                                 && sessionId != null && !isNotification)
                             {
                                 Log($"[Proxy] Master 404 (session {sessionId} expired/unknown). Re-initializing session...");
                                 sessionId = null;
-                                string? newSessionId = await ProxyRehandshakeAsync(httpClient, baseUrl, cachedInitializeLine, ct);
+                                string? newSessionId = await ProxyRehandshakeAsync(httpClient, baseUrl, cachedInitializeLine, negotiatedProtocolVersion, ct);
                                 if (newSessionId != null)
                                 {
                                     sessionId = newSessionId;
                                     Log($"[Proxy] Re-handshake complete. New ID: {sessionId}");
-                                    _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, cts.Token));
+                                    _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, negotiatedProtocolVersion, cts.Token));
                                     retryCount++;
                                     continue; // resend the original request with the fresh session
                                 }
@@ -807,7 +832,7 @@ namespace GxMcp.Gateway
                             // Recover exactly like the 404 case: replay the (persisted) initialize to mint a
                             // fresh session, then resend the original request. Gated on the session-missing
                             // signal so a genuine bad-request 400 still surfaces to the client.
-                            if (response.StatusCode == System.Net.HttpStatusCode.BadRequest
+                            if (!isModern && response.StatusCode == System.Net.HttpStatusCode.BadRequest
                                 && !isNotification
                                 && !string.IsNullOrEmpty(cachedInitializeLine)
                                 && remoteError != null
@@ -815,16 +840,34 @@ namespace GxMcp.Gateway
                             {
                                 Log("[Proxy] Master 400 (session missing). Re-initializing session...");
                                 sessionId = null;
-                                string? newSessionId = await ProxyRehandshakeAsync(httpClient, baseUrl, cachedInitializeLine, ct);
+                                string? newSessionId = await ProxyRehandshakeAsync(httpClient, baseUrl, cachedInitializeLine, negotiatedProtocolVersion, ct);
                                 if (newSessionId != null)
                                 {
                                     sessionId = newSessionId;
                                     Log($"[Proxy] Re-handshake complete (after 400). New ID: {sessionId}");
-                                    _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, cts.Token));
+                                    _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, negotiatedProtocolVersion, cts.Token));
                                     retryCount++;
                                     continue; // resend the original request with the fresh session
                                 }
                                 Log("[Proxy] Re-handshake after 400 failed; returning error to client.");
+                            }
+
+                            // Modern transport errors are already JSON-RPC responses. Preserve
+                            // their protocol error code/data instead of flattening them into a
+                            // transport-shaped "Master error: BadRequest" envelope.
+                            if (isModern && !isNotification)
+                            {
+                                try
+                                {
+                                    var jsonError = JObject.Parse(remoteError ?? string.Empty);
+                                    if (jsonError["jsonrpc"] != null && jsonError["error"] != null)
+                                    {
+                                        await TryWriteStdout(jsonError.ToString(Formatting.None));
+                                        success = true;
+                                        continue;
+                                    }
+                                }
+                                catch { /* fall through to the generic proxy error */ }
                             }
 
                             Log($"[Proxy] Master status {response.StatusCode}: {remoteError}");
@@ -869,13 +912,14 @@ namespace GxMcp.Gateway
         // session id, or null when there is nothing to replay or the master refused. The
         // initialize response body is intentionally discarded — the client already received
         // its initialize reply; this handshake is an internal session refresh.
-        private static async Task<string?> ProxyRehandshakeAsync(HttpClient httpClient, string baseUrl, string? cachedInitializeLine, CancellationToken ct)
+        private static async Task<string?> ProxyRehandshakeAsync(HttpClient httpClient, string baseUrl, string? cachedInitializeLine, string protocolVersion, CancellationToken ct)
         {
             if (string.IsNullOrEmpty(cachedInitializeLine)) return null;
             try
             {
                 var content = new StringContent(cachedInitializeLine!, Encoding.UTF8, "application/json");
                 using var msg = new HttpRequestMessage(HttpMethod.Post, baseUrl) { Content = content };
+                msg.Headers.Add("MCP-Protocol-Version", protocolVersion);
                 var resp = await httpClient.SendAsync(msg, ct);
                 if (resp.IsSuccessStatusCode && resp.Headers.TryGetValues("MCP-Session-Id", out var values))
                     return values.FirstOrDefault();
@@ -885,13 +929,27 @@ namespace GxMcp.Gateway
             return null;
         }
 
-        private static async Task RunProxySseForwarderAsync(int port, string sessionId, CancellationToken ct)
+        private static string ResolveProxyProtocolVersion(string? initializeLine)
+        {
+            try
+            {
+                var request = JObject.Parse(initializeLine ?? string.Empty);
+                return McpRouter.NegotiateProtocolVersion(McpHttpProtocol.GetRequestProtocolVersion(request));
+            }
+            catch
+            {
+                return McpRouter.SupportedProtocolVersion;
+            }
+        }
+
+        private static async Task RunProxySseForwarderAsync(int port, string sessionId, string protocolVersion, CancellationToken ct)
         {
             string url = $"http://localhost:{port}/mcp";
             using var client = new HttpClient();
             client.Timeout = Timeout.InfiniteTimeSpan;
             client.DefaultRequestHeaders.Add("MCP-Session-Id", sessionId);
-            client.DefaultRequestHeaders.Add("MCP-Protocol-Version", McpRouter.SupportedProtocolVersion);
+            client.DefaultRequestHeaders.Add("MCP-Protocol-Version", protocolVersion);
+            client.DefaultRequestHeaders.Accept.ParseAdd("text/event-stream");
 
             try
             {

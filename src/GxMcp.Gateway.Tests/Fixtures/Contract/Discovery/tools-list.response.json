@@ -1,4 +1,6 @@
 {
+  "cacheScope": "public",
+  "resultType": "complete",
   "tools": [
     {
       "annotations": {
@@ -517,7 +519,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers, and folder=<name>/module=<name> place the new object there (created in Root, then moved+verified); SDT takes optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog). action=object_atomic creates or updates definition, variables, rules, properties, and Source as one caller-atomic operation with preflight, persistence verification, optional specification, and compensating rollback.",
+      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers, and folder=<name>/module=<name> place the new object there (created in Root, then moved+verified); SDT takes optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog) | object_atomic (issue #62: all-or-nothing create/update of an object with variables[], rules[], parms[], properties{} and source in ONE validated call — pre-validates every field before the first save, composes the SDK write primitives, compensates on failure, dryRun previews, validate=true runs the inline Specify pass, update mode guards concurrent writes via expectedVersion). | curl_procedure imports a REST-consumer Procedure from a curl command through the GeneXus SDK.",
       "inputSchema": {
         "examples": [
           {
@@ -536,23 +538,6 @@
             "spec": {
               "host": "Customer"
             }
-          },
-          {
-            "action": "object_atomic",
-            "name": "ApproveOrder",
-            "rollbackOnFailure": true,
-            "rules": [
-              "parm(in:&OrderId);"
-            ],
-            "source": "// implementation",
-            "type": "Procedure",
-            "validate": true,
-            "variables": [
-              {
-                "name": "OrderId",
-                "typeName": "OrderId"
-              }
-            ]
           }
         ],
         "properties": {
@@ -614,6 +599,10 @@
             },
             "type": "array"
           },
+          "expectedVersion": {
+            "description": "object_atomic update: optimistic concurrency token returned as `version` by a prior atomic create/update/read; a mismatch fails with ConcurrentModification instead of overwriting concurrent changes.",
+            "type": "string"
+          },
           "firstItem": {
             "description": "object SDT optional: name of the first structure item to seed (SDK requires ≥1). Defaults to Item1. Use to avoid the throwaway Item1.",
             "type": "string"
@@ -638,6 +627,15 @@
             "description": "object Domain.",
             "type": "integer"
           },
+          "mode": {
+            "description": "object_atomic: create (fail if exists), update (fail if missing), auto (default — create or update by existence).",
+            "enum": [
+              "create",
+              "update",
+              "auto"
+            ],
+            "type": "string"
+          },
           "module": {
             "description": "object: Module destination (created in Root, then moved+verified).",
             "type": "string"
@@ -657,27 +655,39 @@
             "description": "object: folder/module destination (fallback when folder/module absent).",
             "type": "string"
           },
+          "parms": {
+            "description": "object_atomic: parameter entries rendered into a Parm rule — bare names (\"&Id\") or prefixed (\"out:&Msg\").",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "part": {
             "description": "sd_panel_edit/template.",
             "type": "string"
           },
           "properties": {
-            "description": "object_atomic scalar object properties.",
+            "description": "object_atomic: object-level properties applied via the genexus_properties path (propertyName → value).",
             "type": "object"
           },
           "rollbackOnFailure": {
-            "default": true,
+            "description": "Issue #60: with action=object and validationMode=specify, roll back the created object when the specify pass reports errors. A fresh object has no pre-write snapshot, so rollback reports rolledBack=false — delete it via genexus_delete_object if spec fails.",
             "type": "boolean"
           },
           "rules": {
-            "description": "object_atomic Rules text or array of rule lines."
+            "description": "object_atomic: rule lines (e.g. \"Parm(in:&Id);\").",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "signed": {
             "description": "object Domain.",
             "type": "boolean"
           },
           "source": {
-            "description": "object_atomic Source text or array of lines."
+            "description": "object_atomic: Source part text.",
+            "type": "string"
           },
           "spec": {
             "description": "popup.",
@@ -700,18 +710,18 @@
             "type": "boolean"
           },
           "validate": {
-            "default": false,
+            "description": "object_atomic: run the inline Specify pass (Spec+Gen) before confirming success. On failure with rollbackOnFailure=true, a freshly-created object is deleted so the operation stays all-or-nothing.",
             "type": "boolean"
           },
           "validationMode": {
-            "default": "specify",
+            "description": "Issue #60: with action=object, run the inline Specify pass (Spec+Gen, no Compile) after creation, returning structured spc*/gen* diagnostics in the same call. Combines with rollbackOnFailure.",
             "enum": [
               "specify"
             ],
             "type": "string"
           },
           "variables": {
-            "description": "object_atomic variables.",
+            "description": "object_atomic: one object per variable — {varName, typeName?, length?, decimals?, collection?}. Validated before any save; errors are attributed to variables[N].",
             "items": {
               "properties": {
                 "basedOn": {
@@ -736,6 +746,9 @@
                   "type": "string"
                 }
               },
+              "required": [
+                "varName"
+              ],
               "type": "object"
             },
             "type": "array"
@@ -755,7 +768,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Database umbrella. action: drift_check|drift_report (Transaction↔DB schema drift) | optimize_analyze|optimize_suggest|optimize_report (static index advisor) | sql_ddl|sql_navigation (SQL for Transaction/Procedure) | sample_data (fake INSERTs) | types_list|types_describe|types_validate (Domains/SDT constraints) | translations_import. reorg_preview with deep=true runs non-mutating Impact Analysis and returns exact DDL only when a current SQL artifact is available.",
+      "description": "Database umbrella. action: drift_check|drift_report (Transaction↔DB schema drift) | optimize_analyze|optimize_suggest|optimize_report (static index advisor) | sql_ddl|sql_navigation (SQL for Transaction/Procedure) | sample_data (fake INSERTs) | types_list|types_describe|types_validate (Domains/SDT constraints) | reorg_impact (timestamp/deep ImpactDatabase) | reorg_preview (non-mutating logical↔physical impact diff plus exact SQL only when a current artifact is available) | translations_import.",
       "inputSchema": {
         "examples": [
           {
@@ -767,7 +780,8 @@
           },
           {
             "action": "reorg_preview",
-            "deep": true
+            "deep": true,
+            "name": "Customer"
           }
         ],
         "properties": {
@@ -791,7 +805,7 @@
             "type": "string"
           },
           "deep": {
-            "description": "reorg_impact/reorg_preview: run non-mutating ISpecifierService.ImpactDatabase and capture a current SQL artifact when available.",
+            "description": "reorg_impact/reorg_preview only: run ISpecifierService.ImpactDatabase (specification, build-heavy) for the authoritative AnalysisResult. Default false (cheap timestamp heuristic).",
             "type": "boolean"
           },
           "format": {
@@ -1137,6 +1151,10 @@
             "description": "Omit post_state.diff (default true).",
             "type": "boolean"
           },
+          "rollbackOnFailure": {
+            "description": "Issue #60: with validationMode=specify, restore the pre-write state (from the edit snapshot) when the specify pass reports errors.",
+            "type": "boolean"
+          },
           "targets": {
             "items": {
               "properties": {
@@ -1164,6 +1182,13 @@
               "strict",
               "best-effort",
               "only"
+            ],
+            "type": "string"
+          },
+          "validationMode": {
+            "description": "Issue #60: run the inline Specify pass (Spec+Gen, no Compile) against the edited object right after the write, returning structured spc*/gen* diagnostics in the same call. Combines with rollbackOnFailure.",
+            "enum": [
+              "specify"
             ],
             "type": "string"
           },
@@ -1597,7 +1622,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Use this to snapshot an object: metadata, variables, structure, signature. runtimeIds needs a prior build; use genexus_read for full source.",
+      "description": "Use this for a compact object snapshot: metadata, variables, structure, signature and navigation context. Don't use it when you need full Source or exact part bytes; use genexus_read for that. runtimeIds needs a prior build.",
       "inputSchema": {
         "examples": [
           {
@@ -2523,6 +2548,17 @@
           "propertyName": {
             "type": "string"
           },
+          "rollbackOnFailure": {
+            "description": "Issue #60: with action=set and validationMode=specify, restore the pre-write state when the specify pass reports errors. Property writes have no pre-write snapshot, so rollback reports rolledBack=false (the object keeps the new value) when spec fails.",
+            "type": "boolean"
+          },
+          "validationMode": {
+            "description": "Issue #60: with action=set, run the inline Specify pass (Spec+Gen, no Compile) after the property write, returning structured spc*/gen* diagnostics in the same call. Combines with rollbackOnFailure.",
+            "enum": [
+              "specify"
+            ],
+            "type": "string"
+          },
           "value": {
             "type": "string"
           }
@@ -2899,6 +2935,10 @@
           "caseSensitive": {
             "type": "boolean"
           },
+          "cursor": {
+            "description": "Opaque continuation token from nextCursor; preferred when a result page ended inside an object. Do not edit.",
+            "type": "string"
+          },
           "fields": {
             "description": "Whole-field metadata match (returns matchedValue, no line context). Default [source]. Prefer scope=[webForm] for line-context WebForm hits; use fields=[webForm] only for a coarse contains-match.",
             "items": {
@@ -2950,7 +2990,7 @@
             "type": "array"
           },
           "startIndex": {
-            "description": "Resume cursor. On Timeout the response returns nextCursor; pass it here to continue where the scan stopped.",
+            "description": "Legacy object-boundary resume. For a page that ended inside an object, prefer the opaque cursor returned in nextCursor.",
             "type": "integer"
           },
           "timeoutMs": {
@@ -3104,6 +3144,17 @@
           "payload": {
             "description": "update_visual (Transaction):{children:[...]}; update_visual (SDT):{isCollection?,collectionItemName?,children:[{name,type?,length?,decimals?,basedOnDomain?,isCollection?,isLevel?,children?}]}. update_group:{members:[{name,subtypeOf}],remove?:[name]}. create_index:{attributes:[\"Attr\"],unique?:true,name?,order?}. drop_index:{indexName}. set_attribute:{formula?,subtypeOf?,title?,columnTitle?,contextualTitle?,isCollection?,basedOnDomain?}. set_level:{level?,descriptionAttribute?,imageAttribute?}. set_domain:{enumValues:[{name,value,description?}],dataType?,length?,decimals?,signed?}.",
             "type": "object"
+          },
+          "rollbackOnFailure": {
+            "description": "Issue #60: with validationMode=specify, restore the pre-write state when the specify pass reports errors. Structure/Domain writes have no pre-write snapshot, so rollback reports rolledBack=false (the object keeps the new state) when spec fails.",
+            "type": "boolean"
+          },
+          "validationMode": {
+            "description": "Issue #60: run the inline Specify pass (Spec+Gen, no Compile) after a structure write (update_visual / set_domain / set_attribute / set_level / update_group), returning structured spc*/gen* diagnostics in the same call. Combines with rollbackOnFailure.",
+            "enum": [
+              "specify"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -3328,7 +3379,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Variables CRUD. add accepts varName or a variables[] batch; modify changes type atomically. basedOn binds a Domain by native SDK identity for add/modify. length/decimals override size; collection=true declares a collection; untyped add inherits a same-named attribute. VarChar stays VARCHAR. dryRun previews; async returns an operationId.",
+      "description": "Variables CRUD. add accepts varName or variables[] batch; modify changes type atomically. basedOn binds a Domain by native SDK identity. length/decimals override size; collection=true declares a collection; untyped add inherits a same-named attribute. VarChar stays VARCHAR. dryRun previews; validationMode=specify can run inline validation; async returns an operationId.",
       "inputSchema": {
         "examples": [
           {
@@ -3336,15 +3387,6 @@
             "name": "MyPanel",
             "typeName": "Numeric",
             "varName": "&Choice"
-          },
-          {
-            "action": "add",
-            "basedOn": "CompanyId",
-            "decimals": 0,
-            "length": 4,
-            "name": "MyProc",
-            "typeName": "Numeric",
-            "varName": "&CompanyId"
           },
           {
             "action": "add",
@@ -3378,28 +3420,28 @@
             "type": "string"
           },
           "async": {
-            "description": "Run as background job.",
+            "description": "Run as a background job. Result returns operationId/job_id for genexus_lifecycle polling.",
             "type": "boolean"
           },
           "basedOn": {
-            "description": "add/modify: Domain name; native SDK reference.",
+            "description": "modify optional: Domain.",
             "type": "string"
           },
           "collection": {
-            "description": "add/modify: collection variable.",
+            "description": "add/modify optional: declare the variable as a collection.",
             "type": "boolean"
           },
           "decimals": {
-            "description": "add/modify: override parsed decimals.",
+            "description": "add/modify optional: overrides decimals parsed from typeName.",
             "type": "integer"
           },
           "dryRun": {
             "default": false,
-            "description": "Preview without persisting.",
+            "description": "When true, returns what would change without persisting.",
             "type": "boolean"
           },
           "estimated_seconds": {
-            "description": "Async estimate; default 30.",
+            "description": "When async=true, expected runtime used for progress/job metadata (default 30).",
             "type": "integer"
           },
           "kb": {
@@ -3407,14 +3449,25 @@
             "type": "string"
           },
           "length": {
-            "description": "add/modify: override parsed length.",
+            "description": "add/modify optional: overrides the length parsed from typeName (fixes the Character(20) default).",
             "type": "integer"
           },
           "name": {
             "type": "string"
           },
+          "rollbackOnFailure": {
+            "description": "Issue #60: with validationMode=specify, restore the pre-write state when the specify pass reports errors. Variable writes have no pre-write snapshot, so rollback reports rolledBack=false (the variables stay) when spec fails.",
+            "type": "boolean"
+          },
           "typeName": {
-            "description": "Primitive, SDT, BC, Domain, or GeneXus built-in type.",
+            "description": "Primitive (Character/Numeric/VarChar/Date/...), SDT/BC/Domain name, or WebSession. VarChar keeps VARCHAR semantics.",
+            "type": "string"
+          },
+          "validationMode": {
+            "description": "Issue #60: run the inline Specify pass (Spec+Gen, no Compile) against the edited object right after the write, returning structured spc*/gen* diagnostics in the same call. Combines with rollbackOnFailure.",
+            "enum": [
+              "specify"
+            ],
             "type": "string"
           },
           "varName": {
@@ -3422,7 +3475,7 @@
             "type": "string"
           },
           "variables": {
-            "description": "Batch add: {varName,typeName?,basedOn?,length?,decimals?,collection?}; one save.",
+            "description": "Batch add only: one object per variable — {varName, typeName?, length?, decimals?, collection?}. Added before a single save.",
             "items": {
               "properties": {
                 "basedOn": {
@@ -3638,6 +3691,125 @@
         "type": "object"
       },
       "name": "genexus_worker_reload"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "WorkWithPlus Action Group / grid-action editing (issue #58). action=list (read-only) lists the PatternInstance's action containers and their <userAction>/<standardAction> children; add_action adds a custom userAction to an existing or new group (procedure existence verified, selection single|multiple, enabledWhen condition, icon, description, confirm, position); update_action changes those attributes; move_action relocates an action between groups or reorders it; remove_action deletes an action (confirm=true). dryRun=true returns the XML diff without persisting. Edits target the WorkWithPlus host's PatternInstance XML (survives pattern reapply). NEVER creates Security/GAM permissions. Attributes are passed verbatim to the WWP XML; the SDK's own save normalization is reported honestly via the pattern write verification.",
+      "inputSchema": {
+        "examples": [
+          {
+            "action": "list",
+            "name": "MonitorIntegracaoWW"
+          },
+          {
+            "action": "add_action",
+            "actionName": "Reativar",
+            "dryRun": true,
+            "enabledWhen": "MonitorIntegracaoStatus = DSituacaoProcessamento.Suspenso",
+            "group": "Processamento",
+            "name": "MonitorIntegracaoWW",
+            "procedure": "MonitorIntegracaoReativar",
+            "selection": "multiple"
+          },
+          {
+            "action": "remove_action",
+            "actionName": "Reativar",
+            "confirm": true,
+            "name": "MonitorIntegracaoWW"
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "list",
+              "add_action",
+              "update_action",
+              "move_action",
+              "remove_action"
+            ],
+            "type": "string"
+          },
+          "actionName": {
+            "description": "Action name (e.g. 'Reativar').",
+            "type": "string"
+          },
+          "buttonClass": {
+            "description": "add/update: theme button class (e.g. 'btn ButtonCinza').",
+            "type": "string"
+          },
+          "caption": {
+            "description": "add/update: button caption (defaults to actionName).",
+            "type": "string"
+          },
+          "confirm": {
+            "description": "add/update: confirmation prompt; remove_action: required to delete (unless dryRun).",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "add/update: tooltip/description.",
+            "type": "string"
+          },
+          "dryRun": {
+            "description": "Return the XML diff without persisting (default false).",
+            "type": "boolean"
+          },
+          "enabledWhen": {
+            "description": "add/update: availability condition text (e.g. 'MonitorIntegracaoStatus = DSituacaoProcessamento.Suspenso'). Stored verbatim; expression semantics are not validated.",
+            "type": "string"
+          },
+          "fromGroup": {
+            "description": "move_action: source group (optional; searched across groups when omitted).",
+            "type": "string"
+          },
+          "group": {
+            "description": "Action group/container name (TableActions row). add_action: creates a new group when absent; update/remove: scope filter.",
+            "type": "string"
+          },
+          "icon": {
+            "description": "add/update: button icon.",
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Transaction, WebPanel, or WorkWithPlus<Object> host.",
+            "type": "string"
+          },
+          "position": {
+            "description": "add/move/update: zero-based index among the group's actions.",
+            "type": "integer"
+          },
+          "procedure": {
+            "description": "add/update: associated Procedure; existence is validated against the KB.",
+            "type": "string"
+          },
+          "selection": {
+            "description": "add/update: execution scope for grid actions.",
+            "enum": [
+              "single",
+              "multiple"
+            ],
+            "type": "string"
+          },
+          "toGroup": {
+            "description": "move_action: destination group (created when absent).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_wwp"
     }
-  ]
+  ],
+  "ttlMs": 3600000
 }

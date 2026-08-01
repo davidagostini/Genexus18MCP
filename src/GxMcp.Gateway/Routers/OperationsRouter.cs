@@ -105,7 +105,11 @@ namespace GxMcp.Gateway.Routers
                         collection = args?["collection"]?.ToObject<bool?>(),
                         // issue #32 item 1: batch add — array of {varName,typeName,length,decimals,collection}.
                         variables = args?["variables"],
-                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        // issue #60 — validationMode="specify" runs the inline Specify pass after
+                        // the write; rollbackOnFailure restores the pre-write state on spec errors.
+                        validationMode = args?["validationMode"]?.ToString(),
+                        rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                     };
                 }
 
@@ -493,6 +497,18 @@ namespace GxMcp.Gateway.Routers
                 // Worker's ProfileService.Run switches on args.action (analyze|hotspots|correlate).
                 // profile merged into genexus_telemetry umbrella.
 
+                // issue #58 — genexus_wwp: WorkWithPlus Action Group / grid-action
+                // editing over the host's PatternInstance XML. Worker's
+                // WwpActionService.Run switches on args.action (list|add_action|
+                // update_action|move_action|remove_action); dryRun supported.
+                case "genexus_wwp":
+                    return new
+                    {
+                        module = "WwpAction",
+                        action = "Run",
+                        @params = args
+                    };
+
                 // genexus_types — Domain/SDT introspection + value validation.
                 default:
                     return null;
@@ -531,11 +547,26 @@ namespace GxMcp.Gateway.Routers
                         folder = args?["folder"]?.ToString(),
                         destModule = args?["module"]?.ToString(),
                         parentPath = args?["parentPath"]?.ToString(),
-                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        // issue #60 — validationMode="specify" runs the inline Specify pass after
+                        // creation; rollbackOnFailure deletes/reverts on spec errors (best-effort).
+                        validationMode = args?["validationMode"]?.ToString(),
+                        rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                     };
 
                 case "object_atomic":
-                    return new { module = "AtomicAuthoring", action = "Run", target = name, @params = args };
+                    // Issue #62 — atomic create/update: one validated call with variables[],
+                    // rules[], parms[], properties{} and source. Forward the raw args; the
+                    // worker's AtomicCreateService validates the whole definition BEFORE the
+                    // first save, composes the SDK write primitives, and compensates on failure
+                    // (delete fresh object / restore snapshots) so nothing partial is left.
+                    return new
+                    {
+                        module = "AtomicCreate",
+                        action = "Run",
+                        target = name,
+                        @params = args
+                    };
 
                 case "popup":
                     return new
@@ -620,7 +651,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_create: unknown action '{action}'. Valid: object|object_atomic|popup|sd_panel_create|sd_panel_inspect|sd_panel_edit|save_as|scaffold|translate|sample|template."
+                        error = $"genexus_create: unknown action '{action}'. Valid: object|object_atomic|popup|sd_panel_create|sd_panel_inspect|sd_panel_edit|curl_procedure|save_as|scaffold|translate|sample|template."
                     };
             }
         }
@@ -927,12 +958,15 @@ namespace GxMcp.Gateway.Routers
                     };
                 }
 
-                // P1 #5: reorg / DDL impact preview. Cheap timestamp heuristic by default;
-                // deep=true runs ISpecifierService.ImpactDatabase (specification, build-heavy).
+                // P1 #5 / issue #61: reorg / DDL impact preview. Cheap timestamp
+                // heuristic by default; deep=true runs ISpecifierService.ImpactDatabase
+                // (specification, build-heavy). reorg_preview additionally diffs the
+                // model-logical vs physical column structure (nullable per #57), lists
+                // indexes, and emits proposed DDL + destructive warnings.
                 case "reorg_impact":
                     return new { module = "ReorgImpact", action = "Run", @params = args };
                 case "reorg_preview":
-                    return new { module = "ReorgImpact", action = "Run", @params = args };
+                    return new { module = "ReorgImpact", action = "Preview", @params = args };
 
                 // SDK translations import — was genexus_translations action=import.
                 case "translations_import":
@@ -950,7 +984,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_db: unknown action '{action}'. Valid: drift_check|drift_report|optimize_analyze|optimize_suggest|optimize_report|sql_ddl|sql_navigation|sample_data|types_list|types_describe|types_validate|translations_import."
+                        error = $"genexus_db: unknown action '{action}'. Valid: drift_check|drift_report|optimize_analyze|optimize_suggest|optimize_report|sql_ddl|sql_navigation|sample_data|types_list|types_describe|types_validate|translations_import|reorg_impact|reorg_preview."
                     };
             }
         }
@@ -1104,7 +1138,11 @@ namespace GxMcp.Gateway.Routers
                     propertyName = args?["propertyName"]?.ToString(),
                     value = args?["value"]?.ToString(),
                     control = args?["control"]?.ToString(),
-                    type = args?["type"]?.ToString()
+                    type = args?["type"]?.ToString(),
+                    // issue #60 — validationMode="specify" runs the inline Specify pass after
+                    // the property write; rollbackOnFailure restores on spec errors.
+                    validationMode = args?["validationMode"]?.ToString(),
+                    rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                 };
             }
 
@@ -1179,7 +1217,11 @@ namespace GxMcp.Gateway.Routers
                 module = "Structure",
                 action = mappedAction,
                 target = args?["name"]?.ToString(),
-                payload = args?["payload"]?.ToString()
+                payload = args?["payload"]?.ToString(),
+                // issue #60 — validationMode="specify" runs the inline Specify pass after a
+                // structure write; rollbackOnFailure restores the pre-write state on spec errors.
+                validationMode = args?["validationMode"]?.ToString(),
+                rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
             };
         }
 
