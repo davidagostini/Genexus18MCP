@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 2026-07-31
+## Unreleased
 
 ### Added
 
@@ -16,10 +16,12 @@
 ### Fixed
 
 - **Persistence checks now cover Domain bindings and Transaction nullability.** Domain-based variables retain both SDK references, and Transaction attributes use the typed SDK nullable value; both are re-read after saving before success is reported (#59).
+- **Domain-based variables now reject display-only type tokens.** `genexus_variable action=add|modify` resolves Root Module and module-qualified Domains before the generic GeneXus data-type registry, binds the SDK `DomainKey`, and refuses the registry's `GX_DOM_REF`/`dom:<name>` representation so it cannot produce an invalid persisted reference. After saving, the writer compares the Domain entity key and inherited primitive shape; a mismatch returns `VariableTypeNotPersisted` and restores the variable instead of reporting a false success. Direct `add` also accepts `basedOn`, matching `modify` and batch add.
 
 ### Internal
 
 - `build.ps1` now honors an explicit `GX_PATH`, allowing clean worktrees to build against the selected GeneXus installation without a local connection/configuration file. The `genexus_inspect` schema guidance was aligned with its CLI contract test, and the schema budget was raised from 16,900 to 17,700 tokens for the new #58–#62 contracts (measured at about 17,567).
+- Added a guarded U16 integration regression for `add/modify → save → reopen → XPZ export → importer → read`, including `parm(...)`, Root Module and named-Module Domains, and an assertion that exported XML contains native `Domain:<name>` references and no `ATTCUSTOMTYPE` `dom:` token. Module creation now initializes its Root Module parent, matching the already-advertised `genexus_create type=Module` contract and enabling isolated fixtures.
 
 ## v2.37.0 — 2026-07-31
 

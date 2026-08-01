@@ -490,6 +490,15 @@ namespace GxMcp.Worker.Helpers
                         v.DomainBasedOn = null; 
                         v.SetPropertyValue("DataType", null); // Reset user type if it was set
                     }
+                    else if (ResolveDomain(part.Model, typeStr, part.KBObject?.Module) is global::Artech.Genexus.Common.Objects.Domain textDomain)
+                    {
+                        // Resolve Domains before the generic type registry. The registry represents
+                        // a Domain as GX_DOM_REF/ATTCUSTOMTYPE (displayed as dom:<name>), which is a
+                        // parser/display token and is not a valid persisted variable reference.
+                        if (!BindVariableToDomain(v, textDomain, out var domainFailure))
+                            throw new InvalidOperationException("VariableTypeNotPersisted: " + domainFailure);
+                        Logger.Info($"Resolved variable {name} type to Domain: {textDomain.QualifiedName}");
+                    }
                     else if (TryBindGenexusDataType(v, typeStr))
                     {
                         // Built-in GeneXus data types (HttpClient, WebSession, Location, ...) via the
@@ -509,7 +518,10 @@ namespace GxMcp.Worker.Helpers
                         if (targetObj != null)
                         {
                             if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
-                                v.DomainBasedOn = dom;
+                            {
+                                if (!BindVariableToDomain(v, dom, out var domainFailure))
+                                    throw new InvalidOperationException("VariableTypeNotPersisted: " + domainFailure);
+                            }
                             else if (targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
                             {
                                 BindVariableToSdt(v, targetObj);
@@ -562,20 +574,118 @@ namespace GxMcp.Worker.Helpers
             else Logger.Error("[BindVariableToSdt] Could not construct AttCustomType for " + sdtObj.Name);
         }
 
-        /// <summary>
-        /// Bind a variable to a Domain using both SDK references.  Setting only
-        /// DomainBasedOn leaves DomainKey empty in some GX18 upgrades; the variable
-        /// then appears typed in memory but reloads as its primitive fallback.
-        /// </summary>
-        public static void BindVariableToDomain(global::Artech.Genexus.Common.Variable v,
-            global::Artech.Genexus.Common.Objects.Domain domain)
+        // Bind a variable to a Domain using both SDK references.
+        //
+        // DomainBasedOn is the IDE-facing relationship, while DomainKey is the stable
+        // entity identity required by some GX18 builds. The generic data-type provider
+        // returns a GX_DOM_REF AttCustomType whose parser/display form is dom:<name>;
+        // persisting that token in ATTCUSTOMTYPE produces a non-importable XPZ.
+        public static bool BindVariableToDomain(global::Artech.Genexus.Common.Variable v,
+            global::Artech.Genexus.Common.Objects.Domain domain, out string failure)
         {
-            if (v == null) throw new ArgumentNullException(nameof(v));
-            if (domain == null) throw new ArgumentNullException(nameof(domain));
+            failure = null;
+            if (v == null || domain == null)
+            {
+                failure = "Variable or Domain is null.";
+                return false;
+            }
 
-            v.DomainBasedOn = domain;
-            try { v.DomainKey = domain.Key; }
-            catch (Exception ex) { Logger.Warn("DomainKey set failed for &" + v.Name + ": " + ex.Message); }
+            try
+            {
+                v.DomainBasedOn = domain;
+                v.DomainKey = domain.Key;
+                string customTypeToken = null;
+                try { customTypeToken = v.GetPropertyValue("ATTCUSTOMTYPE")?.ToString(); } catch { }
+
+                if (!IsNativeDomainReference(domain.Key, v.DomainKey, customTypeToken, out failure))
+                {
+                    try { v.DomainBasedOn = null; } catch { }
+                    try { v.DomainKey = null; } catch { }
+                    return false;
+                }
+
+                Logger.Info($"[BindVariableToDomain] Bound {v.Name} -> {domain.QualifiedName} by EntityKey {domain.Key}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failure = ex.InnerException?.Message ?? ex.Message;
+                Logger.Warn("[BindVariableToDomain] " + failure);
+                try { v.DomainBasedOn = null; } catch { }
+                try { v.DomainKey = null; } catch { }
+                return false;
+            }
+        }
+
+        // Domain resolution is intentionally separate from ResolveTypeObject and from the generic
+        // DataTypeProvider. Domain.ResolveName applies GeneXus module visibility rules and accepts
+        // qualified names; model.Objects.GetByName alone can miss a Domain in a named Module.
+        public static global::Artech.Genexus.Common.Objects.Domain ResolveDomain(
+            KBModel model, string domainName, global::Artech.Architecture.Common.Objects.Module contextModule = null)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(domainName)) return null;
+            string name = domainName.Trim();
+            try
+            {
+                var fromModule = contextModule ?? model.RootModule;
+                var resolved = global::Artech.Genexus.Common.Objects.Domain.ResolveName(fromModule, name);
+                if (resolved != null) return resolved;
+            }
+            catch { /* fall through to the root/object lookup for SDK-version resilience */ }
+
+            if (contextModule != model.RootModule)
+            {
+                try
+                {
+                    var resolved = global::Artech.Genexus.Common.Objects.Domain.ResolveName(model.RootModule, name);
+                    if (resolved != null) return resolved;
+                }
+                catch { }
+            }
+
+            try { return ResolveTypeObject(model, name) as global::Artech.Genexus.Common.Objects.Domain; }
+            catch { return null; }
+        }
+
+        // Pure comparison seam used by regression tests and by the post-save verifier.
+        // A matching key is authoritative; a friendly dom:/domain: token in the raw
+        // custom type is always rejected even if the formatted Variables view looks OK.
+        internal static bool IsNativeDomainReference(
+            global::Artech.Udm.Framework.EntityKey expectedKey,
+            global::Artech.Udm.Framework.EntityKey actualKey,
+            string customTypeToken,
+            out string failure)
+        {
+            return IsNativeDomainReferenceParts(
+                expectedKey?.Type, expectedKey?.Id,
+                actualKey?.Type, actualKey?.Id,
+                customTypeToken, out failure);
+        }
+
+        internal static bool IsNativeDomainReferenceParts(
+            Guid? expectedType, int? expectedId,
+            Guid? actualType, int? actualId,
+            string customTypeToken,
+            out string failure)
+        {
+            if (!expectedType.HasValue || !expectedId.HasValue
+                || !actualType.HasValue || !actualId.HasValue
+                || expectedType.Value != actualType.Value || expectedId.Value != actualId.Value)
+            {
+                failure = "The persisted DomainKey does not match the requested Domain entity.";
+                return false;
+            }
+
+            string token = (customTypeToken ?? string.Empty).Trim();
+            if (token.StartsWith("dom:", StringComparison.OrdinalIgnoreCase)
+                || token.StartsWith("domain:", StringComparison.OrdinalIgnoreCase))
+            {
+                failure = "ATTCUSTOMTYPE contains a display-only Domain token ('" + token + "') instead of a native SDK reference.";
+                return false;
+            }
+
+            failure = null;
+            return true;
         }
 
         // Built-in GeneXus "user-defined" effective types that live in eDBType.GX_USRDEFTYP,
@@ -631,6 +741,15 @@ namespace GxMcp.Worker.Helpers
                 if (provider == null) return false;
                 var att = provider.GetTypeByName(typeName.Trim(), model);
                 if (att == null) return false;
+                // A Domain is not a generic custom data type for Variables. Persisting this
+                // GX_DOM_REF AttCustomType writes the friendly dom:<name> token into
+                // ATTCUSTOMTYPE, producing an XPZ the GeneXus importer cannot read. Callers must
+                // resolve the Domain entity and assign Variable.DomainKey instead.
+                if (att.DataType == (int)global::Artech.Genexus.Common.eDBType.GX_DOM_REF)
+                {
+                    Logger.Warn($"[TryBindGenexusDataType] Refusing display-only Domain token for '{typeName}'; bind by DomainKey instead.");
+                    return false;
+                }
                 v.Type = (global::Artech.Genexus.Common.eDBType)att.DataType;
                 try { v.SetPropertyValue("ATTCUSTOMTYPE", att); }
                 catch (Exception ex) { Logger.Warn("[TryBindGenexusDataType] SetPropertyValue ATTCUSTOMTYPE failed: " + ex.Message); return false; }

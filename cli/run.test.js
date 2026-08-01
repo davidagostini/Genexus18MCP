@@ -11,6 +11,7 @@ const { detectClientInstalled, readJsonFileSafe } = require('./lib/config');
 const cliPath = path.join(__dirname, 'run.js');
 const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
 fs.writeFileSync(path.join(testGxPath, 'genexus.exe'), '');
+const testGatewayEnv = { GENEXUS_MCP_GATEWAY_EXE: process.execPath };
 test.after(() => fs.rmSync(testGxPath, { recursive: true, force: true }));
 
 function runCli(args, opts = {}) {
@@ -144,7 +145,7 @@ test('non-interactive init supports idempotent no-op', () => {
         'json'
     ];
 
-    const first = runCli(args);
+    const first = runCli(args, { env: testGatewayEnv });
     assert.equal(first.status, 0);
     const firstParsed = JSON.parse(first.stdout);
     assert.equal(firstParsed.ok.noOp, false);
@@ -153,7 +154,7 @@ test('non-interactive init supports idempotent no-op', () => {
     assert.ok(Array.isArray(firstParsed.ok.verification.checks), 'verification should have checks array');
     assert.equal(firstParsed.meta.smokeSkipped, true, '--no-smoke should be reflected in meta');
 
-    const second = runCli(args);
+    const second = runCli(args, { env: testGatewayEnv });
     assert.equal(second.status, 0);
     const secondParsed = JSON.parse(second.stdout);
     assert.equal(secondParsed.ok.noOp, true);
@@ -237,7 +238,7 @@ test('init auto-discovers KB from cwd when --kb is omitted', () => {
 
     const res = runCli(
         ['init', '--gx', testGxPath, '--no-smoke', '--format', 'json'],
-        { cwd: kbDir }
+        { cwd: kbDir, env: testGatewayEnv }
     );
 
     assert.equal(res.status, 0);
