@@ -50,6 +50,8 @@ namespace GxMcp.Worker.Services
         private readonly ConversionService _conversionService;
         private readonly SelfTestService _selfTestService;
         private readonly PatternAnalysisService _patternAnalysisService;
+        private readonly WwpActionService _wwpActionService;
+        private readonly AtomicAuthoringService _atomicAuthoringService;
         private readonly DataInsightService _dataInsightService;
         private readonly DatabaseInfoService _databaseInfoService;
         private readonly SummarizeService _summarizeService;
@@ -186,6 +188,7 @@ namespace GxMcp.Worker.Services
             _dataInsightService = new DataInsightService(_kbService, _objectService, _navigationService, _patternAnalysisService);
             _databaseInfoService = new DatabaseInfoService(_kbService);
             _writeService = new WriteService(_objectService);
+            _wwpActionService = new WwpActionService(_objectService, _patternAnalysisService, _writeService);
             _refactorService = new RefactorService(_kbService, _objectService, _indexCacheService, _writeService, _patternAnalysisService);
             _patchService = new PatchService(_objectService, _writeService, _patternAnalysisService);
             _batchService = new BatchService(_kbService, _writeService, _patchService, _objectService);
@@ -200,6 +203,7 @@ namespace GxMcp.Worker.Services
             _structureService = new StructureService(_objectService);
             _authoringService = new Structure.AuthoringService(_objectService);
             _propertyService = new PropertyService(_objectService);
+            _atomicAuthoringService = new AtomicAuthoringService(_objectService, _writeService, _propertyService, _buildService);
             _conversionService = new ConversionService(_objectService);
             _selfTestService = new SelfTestService(_kbService, _searchService, _linterService);
             _kbValidationService = new KbValidationService(_indexCacheService, _objectService, _patternAnalysisService);
@@ -556,6 +560,7 @@ namespace GxMcp.Worker.Services
                 ["forge"] = Handle_Forge,
                 ["conversion"] = Handle_Conversion,
                 ["pattern"] = Handle_Pattern,
+                ["atomicauthoring"] = Handle_AtomicAuthoring,
                 ["sdkprobe"] = Handle_SdkProbe,
                 ["ui"] = Handle_Ui,
                 ["layout"] = Handle_Layout,
@@ -1441,6 +1446,13 @@ namespace GxMcp.Worker.Services
                 string patKey = args?["pattern"]?.ToString();
                 return _patternApplyService.DiagnosePattern(target, patKey, patSettings);
             }
+            if (action == "ManageActions") return _wwpActionService.Run(target, args ?? new JObject());
+            return null;
+        }
+
+        private string Handle_AtomicAuthoring(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            if (action == "Run") return _atomicAuthoringService.Run(args ?? request ?? new JObject());
             return null;
         }
 

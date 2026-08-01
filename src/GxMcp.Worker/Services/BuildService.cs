@@ -2713,60 +2713,12 @@ namespace GxMcp.Worker.Services
 
         public string ReorgPreview(string target)
         {
-            var result = new JObject
+            return new ReorgImpactService(_kbService).Run(new JObject
             {
-                ["status"] = "Stub",
-                ["target"] = target ?? string.Empty,
-                ["ddl"] = new JArray(),
-                ["summary"] = new JObject
-                {
-                    ["tables_added"] = 0,
-                    ["tables_changed"] = 0,
-                    ["columns_added"] = 0,
-                    ["columns_dropped"] = 0
-                }
-            };
-
-            // issue #37 item 4: report the datastore + reorg mode so the agent can tell
-            // WHETHER reorg is even possible. In a DBA-managed environment
-            // (Reorganize Server tables = No) GeneXus never applies the delta — action=reorg
-            // there is a no-op the agent should not keep retrying.
-            bool? reorgEnabled = null;
-            try
-            {
-                dynamic kb = _kbService?.GetKB();
-                if (kb != null)
-                {
-                    // Statically type — see CheckReorgDisabled: a dynamic `ds` would make
-                    // re.Value<bool>() a dynamic generic call that fails to bind.
-                    JObject ds = DatabaseInfoService.GetDefaultDataStoreInfo(kb);
-                    if (ds != null)
-                    {
-                        result["datastore"] = ds;
-                        JToken re = ds["reorgEnabled"];
-                        if (re != null && re.Type == JTokenType.Boolean) reorgEnabled = re.Value<bool>();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn("[REORG-PREVIEW] datastore introspection failed: " + ex.Message);
-            }
-            result["reorgEnabled"] = reorgEnabled.HasValue ? (JToken)reorgEnabled.Value : JValue.CreateNull();
-
-            if (reorgEnabled == false)
-            {
-                result["note"] = "This datastore has 'Reorganize Server tables = No' (DBA-managed). GeneXus generates the DDL during Impact Analysis but NEVER applies it to the server — action=reorg is a no-op here. Obtain the DDL from the GeneXus IDE Impact Analysis report and hand it to your DBA / apply it via a DB tool; do not keep retrying action=reorg. reorg_preview does not yet extract the generated DDL text on this worker.";
-            }
-            else
-            {
-                result["note"] = "reorg_preview does not extract the generated DDL text (no non-mutating SDK plan API is wired on net48). "
-                    + (reorgEnabled == true
-                        ? "This datastore has reorg ENABLED, so action=reorg on a non-production environment will apply and surface the actual CREATE/ALTER statements."
-                        : "The 'Reorganize server tables' toggle is not exposed by the GeneXus 18 SDK object model, so the MCP cannot auto-detect a DBA-managed no-reorg environment — confirm it in the IDE (datastore/environment Properties). If it is set to No, GeneXus generates the DDL during Impact Analysis but never applies it; apply the script via your DB tooling.")
-                    + " For build-independent schema-drift findings use action=validate-kb.";
-            }
-            return result.ToString(Newtonsoft.Json.Formatting.None);
+                ["action"] = "reorg_preview",
+                ["name"] = target,
+                ["deep"] = true
+            });
         }
     }
 }

@@ -150,6 +150,7 @@ namespace GxMcp.Worker.Services
                     if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
                 }
 
+                string persistedBefore = TryReadPropertyString(container, propName);
                 using (var trans = obj.Model.KB.BeginTransaction())
                 {
                     bool committed = false;
@@ -158,7 +159,7 @@ namespace GxMcp.Worker.Services
                         // issue #41 (general safety net): capture the prior value so a silent
                         // wipe (non-empty → empty for a non-empty request) is caught even for
                         // properties not on the explicit non-scalar list, and rolled back.
-                        string beforeVal = TryReadPropertyString(container, propName);
+                        string beforeVal = persistedBefore;
 
                         ApplyPropertyValue(container, propName, value, controlName, obj);
 
@@ -185,7 +186,28 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                return Models.McpResponse.Ok(target: target, code: "PropertyApplied", result: new JObject { ["property"] = propName, ["value"] = value });
+                var refreshedObject = _objectService.FindObject(target, typeFilter);
+                dynamic refreshedContainer = refreshedObject;
+                if (!string.IsNullOrEmpty(controlName)) refreshedContainer = FindControl(refreshedObject, controlName);
+                string persistedValue = TryReadPropertyString(refreshedContainer, propName);
+                bool matches = string.Equals((value ?? string.Empty).Trim(), (persistedValue ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase);
+                var mutation = new JObject
+                {
+                    ["before"] = persistedBefore,
+                    ["requested"] = value,
+                    ["persisted"] = persistedValue,
+                    ["diff"] = new JObject { ["matches"] = matches },
+                    ["saved"] = matches
+                };
+                if (!matches)
+                    return Models.McpResponse.Err(code: "PropertyNotPersisted",
+                        message: "The property save completed, but the persisted value does not match the request.",
+                        target: target, extra: new JObject { ["property"] = propName, ["mutation"] = mutation });
+
+                return Models.McpResponse.Ok(target: target, code: "PropertyApplied", result: new JObject
+                {
+                    ["property"] = propName, ["value"] = value, ["mutation"] = mutation
+                });
             }
             catch (PropertyWipeException pwe)
             {

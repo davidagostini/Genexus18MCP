@@ -191,6 +191,48 @@ namespace GxMcp.Worker.Tests
             Assert.False(fakeAnalyze.WasCalled);
             Assert.False(fakeBuild.WasCalled);
         }
+
+        [Fact]
+        public void Orchestrate_ValidateTrue_SpecifiesBeforeCallerBuild()
+        {
+            var fakeWrite = new FakeWriteService(JObject.Parse(@"{ ""status"": ""Ok"" }"));
+            var fakeAnalyze = new FakeAnalyzeService(JObject.Parse(@"{ ""status"": ""Ready"", ""callers"": [] }"));
+            var fakeBuild = new FakeBuildService(JObject.Parse(@"{ ""status"": ""ok"", ""code"": ""Specified"" }"));
+            var orchestrator = new EditAndBuildOrchestrator(fakeWrite, fakeAnalyze, fakeBuild);
+
+            var env = JObject.Parse(orchestrator.Orchestrate(new JObject
+            {
+                ["name"] = "InvoiceProc", ["part"] = "Rules", ["content"] = "parm(out:&Ok);",
+                ["validate"] = true, ["validationMode"] = "specify", ["rollbackOnFailure"] = true
+            }));
+
+            Assert.Equal("ok", env["status"]?.ToString());
+            Assert.True(fakeBuild.WasSpecifyCalled);
+            Assert.True(env["result"]?["specified"]?.ToObject<bool>() ?? false);
+        }
+
+        [Fact]
+        public void Orchestrate_AsyncSpecification_ReturnsPollTarget_WithoutStartingCallerBuild()
+        {
+            var fakeWrite = new FakeWriteService(JObject.Parse(@"{ ""status"": ""Ok"" }"));
+            var fakeAnalyze = new FakeAnalyzeService(null);
+            var fakeBuild = new FakeBuildService(JObject.Parse(@"{ ""status"": ""Accepted"", ""taskId"": ""spec-123"" }"));
+            var orchestrator = new EditAndBuildOrchestrator(fakeWrite, fakeAnalyze, fakeBuild);
+
+            var env = JObject.Parse(orchestrator.Orchestrate(new JObject
+            {
+                ["name"] = "InvoiceProc", ["part"] = "Source", ["content"] = "// changed",
+                ["validate"] = true
+            }));
+
+            Assert.Equal("ok", env["status"]?.ToString());
+            Assert.Equal("EditValidationAccepted", env["code"]?.ToString());
+            Assert.Equal("op:spec-123", env["result"]?["pollTarget"]?.ToString());
+            Assert.False(env["result"]?["specified"]?.ToObject<bool>() ?? true);
+            Assert.True(fakeBuild.WasSpecifyCalled);
+            Assert.False(fakeAnalyze.WasCalled);
+            Assert.False(fakeBuild.WasCalled);
+        }
     }
 
     internal class FakeWriteService : IWriteServiceFacade
@@ -223,10 +265,16 @@ namespace GxMcp.Worker.Tests
     {
         private readonly JObject _result;
         public bool WasCalled { get; private set; }
+        public bool WasSpecifyCalled { get; private set; }
         public FakeBuildService(JObject result) { _result = result; }
         public string Build(string action, string target, string includeCallees, int buildPlanCap)
         {
             WasCalled = true;
+            return _result == null ? "{}" : _result.ToString();
+        }
+        public string Specify(string target)
+        {
+            WasSpecifyCalled = true;
             return _result == null ? "{}" : _result.ToString();
         }
     }

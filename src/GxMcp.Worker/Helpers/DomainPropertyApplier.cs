@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
+using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Helpers
 {
@@ -133,6 +134,36 @@ namespace GxMcp.Worker.Helpers
             if (InvokePropertyBagSetEnumValues(domain, evsInstance)) return applied;
             if (TrySetProperty(domain, "EnumValues", evsInstance)) return applied;
             return -1;
+        }
+
+        /// <summary>Return the values currently exposed by the SDK in a stable JSON shape.</summary>
+        public static JArray ReadEnumValues(object domain)
+        {
+            var result = new JArray();
+            if (domain == null) return result;
+            try
+            {
+                object enumValues = AttributeTypeApplier.GetPropertyUnambiguous(domain.GetType(), "EnumValues")
+                    ?.GetValue(domain, null);
+                object values = enumValues == null ? null
+                    : AttributeTypeApplier.GetPropertyUnambiguous(enumValues.GetType(), "Values")?.GetValue(enumValues, null);
+                if (!(values is IEnumerable enumerable)) return result;
+                foreach (object item in enumerable)
+                {
+                    if (item == null) continue;
+                    var jo = new JObject();
+                    foreach (string propertyName in new[] { "Name", "Value", "Description" })
+                    {
+                        object value = null;
+                        try { value = AttributeTypeApplier.GetPropertyUnambiguous(item.GetType(), propertyName)?.GetValue(item, null); }
+                        catch { }
+                        if (value != null) jo[char.ToLowerInvariant(propertyName[0]) + propertyName.Substring(1)] = value.ToString();
+                    }
+                    result.Add(jo);
+                }
+            }
+            catch { }
+            return result;
         }
 
         private static bool InvokePropertyBagSetEnumValues(object domain, object evsInstance)

@@ -562,6 +562,22 @@ namespace GxMcp.Worker.Helpers
             else Logger.Error("[BindVariableToSdt] Could not construct AttCustomType for " + sdtObj.Name);
         }
 
+        /// <summary>
+        /// Bind a variable to a Domain using both SDK references.  Setting only
+        /// DomainBasedOn leaves DomainKey empty in some GX18 upgrades; the variable
+        /// then appears typed in memory but reloads as its primitive fallback.
+        /// </summary>
+        public static void BindVariableToDomain(global::Artech.Genexus.Common.Variable v,
+            global::Artech.Genexus.Common.Objects.Domain domain)
+        {
+            if (v == null) throw new ArgumentNullException(nameof(v));
+            if (domain == null) throw new ArgumentNullException(nameof(domain));
+
+            v.DomainBasedOn = domain;
+            try { v.DomainKey = domain.Key; }
+            catch (Exception ex) { Logger.Warn("DomainKey set failed for &" + v.Name + ": " + ex.Message); }
+        }
+
         // Built-in GeneXus "user-defined" effective types that live in eDBType.GX_USRDEFTYP,
         // keyed by their AttCustomType subtype id (category 255). Confirmed live for issue #33: a
         // WebSession variable persists as AttCustomType{ dataType=255, guid="31", description=

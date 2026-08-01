@@ -9,6 +9,9 @@ const { compareSemver, detectInstallMethod, upgradePlanFor } = require('./lib/up
 const { detectClientInstalled, readJsonFileSafe } = require('./lib/config');
 
 const cliPath = path.join(__dirname, 'run.js');
+const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
+fs.writeFileSync(path.join(testGxPath, 'genexus.exe'), '');
+test.after(() => fs.rmSync(testGxPath, { recursive: true, force: true }));
 
 function runCli(args, opts = {}) {
     return spawnSync(process.execPath, [cliPath, ...args], {
@@ -135,7 +138,7 @@ test('non-interactive init supports idempotent no-op', () => {
         '--kb',
         kbDir,
         '--gx',
-        'C:\\Program Files (x86)\\GeneXus\\GeneXus18',
+        testGxPath,
         '--no-smoke',
         '--format',
         'json'
@@ -176,7 +179,7 @@ test('whoami with config returns kb and geneXus details', () => {
     const kbDir = path.join(tempRoot, 'kb-w');
     fs.mkdirSync(kbDir, { recursive: true });
 
-    runCli(['init', '--kb', kbDir, '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json']);
+    runCli(['init', '--kb', kbDir, '--gx', testGxPath, '--no-smoke', '--format', 'json']);
 
     const res = runCli(['whoami', '--format', 'json'], { cwd: kbDir });
     assert.equal(res.status, 0);
@@ -184,7 +187,7 @@ test('whoami with config returns kb and geneXus details', () => {
     assert.equal(parsed.ok.connected, true);
     assert.equal(parsed.ok.kb.path, kbDir);
     assert.equal(parsed.ok.kb.name, path.basename(kbDir));
-    assert.equal(parsed.ok.geneXus.installationPath, 'C:\\Program Files (x86)\\GeneXus\\GeneXus18');
+    assert.equal(parsed.ok.geneXus.installationPath, testGxPath);
     assert.equal(parsed.meta.command, 'whoami');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -195,7 +198,7 @@ test('uninstall --yes removes local config and reports plan', () => {
     const kbDir = path.join(tempRoot, 'kb-u');
     fs.mkdirSync(kbDir, { recursive: true });
 
-    runCli(['init', '--kb', kbDir, '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json']);
+    runCli(['init', '--kb', kbDir, '--gx', testGxPath, '--no-smoke', '--format', 'json']);
 
     const cfgPath = path.join(kbDir, 'config.json');
     assert.equal(fs.existsSync(cfgPath), true, 'precondition: config.json exists');
@@ -233,7 +236,7 @@ test('init auto-discovers KB from cwd when --kb is omitted', () => {
     fs.writeFileSync(path.join(kbDir, 'KnowledgeBase.Connection'), '');
 
     const res = runCli(
-        ['init', '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json'],
+        ['init', '--gx', testGxPath, '--no-smoke', '--format', 'json'],
         { cwd: kbDir }
     );
 
@@ -250,7 +253,7 @@ test('init fails clearly when paths cannot be auto-discovered', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-test-'));
 
     const res = runCli(
-        ['init', '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json'],
+        ['init', '--gx', testGxPath, '--no-smoke', '--format', 'json'],
         { cwd: tempRoot }
     );
 
@@ -267,7 +270,7 @@ test('kb list shows the KB auto-registered by init', () => {
     const kbDir = path.join(tempRoot, 'kb-list');
     fs.mkdirSync(kbDir, { recursive: true });
 
-    runCli(['init', '--kb', kbDir, '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json']);
+    runCli(['init', '--kb', kbDir, '--gx', testGxPath, '--no-smoke', '--format', 'json']);
 
     const res = runCli(['kb', 'list', '--format', 'json'], { cwd: kbDir });
     assert.equal(res.status, 0);
@@ -288,7 +291,7 @@ test('kb add and switch update active KB', () => {
     fs.mkdirSync(kbA, { recursive: true });
     fs.mkdirSync(kbB, { recursive: true });
 
-    runCli(['init', '--kb', kbA, '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json']);
+    runCli(['init', '--kb', kbA, '--gx', testGxPath, '--no-smoke', '--format', 'json']);
 
     const addRes = runCli(['kb', 'add', '--name', 'bravo', '--kb', kbB, '--format', 'json'], { cwd: kbA });
     assert.equal(addRes.status, 0);
@@ -314,7 +317,7 @@ test('kb switch rejects unknown name', () => {
     const kbDir = path.join(tempRoot, 'kb-x');
     fs.mkdirSync(kbDir, { recursive: true });
 
-    runCli(['init', '--kb', kbDir, '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json']);
+    runCli(['init', '--kb', kbDir, '--gx', testGxPath, '--no-smoke', '--format', 'json']);
 
     const res = runCli(['kb', 'switch', '--name', 'nonexistent', '--format', 'json'], { cwd: kbDir });
     assert.equal(res.status, 2);
@@ -332,7 +335,7 @@ test('kb remove deletes entry and reassigns active when applicable', () => {
     fs.mkdirSync(kbA, { recursive: true });
     fs.mkdirSync(kbB, { recursive: true });
 
-    runCli(['init', '--kb', kbA, '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json']);
+    runCli(['init', '--kb', kbA, '--gx', testGxPath, '--no-smoke', '--format', 'json']);
     runCli(['kb', 'add', '--name', 'second', '--kb', kbB, '--format', 'json'], { cwd: kbA });
 
     const removeRes = runCli(['kb', 'remove', '--name', path.basename(kbA), '--format', 'json'], { cwd: kbA });
@@ -351,7 +354,7 @@ test('kb switch --kb refuses to overwrite existing entry with different path', (
     fs.mkdirSync(kbA, { recursive: true });
     fs.mkdirSync(kbB, { recursive: true });
 
-    runCli(['init', '--kb', kbA, '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json']);
+    runCli(['init', '--kb', kbA, '--gx', testGxPath, '--no-smoke', '--format', 'json']);
 
     const res = runCli(['kb', 'switch', '--kb', kbB, '--format', 'json'], { cwd: kbA });
     assert.equal(res.status, 2);
@@ -369,7 +372,7 @@ test('kb remove of last KB clears legacy KBPath', () => {
     const kbDir = path.join(tempRoot, 'kb-last');
     fs.mkdirSync(kbDir, { recursive: true });
 
-    runCli(['init', '--kb', kbDir, '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json']);
+    runCli(['init', '--kb', kbDir, '--gx', testGxPath, '--no-smoke', '--format', 'json']);
 
     runCli(['kb', 'remove', '--name', path.basename(kbDir), '--format', 'json'], { cwd: kbDir });
 
@@ -385,7 +388,7 @@ test('kb subcommand validation: missing subcommand returns usage error', () => {
     const kbDir = path.join(tempRoot, 'kb-v');
     fs.mkdirSync(kbDir, { recursive: true });
 
-    runCli(['init', '--kb', kbDir, '--gx', 'C:\\Program Files (x86)\\GeneXus\\GeneXus18', '--no-smoke', '--format', 'json']);
+    runCli(['init', '--kb', kbDir, '--gx', testGxPath, '--no-smoke', '--format', 'json']);
 
     const res = runCli(['kb', '--format', 'json'], { cwd: kbDir });
     assert.equal(res.status, 2);
