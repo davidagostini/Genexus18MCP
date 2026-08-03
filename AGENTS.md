@@ -109,7 +109,7 @@ Whenever the user requests a release (e.g. "cria release", "corta release", "faz
 1. **Always cut BOTH GitHub Release AND publish to npm (`genexus-mcp`).**
 2. **Standard release execution:** Run `.\release.ps1 -Version <X.Y.Z>` (or execute build → bump versions in `package.json`, `.csproj`, `CHANGELOG.md` → pack `publish.zip` using normalized forward slashes → write `publish.zip.sha256` → commit & tag `vX.Y.Z` → `gh release create` → `gh release upload publish.zip`).
 3. **Automated npm publish verification:** GitHub Actions (`.github/workflows/release.yml`) triggers on release/upload of `publish.zip` and publishes `genexus-mcp` to npm via OIDC. Always verify workflow completion with `gh run list --workflow release.yml` and `npm view genexus-mcp@latest version`.
-4. **Issue closure:** If the release resolves open GitHub issues, comment on each issue with the release link (`https://github.com/lennix1337/Genexus18MCP/releases/tag/vX.Y.Z`) and close them.
+4. **Strict Issue closure rule:** GitHub issues MUST ONLY be closed after a release containing the fix/change is cut and published with a release link. Comment on each resolved issue with the release link (`https://github.com/lennix1337/Genexus18MCP/releases/tag/vX.Y.Z`) before closing it. NEVER close an issue directly on PR merge without linking a released version.
 
 ## Permissions granted to the assistant
 
