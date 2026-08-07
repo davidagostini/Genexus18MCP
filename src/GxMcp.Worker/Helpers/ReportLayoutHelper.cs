@@ -123,13 +123,26 @@ namespace GxMcp.Worker.Helpers
             return root.ToString();
         }
 
-        public static bool WriteLayout(KBObjectPart part, string xml)
+        public static bool WriteLayout(KBObjectPart part, string xml, string baselineXml = null)
         {
             if (part == null || string.IsNullOrWhiteSpace(xml)) return false;
 
             try
             {
                 var visualDoc = XDocument.Parse(xml);
+                XDocument baselineDoc = null;
+                if (!string.IsNullOrWhiteSpace(baselineXml))
+                {
+                    try
+                    {
+                        baselineDoc = XDocument.Parse(baselineXml);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warn("ReportLayoutHelper.WriteLayout baseline parse failed; applying legacy mapping: " + ex.Message);
+                    }
+                }
+
                 var partType = part.GetType();
                 var layoutProp = partType.GetProperty("MyLayout", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)
                               ?? partType.GetProperty("Layout", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
@@ -151,9 +164,14 @@ namespace GxMcp.Worker.Helpers
                 {
                     var elName = elXml.Attribute("ControlName")?.Value ?? elXml.Attribute("Name")?.Value;
                     if (string.IsNullOrEmpty(elName)) continue;
+                    var baselineEl = FindBaselineControl(elXml, baselineDoc);
+                    var incomingBlock = elXml.Parent;
+                    string blockName = incomingBlock?.Attribute("ControlName")?.Value ?? incomingBlock?.Attribute("Name")?.Value;
 
                     foreach (var bandObj in bandsList)
                     {
+                        if (!IsMatchingReportBand(bandObj, blockName)) continue;
+
                         var items = GetCollection(bandObj, "Items", "Elements", "Controls", "Components");
                         if (items == null) continue;
 
@@ -172,6 +190,7 @@ namespace GxMcp.Worker.Helpers
                                 {
                                     string aName = attr.Name.LocalName;
                                     if (IsExcludedAttribute(aName)) continue;
+                                    if (!HasReportAttributeChanged(elXml, baselineEl, aName)) continue;
                                     string rawValue = attr.Value;
                                     if (IsColorAttributeName(aName))
                                     {
@@ -446,6 +465,76 @@ namespace GxMcp.Worker.Helpers
         {
             string[] excluded = { "ControlName", "Name", "TypeName", "ControlSource" };
             return excluded.Contains(name, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static bool IsMatchingReportBand(object band, string blockName)
+        {
+            if (string.IsNullOrEmpty(blockName)) return true;
+
+            string bandName = GetBandName(band);
+            string bandControlName = GetBandControlName(band);
+            if (string.IsNullOrEmpty(bandName) && string.IsNullOrEmpty(bandControlName)) return true;
+
+            return string.Equals(bandName, blockName, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(bandControlName, blockName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static XElement FindBaselineControl(XElement incomingControl, XDocument baselineDoc)
+        {
+            if (incomingControl == null || baselineDoc == null)
+            {
+                return null;
+            }
+
+            var incomingBlock = incomingControl.Parent;
+            if (incomingBlock == null || !string.Equals(incomingBlock.Name.LocalName, "PrintBlock", StringComparison.OrdinalIgnoreCase))
+            {
+                return baselineDoc.Descendants("Control")
+                    .FirstOrDefault(control => SameControlIdentity(control, incomingControl));
+            }
+
+            string blockName = incomingBlock.Attribute("ControlName")?.Value ?? incomingBlock.Attribute("Name")?.Value;
+            var baselineBlock = baselineDoc.Descendants("PrintBlock")
+                .FirstOrDefault(block => string.Equals(
+                    block.Attribute("ControlName")?.Value ?? block.Attribute("Name")?.Value,
+                    blockName,
+                    StringComparison.OrdinalIgnoreCase));
+            if (baselineBlock == null)
+            {
+                return null;
+            }
+
+            var incomingControls = incomingBlock.Elements("Control").ToList();
+            int occurrence = incomingControls.IndexOf(incomingControl);
+            var baselineControls = baselineBlock.Elements("Control").ToList();
+            if (occurrence >= 0 && occurrence < baselineControls.Count &&
+                SameControlIdentity(baselineControls[occurrence], incomingControl))
+            {
+                return baselineControls[occurrence];
+            }
+
+            return baselineControls.FirstOrDefault(control => SameControlIdentity(control, incomingControl));
+        }
+
+        private static bool SameControlIdentity(XElement first, XElement second)
+        {
+            if (first == null || second == null) return false;
+
+            string firstName = first.Attribute("ControlName")?.Value ?? first.Attribute("Name")?.Value;
+            string secondName = second.Attribute("ControlName")?.Value ?? second.Attribute("Name")?.Value;
+            return string.Equals(firstName, secondName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasReportAttributeChanged(XElement incomingControl, XElement baselineControl, string attributeName)
+        {
+            // The visual projection is intentionally lossy. If a baseline is available,
+            // only values changed by the caller may be sent back to the SDK; reapplying
+            // the projection for every control is what resets untouched report properties.
+            if (baselineControl == null) return true;
+
+            var incoming = incomingControl.Attribute(attributeName);
+            var baseline = baselineControl.Attribute(attributeName);
+            return baseline == null || !string.Equals(incoming?.Value, baseline.Value, StringComparison.Ordinal);
         }
 
         private static bool TryPersistPart(KBObjectPart part, string operation)

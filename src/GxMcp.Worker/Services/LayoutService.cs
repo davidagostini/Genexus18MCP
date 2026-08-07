@@ -197,6 +197,7 @@ namespace GxMcp.Worker.Services
                 if (contextResult.Error != null) return contextResult.Error;
 
                 var doc = contextResult.Document;
+                string baselineXml = doc.ToString();
                 var element = FindControlElement(doc, controlName);
                 if (element == null)
                     return Models.McpResponse.Err(
@@ -243,7 +244,13 @@ namespace GxMcp.Worker.Services
                 Logger.Info($"SetProperty: Target XML updated for {controlName}. attrName={attrName}. Current element attributes: {string.Join(", ", System.Linq.Enumerable.Select(element.Attributes(), a => a.Name.LocalName + "=" + a.Value))}");
                 Logger.Info($"SetProperty: New XML Sample (first 500 chars): " + (normalized.Length > 500 ? normalized.Substring(0, 500) : normalized));
                 
-                var persistError = PersistVisualXml(obj, contextResult, target, normalized, compositionRepairToken: value);
+                var persistError = PersistVisualXml(
+                    obj,
+                    contextResult,
+                    target,
+                    normalized,
+                    baselineXml: baselineXml,
+                    compositionRepairToken: value);
                 if (persistError != null) return persistError;
 
                 var persistedObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target);
@@ -397,6 +404,7 @@ namespace GxMcp.Worker.Services
                 if (contextResult.Error != null) return contextResult.Error;
 
                 var doc = contextResult.Document;
+                string baselineXml = doc.ToString();
                 var applied = new JArray();
 
                 foreach (var token in changes)
@@ -454,7 +462,12 @@ namespace GxMcp.Worker.Services
                 }
 
                 string normalized = doc.ToString();
-                var persistError = PersistVisualXml(obj, contextResult, target, normalized);
+                var persistError = PersistVisualXml(
+                    obj,
+                    contextResult,
+                    target,
+                    normalized,
+                    baselineXml: baselineXml);
                 if (persistError != null) return persistError;
 
                 var persistedObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target);
