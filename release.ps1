@@ -236,6 +236,22 @@ if ($needsBump) {
         }
         Ok "src/nexus-ide/package.json → $Version"
     }
+
+    # CHANGELOG.md — promote ## Unreleased to ## v$Version — YYYY-MM-DD if ## v$Version does not exist yet.
+    $changelogPath = Join-Path $root 'CHANGELOG.md'
+    if (Test-Path $changelogPath) {
+        if (-not $DryRun) {
+            $dateStr = (Get-Date).ToString('yyyy-MM-dd')
+            $rawCl = [System.IO.File]::ReadAllText($changelogPath)
+            if ($rawCl -notmatch "## v$([Regex]::Escape($Version))") {
+                $bumpedCl = [Regex]::Replace($rawCl,
+                    '(?m)^## Unreleased\s*[\r\n]+',
+                    "## Unreleased`r`n`r`n## v$Version — $dateStr`r`n`r`n")
+                [System.IO.File]::WriteAllText($changelogPath, $bumpedCl, [System.Text.UTF8Encoding]::new($false))
+            }
+        }
+        Ok "CHANGELOG.md → ## v$Version"
+    }
 } else {
     Ok "Version unchanged — skipping bump."
 }
