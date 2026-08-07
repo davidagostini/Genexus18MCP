@@ -181,6 +181,15 @@ namespace GxMcp.Worker.Helpers
                                     bool assignmentApplied = false;
                                     foreach (var sdkPropName in ResolveSdkPropertyCandidates(aName))
                                     {
+                                        if (TryReadProperty(item, iType, sdkPropName, out string currentValue))
+                                        {
+                                            if (IsPropertyEquivalent(aName, sdkPropName, currentValue, rawValue))
+                                            {
+                                                assignmentApplied = true;
+                                                break;
+                                            }
+                                        }
+
                                         if (TrySetProperty(item, iType, sdkPropName, rawValue))
                                         {
                                             assignmentApplied = true;
@@ -615,7 +624,7 @@ namespace GxMcp.Worker.Helpers
 
             var rgbMatch = System.Text.RegularExpressions.Regex.Match(
                 token,
-                @"^\s*(\d{1,3})\s*;\s*(\d{1,3})\s*;\s*(\d{1,3})\s*\|?\s*$");
+                @"^\s*(\d{1,3})\s*[,;]\s*(\d{1,3})\s*[,;]\s*(\d{1,3})\s*\|?\s*$");
             if (rgbMatch.Success)
             {
                 if (int.TryParse(rgbMatch.Groups[1].Value, out int r) &&
@@ -761,6 +770,58 @@ namespace GxMcp.Worker.Helpers
                 }
             }
             catch { }
+
+            return false;
+        }
+
+        private static bool IsGeometryAttributeName(string name)
+        {
+            return string.Equals(name, "X", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "Y", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "Left", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "Top", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "Width", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "Height", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "BorderWidth", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsEnumAttributeName(string name)
+        {
+            return string.Equals(name, "Alignment", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "Borders", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "WordWrap", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "Visible", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(name, "Enabled", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsPropertyEquivalent(string aName, string sdkPropName, string currentValue, string rawValue)
+        {
+            if (currentValue == null && rawValue == null) return true;
+            if (currentValue == null || rawValue == null) return false;
+
+            if (string.Equals(currentValue, rawValue, StringComparison.Ordinal)) return true;
+
+            if (IsColorAttributeName(aName) || IsColorAttributeName(sdkPropName))
+            {
+                if (TryParseColor(currentValue, out var c1) && TryParseColor(rawValue, out var c2))
+                {
+                    return c1.ToArgb() == c2.ToArgb();
+                }
+            }
+
+            if (IsGeometryAttributeName(aName) || IsGeometryAttributeName(sdkPropName))
+            {
+                if (double.TryParse(currentValue, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double d1) &&
+                    double.TryParse(rawValue, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double d2))
+                {
+                    return Math.Abs(d1 - d2) < 0.001;
+                }
+            }
+
+            if (IsEnumAttributeName(aName) || IsEnumAttributeName(sdkPropName))
+            {
+                return string.Equals(currentValue.Trim(), rawValue.Trim(), StringComparison.OrdinalIgnoreCase);
+            }
 
             return false;
         }

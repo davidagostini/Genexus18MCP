@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`genexus_create action=object_atomic` no longer rolls back valid objects on SDK Source casing/indentation normalization.** (Issue #70) `WhitespaceInsensitiveEquals` now performs case-insensitive comparison (`OrdinalIgnoreCase`), preventing Procedure `Source` keyword case-normalization (`for each` -> `For Each`, `parm` -> `Parm`, `if` -> `If`) from triggering false-positive `WriteNotPersisted` errors that previously rolled back and deleted freshly-created objects.
+- **Async `genexus_edit` no longer reports `failed` status for persisted `PatternInstance` parts.** (Issue #71) `WhitespaceInsensitiveEquals` now evaluates structural XML equivalence for XML parts (`PatternInstance`, `Layout`, `WebForm`, etc.), ignoring SDK-dropped default/empty attributes (`default*`, empty strings, default boolean/numeric values) and empty element self-closing differences so background edit jobs report `succeeded`.
+- **`genexus_layout action=set_property` on Reports no longer degrades untouched controls or RGB colors.** (Issue #72) `ReportLayoutHelper.TryParseColor` now parses comma-separated RGB color strings (`192, 0, 0`) in addition to semicolons, preventing RGB colors from falling back to `Black`. `ReportLayoutHelper.WriteLayout` now verifies whether the current SDK property value is already equivalent (`IsPropertyEquivalent`) before calling `TrySetProperty`, preventing untouched controls, geometry, alignment, and colors from being overwritten with lossy defaults.
+
 ## v2.39.0 — 2026-08-03
 
 This release fixes `dryRun` precheck error handling for pattern/visual parts, clarifies `dryRun` verification scope, updates agent instructions regarding SDK folder/module placement capabilities, and enforces strict release-linked issue closure.

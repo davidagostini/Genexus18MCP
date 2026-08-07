@@ -301,13 +301,149 @@ namespace GxMcp.Worker.Services
         // issue #36.6 — compare two content blobs ignoring all whitespace differences, so a
         // pure re-formatting by the serializer isn't mistaken for a content divergence when we
         // decide whether the requested content is already present.
+        // issue #36.6 / issues #70 & #71 — compare two content blobs ignoring whitespace & casing differences
+        // outside string literals, so pure re-formatting or SDK casing/XML normalization by the serializer
+        // isn't mistaken for a content divergence.
         private static bool WhitespaceInsensitiveEquals(string a, string b)
         {
             if (a == null || b == null) return false;
-            string na = System.Text.RegularExpressions.Regex.Replace(a, @"\s+", "");
-            string nb = System.Text.RegularExpressions.Regex.Replace(b, @"\s+", "");
-            return string.Equals(na, nb, StringComparison.Ordinal);
+            if (string.Equals(a, b, StringComparison.Ordinal)) return true;
+
+            if (IsXmlString(a) && IsXmlString(b))
+            {
+                return IsXmlEquivalent(a, b);
+            }
+
+            return NormalizedCodeEquals(a, b);
         }
+
+        private static bool NormalizedCodeEquals(string a, string b)
+        {
+            var linesA = a.Replace("\r\n", "\n").Split('\n');
+            var linesB = b.Replace("\r\n", "\n").Split('\n');
+
+            if (linesA.Length != linesB.Length) return false;
+
+            for (int i = 0; i < linesA.Length; i++)
+            {
+                string trimA = linesA[i].Trim();
+                string trimB = linesB[i].Trim();
+
+                if (!string.Equals(trimA, trimB, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsXmlString(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            string trimmed = s.TrimStart();
+            return trimmed.StartsWith("<");
+        }
+
+        private static bool IsXmlEquivalent(string a, string b)
+        {
+            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
+            try
+            {
+                var docA = System.Xml.Linq.XDocument.Parse(a);
+                var docB = System.Xml.Linq.XDocument.Parse(b);
+                return AreXmlElementsEqual(docA.Root, docB.Root, depth: 0);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool AreXmlElementsEqual(System.Xml.Linq.XElement e1, System.Xml.Linq.XElement e2, int depth)
+        {
+            if (e1 == null && e2 == null) return true;
+            if (e1 == null || e2 == null) return false;
+            if (depth > 64) return false; // Prevent stack overflow on deeply nested XML
+
+            if (e1.Name != e2.Name)
+                return false;
+
+            var attrs1 = GetSignificantAttributes(e1);
+            var attrs2 = GetSignificantAttributes(e2);
+
+            foreach (var kvp in attrs1)
+            {
+                if (attrs2.TryGetValue(kvp.Key, out string val2))
+                {
+                    if (!string.Equals(kvp.Value, val2, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+                else
+                {
+                    if (!IsDefaultOrEmptyAttribute(kvp.Key, kvp.Value))
+                        return false;
+                }
+            }
+
+            foreach (var kvp in attrs2)
+            {
+                if (!attrs1.ContainsKey(kvp.Key))
+                {
+                    if (!IsDefaultOrEmptyAttribute(kvp.Key, kvp.Value))
+                        return false;
+                }
+            }
+
+            var children1 = e1.Elements().Where(c => !IsEmptyContainer(c)).ToList();
+            var children2 = e2.Elements().Where(c => !IsEmptyContainer(c)).ToList();
+
+            if (children1.Count != children2.Count)
+                return false;
+
+            for (int i = 0; i < children1.Count; i++)
+            {
+                if (!AreXmlElementsEqual(children1[i], children2[i], depth + 1))
+                    return false;
+            }
+
+            if (children1.Count == 0 && children2.Count == 0)
+            {
+                string t1 = e1.Value?.Trim() ?? "";
+                string t2 = e2.Value?.Trim() ?? "";
+                if (!string.Equals(t1, t2, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static System.Collections.Generic.Dictionary<string, string> GetSignificantAttributes(System.Xml.Linq.XElement e)
+        {
+            var dict = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var attr in e.Attributes())
+            {
+                dict[attr.Name.LocalName] = attr.Value;
+            }
+            return dict;
+        }
+
+        private static bool IsDefaultOrEmptyAttribute(string name, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return true;
+            if (name.StartsWith("default", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(value, "0", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(value, "100", StringComparison.OrdinalIgnoreCase);
+            }
+            return false;
+        }
+
+        private static bool IsEmptyContainer(System.Xml.Linq.XElement e)
+        {
+            return !e.HasElements && string.IsNullOrWhiteSpace(e.Value) && !e.HasAttributes;
+        }
+
 
         private static JObject DescribeContent(string content)
         {
