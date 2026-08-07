@@ -15,7 +15,7 @@ namespace GxMcp.Worker.Services
     // (plan TECHDEBT-03). Pure move, no logic changes — see plans/README.md TECHDEBT-03.
     public partial class LayoutService
     {
-        private string PersistVisualXml(KBObject obj, LayoutContextResult context, string target, string normalizedXml, string compositionRepairToken = null)
+        private string PersistVisualXml(KBObject obj, LayoutContextResult context, string target, string normalizedXml, string baselineXml = null, string compositionRepairToken = null)
         {
             var kb = _objectService.GetKbService().GetKB();
             if (kb == null)
@@ -70,7 +70,7 @@ namespace GxMcp.Worker.Services
                                 target: target);
                         }
 
-                        if (!ReportLayoutHelper.WriteLayout(context.VisualPart, normalizedXml))
+                        if (!ReportLayoutHelper.WriteLayout(context.VisualPart, normalizedXml, baselineXml))
                         {
                             transaction.Rollback();
                             return Models.McpResponse.Err(

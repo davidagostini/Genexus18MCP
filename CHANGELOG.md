@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v2.39.2 — 2026-08-07
+
+### Fixed
+
+- Fixed Report layout writes so `genexus_layout action=set_property` preserves untouched controls, RGB colors, alignment, and geometry ([#72](https://github.com/lennix1337/Genexus18MCP/issues/72)).
+
 ## v2.39.1 — 2026-08-07
 
 This release fixes `object_atomic` rollback on Procedure source casing normalization, async `genexus_edit` failures on XML `PatternInstance` default attributes, and `genexus_layout set_property` degradation on Report layouts.
