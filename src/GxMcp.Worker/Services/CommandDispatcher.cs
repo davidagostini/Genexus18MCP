@@ -956,7 +956,10 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Batch(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "BatchRead") return _batchService.BatchRead(args?["items"] as JArray, args?["part"]?.ToString() ?? "Source");
+            if (action == "BatchRead") return _batchService.BatchRead(
+                args?["items"] as JArray,
+                args?["part"]?.ToString() ?? "Source",
+                args?["parts"] as JArray);
             if (action == "BatchEdit") return _batchService.BatchEdit(target, args?["changes"] as JArray);
             if (action == "MultiEdit") return _batchService.MultiEdit(args?["items"] as JArray);
             if (action == "Process") return _batchService.ProcessBatch(args?["batchAction"]?.ToString(), target, payload);

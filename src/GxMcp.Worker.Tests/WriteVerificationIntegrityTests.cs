@@ -80,5 +80,14 @@ namespace GxMcp.Worker.Tests
             Assert.True(status["sdkBusy"]?["active"]?.ToObject<bool>());
             Assert.Equal("Undo/Undo", status["activeOperation"]?.ToString());
         }
+
+        [Fact]
+        public void WorkerCommand_ExposesGatewayOperationIdForBusyDiagnostics()
+        {
+            string operationId = Program.ExtractOperationId(
+                "{\"id\":\"worker-1\",\"method\":\"Patch\",\"action\":\"Apply\",\"_meta\":{\"progressToken\":\"op-123\"}}");
+
+            Assert.Equal("op-123", operationId);
+        }
     }
 }

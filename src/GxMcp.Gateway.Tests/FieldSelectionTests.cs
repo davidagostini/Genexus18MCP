@@ -89,7 +89,7 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("ExtractSource", obj["action"]?.ToString());
         }
 
-        // ── parts= + targets= should use targets path (targets wins) ─────────
+        // ── parts= + targets= should preserve field selection ────────────────
 
         [Fact]
         public void Targets_WithoutParts_RoutesToBatchRead()
@@ -101,6 +101,19 @@ namespace GxMcp.Gateway.Tests
 
             Assert.Equal("Batch", obj["module"]?.ToString());
             Assert.Equal("BatchRead", obj["action"]?.ToString());
+        }
+
+        [Fact]
+        public void Targets_WithParts_ForwardsRequestedPartsToBatchRead()
+        {
+            var args = JObject.Parse(
+                "{\"targets\":[\"Proc1\",\"Proc2\"],\"parts\":[\"Variables\"]}");
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            var obj = JObject.FromObject(msg!);
+
+            Assert.Equal("Batch", obj["module"]?.ToString());
+            Assert.Equal("BatchRead", obj["action"]?.ToString());
+            Assert.Equal("Variables", obj["parts"]?[0]?.ToString());
         }
     }
 }

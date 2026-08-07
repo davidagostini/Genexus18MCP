@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Models;
 
@@ -249,7 +250,7 @@ namespace GxMcp.Worker.Services
             };
         }
 
-        public string BatchRead(JArray items, string defaultPart = "Source")
+        public string BatchRead(JArray items, string defaultPart = "Source", JArray requestedParts = null)
         {
             try
             {
@@ -272,9 +273,11 @@ namespace GxMcp.Worker.Services
                     // longer crashes with "Cannot access child value on JValue".
                     string name;
                     string part;
+                    bool hasItemPart = false;
                     if (item is JObject itemObj)
                     {
                         name = itemObj["name"]?.ToString();
+                        hasItemPart = !string.IsNullOrWhiteSpace(itemObj["part"]?.ToString());
                         part = itemObj["part"]?.ToString() ?? defaultPart;
                     }
                     else
@@ -284,14 +287,29 @@ namespace GxMcp.Worker.Services
                     }
                     if (string.IsNullOrEmpty(name)) continue;
 
-                    string readResult = _objectService.ReadObjectSource(name, part, null, null, "mcp");
+                    var selectedParts = requestedParts?
+                        .Select(p => p?.ToString())
+                        .Where(p => !string.IsNullOrWhiteSpace(p))
+                        .ToArray();
+                    bool useFieldSelection = !hasItemPart && selectedParts != null && selectedParts.Length > 0;
+                    string readResult = useFieldSelection
+                        ? _objectService.ReadObjectSourceParts(name, selectedParts)
+                        : _objectService.ReadObjectSource(name, part, null, null, "mcp");
                     try {
                         var parsed = JObject.Parse(readResult);
                         parsed["object"] = name;
-                        parsed["part"] = part;
+                        if (useFieldSelection)
+                            parsed["requestedParts"] = new JArray(selectedParts);
+                        else
+                            parsed["part"] = part;
                         results.Add(parsed);
                     } catch {
-                        results.Add(new JObject { ["object"] = name, ["part"] = part, ["error"] = readResult });
+                        var failed = new JObject { ["object"] = name, ["error"] = readResult };
+                        if (useFieldSelection)
+                            failed["requestedParts"] = new JArray(selectedParts);
+                        else
+                            failed["part"] = part;
+                        results.Add(failed);
                     }
                 }
 

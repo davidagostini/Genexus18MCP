@@ -71,6 +71,25 @@ namespace GxMcp.Gateway.Tests
             Assert.False(tracker.IsProgressTokenActive(opId));
         }
 
+        [Fact]
+        public void CancellationRequest_RemainsNonTerminal_UntilWorkerCompletes()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            const string requestId = "req-cancel-requested";
+            string opId = tracker.StartOperation(requestId, "genexus_edit", null, "cid");
+
+            Assert.True(tracker.MarkCancellationRequested(opId, "waiting for SDK"));
+            Assert.Equal("CancellationRequested", tracker.BuildOperationStatus(opId)["status"]?.ToString());
+
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["status"] = "ok" }
+            });
+
+            Assert.Equal("Completed", tracker.BuildOperationStatus(opId)["status"]?.ToString());
+        }
+
         // BUG-05 regression: on JSON-RPC id reuse within the retention window,
         // StartOperation overwrites _requestToOperation to the new op. CleanupExpired
         // of the OLD op must not then delete the mapping now pointing at the NEW op.

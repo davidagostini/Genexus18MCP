@@ -856,6 +856,36 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
+                // A GeneXus save can throw after committing the variable. Reconcile from a
+                // fresh, complete Variables read before reporting AddVariableFailed.
+                try
+                {
+                    string verifyJson = _objectService.ReadObjectSourceForVerification(target, "Variables");
+                    var verifyObj = JObject.Parse(verifyJson);
+                    string verifyText = verifyObj["source"]?.ToString()
+                        ?? verifyObj["content"]?.ToString()
+                        ?? verifyObj["parts"]?["Variables"]?.ToString()
+                        ?? "";
+                    if (!string.IsNullOrWhiteSpace(verifyText)
+                        && MissingVariableNames(verifyText, new[] { varName }).Count == 0)
+                    {
+                        Logger.Warn("[VARIABLES-POST-CHECK] AddVariable threw after persistence for " + target
+                            + "/" + varName + "; returning reconciled success. Cause: " + ex.Message);
+                        return McpResponse.Ok(target: target, code: "VariableAdded", result: new JObject
+                        {
+                            ["variable"] = varName,
+                            ["requestedType"] = typeName,
+                            ["persisted"] = true,
+                            ["saved"] = true,
+                            ["verification"] = "reconciledAfterFailure",
+                            ["warning"] = "The SDK reported an error after save, but a fresh full read confirmed the variable is persisted."
+                        });
+                    }
+                }
+                catch (Exception verifyEx)
+                {
+                    Logger.Debug("[VARIABLES-POST-CHECK] Exception reconciliation failed for " + target + ": " + verifyEx.Message);
+                }
                 return McpResponse.Err(
                     code: "AddVariableFailed",
                     message: ex.Message,
@@ -884,7 +914,7 @@ namespace GxMcp.Worker.Services
             string text = "";
             try
             {
-                string readJson = _objectService.ReadObjectSource(target, "Variables", null, null, "mcp", true, null);
+                string readJson = _objectService.ReadObjectSourceForVerification(target, "Variables");
                 if (!string.IsNullOrWhiteSpace(readJson))
                 {
                     var readObj = JObject.Parse(readJson);

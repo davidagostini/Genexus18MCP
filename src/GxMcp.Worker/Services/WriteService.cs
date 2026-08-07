@@ -1569,11 +1569,15 @@ namespace GxMcp.Worker.Services
                         try 
                         {
                             failureStage = "object_save";
-                            Logger.Info("[DEBUG-SAVE] Invoking obj.EnsureSave(check: true)...");
-                            obj.EnsureSave(true);
-                            Logger.Info("[DEBUG-SAVE] obj.EnsureSave(true) completed.");
+                            Logger.Info($"[DEBUG-SAVE] Invoking obj.EnsureSave(check: {autoValidate.ToString().ToLowerInvariant()})...");
+                            // PatchService deliberately passes autoValidate=false: a best-effort
+                            // source patch must not run a full-object Validate pass and block the
+                            // single STA worker on unrelated legacy errors. The previous hardcoded
+                            // true made the public validation mode ineffective.
+                            obj.EnsureSave(autoValidate);
+                            Logger.Info($"[DEBUG-SAVE] obj.EnsureSave({autoValidate.ToString().ToLowerInvariant()}) completed.");
                         }
-                        catch (Exception ex) when (ex.Message.Contains("Validation failed") || ex.Message.Contains("Save failed"))
+                        catch (Exception ex) when (autoValidate && (ex.Message.Contains("Validation failed") || ex.Message.Contains("Save failed")))
                         {
                             Logger.Warn($"[DEBUG-SAVE] Standard save failed: {ex.Message}. Retrying with check=false...");
                             // RETRY WITHOUT VALIDATION (User request)

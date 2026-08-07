@@ -11,6 +11,11 @@
   `truncation`, `readFailure`, and a real `contentMismatch`.
 - Lifecycle status now merges the worker's SDK single-flight state, so long-running
   Undo operations report `isBusy: true` with the active operation and elapsed time.
+- Batch `genexus_read targets=[...]` now honors `parts=[...]`; variable persistence
+  checks use an uncached full read and reconcile SDK errors that occur after commit.
+- Best-effort patches no longer force a full-object validation pass, cancellation of
+  non-preemptible SDK calls reports `CancellationRequested`, `WorkerBusy` identifies
+  the blocking operation, and forced reloads verify replacement workers are SDK-ready.
 
 ## v2.39.2 — 2026-08-07
 
