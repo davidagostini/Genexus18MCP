@@ -1790,6 +1790,28 @@ namespace GxMcp.Worker.Services
         }
 
         /// <summary>
+        /// Performs a fresh, complete read for post-write verification. This deliberately
+        /// bypasses the MCP read cache, minimization, and the implicit 200-line/16-KB page.
+        /// A verification read must compare the complete persisted part with the complete
+        /// request; a client-facing, context-budgeted projection is not evidence of a
+        /// persistence mismatch.
+        /// </summary>
+        internal string ReadObjectSourceForVerification(string target, string partName, string typeFilter = null)
+        {
+            var obj = FindObject(target, typeFilter);
+            if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+
+            string resolvedPart = ResolvePartName(obj, partName);
+            return ReadObjectSourceInternal(
+                obj,
+                resolvedPart,
+                offset: 0,
+                limit: 0,
+                client: "mcp",
+                minimize: false);
+        }
+
+        /// <summary>
         /// Read multiple named parts of an object in one call.
         /// Returns a JSON object: { name, type, parts: { Source: "...", Variables: "..." } }
         /// Parts that are not found or produce no source are silently omitted.

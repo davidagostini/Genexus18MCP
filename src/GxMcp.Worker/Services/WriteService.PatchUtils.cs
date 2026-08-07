@@ -192,48 +192,82 @@ namespace GxMcp.Worker.Services
                 return parsed.ToString();
 
             string finalSource = "";
+            bool verificationReadTruncated = false;
+            string verificationReadFailure = null;
             try
             {
                 if (!string.IsNullOrWhiteSpace(target) && _objectService != null)
                 {
-                    string readJson = _objectService.ReadObjectSource(target, partName, null, null, "mcp", true, null);
+                    // This is an integrity check, not a client-facing read. The former call
+                    // used client=mcp + minimize=true with no explicit page, so a large Source
+                    // was reduced and then capped before being compared with the full request.
+                    // That produced a false WriteNotPersisted after a successful SDK commit.
+                    string readJson = _objectService.ReadObjectSourceForVerification(target, partName);
                     if (!string.IsNullOrWhiteSpace(readJson))
                     {
                         var readObj = JObject.Parse(readJson);
+                        verificationReadTruncated = readObj["truncated"]?.ToObject<bool?>() == true
+                            || readObj["isTruncatedByWorker"]?.ToObject<bool?>() == true;
                         finalSource = readObj["source"]?.ToString()
                             ?? readObj["content"]?.ToString()
                             ?? readObj["parts"]?[partName ?? "Source"]?.ToString()
                             ?? "";
                     }
+                    else
+                    {
+                        verificationReadFailure = "emptyReadResponse";
+                    }
                 }
             }
             catch (Exception ex)
             {
+                verificationReadFailure = ex.GetType().Name;
                 Logger.Debug("[PERSISTED-STATE] Re-read failed for " + target + " (" + partName + "): " + ex.Message);
             }
 
             // issue #31.3: center the snippet on the first changed line when we know the
             // prior source, so the edited region is shown even past the first ~10 lines.
             int? editLine = priorSource != null ? (int?)FirstDiffLine(priorSource, finalSource) : null;
-            AppendPersistedState(parsed, finalSource, editLine);
+            bool verificationReadReliable = !verificationReadTruncated && verificationReadFailure == null;
+            if (verificationReadReliable)
+            {
+                AppendPersistedState(parsed, finalSource, editLine);
+            }
+            else
+            {
+                // Keep the stable keys without advertising a hash of a partial/unknown read
+                // as though it represented the complete persisted part.
+                parsed["persistedHash"] = null;
+                parsed["persistedSnippet"] = null;
+            }
 
             // #59: every textual mutation exposes the requested/persisted comparison,
             // including SDK normalization, and a successful full write may not claim
             // success unless the re-read state satisfies the request.
             if (requestedContent != null)
             {
-                bool requestedMatches = WhitespaceInsensitiveEquals(finalSource, requestedContent);
+                var verification = EvaluatePersistedVerification(
+                    requestedContent,
+                    finalSource,
+                    verificationReadTruncated,
+                    verificationReadFailure);
                 parsed["mutation"] = new JObject
                 {
                     ["before"] = DescribeContent(priorSource),
                     ["requested"] = DescribeContent(requestedContent),
-                    ["persisted"] = DescribeContent(finalSource),
+                    ["persisted"] = verificationReadReliable ? DescribeContent(finalSource) : null,
                     ["diff"] = new JObject
                     {
-                        ["matches"] = requestedMatches,
-                        ["firstDifferentLine"] = FirstDiffLine(requestedContent, finalSource)
+                        ["matches"] = verification.Matches,
+                        ["reason"] = verification.Reason,
+                        ["firstDifferentLine"] = verificationReadReliable
+                            ? (JToken)FirstDiffLine(requestedContent, finalSource)
+                            : JValue.CreateNull()
                     },
-                    ["saved"] = requestedMatches
+                    ["verification"] = verification.State,
+                    ["saved"] = verification.IsIndeterminate
+                        ? JValue.CreateNull()
+                        : (JToken)verification.Matches
                 };
 
                 string responseStatus = parsed["status"]?.ToString();
@@ -242,13 +276,19 @@ namespace GxMcp.Worker.Services
                 string responseCode = parsed["code"]?.ToString();
                 bool applied = string.Equals(responseCode, "WriteApplied", StringComparison.OrdinalIgnoreCase)
                             || string.Equals(responseCode, "WriteNoChange", StringComparison.OrdinalIgnoreCase);
-                if (successful && applied && !requestedMatches)
+                if (successful && applied && verification.IsIndeterminate)
+                {
+                    parsed["verificationWarning"] = verification.Reason == "truncation"
+                        ? "Post-write verification returned a truncated source. The save result is preserved and verification is indeterminate; re-read the complete part before deciding whether to undo."
+                        : "Post-write verification could not read the complete persisted part. The save result is preserved and verification is indeterminate; re-read before deciding whether to undo.";
+                }
+                else if (successful && applied && !verification.Matches)
                 {
                     JObject mutation = (JObject)parsed["mutation"].DeepClone();
                     return Models.McpResponse.Err(
                         code: "WriteNotPersisted",
                         message: "The SDK save completed, but the persisted part does not match the requested content.",
-                        hint: "Inspect mutation.diff and retry from the persisted state; SDK normalization is shown explicitly.",
+                        hint: "Inspect mutation.diff.reason: normalization, truncation, and a real content mismatch are reported separately. Retry only from a complete persisted read.",
                         target: target,
                         extra: new JObject
                         {
@@ -296,6 +336,68 @@ namespace GxMcp.Worker.Services
             }
 
             return parsed.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        internal sealed class PersistedVerificationResult
+        {
+            public string State { get; set; }
+            public string Reason { get; set; }
+            public bool Matches { get; set; }
+            public bool IsIndeterminate => string.Equals(State, "indeterminate", StringComparison.Ordinal);
+        }
+
+        internal static PersistedVerificationResult EvaluatePersistedVerification(
+            string requested,
+            string persisted,
+            bool readTruncated,
+            string readFailure)
+        {
+            if (readTruncated)
+            {
+                return new PersistedVerificationResult
+                {
+                    State = "indeterminate",
+                    Reason = "truncation",
+                    Matches = false
+                };
+            }
+            if (!string.IsNullOrWhiteSpace(readFailure))
+            {
+                return new PersistedVerificationResult
+                {
+                    State = "indeterminate",
+                    Reason = "readFailure",
+                    Matches = false
+                };
+            }
+            if (string.Equals(requested, persisted, StringComparison.Ordinal))
+            {
+                return new PersistedVerificationResult { State = "verified", Reason = "none", Matches = true };
+            }
+            if (WhitespaceInsensitiveEquals(persisted, requested)
+                || XmlEquivalentWhenApplicable(persisted, requested))
+            {
+                return new PersistedVerificationResult
+                {
+                    State = "verified",
+                    Reason = "normalization",
+                    Matches = true
+                };
+            }
+            return new PersistedVerificationResult
+            {
+                State = "mismatch",
+                Reason = "contentMismatch",
+                Matches = false
+            };
+        }
+
+        private static bool XmlEquivalentWhenApplicable(string a, string b)
+        {
+            if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
+            if (!a.TrimStart().StartsWith("<", StringComparison.Ordinal)
+                || !b.TrimStart().StartsWith("<", StringComparison.Ordinal)) return false;
+            return XmlEquivalence.AreEquivalent(a, b, out _);
         }
 
         // issue #36.6 — compare two content blobs ignoring all whitespace differences, so a

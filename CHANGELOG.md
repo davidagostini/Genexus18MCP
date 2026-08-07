@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- Post-write verification now performs a fresh, explicit full-part read instead of
+  comparing an MCP-defaulted/minimized page with the complete requested source. A
+  truncated or failed verification read is reported as `indeterminate` and does not
+  become `WriteNotPersisted`; mutation diagnostics distinguish `normalization`,
+  `truncation`, `readFailure`, and a real `contentMismatch`.
+- Lifecycle status now merges the worker's SDK single-flight state, so long-running
+  Undo operations report `isBusy: true` with the active operation and elapsed time.
+
 ## v2.39.1 — 2026-08-07
 
 This release fixes `object_atomic` rollback on Procedure source casing normalization, async `genexus_edit` failures on XML `PatternInstance` default attributes, and `genexus_layout set_property` degradation on Report layouts.

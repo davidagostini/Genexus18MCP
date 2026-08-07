@@ -1,0 +1,84 @@
+using GxMcp.Worker.Services;
+using Newtonsoft.Json.Linq;
+using Xunit;
+
+namespace GxMcp.Worker.Tests
+{
+    public class WriteVerificationIntegrityTests
+    {
+        [Fact]
+        public void TruncatedRead_IsIndeterminate_NotWriteMismatch()
+        {
+            var result = WriteService.EvaluatePersistedVerification(
+                new string('x', 56788),
+                new string('x', 16384),
+                readTruncated: true,
+                readFailure: null);
+
+            Assert.Equal("indeterminate", result.State);
+            Assert.Equal("truncation", result.Reason);
+            Assert.True(result.IsIndeterminate);
+            Assert.False(result.Matches);
+        }
+
+        [Fact]
+        public void FormattingAndCasingSdkChange_IsReportedAsNormalization()
+        {
+            var result = WriteService.EvaluatePersistedVerification(
+                "parm(in:&Id);\r\nFor each\r\nEndFor",
+                "Parm(in:&Id);\n  FOR EACH\nEndFor",
+                readTruncated: false,
+                readFailure: null);
+
+            Assert.Equal("verified", result.State);
+            Assert.Equal("normalization", result.Reason);
+            Assert.True(result.Matches);
+        }
+
+        [Fact]
+        public void XmlAttributeOrder_IsReportedAsNormalization()
+        {
+            var result = WriteService.EvaluatePersistedVerification(
+                "<root><item a=\"1\" b=\"2\" /></root>",
+                "<root><item b=\"2\" a=\"1\" /></root>",
+                readTruncated: false,
+                readFailure: null);
+
+            Assert.Equal("verified", result.State);
+            Assert.Equal("normalization", result.Reason);
+            Assert.True(result.Matches);
+        }
+
+        [Fact]
+        public void RealDifference_RemainsAContentMismatch()
+        {
+            var result = WriteService.EvaluatePersistedVerification(
+                "msg('new')",
+                "msg('old')",
+                readTruncated: false,
+                readFailure: null);
+
+            Assert.Equal("mismatch", result.State);
+            Assert.Equal("contentMismatch", result.Reason);
+            Assert.False(result.Matches);
+        }
+
+        [Fact]
+        public void UndoSdkBusy_ForcesPublicIsBusyTrue()
+        {
+            var status = new JObject { ["isBusy"] = false };
+            var sdkBusy = new JObject
+            {
+                ["active"] = true,
+                ["operation"] = "Undo/Undo",
+                ["elapsedMs"] = 42000
+            };
+
+            Program.MergeSdkBusyStatus(status, sdkBusy);
+
+            Assert.True(status["isBusy"]?.ToObject<bool>());
+            Assert.True(status["sdkBusy"]?["active"]?.ToObject<bool>());
+            Assert.Equal("Undo/Undo", status["activeOperation"]?.ToString());
+        }
+    }
+}

@@ -65,6 +65,38 @@ namespace GxMcp.Worker
         private static long _sdkBusySinceTicks;       // DateTime.UtcNow.Ticks when the current SDK command started (x86: use Interlocked)
         private static volatile string _sdkBusyOp;    // "method/action" of the in-flight SDK command (diagnostics)
         private static readonly int _busyRejectThresholdMs = ResolveBusyRejectThresholdMs();
+
+        internal static JObject GetSdkBusyStatus(DateTime? nowUtc = null)
+        {
+            bool active = _sdkBusy == 1;
+            long sinceTicks = Interlocked.Read(ref _sdkBusySinceTicks);
+            var status = new JObject
+            {
+                ["active"] = active,
+                ["operation"] = active ? _sdkBusyOp : null,
+                ["elapsedMs"] = 0
+            };
+            if (active && sinceTicks > 0)
+            {
+                var since = new DateTime(sinceTicks, DateTimeKind.Utc);
+                status["elapsedMs"] = Math.Max(0L, (long)((nowUtc ?? DateTime.UtcNow) - since).TotalMilliseconds);
+            }
+            return status;
+        }
+
+        internal static void MergeSdkBusyStatus(JObject status, JObject sdkBusy)
+        {
+            if (status == null) return;
+            sdkBusy = sdkBusy ?? new JObject { ["active"] = false, ["elapsedMs"] = 0 };
+            bool active = sdkBusy["active"]?.ToObject<bool?>() == true;
+            status["sdkBusy"] = sdkBusy;
+            if (active)
+            {
+                status["isBusy"] = true;
+                status["activeOperation"] = sdkBusy["operation"]?.DeepClone();
+            }
+        }
+
         private static int ResolveBusyRejectThresholdMs()
         {
             var s = Environment.GetEnvironmentVariable("GXMCP_BUSY_REJECT_MS");
