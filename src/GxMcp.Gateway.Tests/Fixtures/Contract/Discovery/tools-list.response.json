@@ -133,7 +133,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent (IDE Right-click → Apply Pattern). Transaction=family-gen; WebPanel/SDPanel=direct-attach (pass settings.template). mode=diagnose (or dryRun=true) returns findings without mutating. Working on Smart Devices? → resources/read uri=genexus://kb/skills/sd-panel-mobile for Main object semantics. mode=actions manages typed grid actions and Action Groups, persists and re-reads PatternInstance, supports dryRun diff, and never adds security permissions automatically.",
+      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent (IDE Right-click → Apply Pattern). Transaction=family-gen; WebPanel/WebComponent/SDPanel=direct-attach (pass settings.template). mode=diagnose (or dryRun=true) returns findings without mutating. Working on Smart Devices? → resources/read uri=genexus://kb/skills/sd-panel-mobile for Main object semantics. mode=actions manages typed grid actions and Action Groups, persists and re-reads PatternInstance, supports dryRun diff, and never adds security permissions automatically.",
       "inputSchema": {
         "examples": [
           {

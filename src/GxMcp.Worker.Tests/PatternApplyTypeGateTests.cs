@@ -27,6 +27,7 @@ namespace GxMcp.Worker.Tests
 
         [Theory]
         [InlineData("WebPanel")]
+        [InlineData("WebComponent")]
         [InlineData("SDPanel")]
         public void WebPanelKind_NoTemplate_NoRejection(string parentType)
         {
@@ -58,6 +59,7 @@ namespace GxMcp.Worker.Tests
             var valid = (JArray)env["validParentTypes"]!;
             Assert.Contains("Transaction", valid);
             Assert.Contains("WebPanel", valid);
+            Assert.Contains("WebComponent", valid);
             Assert.Contains("SDPanel", valid);
             Assert.NotNull(env["error"]?["hint"]);
         }
@@ -103,6 +105,17 @@ namespace GxMcp.Worker.Tests
                 callerTemplate: "MatIsoTemplate",
                 availableTemplates: new List<string> { "MatIsoTemplate", "PopoverEmpty" });
             Assert.Null(r);
+        }
+
+        [Theory]
+        [InlineData("WebPanel", "webpanel-direct-attach")]
+        [InlineData("WebComponent", "webcomponent-direct-attach")]
+        [InlineData("SDPanel", "sdpanel-direct-attach")]
+        [InlineData("Transaction", "transaction-family")]
+        [InlineData("Procedure", "unknown")]
+        public void BindingMode_ReflectsParentLifecycle(string parentType, string expected)
+        {
+            Assert.Equal(expected, PatternApplyService.GetWwpBindingMode(parentType));
         }
 
         [Fact]
