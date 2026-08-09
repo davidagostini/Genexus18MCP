@@ -966,6 +966,112 @@ namespace GxMcp.Worker.Services
             try { _engine?.GetPatternDefinition(WorkWithPlusPatternId); } catch { }
         }
 
+        // WWP has shipped multiple public overloads with this name. In U16, for
+        // example, both of these are present:
+        //   (KBModel, KBObject, string, out PatternInstance)
+        //   (KBModel, KBObject, SettingsView, string, out PatternInstance)
+        // Type.GetMethod(name) therefore throws AmbiguousMatchException before the
+        // package code is ever reached. Resolve against the complete call shape and
+        // prefer exact runtime-type matches; never pick an arbitrary tied overload.
+        internal static MethodInfo ResolveCompatibleStaticOverload(
+            Type declaringType,
+            string methodName,
+            object[] arguments,
+            int byRefArgumentIndex,
+            Type expectedReturnType,
+            out string candidateSignatures,
+            out string resolutionError)
+        {
+            candidateSignatures = "<none>";
+            resolutionError = null;
+            if (declaringType == null)
+            {
+                resolutionError = "Declaring type is null.";
+                return null;
+            }
+
+            arguments = arguments ?? Array.Empty<object>();
+            var candidates = declaringType
+                .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .Where(m => string.Equals(m.Name, methodName, StringComparison.Ordinal))
+                .OrderBy(m => m.MetadataToken)
+                .ToList();
+            candidateSignatures = candidates.Count == 0
+                ? "<none>"
+                : string.Join("; ", candidates.Select(FormatMethodSignature));
+
+            var compatible = new List<Tuple<MethodInfo, int>>();
+            foreach (var method in candidates)
+            {
+                if (expectedReturnType != null && method.ReturnType != expectedReturnType) continue;
+                var parameters = method.GetParameters();
+                if (parameters.Length != arguments.Length) continue;
+
+                int score = 0;
+                bool matches = true;
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    bool shouldBeByRef = i == byRefArgumentIndex;
+                    if (parameters[i].ParameterType.IsByRef != shouldBeByRef)
+                    {
+                        matches = false;
+                        break;
+                    }
+
+                    var parameterType = parameters[i].ParameterType.IsByRef
+                        ? parameters[i].ParameterType.GetElementType()
+                        : parameters[i].ParameterType;
+                    var argument = arguments[i];
+                    if (argument == null)
+                    {
+                        if (!parameters[i].IsOut && parameterType.IsValueType && Nullable.GetUnderlyingType(parameterType) == null)
+                        {
+                            matches = false;
+                            break;
+                        }
+                        continue;
+                    }
+
+                    var argumentType = argument.GetType();
+                    if (parameterType == argumentType) score += 100;
+                    else if (parameterType.IsAssignableFrom(argumentType)) score += parameterType == typeof(object) ? 1 : 10;
+                    else
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+
+                if (matches) compatible.Add(Tuple.Create(method, score));
+            }
+
+            if (compatible.Count == 0)
+            {
+                resolutionError = "No compatible overload for the supplied argument types.";
+                return null;
+            }
+
+            int bestScore = compatible.Max(x => x.Item2);
+            var best = compatible.Where(x => x.Item2 == bestScore).Select(x => x.Item1).ToList();
+            if (best.Count != 1)
+            {
+                resolutionError = "Multiple equally compatible overloads: " + string.Join("; ", best.Select(FormatMethodSignature));
+                return null;
+            }
+            return best[0];
+        }
+
+        internal static string FormatMethodSignature(MethodInfo method)
+        {
+            if (method == null) return "<null>";
+            return method.ReturnType.FullName + " " + method.DeclaringType.FullName + "." + method.Name + "(" +
+                string.Join(", ", method.GetParameters().Select(p =>
+                {
+                    var type = p.ParameterType.IsByRef ? p.ParameterType.GetElementType() : p.ParameterType;
+                    return (p.IsOut ? "out " : p.ParameterType.IsByRef ? "ref " : "") + type.FullName;
+                })) + ")";
+        }
+
         // OFFICIAL APPLY PATH for WebPanel/WebComponent/Procedure/SDPanel targets via the WWP
         // package's `PatternInstancePackageInterface` helper. This is the IDE's
         // canonical Right-click → Apply Pattern → WWP route. Three static methods:
@@ -1021,12 +1127,29 @@ namespace GxMcp.Worker.Services
                 var ifaceType = wwpAsm.GetType("DVelop.Patterns.WorkWithPlus.Helpers.PatternInstancePackageInterface", false);
                 if (ifaceType == null) { errorMessage = "PatternInstancePackageInterface type not found"; return false; }
 
-                var createMethod = ifaceType.GetMethod("CreatePatternInstanceWithTemplate", BindingFlags.Public | BindingFlags.Static);
-                var setApplyMethod = ifaceType.GetMethod("SetPatternApplyOnSave", BindingFlags.Public | BindingFlags.Static);
-                var validateSaveMethod = ifaceType.GetMethod("ValidateAndSave", BindingFlags.Public | BindingFlags.Static);
+                var kb = _objectService.GetKbService()?.GetKB();
+                if (kb == null) { errorMessage = "No KB open"; return false; }
+                object model = kb.DesignModel;
+
+                // A non-null string also disambiguates any same-arity overload whose
+                // third parameter is a package-specific settings object.
+                var createArgs = new object[] { model, parent, preferredTemplate ?? string.Empty, null };
+                var createMethod = ResolveCompatibleStaticOverload(
+                    ifaceType, "CreatePatternInstanceWithTemplate", createArgs, 3, typeof(bool),
+                    out var createCandidates, out var createResolutionError);
+                var oneObjectArg = new object[] { parent };
+                var setApplyMethod = ResolveCompatibleStaticOverload(
+                    ifaceType, "SetPatternApplyOnSave", oneObjectArg, -1, typeof(bool),
+                    out var setApplyCandidates, out var setApplyResolutionError);
+                var validateSaveMethod = ResolveCompatibleStaticOverload(
+                    ifaceType, "ValidateAndSave", oneObjectArg, -1, typeof(bool),
+                    out var validateCandidates, out var validateResolutionError);
                 if (createMethod == null || setApplyMethod == null || validateSaveMethod == null)
                 {
-                    errorMessage = "PatternInstancePackageInterface missing expected statics (CreatePatternInstanceWithTemplate/SetPatternApplyOnSave/ValidateAndSave)";
+                    errorMessage = "PatternInstancePackageInterface overload resolution failed. " +
+                        "CreatePatternInstanceWithTemplate: " + (createResolutionError ?? "ok") + " Candidates: " + createCandidates + ". " +
+                        "SetPatternApplyOnSave: " + (setApplyResolutionError ?? "ok") + " Candidates: " + setApplyCandidates + ". " +
+                        "ValidateAndSave: " + (validateResolutionError ?? "ok") + " Candidates: " + validateCandidates + ".";
                     return false;
                 }
 
@@ -1036,10 +1159,6 @@ namespace GxMcp.Worker.Services
                     errorMessage = "No `WorkWithPlus for Web Template` object found in this KB and no caller hint provided. Pass settings.template explicitly.";
                     return false;
                 }
-
-                var kb = _objectService.GetKbService()?.GetKB();
-                if (kb == null) { errorMessage = "No KB open"; return false; }
-                object model = kb.DesignModel;
 
                 // Invoke: bool CreatePatternInstanceWithTemplate(model, parent, template, out instance)
                 // Empirically the return value is unreliable — false has been observed even
@@ -1057,7 +1176,7 @@ namespace GxMcp.Worker.Services
                 {
                     var inner = tie.InnerException ?? tie;
                     createThrew = true;
-                    createThrowMsg = inner.GetType().Name + ": " + inner.Message;
+                    createThrowMsg = inner.ToString();
                     createResult = null;
                 }
                 bool createSaid = createResult is bool b && b;
@@ -1071,8 +1190,11 @@ namespace GxMcp.Worker.Services
                 if (hostObj == null)
                 {
                     errorMessage = createThrew
-                        ? "CreatePatternInstanceWithTemplate threw: " + createThrowMsg
-                        : "CreatePatternInstanceWithTemplate returned " + (createSaid ? "true" : "false") + " but host not present on disk (template='" + usedTemplate + "')";
+                        ? "CreatePatternInstanceWithTemplate threw via " + FormatMethodSignature(createMethod) + ": " + createThrowMsg +
+                          " Available overloads: " + createCandidates
+                        : "CreatePatternInstanceWithTemplate returned " + (createSaid ? "true" : "false") +
+                          " via " + FormatMethodSignature(createMethod) + " but host not present on disk (template='" + usedTemplate +
+                          "'). Available overloads: " + createCandidates;
                     return false;
                 }
                 hostName = hostObj.Name;
@@ -1094,7 +1216,8 @@ namespace GxMcp.Worker.Services
                 catch (TargetInvocationException tie)
                 {
                     var inner = tie.InnerException ?? tie;
-                    errorMessage = "ValidateAndSave threw: " + inner.GetType().Name + ": " + inner.Message;
+                    errorMessage = "ValidateAndSave threw via " + FormatMethodSignature(validateSaveMethod) + ": " + inner.ToString() +
+                        " Available overloads: " + validateCandidates;
                     return false;
                 }
 
@@ -1117,12 +1240,35 @@ namespace GxMcp.Worker.Services
                     Logger.Info("Package-interface attach: UpdateParentObject best-effort failed: " + ex.Message);
                 }
 
+                // A generated WorkWithPlus<Parent> object is not sufficient proof:
+                // the package can create the host and still fail to bind its
+                // PatternInstance to the original WebPanel/WebComponent. Re-read via
+                // the same SDK API used at the beginning of apply_pattern and only
+                // report success when the association is visible.
+                object attachedInstance;
+                try
+                {
+                    attachedInstance = _engine.GetPatternInstance(parent, WorkWithPlusPatternId);
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = "Pattern host '" + hostName + "' was created, but post-attach PatternInstance verification threw: " + ex.ToString();
+                    return false;
+                }
+                if (attachedInstance == null)
+                {
+                    errorMessage = "Pattern host '" + hostName + "' was created and saved via " + FormatMethodSignature(createMethod) +
+                        ", but no WorkWithPlus PatternInstance is associated with parent '" + parent.Name +
+                        "' after the call. Available overloads: " + createCandidates;
+                    return false;
+                }
+
                 Logger.Info("Package-interface attach succeeded: host='" + hostName + "' parent='" + parent.Name + "' template='" + usedTemplate + "'");
                 return true;
             }
             catch (Exception ex)
             {
-                errorMessage = ex.GetType().Name + ": " + ex.Message;
+                errorMessage = ex.ToString();
                 Logger.Warn("TryPackageInterfaceAttach unexpected: " + ex);
                 return false;
             }

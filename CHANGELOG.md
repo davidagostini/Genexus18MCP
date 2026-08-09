@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `genexus_apply_pattern` now selects the WorkWithPlus
+  `CreatePatternInstanceWithTemplate` overload by its complete compatible
+  signature. GeneXus 18 Upgrade 16 exposes both four- and five-parameter
+  overloads, which made name-only reflection fail with
+  `AmbiguousMatchException` when attaching WorkWithPlus to a new WebComponent.
+  Success is now confirmed by re-reading the PatternInstance association;
+  failures include the selected/found signatures and full inner exception.
+
 ## v2.39.3 — 2026-08-09
 
 ### Fixed
