@@ -173,8 +173,8 @@ namespace GxMcp.Gateway
                 "{ \"name\": \"Invoice\", \"pattern\": \"WorkWithPlus\" }\n" +
                 "// Generates: WorkWithPlusInvoice + WWInvoice + ViewInvoice + ExportWWInvoice + ExportReportWWInvoice\n" +
                 "```\n\n" +
-                "### B) WebPanel target — in-place attach + auto-project (SOTA path)\n" +
-                "For custom WWP screens that aren't pure CRUD (queries, dashboards, hybrid lists). The MCP attaches a `WorkWithPlus<WebPanelName>` host bound to the WebPanel via the SDK's `PatternInstancePackageInterface.CreatePatternInstanceWithTemplate`, then immediately runs `IPatternBuildProcess.UpdateParentObject` so the WebPanel's WebForm reflects the pattern projection. The original WebPanel **stays put** — no destruction, no rename.\n\n" +
+                "### B) WebPanel, WebComponent or SDPanel target — in-place attach + auto-project (SOTA path)\n" +
+                "For custom WWP screens that aren't pure CRUD (queries, dashboards, hybrid lists and reusable components). The MCP attaches a `WorkWithPlus<ObjectName>` host bound to the original object via the SDK's `PatternInstancePackageInterface.CreatePatternInstanceWithTemplate`, then immediately runs `IPatternBuildProcess.UpdateParentObject` so its WebForm reflects the pattern projection. The original object keeps its type and name.\n\n" +
                 "Required: `settings.template` matching a `WorkWithPlus for Web Template` object in your KB. Common names: `MatIsoTemplate`, `TransactionResp2`, `PopoverEmpty`, `TransactionPopUp`. The MCP auto-discovers one if you omit, but explicit is better.\n\n" +
                 "```jsonc\n" +
                 "{ \"name\": \"InvoiceQueryPanel\",\n" +
@@ -184,7 +184,7 @@ namespace GxMcp.Gateway
                 "// → patternHost: \"WorkWithPlusInvoiceQueryPanel\" (host with editable PatternInstance)\n" +
                 "// → InvoiceQueryPanel.WebForm now contains the template-derived layout\n" +
                 "```\n\n" +
-                "**Auto-project on edit:** subsequent `genexus_edit name=WorkWithPlus<X> part=PatternInstance` calls automatically run UpdateParentObject too — every PatternInstance edit lands on the WebPanel's WebForm in the same call. The response's `projection.status` field reports the outcome.\n\n" +
+                "**Auto-project on edit:** subsequent `genexus_edit name=WorkWithPlus<X> part=PatternInstance` calls automatically run UpdateParentObject too — every PatternInstance edit lands on the parent object's WebForm in the same call. The response's `projection.status` field reports the outcome.\n\n" +
                 "## Response\n" +
                 "- `{ status: \"Success\", wasFirstApply: true|false, generatedObjects: [...] }` on the happy path.\n" +
                 "- `{ status: \"pattern_unavailable\", message: ... }` if `Artech.Packages.Patterns.dll` / license is missing — the call is **non-fatal**, treat as \"feature unavailable on this install\" and surface the message.\n" +
