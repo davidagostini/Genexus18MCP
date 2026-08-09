@@ -64,7 +64,12 @@ namespace GxMcp.Gateway.Routers
                             module = "Batch",
                             action = "BatchRead",
                             items = (JArray)targetsTokRead!,
-                            part = part
+                            part = part,
+                            // A batch read must preserve the same field-selection contract as
+                            // a single-object read. Previously targets short-circuited before
+                            // parts was inspected, silently turning parts:["Variables"] into
+                            // the default Source read.
+                            parts = args?["parts"] as JArray
                         };
                     }
                     var partsTok = args?["parts"];

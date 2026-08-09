@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- Post-write verification now performs a fresh, explicit full-part read instead of
+  comparing an MCP-defaulted/minimized page with the complete requested source. A
+  truncated or failed verification read is reported as `indeterminate` and does not
+  become `WriteNotPersisted`; mutation diagnostics distinguish `normalization`,
+  `truncation`, `readFailure`, and a real `contentMismatch`.
+- Lifecycle status now merges the worker's SDK single-flight state, so long-running
+  Undo operations report `isBusy: true` with the active operation and elapsed time.
+- Batch `genexus_read targets=[...]` now honors `parts=[...]`; variable persistence
+  checks use an uncached full read and reconcile SDK errors that occur after commit.
+- Best-effort patches no longer force a full-object validation pass, cancellation of
+  non-preemptible SDK calls reports `CancellationRequested`, `WorkerBusy` identifies
+  the blocking operation, and forced reloads verify replacement workers are SDK-ready.
 - **`genexus_apply_pattern` now accepts WorkWithPlus on WebComponents.** WebComponents that expose WorkWithPlus in the GeneXus IDE were incorrectly rejected by the MCP's parent-type gate. They now use the same template-based direct-attach lifecycle as WebPanels, preserving the original object type while creating and projecting the linked `WorkWithPlus<Object>` instance.
 
 ## v2.39.2 — 2026-08-07

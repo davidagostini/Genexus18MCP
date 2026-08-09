@@ -169,6 +169,28 @@ namespace GxMcp.Gateway
             return true;
         }
 
+        // SDK calls execute on a non-preemptible STA thread. For those calls, receiving a
+        // cancel request is not the same as cancellation completing. Keep the operation live
+        // and let CompleteFromWorker publish the truthful terminal state when the SDK returns.
+        public bool MarkCancellationRequested(string operationId, string reason)
+        {
+            if (string.IsNullOrWhiteSpace(operationId)) return false;
+            if (!_operations.TryGetValue(operationId, out var record)) return false;
+
+            lock (record.SyncRoot)
+            {
+                if (string.Equals(record.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(record.Status, "Failed", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(record.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                record.Status = "CancellationRequested";
+                record.UpdatedAtUtc = DateTime.UtcNow;
+                record.LastError = reason ?? "Cancellation requested by client; waiting for the SDK call to return.";
+            }
+            return true;
+        }
+
         // A4: a worker progress frame carries progressToken == operationId (see
         // SendWorkerCommandAsync). Bump the record's UpdatedAtUtc so a status poll
         // (genexus_lifecycle action=status target=op:<id>) shows real liveness

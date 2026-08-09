@@ -817,6 +817,10 @@ namespace GxMcp.Worker.Services
                 var activeBuilds = BuildService.GetActiveBuildsSummary();
                 statusJson["activeBuilds"] = activeBuilds;
                 statusJson["buildBusy"] = activeBuilds.Count > 0;
+                // The STA single-flight tracker covers every SDK command, including Undo.
+                // Merge it into the public status instead of reporting isBusy=false while
+                // the worker is actively restoring snapshots.
+                Program.MergeSdkBusyStatus(statusJson, Program.GetSdkBusyStatus());
                 // issue #42 (P5) — objects edited via MCP but not yet successfully
                 // built this session (their generated .cs is stale relative to the KB).
                 try
@@ -952,7 +956,10 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Batch(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "BatchRead") return _batchService.BatchRead(args?["items"] as JArray, args?["part"]?.ToString() ?? "Source");
+            if (action == "BatchRead") return _batchService.BatchRead(
+                args?["items"] as JArray,
+                args?["part"]?.ToString() ?? "Source",
+                args?["parts"] as JArray);
             if (action == "BatchEdit") return _batchService.BatchEdit(target, args?["changes"] as JArray);
             if (action == "MultiEdit") return _batchService.MultiEdit(args?["items"] as JArray);
             if (action == "Process") return _batchService.ProcessBatch(args?["batchAction"]?.ToString(), target, payload);

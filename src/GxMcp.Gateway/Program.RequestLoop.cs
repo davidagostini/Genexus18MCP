@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using Microsoft.Extensions.Logging;
 using System.Threading;
@@ -369,6 +370,7 @@ namespace GxMcp.Gateway
                     }
                     try
                     {
+                        var handlesToRestore = _workerPool?.ListOpen().ToList() ?? new List<KbHandle>();
                         if (_workerPool != null)
                         {
                             using (SuppressEagerRespawn())
@@ -378,6 +380,26 @@ namespace GxMcp.Gateway
                         }
                         _semanticCache.Clear();
                         StartWorker(_activeConfig);
+                        var readyAliases = new JArray();
+                        var failedAliases = new JArray();
+                        foreach (var handle in handlesToRestore)
+                        {
+                            try
+                            {
+                                using var readyCts = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+                                var replacement = await _workerPool!.AcquireAsync(handle, readyCts.Token).ConfigureAwait(false);
+                                bool ready = await McpRouter.AwaitWithHeartbeat(
+                                    replacement.SdkReadyTask, timeoutMs: 180_000,
+                                    progressToken: null, heartbeat: null,
+                                    toolName: "worker_reload force").ConfigureAwait(false);
+                                if (ready) readyAliases.Add(handle.Alias);
+                                else failedAliases.Add(new JObject { ["alias"] = handle.Alias, ["reason"] = "sdkReadyTimeout" });
+                            }
+                            catch (Exception restoreEx)
+                            {
+                                failedAliases.Add(new JObject { ["alias"] = handle.Alias, ["reason"] = restoreEx.Message });
+                            }
+                        }
                         BroadcastToolsListChanged("worker_reloaded_force");
                         BroadcastResourcesListChanged("worker_reloaded_force");
                         var ok = new JObject
@@ -387,10 +409,17 @@ namespace GxMcp.Gateway
                             ["result"] = BuildToolResultContent(
                                 new JObject
                                 {
-                                    ["status"] = "Forced",
-                                    ["detail"] = "Worker process(es) killed by gateway and respawned. Any in-flight worker job was abandoned."
+                                    ["status"] = failedAliases.Count == 0 ? "Forced" : "ReloadFailed",
+                                    ["online"] = handlesToRestore.Count > 0 && readyAliases.Count > 0 && failedAliases.Count == 0,
+                                    ["restoredWorkers"] = readyAliases,
+                                    ["failedWorkers"] = failedAliases,
+                                    ["detail"] = handlesToRestore.Count == 0
+                                        ? "Worker pool was reset; no previously-open worker existed to restore. A worker will start on the next KB request."
+                                        : failedAliases.Count == 0
+                                            ? "Worker process(es) were killed, respawned, and confirmed SDK-ready. Any in-flight worker job was abandoned."
+                                            : "Worker process(es) were killed, but one or more replacements did not become SDK-ready."
                                 },
-                                isError: false,
+                                isError: failedAliases.Count > 0,
                                 toolName: toolName,
                                 toolArgs: args)
                         };
@@ -1049,7 +1078,8 @@ namespace GxMcp.Gateway
                         lifecycleTarget.StartsWith("op:", StringComparison.OrdinalIgnoreCase))
                     {
                         string operationId = lifecycleTarget.Substring(3);
-                        bool existed = _operationTracker.MarkCancelled(operationId, "Cancelled by client via lifecycle action=cancel.");
+                        bool existed = _operationTracker.MarkCancellationRequested(operationId,
+                            "Cancellation requested by client; the current GeneXus SDK call is non-preemptible and may still complete.");
                         // A5: fan a Control:Cancel out to the worker (mirroring the job_id
                         // path above) so cooperative handlers trip their CTS and free the
                         // single STA queue, instead of leaving the worker running the
@@ -1079,7 +1109,7 @@ namespace GxMcp.Gateway
                                     {
                                         jsonrpc = "2.0",
                                         id = kvp.Key,
-                                        error = new { code = -32603, message = "Operation cancelled by client." }
+                                        error = new { code = -32603, message = "Operation cancellation requested by client; the SDK call may still be running." }
                                     }));
                                     break;
                                 }
@@ -1088,11 +1118,11 @@ namespace GxMcp.Gateway
 
                         var cancelPayload = new JObject
                         {
-                            ["status"] = existed ? "Cancelled" : "NotFound",
+                            ["status"] = existed ? "CancellationRequested" : "NotFound",
                             ["operationId"] = operationId,
                             ["abandonedRequestId"] = abandonedRequestId,
                             ["message"] = existed
-                                ? "Operation marked as Cancelled. Worker may still finish its current SDK call but no further response will be delivered."
+                                ? "Cancellation was requested and the client response was abandoned. The non-preemptible SDK call may still finish; poll this operation for its final state."
                                 : "Operation not found in tracker (may have completed and been pruned, or never existed)."
                         };
                         return BuildToolTextResponse(idToken, cancelPayload, isError: !existed, toolName: "genexus_lifecycle", toolArgs: args);
