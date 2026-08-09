@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added `scripts/mcp_recover.ps1`, an out-of-band Streamable HTTP client for
+  continuing diagnostics when a client-owned STDIO transport has closed. It
+  initializes a fresh session, discovers the current catalog, and blocks tools
+  not marked read-only unless `-AllowWrite` is passed explicitly.
+
 ## v2.39.3 — 2026-08-09
 
 ### Fixed
