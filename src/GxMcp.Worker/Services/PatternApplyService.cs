@@ -98,8 +98,7 @@ namespace GxMcp.Worker.Services
                     string parentType = obj.TypeDescriptor?.Name ?? "";
                     string callerTemplate = settings != null ? settings["template"]?.ToString() : null;
                     List<string> availableTemplates = null;
-                    bool isWebPanelKind = string.Equals(parentType, "WebPanel", StringComparison.OrdinalIgnoreCase)
-                                       || string.Equals(parentType, "SDPanel", StringComparison.OrdinalIgnoreCase);
+                    bool isWebPanelKind = IsWwpDirectAttachParentType(parentType);
                     if (isWebPanelKind)
                     {
                         try { availableTemplates = ListWwpWebTemplates(); } catch { /* best-effort */ }
@@ -475,11 +474,7 @@ namespace GxMcp.Worker.Services
             Phase("indexUpdate");
 
             string parentTypeName = obj?.TypeDescriptor?.Name ?? "";
-            string bindingMode;
-            if (string.Equals(parentTypeName, "Transaction", StringComparison.OrdinalIgnoreCase)) bindingMode = "transaction-family";
-            else if (string.Equals(parentTypeName, "WebPanel", StringComparison.OrdinalIgnoreCase)) bindingMode = "webpanel-direct-attach";
-            else if (string.Equals(parentTypeName, "SDPanel", StringComparison.OrdinalIgnoreCase)) bindingMode = "sdpanel-direct-attach";
-            else bindingMode = "unknown";
+            string bindingMode = GetWwpBindingMode(parentTypeName);
 
             // Friction 2026-05-26 — apply_pattern reapply previously returned
             // status=Success even when the parent's Events-by-WorkWithPlus
@@ -607,7 +602,7 @@ namespace GxMcp.Worker.Services
             if (!string.IsNullOrEmpty(host)) patternResult["patternHost"] = host;
 
             // F23: surface available `WorkWithPlus for Web Template` names.
-            if (obj?.TypeDescriptor?.Name == "WebPanel" || obj?.TypeDescriptor?.Name == "SDPanel")
+            if (IsWwpDirectAttachParentType(obj?.TypeDescriptor?.Name))
             {
                 try
                 {
@@ -685,7 +680,7 @@ namespace GxMcp.Worker.Services
                     {
                         isNoOp = true;
                         patternResult["noOpReason"] = "Engine ApplyPattern void overload no-op'd on this target, and the WWP package's CreatePatternInstanceWithTemplate fallback also failed: " + (packageAttachError ?? "unknown");
-                        patternResult["recommendation"] = obj.TypeDescriptor?.Name == "WebPanel"
+                        patternResult["recommendation"] = IsWwpDirectAttachParentType(obj.TypeDescriptor?.Name)
                             ? "Either: (1) pass an explicit `settings.template` matching a `WorkWithPlus for Web Template` object in this KB (we tried auto-discovery first). (2) Apply WorkWithPlus to a Transaction — the engine generates 'WW<Trn>' as a wired WWP screen."
                             : "Apply WorkWithPlus to a Transaction to generate the WWP family.";
 
@@ -775,7 +770,7 @@ namespace GxMcp.Worker.Services
         // ineligible for WorkWithPlus, or null if the apply may proceed.
         // - WorkWithPlus key only (other keys pass through unchanged)
         // - Transaction: always eligible (no template required)
-        // - WebPanel/SDPanel: eligible; if callerTemplate provided AND
+        // - WebPanel/WebComponent/SDPanel: eligible; if callerTemplate provided AND
         //   availableTemplates is non-empty AND template not in list → reject
         // - Anything else → reject upfront (Procedure/SDT/Domain/etc.)
         // Extracted so the rejection contract is unit-testable without a live
@@ -793,8 +788,7 @@ namespace GxMcp.Worker.Services
 
             if (parentType == null) parentType = "";
             bool isTransaction = string.Equals(parentType, "Transaction", StringComparison.OrdinalIgnoreCase);
-            bool isWebPanelKind = string.Equals(parentType, "WebPanel", StringComparison.OrdinalIgnoreCase)
-                               || string.Equals(parentType, "SDPanel", StringComparison.OrdinalIgnoreCase);
+            bool isWebPanelKind = IsWwpDirectAttachParentType(parentType);
 
             if (!isTransaction && !isWebPanelKind)
             {
@@ -802,16 +796,16 @@ namespace GxMcp.Worker.Services
                 {
                     ["patternKey"] = patternKey,
                     ["parentType"] = parentType,
-                    ["validParentTypes"] = new JArray("Transaction", "WebPanel", "SDPanel")
+                    ["validParentTypes"] = new JArray("Transaction", "WebPanel", "WebComponent", "SDPanel")
                 };
                 var rej = JObject.Parse(McpResponse.Err(
                     code: "PatternParentTypeMismatch",
                     message: $"WorkWithPlus cannot be applied to a {parentType}.",
-                    hint: "Apply WorkWithPlus only to a Transaction (generates WW/View/Export family) or to a WebPanel/SDPanel (direct-attach with a Template; pass settings.template or let the MCP auto-discover one).",
+                    hint: "Apply WorkWithPlus only to a Transaction (generates WW/View/Export family) or to a WebPanel/WebComponent/SDPanel (direct-attach with a Template; pass settings.template or let the MCP auto-discover one).",
                     nextSteps: new JArray(McpResponse.NextStep(
                         tool: "genexus_apply_pattern",
                         args: new JObject { ["name"] = objName, ["pattern"] = patternKey },
-                        why: "Call on a Transaction or WebPanel instead.")),
+                        why: "Call on a Transaction, WebPanel, WebComponent or SDPanel instead.")),
                     target: objName,
                     extra: rejExtra));
                 return rej.ToString(Newtonsoft.Json.Formatting.None);
@@ -843,6 +837,22 @@ namespace GxMcp.Worker.Services
             }
 
             return null;
+        }
+
+        internal static bool IsWwpDirectAttachParentType(string parentType)
+        {
+            return string.Equals(parentType, "WebPanel", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(parentType, "WebComponent", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(parentType, "SDPanel", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static string GetWwpBindingMode(string parentType)
+        {
+            if (string.Equals(parentType, "Transaction", StringComparison.OrdinalIgnoreCase)) return "transaction-family";
+            if (string.Equals(parentType, "WebPanel", StringComparison.OrdinalIgnoreCase)) return "webpanel-direct-attach";
+            if (string.Equals(parentType, "WebComponent", StringComparison.OrdinalIgnoreCase)) return "webcomponent-direct-attach";
+            if (string.Equals(parentType, "SDPanel", StringComparison.OrdinalIgnoreCase)) return "sdpanel-direct-attach";
+            return "unknown";
         }
 
         // 60s — fresh enough to pick up new templates, cheap on the upfront-guard
@@ -956,7 +966,7 @@ namespace GxMcp.Worker.Services
             try { _engine?.GetPatternDefinition(WorkWithPlusPatternId); } catch { }
         }
 
-        // OFFICIAL APPLY PATH for WebPanel/Procedure/SDPanel targets via the WWP
+        // OFFICIAL APPLY PATH for WebPanel/WebComponent/Procedure/SDPanel targets via the WWP
         // package's `PatternInstancePackageInterface` helper. This is the IDE's
         // canonical Right-click → Apply Pattern → WWP route. Three static methods:
         //   1. CreatePatternInstanceWithTemplate(KBModel, KBObject, String, out PatternInstance) -> Boolean
@@ -1809,8 +1819,7 @@ namespace GxMcp.Worker.Services
                 // ── 5. Parent-type gate ──────────────────────────────────────────
                 string callerTemplate = settings?["template"]?.ToString();
                 List<string> availableTemplates = null;
-                bool isWebPanelKind = string.Equals(parentType, "WebPanel", StringComparison.OrdinalIgnoreCase)
-                                   || string.Equals(parentType, "SDPanel", StringComparison.OrdinalIgnoreCase);
+                bool isWebPanelKind = IsWwpDirectAttachParentType(parentType);
                 if (isWebPanelKind)
                 {
                     try { availableTemplates = ListWwpWebTemplates(); } catch { availableTemplates = new List<string>(); }
@@ -1827,7 +1836,7 @@ namespace GxMcp.Worker.Services
                     string remediation = rejectEnv["hint"]?.ToString()
                         ?? (rejectEnv["availableTemplates"] != null
                             ? "Pass settings.template equal to one of availableTemplates: " + rejectEnv["availableTemplates"]
-                            : "Apply WorkWithPlus only to Transaction, WebPanel or SDPanel.");
+                            : "Apply WorkWithPlus only to Transaction, WebPanel, WebComponent or SDPanel.");
                     findings.Add(Finding(reason, "critical", detail, remediation));
                 }
 
@@ -1854,7 +1863,7 @@ namespace GxMcp.Worker.Services
                     {
                         findings.Add(Finding("missingRequiredAttribute", "warn",
                             $"No settings.template supplied and no 'WorkWithPlus for Web Template' objects found in this KB.",
-                            "Import or create a 'WorkWithPlus for Web Template' object before applying to a WebPanel."));
+                            $"Import or create a 'WorkWithPlus for Web Template' object before applying to a {parentType}."));
                     }
                 }
 

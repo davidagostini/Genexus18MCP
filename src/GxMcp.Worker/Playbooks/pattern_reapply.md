@@ -9,7 +9,7 @@ generator against the existing PatternInstance.
 | Scenario                          | Call                                                              |
 | --------------------------------- | ----------------------------------------------------------------- |
 | First time on a Transaction       | `genexus_apply_pattern name=<Trn> pattern=WorkWithPlus`           |
-| First time on a WebPanel/SDPanel  | `... settings={"template":"EmptyWithTitle"}`                      |
+| First time on a WebPanel/WebComponent/SDPanel | `... settings={"template":"EmptyWithTitle"}`             |
 | Re-generate after PatternInstance edit | `... reapply=true`                                           |
 | Diagnose without mutating         | `... mode=diagnose`                                               |
 | Apply + verify build              | `... validate=true` (adds 60–180s build step)                     |

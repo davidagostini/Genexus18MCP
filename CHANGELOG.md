@@ -16,6 +16,7 @@
 - Best-effort patches no longer force a full-object validation pass, cancellation of
   non-preemptible SDK calls reports `CancellationRequested`, `WorkerBusy` identifies
   the blocking operation, and forced reloads verify replacement workers are SDK-ready.
+- **`genexus_apply_pattern` now accepts WorkWithPlus on WebComponents.** WebComponents that expose WorkWithPlus in the GeneXus IDE were incorrectly rejected by the MCP's parent-type gate. They now use the same template-based direct-attach lifecycle as WebPanels, preserving the original object type while creating and projecting the linked `WorkWithPlus<Object>` instance.
 
 ## v2.39.2 — 2026-08-07
 
