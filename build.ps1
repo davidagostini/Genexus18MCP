@@ -132,7 +132,7 @@ if (Test-Path $workerBinRelease) {
     Get-ChildItem -Path "$workerBinRelease\*" -Recurse | Copy-Item -Destination "$workerPublishDir" -Recurse -Force
 }
 
-# 4.1 GeneXus Definitions/ — NOT copied into the artifact.
+# 4.1 GeneXus Definitions/ - NOT copied into the artifact.
 # The Worker sets Directory.SetCurrentDirectory(gxPath) before calling any SDK
 # methods, so the SDK resolves Definitions/ from the local GeneXus 18 install
 # (the same path it was loaded from). Shipping a copy would:
@@ -140,12 +140,12 @@ if (Test-Path $workerBinRelease) {
 #   (b) risk stale copies diverging from the user's actual GeneXus version.
 # Every install of genexus-mcp already requires a local GeneXus 18 install, so
 # the SDK always finds the canonical Definitions/ at runtime without a copy here.
-Write-Host "   > Skipping Definitions/ copy — resolved at runtime from GeneXus install dir ($gxPath)."
+Write-Host "   > Skipping Definitions/ copy - resolved at runtime from GeneXus install dir ($gxPath)."
 
 # 5. Write a SANITIZED fallback config.json into the publish artifact.
 #    This file is only a fallback for a bare manual run (every real launcher sets
 #    GX_CONFIG_PATH to the KB's own config). We deliberately do NOT sync the dev's
-#    root config.json here — that would ship the developer's real KB path in the
+#    root config.json here - that would ship the developer's real KB path in the
 #    release zip (a privacy/hygiene leak). The placeholder KBPath signals "set me".
 Write-Host "   > Writing sanitized fallback config.json to publish..."
 $defaultConfig = @{
@@ -201,7 +201,7 @@ dotnet GxMcp.Gateway.dll
 '@
 Set-Content -Path "$publishDir\start_mcp.bat" -Value $batContent -Encoding Ascii
 
-# 6.1 Slim the publish output: drop debug symbols (.pdb — not shipped) and any
+# 6.1 Slim the publish output: drop debug symbols (.pdb - not shipped) and any
 # transient runtime logs/cache a dev run may have written into the dir.
 Get-ChildItem -Path $publishDir -Recurse -Include *.pdb,*.log,*.prev.log,*panic*.log -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
