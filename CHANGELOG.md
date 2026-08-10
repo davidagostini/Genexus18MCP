@@ -53,6 +53,22 @@
   The create path now forces the structure part dirty before saving (the same
   fix the SDT write path already applied), so the first member survives and
   round-trip reads agree with the creation response.
+- `genexus_read` (and other read tools) could keep returning stale content after
+  a delete or write until the gateway restarted. The gateway replays the first
+  successful response for an identical read to avoid re-hitting the SDK, but
+  that semantic cache was only cleared by a subset of write tools — a
+  `genexus_delete_object`, `genexus_variable` edits, `genexus_apply_pattern`,
+  `genexus_rename_across_kb`, structure/index mutations, `genexus_transfer
+  action=import`, `genexus_db` data mutations (translations/sample data) and
+  gxserver commit/update/lock/resolve were missed, so a read of a deleted
+  object could return its pre-delete content. Every KB-mutating tool/action
+  now invalidates the cache, and cache entries are scoped per KB so identical
+  reads against different open Knowledge Bases never share envelopes.
+
+Thanks to [@davidagostini](https://github.com/davidagostini) for the WorkWithPlus
+overload-resolution fix and the out-of-band MCP recovery client — see PRs
+[#76](https://github.com/lennix1337/Genexus18MCP/pull/76) and
+[#77](https://github.com/lennix1337/Genexus18MCP/pull/77).
 
 ### Internal
 
