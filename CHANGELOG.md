@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.39.4 - 2026-08-10
+
 ### Added
 
 - Added `scripts/mcp_recover.ps1`, an out-of-band Streamable HTTP client for
@@ -2158,6 +2160,8 @@ WorkWithPlus on a bare WebPanel now works end-to-end. Apply the pattern, get a h
 
 ## Unreleased
 
+## v2.39.4 - 2026-08-10
+
 (none)
 
 ## v2.5.3 — 2026-05-19
@@ -3275,6 +3279,8 @@ Plan: `docs/superpowers/plans/2026-05-13-mcp-perf-and-tool-stability-v2.2.0.md`.
   process level (single env-flip kill switch).
 
 ## Unreleased
+
+## v2.39.4 - 2026-08-10
 
 Closes every item from the second-cycle friction report
 `docs/mcp-friction-report-2026-05-13.md`, produced by a fresh real-KB session

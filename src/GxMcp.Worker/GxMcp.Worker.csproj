@@ -11,10 +11,10 @@
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
     <NoWarn>$(NoWarn);MSB3277</NoWarn>
-    <Version>2.39.3</Version>
-    <AssemblyVersion>2.39.3.0</AssemblyVersion>
-    <FileVersion>2.39.3.0</FileVersion>
-    <InformationalVersion>2.39.3</InformationalVersion>
+    <Version>2.39.4</Version>
+    <AssemblyVersion>2.39.4.0</AssemblyVersion>
+    <FileVersion>2.39.4.0</FileVersion>
+    <InformationalVersion>2.39.4</InformationalVersion>
   </PropertyGroup>
 
   <PropertyGroup>
