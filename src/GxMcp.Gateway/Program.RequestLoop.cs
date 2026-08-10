@@ -1061,13 +1061,20 @@ namespace GxMcp.Gateway
                                 env => env,
                                 (_, __) => new JObject(),
                                 toolName: "genexus_lifecycle", toolArgs: args, trackOperation: false);
+                            // Issue #79: Cancel only acts on running jobs now, so a
+                            // terminal job surfaces a truthful message instead of the
+                            // misleading "not found in registry".
+                            var terminalJob = ok ? null : JobRegistry.Get(cancelJobId);
+                            string cancelMsg = ok
+                                ? "Job marked Cancelled and Control:Cancel fanned out to the worker. Handlers honouring CancellationToken (search, analyze, build expansion) will terminate within one iteration."
+                                : terminalJob != null
+                                    ? "Job is already in a terminal state ('" + terminalJob.Status + "'); nothing to cancel."
+                                    : "Job not found in registry (may have completed and been pruned).";
                             var jp = new JObject
                             {
                                 ["status"] = ok ? "Cancelled" : "NotFound",
                                 ["jobId"] = cancelJobId,
-                                ["message"] = ok
-                                    ? "Job marked Cancelled and Control:Cancel fanned out to the worker. Handlers honouring CancellationToken (search, analyze, build expansion) will terminate within one iteration."
-                                    : "Job not found in registry (may have completed and been pruned)."
+                                ["message"] = cancelMsg
                             };
                             return BuildToolTextResponse(idToken, jp, isError: !ok, toolName: "genexus_lifecycle", toolArgs: args);
                         }
@@ -1751,10 +1758,45 @@ namespace GxMcp.Gateway
                         {
                             try
                             {
-                                var inner = await SendWorkerCommandAsync(
+                                // Issue #79: SendWorkerCommandAsync is called with timeoutMs=0
+                                // (wait forever) because a legitimately slow SDK save must not be
+                                // cut off — but that means a BLOCKED SDK call (IDE modal dialog
+                                // holding the model, or the SDK retrying a failing validation
+                                // internally) left the job 'running' indefinitely with no
+                                // actionable signal. Race the worker wait against a generous
+                                // watchdog bound; on fire, mark the job terminal 'stalled' with
+                                // recovery steps instead of hanging forever. gxserver update/commit
+                                // is excluded (a server apply can legitimately run arbitrarily
+                                // long — an 850-object changelist exceeded the 10 min sync
+                                // ceiling), so its jobs wait without a stall bound.
+                                int watchdogMs = isAsyncGxServer ? int.MaxValue : AsyncEditWatchdogMs(estEdit);
+                                var cancelToken = JobRegistry.RegisterCancellation(editJob.Id);
+                                var watchdogDelay = Task.Delay(watchdogMs, cancelToken);
+                                var workerTask = SendWorkerCommandAsync(
                                     capturedCmd, 0,
                                     $"Timeout waiting for async edit: {capturedName}",
                                     r => r, (_, __) => new JObject { ["status"] = "Running" });
+                                var completed = await Task.WhenAny(workerTask, watchdogDelay).ConfigureAwait(false);
+                                if (completed != workerTask)
+                                {
+                                    // Cancelled (delay faulted via the CTS) or deadline hit. A
+                                    // cancel already flipped the job to 'cancelled'; only stall
+                                    // when it is genuinely still running.
+                                    var now = JobRegistry.Get(editJob.Id);
+                                    if (now != null && string.Equals(now.Status, "running", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        int boundSeconds = watchdogMs == int.MaxValue ? -1 : watchdogMs / 1000;
+                                        string boundText = boundSeconds > 0 ? boundSeconds + "s" : "unbounded (watchdog disabled)";
+                                        JobRegistry.Stall(
+                                            editJob.Id,
+                                            capturedName + " did not return within the " + boundText
+                                                + " time bound; SDK call likely blocked (IDE modal dialog or retrying validation) — see result for recovery steps.",
+                                            BuildStalledAsyncMutationEnvelope(editJob.Id, capturedName, estEdit, boundSeconds));
+                                        Log($"[AsyncEdit] Watchdog fired for job={editJob.Id} tool={capturedName} after {watchdogMs}ms — marked stalled.");
+                                    }
+                                    return;
+                                }
+                                var inner = await workerTask;
                                 bool ok = IsSuccessfulBackgroundToolCompletion(inner);
                                 JobRegistry.Complete(editJob.Id, ok, BuildAsyncMutationCompletionSummary(capturedName, ok), inner);
                             }

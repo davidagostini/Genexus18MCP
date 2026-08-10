@@ -93,6 +93,9 @@ namespace GxMcp.Gateway.Tests
         // BUG-05 regression: on JSON-RPC id reuse within the retention window,
         // StartOperation overwrites _requestToOperation to the new op. CleanupExpired
         // of the OLD op must not then delete the mapping now pointing at the NEW op.
+        // The old age-based sweep could also expire a RUNNING op when the thread was
+        // descheduled past the tiny 1ms retention — a genuine CI flake. Running ops
+        // are now immune to time-based expiry (only completed ops age out).
         [Fact]
         public void CleanupExpired_DoesNotDropMappingForReusedRequestId()
         {
@@ -114,6 +117,48 @@ namespace GxMcp.Gateway.Tests
 
             Assert.Equal("Completed", (string)tracker.BuildOperationStatus(op2)["status"]!);
             Assert.NotEqual(op1, op2);
+        }
+
+        // Running operations must never be swept by time-based expiry, even when their
+        // age exceeds the retention window (tiny retention + thread descheduling used to
+        // drop the request->operation mapping mid-flight, making the op NotFound).
+        [Fact]
+        public void CleanupExpired_DoesNotSweepRunningOperation_PastRetentionWindow()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMilliseconds(1));
+            string requestId = "long-running-op";
+            string opId = tracker.StartOperation(requestId, "genexus_edit", null, "cid");
+
+            System.Threading.Thread.Sleep(30); // far past the 1ms retention
+            tracker.CleanupExpired();
+
+            // Still running and still resolvable via its request mapping.
+            Assert.Equal("Running", (string)tracker.BuildOperationStatus(opId)["status"]!);
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["status"] = "ok" }
+            });
+            Assert.Equal("Completed", (string)tracker.BuildOperationStatus(opId)["status"]!);
+        }
+
+        // Completed operations DO age out after the retention window (memory bound).
+        [Fact]
+        public void CleanupExpired_SweepsCompletedOperation_PastRetentionWindow()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMilliseconds(1));
+            string requestId = "completed-op";
+            string opId = tracker.StartOperation(requestId, "genexus_read", null, "cid");
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["ok"] = true }
+            });
+
+            System.Threading.Thread.Sleep(30); // past the 1ms retention
+            tracker.CleanupExpired();
+
+            Assert.Equal("NotFound", (string)tracker.BuildOperationStatus(opId)["status"]!);
         }
 
         // Regression: a worker-crash retry drives both MarkFailedByRequest (the crash) and,

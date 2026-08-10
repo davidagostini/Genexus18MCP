@@ -684,7 +684,16 @@ namespace GxMcp.Gateway
                 bool remove;
                 lock (record.SyncRoot)
                 {
-                    remove = record.UpdatedAtUtc < cutoff;
+                    // Only COMPLETED operations expire by age. A running operation must
+                    // never be swept by a time-based cleanup: under a tiny retention (or
+                    // a descheduled thread) an in-flight record can age past the cutoff
+                    // between StartOperation and the sweep, dropping the request->operation
+                    // mapping and turning every later CompleteFromWorker/status poll into
+                    // NotFound (CI-flaky CleanupExpired_DoesNotDropMappingForReusedRequestId;
+                    // also the exact 'stuck running disappears' trap for long SDK calls).
+                    // Completed records have UpdatedAtUtc pinned to CompletedAtUtc, so the
+                    // age check below is exactly the retention window for terminal ops.
+                    remove = record.CompletedAtUtc.HasValue && record.UpdatedAtUtc < cutoff;
                 }
 
                 if (!remove) continue;

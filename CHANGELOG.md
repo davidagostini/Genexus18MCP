@@ -27,6 +27,49 @@
   path, configuration source, process identity, and complete access exception
   instead of passing diagnose and failing later as a generic `PatternNoOp`.
 
+- Post-write verification no longer rejects writes the SDK module-qualified. When
+  GeneXus saves a Procedure/WebPanel source it can rewrite object and table
+  references with the owning module's prefix (`For Each Foo` persists as
+  `For Each MyModule.Foo`); the verifier treated the inserted token as a content
+  mismatch, firing `WriteNotPersisted` and rolling `object_atomic` creates back.
+  A reference is now considered normalization when every difference is a
+  `<Module>.<Name>` qualification, and `mutation.diff.reason` reports
+  `moduleQualification` so the agent can see exactly what the SDK rewrote.
+  Spacing inside string literals is still treated as a real difference.
+- Async `genexus_edit` / variable / GXserver jobs can no longer stay `running`
+  forever when the SDK call silently blocks. Each job now has a watchdog bound
+  (10 minutes minimum, `max(10 min, 8×estimated_seconds)` up to 60 minutes;
+  tune with `GXMCP_ASYNC_JOB_WATCHDOG_S`, `0` disables). A job that exceeds the
+  bound is marked `stalled` — a terminal error carrying recovery steps (re-run
+  the edit synchronously to get the immediate validation error, cancel the stuck
+  op, check the IDE for a waiting modal dialog) instead of reporting progress
+  that isn't happening. The accepted envelope advertises `stallBoundSeconds` up
+  front, and cancelling a job that already finished is a no-op.
+- `genexus_create type=SDT` with `firstItem`/`firstItemType` now actually
+  persists the seeded member. The SDK's `AddItem` mutates the in-memory SDT
+  structure but does not always flag the `SDTStructurePart` dirty, so the
+  object `Save()` wrote the old (empty) serialized XML while the response
+  claimed `seeded` — a follow-up `genexus_structure` read showed no children.
+  The create path now forces the structure part dirty before saving (the same
+  fix the SDT write path already applied), so the first member survives and
+  round-trip reads agree with the creation response.
+
+### Internal
+
+- `OperationTracker.CleanupExpired` no longer sweeps in-flight operations by age.
+  A running operation past the retention window (tiny test retention plus thread
+  descheduling under CI load) used to have its request→operation mapping dropped
+  mid-flight, making every later completion/status poll return `NotFound` — the
+  cause of the flaky `CleanupExpired_DoesNotDropMappingForReusedRequestId` that
+  blocked PR #76's merge once. Only completed operations age out now.
+- Release tooling now survives Windows PowerShell 5.1 and long-running commands:
+  `release.ps1` and `build.ps1` are saved as UTF-8 **with BOM** (5.1 mis-parses
+  BOM-less `.ps1` containing em-dashes/arrows), `release.ps1 -Detach` relaunches
+  the whole release in a background pwsh writing to `%TEMP%\gxmcp-release*.log`
+  so a 30 s shell timeout can no longer kill a multi-minute run, 5.1 invocations
+  auto-re-exec under pwsh, the CHANGELOG promotion step fails loudly instead of
+  silently shipping a release whose notes fall back to generic text, and
+  `.editorconfig` pins `utf-8-bom` for `*.ps1`.
 ## v2.39.3 — 2026-08-09
 
 ### Fixed

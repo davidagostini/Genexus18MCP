@@ -85,10 +85,13 @@ namespace GxMcp.Gateway
             DateTime completedAt;
             lock (job.SyncRoot)
             {
-                // Don't clobber a Cancelled status with succeeded/failed — the cancel
-                // raced ahead of the worker's response.
-                if (!string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
-                    job.Status = success ? "succeeded" : "failed";
+                // Only a running job can transition to a terminal state. Cancelled and
+                // stalled are already terminal — a late worker response (or a second
+                // poller/reconcile) must never resurrect them. This also fixes the
+                // latent double-complete clobber where a reconcile could overwrite the
+                // poller's terminal verdict.
+                if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)) return;
+                job.Status = success ? "succeeded" : "failed";
                 job.CompletedAt = DateTime.UtcNow;
                 if (job.Summary == null) job.Summary = summary;
                 if (job.Result == null) job.Result = result;
@@ -107,6 +110,26 @@ namespace GxMcp.Gateway
             DisposeCts(jobId);
         }
 
+        // Issue #79: terminal "stalled" state for an async job whose SDK call exceeded
+        // its time bound without returning (typically an IDE modal dialog holding the
+        // model, or the SDK retrying a failing validation internally). Distinct from
+        // "failed" so agents get an explicit, actionable signal ("the worker never
+        // answered — recover with the sync path") instead of a generic failure. Like
+        // cancelled, stalled is terminal: Complete()/Cancel() can't resurrect it.
+        public void Stall(string jobId, string? summary, JObject? result = null)
+        {
+            if (!_jobs.TryGetValue(jobId, out var job)) return;
+            lock (job.SyncRoot)
+            {
+                if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)) return;
+                job.Status = "stalled";
+                job.CompletedAt = DateTime.UtcNow;
+                if (job.Summary == null) job.Summary = summary;
+                if (job.Result == null) job.Result = result;
+            }
+            DisposeCts(jobId);
+        }
+
         // v2.3.8 (Task 7.2): cancel a running job. Signals the CTS (if any pollers
         // registered one) and flips status to "cancelled" so subsequent
         // SnapshotForSession / LongPollJob calls return a terminal envelope.
@@ -119,6 +142,9 @@ namespace GxMcp.Gateway
         public bool Cancel(string jobId, string? reason = null)
         {
             if (!_jobs.TryGetValue(jobId, out var job)) return false;
+            // A terminal job (succeeded/failed/stalled) is done — cancelling it would
+            // only rewrite history. Only running jobs can be cancelled.
+            if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)) return false;
             if (_cts.TryGetValue(jobId, out var cts))
             {
                 try { cts.Cancel(); } catch { /* already disposed */ }

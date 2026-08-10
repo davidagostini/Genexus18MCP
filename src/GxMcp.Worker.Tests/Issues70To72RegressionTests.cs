@@ -52,6 +52,124 @@ namespace GxMcp.Worker.Tests
             Assert.True(matches, "WhitespaceInsensitiveEquals should treat XML with SDK-dropped default attributes as equivalent to avoid false WriteNotPersisted on PatternInstance.");
         }
 
+        // ── issue #78 — the SDK module-qualifies object/table references on save, so the
+        // write verifier must treat "X" ↔ "<Module>.<X>" as normalization instead of
+        // failing a valid save (WriteNotPersisted / AtomicCreateStepFailed rollback).
+
+        [Fact]
+        public void Issue78_ModuleQualification_TreatsUnqualifiedTableReference_AsEquivalent()
+        {
+            string requested = "For Each Foo\n    Where FooId = &FooId\n    Msg(\"ok\")\nEndfor";
+            string persisted = "For Each MyModule.Foo\n    Where FooId = &FooId\n    Msg(\"ok\")\nEndfor";
+
+            var method = typeof(WriteService).GetMethod("WhitespaceInsensitiveEquals", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+
+            bool matches = (bool)method.Invoke(null, new object[] { persisted, requested });
+            Assert.True(matches, "WhitespaceInsensitiveEquals should treat SDK module-qualification of an unqualified table reference as equivalent to avoid false WriteNotPersisted.");
+        }
+
+        [Fact]
+        public void Issue78_ModuleQualification_NestedTableReference_IsEquivalent()
+        {
+            string requested = "For Each Foo.Bar\nEndfor";
+            string persisted = "For Each MyModule.Foo.Bar\nEndfor";
+
+            var method = typeof(WriteService).GetMethod("WhitespaceInsensitiveEquals", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+
+            bool matches = (bool)method.Invoke(null, new object[] { persisted, requested });
+            Assert.True(matches, "A nested reference Foo.Bar should match MyModule.Foo.Bar (single dotted qualifier inserted).");
+        }
+
+        [Fact]
+        public void Issue78_ModuleQualification_QualifiedReference_StaysEqualWhenBothSidesMatch()
+        {
+            string requested = "For Each MyModule.Foo\nEndfor";
+            string persisted = "For Each MyModule.Foo\nEndfor";
+
+            var method = typeof(WriteService).GetMethod("WhitespaceInsensitiveEquals", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+
+            bool matches = (bool)method.Invoke(null, new object[] { persisted, requested });
+            Assert.True(matches);
+        }
+
+        [Fact]
+        public void Issue78_ModuleQualification_RealMismatch_IsNotEqual()
+        {
+            // Different identifier entirely — must remain a mismatch.
+            string requested = "For Each Foo\nEndfor";
+            string persisted = "For Each Bar\nEndfor";
+
+            var method = typeof(WriteService).GetMethod("WhitespaceInsensitiveEquals", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+            Assert.False((bool)method.Invoke(null, new object[] { persisted, requested }));
+
+            // Same tail but different qualifier tail — qualification changed the meaning.
+            string requested2 = "For Each Foo\nEndfor";
+            string persisted2 = "For Each MyModule.Baz\nEndfor";
+            Assert.False((bool)method.Invoke(null, new object[] { persisted2, requested2 }));
+        }
+
+        [Fact]
+        public void Issue78_ModuleQualification_NonIdentifierQualifier_IsNotEqual()
+        {
+            // A qualifier that is not a dotted identifier (numeric prefix) is not
+            // module qualification — keep it a mismatch.
+            string requested = "Msg(Foo)\nEndfor";
+            string persisted = "Msg(123.Foo)\nEndfor";
+
+            var method = typeof(WriteService).GetMethod("WhitespaceInsensitiveEquals", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+            Assert.False((bool)method.Invoke(null, new object[] { persisted, requested }));
+        }
+
+        [Fact]
+        public void Issue78_ModuleQualification_PreservesStringLiteralSpaces()
+        {
+            // Qualification elsewhere on the line must not mask spacing differences
+            // inside a string literal.
+            string requested = "For Each Foo\n    Msg(\"hello  world\")\nEndfor";
+            string persisted = "For Each MyModule.Foo\n    Msg(\"hello world\")\nEndfor";
+
+            var method = typeof(WriteService).GetMethod("WhitespaceInsensitiveEquals", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+            Assert.False((bool)method.Invoke(null, new object[] { persisted, requested }));
+        }
+
+        [Fact]
+        public void Issue78_EvaluatePersistedVerification_ReportsModuleQualificationReason()
+        {
+            string requested = "For Each Foo\nEndfor";
+            string persisted = "For Each MyModule.Foo\nEndfor";
+
+            var result = WriteService.EvaluatePersistedVerification(requested, persisted, readTruncated: false, readFailure: null);
+
+            Assert.Equal("verified", result.State);
+            Assert.True(result.Matches);
+            Assert.Equal("moduleQualification", result.Reason);
+        }
+
+        [Fact]
+        public void Issue78_EvaluatePersistedVerification_PlainNormalizationKeepsNormalizationReason()
+        {
+            string requested = "for each Customer\nendfor";
+            string persisted = "For Each Customer\nEndfor";
+
+            var result = WriteService.EvaluatePersistedVerification(requested, persisted, readTruncated: false, readFailure: null);
+
+            Assert.Equal("verified", result.State);
+            Assert.Equal("normalization", result.Reason);
+        }
+
+        [Fact]
+        public void Issue78_ModuleQualificationEquals_DirectCall_MismatchOnLineCount()
+        {
+            Assert.False(WriteService.ModuleQualificationEquals("For Each Foo", "For Each MyModule.Foo\nEndfor"));
+            Assert.False(WriteService.ModuleQualificationEquals(null, "For Each Foo"));
+        }
+
         [Fact]
         public void Issue72_ReportLayoutHelper_TryParseColor_ParsesCommaSeparatedRGB()
         {

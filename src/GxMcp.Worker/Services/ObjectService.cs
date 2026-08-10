@@ -1118,6 +1118,14 @@ namespace GxMcp.Worker.Services
                             if (added != null)
                             {
                                 Logger.Info("InitializeSDTWithDefaultItem: seeded '" + itemName + "' (" + wantedEnumName + ") into " + sdtName + " via AddItem(string, eDBType)");
+                                // Friction-report 05-13 #2 (the exact trap SdtDslParser documents):
+                                // AddItem mutates the in-memory Items collection, but the
+                                // SDTStructurePart may not flag itself dirty — the following
+                                // obj.Save() then persists the OLD serialized XML, so the seed
+                                // claims success while the SDT stays empty (issue #79 bonus
+                                // report). Force the part dirty exactly like the SDT write path
+                                // (SDTService.UpdateSDTStructure) does before returning.
+                                GxMcp.Worker.Parsers.SdtDslParser.MarkPartDirty((object)structure, sdtName);
                                 return wantedEnumName;
                             }
                         }
@@ -1199,6 +1207,9 @@ namespace GxMcp.Worker.Services
                 } catch { }
                 items.Add(newItem);
                 seededTypeName = wantedEnumName;
+                // Friction-report 05-13 #2: mark the part dirty here too so the fallback
+                // path persists the item on the next obj.Save() (see AddItem path above).
+                GxMcp.Worker.Parsers.SdtDslParser.MarkPartDirty((object)structure, sdtName);
                 Logger.Info("InitializeSDTWithDefaultItem: seeded '" + itemName + "' (" + wantedEnumName + ") into " + sdtName + " via ctor fallback");
             }
             catch (Exception ex)

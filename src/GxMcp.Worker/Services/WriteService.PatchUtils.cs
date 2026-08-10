@@ -377,10 +377,13 @@ namespace GxMcp.Worker.Services
             if (WhitespaceInsensitiveEquals(persisted, requested)
                 || XmlEquivalentWhenApplicable(persisted, requested))
             {
+                // issue #78: distinguish SDK module-qualification ("For Each Foo" →
+                // "For Each MyModule.Foo") from ordinary formatting/casing normalization so
+                // the mutation.diff.reason tells the agent exactly what was rewritten.
                 return new PersistedVerificationResult
                 {
                     State = "verified",
-                    Reason = "normalization",
+                    Reason = ModuleQualificationEquals(persisted, requested) ? "moduleQualification" : "normalization",
                     Matches = true
                 };
             }
@@ -406,6 +409,9 @@ namespace GxMcp.Worker.Services
         // issue #36.6 / issues #70 & #71 — compare two content blobs ignoring whitespace & casing differences
         // outside string literals, so pure re-formatting or SDK casing/XML normalization by the serializer
         // isn't mistaken for a content divergence.
+        // issue #78 — the SDK also module-qualifies object/table references on save ("For Each Foo"
+        // persists as "For Each MyModule.Foo"), inserting a token that whitespace/case comparison
+        // can't classify as equivalent. ModuleQualificationEquals covers that as a final fallback.
         private static bool WhitespaceInsensitiveEquals(string a, string b)
         {
             if (a == null || b == null) return false;
@@ -416,7 +422,7 @@ namespace GxMcp.Worker.Services
                 return IsXmlEquivalent(a, b);
             }
 
-            return NormalizedCodeEquals(a, b);
+            return NormalizedCodeEquals(a, b) || ModuleQualificationEquals(a, b);
         }
 
         private static bool NormalizedCodeEquals(string a, string b)
@@ -436,6 +442,112 @@ namespace GxMcp.Worker.Services
             }
 
             return true;
+        }
+
+        // ----------------------------------------------------------------------
+        // issue #78 — SDK module-qualification normalization.
+        // ----------------------------------------------------------------------
+        // The SDK rewrites object/table references on save by prefixing the module
+        // that owns them ("For Each Foo" persists as "For Each MyModule.Foo"). That
+        // inserts a NEW token, so the whitespace/case-insensitive comparison above
+        // correctly classifies it as a mismatch — and the write verifier then failed
+        // a valid save (WriteNotPersisted / AtomicCreateStepFailed rollback).
+        //
+        // Safety contract (deliberately conservative — a false "verified" would mask
+        // a real content divergence, the exact bug #70/#71 fought):
+        //   1. Only whole tokens may differ, and each differing token must be a
+        //      qualified variant of the other side's token: "X" ↔ "<Module>.<X>".
+        //      A qualifier that changes the tail ("Foo" → "MyModule.Baz") is a
+        //      genuine mismatch.
+        //   2. The qualifier prefix must be a dotted identifier (module names are
+        //      identifiers; numbers/punctuation are rejected).
+        //   3. The whitespace-run signature must be identical: qualification inserts
+        //      no whitespace, so any whitespace drift — including spacing INSIDE
+        //      string literals ("a  b" vs "a b") — means the lines genuinely differ.
+        //   4. At least one qualified token must actually be present; a pure
+        //      whitespace/case difference is reported as plain normalization.
+        internal static bool ModuleQualificationEquals(string a, string b)
+        {
+            if (a == null || b == null) return false;
+            if (string.Equals(a, b, StringComparison.Ordinal)) return false; // no qualification difference to explain
+
+            var linesA = a.Replace("\r\n", "\n").Split('\n');
+            var linesB = b.Replace("\r\n", "\n").Split('\n');
+            if (linesA.Length != linesB.Length) return false;
+
+            bool anyQualified = false;
+            for (int i = 0; i < linesA.Length; i++)
+            {
+                if (!ModuleQualificationLineEquals(linesA[i].Trim(), linesB[i].Trim(), ref anyQualified))
+                    return false;
+            }
+            return anyQualified;
+        }
+
+        private static bool ModuleQualificationLineEquals(string lineA, string lineB, ref bool anyQualified)
+        {
+            if (string.Equals(lineA, lineB, StringComparison.OrdinalIgnoreCase)) return true;
+
+            // Hard precondition: identical whitespace-run structure. Qualification adds
+            // no whitespace, so any whitespace drift means the lines genuinely differ
+            // (this is what keeps spacing inside string literals a mismatch).
+            if (WhitespaceRunSignature(lineA) != WhitespaceRunSignature(lineB)) return false;
+
+            var tokensA = lineA.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+            var tokensB = lineB.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+            if (tokensA.Length != tokensB.Length) return false;
+
+            for (int i = 0; i < tokensA.Length; i++)
+            {
+                if (string.Equals(tokensA[i], tokensB[i], StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsQualifiedVariant(tokensA[i], tokensB[i])) { anyQualified = true; continue; }
+                return false;
+            }
+            return true;
+        }
+
+        // true when one token is the other prefixed with a dotted module qualifier:
+        // "Foo" ↔ "MyModule.Foo", "Foo.Bar" ↔ "MyModule.Foo.Bar".
+        private static bool IsQualifiedVariant(string tokenA, string tokenB)
+        {
+            return IsDottedQualificationOf(tokenB, tokenA) || IsDottedQualificationOf(tokenA, tokenB);
+        }
+
+        private static bool IsDottedQualificationOf(string qualified, string bare)
+        {
+            if (bare.Length == 0 || qualified.Length <= bare.Length) return false;
+            if (!qualified.EndsWith("." + bare, StringComparison.OrdinalIgnoreCase)) return false;
+            string prefix = qualified.Substring(0, qualified.Length - bare.Length - 1);
+            return IsDottedIdentifier(prefix);
+        }
+
+        private static bool IsDottedIdentifier(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return false;
+            foreach (var part in s.Split('.'))
+            {
+                if (part.Length == 0) return false;
+                if (!char.IsLetter(part[0]) && part[0] != '_') return false;
+                foreach (char c in part)
+                {
+                    if (!char.IsLetterOrDigit(c) && c != '_') return false;
+                }
+            }
+            return true;
+        }
+
+        // Concatenated whitespace-run lengths ("For Each Foo" → "1;1;"; "a  b" → "2;").
+        private static string WhitespaceRunSignature(string line)
+        {
+            var sb = new System.Text.StringBuilder();
+            int run = 0;
+            foreach (char c in line)
+            {
+                if (char.IsWhiteSpace(c)) { run++; }
+                else if (run > 0) { sb.Append(run).Append(';'); run = 0; }
+            }
+            if (run > 0) sb.Append(run).Append(';');
+            return sb.ToString();
         }
 
         private static bool IsXmlString(string s)

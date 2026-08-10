@@ -213,7 +213,8 @@ namespace GxMcp.Gateway
                     || string.Equals(status, "Error", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                    || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "stalled", StringComparison.OrdinalIgnoreCase))
                     return BuildOutcome.Error;
             }
 

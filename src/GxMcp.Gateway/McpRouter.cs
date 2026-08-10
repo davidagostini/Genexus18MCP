@@ -1991,14 +1991,22 @@ namespace GxMcp.Gateway
             };
             if (job.Result != null) terminal["result"] = job.Result;
             bool isErr = string.Equals(job.Status, "failed", StringComparison.OrdinalIgnoreCase)
-                      || string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase);
+                      || string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
+                      // issue #79: a watchdog-stalled job is terminal AND an error — the
+                      // SDK never answered, so the agent needs the recovery steps, not a
+                      // neutral status.
+                      || string.Equals(job.Status, "stalled", StringComparison.OrdinalIgnoreCase);
             // Friction 2026-05-22 item 10: when the inner BuildTaskStatus reports
             // 0 errors / 0 warnings / ExitCode=0 (or partial_success=true), respect
             // that over the registry's status flag. Race-safe: if the registry
             // stamped success=false but the build truly was a 0/0/0, the agent
             // would otherwise see an <e>error{}> envelope around "Build succeeded".
+            // cancelled/stalled are excluded: their terminal meaning is authoritative and
+            // must not be reclassified by the build-outcome heuristic (a stalled job's
+            // envelope has no build fields, which the classifier would read as 0/0/0).
             if (isErr && job.Result is JObject inner
-                && !string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(job.Status, "stalled", StringComparison.OrdinalIgnoreCase))
             {
                 var outcome = LifecycleResponseShaper.ClassifyBuildOutcome(inner);
                 if (outcome == LifecycleResponseShaper.BuildOutcome.Success)

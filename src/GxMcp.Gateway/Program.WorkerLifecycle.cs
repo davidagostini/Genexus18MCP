@@ -661,11 +661,27 @@ namespace GxMcp.Gateway
             };
         }
 
+        // Issue #79: only edit/variable jobs carry the watchdog bound in their accepted
+        // envelope — they are the tools whose SDK save can silently block. gxserver
+        // update/commit is deliberately excluded: a server apply can legitimately run
+        // arbitrarily long (an 850-object changelist exceeded even the 10 min sync
+        // ceiling), so it gets no stall bound and no 'will be marked stalled' promise.
+        internal static JObject BuildAsyncMutationAcceptedPayload(JobEntry job, string acceptedSummary)
+        {
+            var payload = BuildAsyncAcceptedPayload(job, acceptedSummary);
+            int boundSeconds = AsyncEditWatchdogMs(job.EstimatedSeconds) / 1000;
+            payload["stallBoundSeconds"] = boundSeconds;
+            payload["hint"] = payload["hint"]!.ToString()
+                + " If it stays 'running' past " + boundSeconds
+                + "s the SDK call is blocked (an IDE modal dialog can hold the model) or retrying a failing validation — the job will be marked 'stalled' with recovery steps; you can also cancel earlier with genexus_lifecycle action=cancel.";
+            return payload;
+        }
+
         internal static JObject BuildAsyncEditAcceptedPayload(JobEntry job)
-            => BuildAsyncAcceptedPayload(job, "Edit accepted;");
+            => BuildAsyncMutationAcceptedPayload(job, "Edit accepted;");
 
         internal static JObject BuildAsyncVariableAcceptedPayload(JobEntry job)
-            => BuildAsyncAcceptedPayload(job, "Variable update accepted;");
+            => BuildAsyncMutationAcceptedPayload(job, "Variable update accepted;");
 
         internal static JObject BuildAsyncLifecycleAcceptedPayload(JobEntry job, string? action)
         {
@@ -691,6 +707,46 @@ namespace GxMcp.Gateway
             }
 
             return success ? "Edit succeeded" : "Edit failed";
+        }
+
+        // Issue #79: the async edit/variable/gxserver path waits on the SDK with NO
+        // timeout (timeoutMs=0), so a blocked SDK call — an IDE modal dialog holding the
+        // model, or the SDK retrying a failing validation internally — left the job
+        // 'running' forever with no actionable signal. This watchdog converts that dead
+        // end into a terminal "stalled" state after a generous multiple of the caller's
+        // estimate, so a legitimate slow write still finishes while a genuinely stuck
+        // one surfaces with recovery steps.
+        //
+        // Bound = max(10 min, min(est × 8, 60 min)); override with
+        // GXMCP_ASYNC_JOB_WATCHDOG_S (seconds, 0 disables the watchdog).
+        internal static int AsyncEditWatchdogMs(int estimatedSeconds)
+        {
+            var envVal = Environment.GetEnvironmentVariable("GXMCP_ASYNC_JOB_WATCHDOG_S");
+            if (!string.IsNullOrWhiteSpace(envVal) && int.TryParse(envVal, out var parsed))
+            {
+                return parsed <= 0 ? int.MaxValue : parsed * 1000; // 0/negative disables
+            }
+            long boundSeconds = Math.Max(600L, Math.Min(estimatedSeconds * 8L, 3600L));
+            return (int)(boundSeconds * 1000);
+        }
+
+        internal static JObject BuildStalledAsyncMutationEnvelope(string jobId, string toolName, int estimatedSeconds, int boundSeconds)
+        {
+            string boundText = boundSeconds > 0
+                ? "did not return within the " + boundSeconds + "s time bound (caller estimated " + estimatedSeconds + "s)"
+                : "did not return within the configured time bound (caller estimated " + estimatedSeconds + "s; watchdog disabled)";
+            return new JObject
+            {
+                ["status"] = "stalled",
+                ["code"] = "AsyncJobStalled",
+                ["tool"] = toolName,
+                ["jobId"] = jobId,
+                ["estimated_seconds"] = estimatedSeconds,
+                ["boundSeconds"] = boundSeconds,
+                ["message"] = "The SDK operation " + boundText
+                    + ". The write is likely blocked by a modal dialog in the GeneXus IDE holding the model (e.g. \"object modified externally — reload?\"), or the SDK is retrying a failing validation internally. This job is now terminal; it will not keep 'running'.",
+                ["hint"] = "1) Run the same edit WITHOUT async=true to get the immediate SDK error (the sync path surfaces TransactionFailed/srcXXXX in seconds). 2) Or cancel with genexus_lifecycle action=cancel target=op:" + jobId + " and check the IDE for a waiting dialog. 3) genexus_read the object before retrying — the write may have partially persisted."
+            };
         }
 
         internal static void NormalizeEditAndBuildPayload(JObject? payload)
