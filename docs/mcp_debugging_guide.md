@@ -37,6 +37,25 @@ When launching the gateway as a stdio MCP server:
 - logs belong on stderr
 - the process must stay idle without printing banner text
 
+### Recover after a closed client transport
+
+If a client-owned STDIO process exits, the client may keep reporting
+`Transport closed` even though the Gateway HTTP endpoint is healthy. A dead
+STDIO stream cannot carry a command that repairs itself. Keep the existing
+conversation/history and use the out-of-band HTTP client:
+
+```powershell
+.\scripts\mcp_recover.ps1 `
+  -BaseUrl http://127.0.0.1:5000/mcp `
+  -Tool genexus_whoami
+```
+
+The script creates a fresh MCP session, discovers the live tool catalog, and
+blocks every tool not explicitly annotated read-only. After reviewing a
+mutating request, pass `-AllowWrite` to opt in. The Gateway must already be
+running at `BaseUrl`; process supervision remains the deployment's
+responsibility.
+
 ## Common failure modes
 
 ### Invalid JSON-RPC id handling
