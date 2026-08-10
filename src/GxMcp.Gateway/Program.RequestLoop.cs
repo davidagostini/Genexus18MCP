@@ -1270,7 +1270,12 @@ namespace GxMcp.Gateway
                                       || string.Equals(tName, "genexus_logs", StringComparison.OrdinalIgnoreCase)
                                       || string.Equals(tName, "genexus_gxserver", StringComparison.OrdinalIgnoreCase);
 
-                    string cKey = $"{tName}:{tArgs?.ToString(Formatting.None)}";
+                    // Scope the semantic cache by the resolved KB: the same tool+args
+                    // against two different open KBs must not share envelopes (the
+                    // worker is single-KB, so an identical read against KB-B could
+                    // otherwise replay KB-A's cached result).
+                    string kbScope = _currentKb.Value?.NormalizedAlias ?? "";
+                    string cKey = $"{kbScope}|{tName}:{tArgs?.ToString(Formatting.None)}";
                     if (!isLiveTool && _semanticCache.TryGetValue(cKey, out var cachedResponse))
                     {
                         Log($"[Cache] HIT for {tName}");

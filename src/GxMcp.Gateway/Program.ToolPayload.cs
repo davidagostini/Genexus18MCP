@@ -186,11 +186,24 @@ namespace GxMcp.Gateway
             return new JValue(raw.Substring(0, 75000) + "... [TRUNCATED]");
         }
 
-        private static bool IsMutatingTool(string toolName, JObject? args)
+        // Semantic-cache invalidation gate: returns true when a tool call may
+        // change KB object state, so DispatchCore can clear _semanticCache before
+        // (and only before) a mutation. A MISS here means the next identical read
+        // replays a stale envelope — the read-after-delete staleness bug (a
+        // genexus_delete_object was not recognised as mutating, so a cached
+        // part=Structure read survived the delete). The verb-substring heuristic
+        // covers names like edit/create/refactor; umbrella tools and
+        // action-dependent tools need the explicit cases below.
+        internal static bool IsMutatingTool(string toolName, JObject? args)
         {
             if (string.IsNullOrWhiteSpace(toolName)) return false;
 
-            if (string.Equals(toolName, "genexus_import_object", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(toolName, "genexus_import_object", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(toolName, "genexus_delete_object", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(toolName, "genexus_rename_across_kb", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(toolName, "genexus_apply_pattern", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(toolName, "genexus_kb_import", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(toolName, "genexus_save_as", StringComparison.OrdinalIgnoreCase)) // clones parts into a new object
             {
                 return true;
             }
@@ -200,6 +213,7 @@ namespace GxMcp.Gateway
                 toolName.Contains("patch", StringComparison.OrdinalIgnoreCase) ||
                 toolName.Contains("create", StringComparison.OrdinalIgnoreCase) ||
                 toolName.Contains("refactor", StringComparison.OrdinalIgnoreCase) ||
+                toolName.Contains("variable", StringComparison.OrdinalIgnoreCase) || // genexus_variable (add/delete/modify)
                 toolName.Contains("add_variable", StringComparison.OrdinalIgnoreCase) ||
                 toolName.Contains("modify_variable", StringComparison.OrdinalIgnoreCase))
             {
@@ -208,7 +222,10 @@ namespace GxMcp.Gateway
 
             if (string.Equals(toolName, "genexus_properties", StringComparison.OrdinalIgnoreCase))
             {
-                return string.Equals(args?["action"]?.ToString(), "set", StringComparison.OrdinalIgnoreCase);
+                // set = scalar property write; move = reparent (Folder/Module placement).
+                string? action = args?["action"]?.ToString();
+                return string.Equals(action, "set", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "move", StringComparison.OrdinalIgnoreCase);
             }
 
             if (string.Equals(toolName, "genexus_asset", StringComparison.OrdinalIgnoreCase))
@@ -223,9 +240,48 @@ namespace GxMcp.Gateway
                        string.Equals(action, "restore", StringComparison.OrdinalIgnoreCase);
             }
 
+            if (string.Equals(toolName, "genexus_transfer", StringComparison.OrdinalIgnoreCase))
+            {
+                // import is destructive (applies an XPZ into the KB); export/inspect read-only.
+                return string.Equals(args?["action"]?.ToString(), "import", StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (string.Equals(toolName, "genexus_db", StringComparison.OrdinalIgnoreCase))
+            {
+                // translations_import writes translated strings into object parts and
+                // sample_data writes test rows into the DB — both mutate state that the
+                // (cacheable) db analysis reads report on. All other actions
+                // (drift/optimize/sql/types/reorg_*) are read-only analysis.
+                string? action = args?["action"]?.ToString();
+                return string.Equals(action, "translations_import", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "sample_data", StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (string.Equals(toolName, "genexus_gxserver", StringComparison.OrdinalIgnoreCase))
+            {
+                // commit/update/lock/resolve apply server state to the KB; pipeline_run/abort
+                // drive CI runs. The reads (status/pending/conflicts/...) are never cached
+                // anyway, but these WRITES change object parts and must drop cached reads.
+                string? action = args?["action"]?.ToString();
+                return string.Equals(action, "commit", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "update", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "lock", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "resolve", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "pipeline_run", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "pipeline_abort", StringComparison.OrdinalIgnoreCase);
+            }
+
             if (string.Equals(toolName, "genexus_structure", StringComparison.OrdinalIgnoreCase))
             {
-                return string.Equals(args?["action"]?.ToString(), "update_visual", StringComparison.OrdinalIgnoreCase);
+                // Every non-get action mutates the structure/indexes.
+                string? action = args?["action"]?.ToString();
+                return string.Equals(action, "update_visual", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "create_index", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "drop_index", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "set_attribute", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "set_level", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "set_domain", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "update_group", StringComparison.OrdinalIgnoreCase);
             }
 
             if (string.Equals(toolName, "genexus_layout", StringComparison.OrdinalIgnoreCase))
@@ -239,9 +295,19 @@ namespace GxMcp.Gateway
 
             if (string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
             {
+                // status/result/cancel/reorg_preview are reads (and status/result/cancel are
+                // already excluded from the semantic cache as live tools). Everything else
+                // writes build/spec artefacts or the index.
                 string? action = args?["action"]?.ToString();
-                return string.Equals(action, "index", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(action, "reorg", StringComparison.OrdinalIgnoreCase);
+                return string.Equals(action, "build", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "rebuild", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "specify", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "validate", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "validate-kb", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "sync", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "index", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "reorg", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "snapshots-restore", StringComparison.OrdinalIgnoreCase);
             }
 
             return false;
