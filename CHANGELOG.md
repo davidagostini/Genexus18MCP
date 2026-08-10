@@ -72,6 +72,12 @@ overload-resolution fix and the out-of-band MCP recovery client — see PRs
 
 ### Internal
 
+- `AGENTS.md` gained an "Engineering workflow rules" section locking in the
+  2026-08-10 session lessons: mandatory PR-author credit in the CHANGELOG,
+  multi-PR merge flow (Unreleased conflicts + fork-PR worktree merge), the
+  semantic-cache invalidation duty for new mutating tools (guarded by
+  `SemanticCacheInvalidationTests`), the real-KB HTTP validation harness, and
+  the bash-on-Windows gotchas that previously burned turns.
 - `OperationTracker.CleanupExpired` no longer sweeps in-flight operations by age.
   A running operation past the retention window (tiny test retention plus thread
   descheduling under CI load) used to have its request→operation mapping dropped

@@ -111,6 +111,95 @@ Whenever the user requests a release (e.g. "cria release", "corta release", "faz
 3. **Automated npm publish verification:** GitHub Actions (`.github/workflows/release.yml`) triggers on release/upload of `publish.zip` and publishes `genexus-mcp` to npm via OIDC. Always verify workflow completion with `gh run list --workflow release.yml` and `npm view genexus-mcp@latest version`.
 4. **Strict Issue closure rule:** GitHub issues MUST ONLY be closed after a release containing the fix/change is cut and published with a release link. Comment on each resolved issue with the release link (`https://github.com/lennix1337/Genexus18MCP/releases/tag/vX.Y.Z`) before closing it. NEVER close an issue directly on PR merge without linking a released version.
 
+## Engineering workflow rules (lock-in 2026-08-10)
+
+Rules learned the hard way during the two-issue/two-PR batch of 2026-08-10.
+Follow them so future work doesn't re-burn the same turns.
+
+### CHANGELOG: PR credit is mandatory
+
+- Every merged PR's user-facing work appears in `## Unreleased` **and** carries
+  author credit. Standard form (already applied for #76/#77):
+
+  ```
+  Thanks to [@davidagostini](https://github.com/davidagostini) for <what> — see PRs
+  [#76](https://github.com/lennix1337/Genexus18MCP/pull/76) and
+  [#77](https://github.com/lennix1337/Genexus18MCP/pull/77).
+  ```
+
+  This is the project standard, not optional. If a PR's entry lands without
+  credit, add the Thanks line before the release is cut.
+
+### Merging multiple PRs
+
+- Two PRs that both edit `CHANGELOG.md` `## Unreleased` conflict on merge
+  **regardless of order**. Plan for it: probe first with `git merge-tree
+  --write-tree` (first PR) and a `git commit-tree` simulation (second PR, on a
+  simulated first merge) — both are read-only and never touch the working tree.
+- For a fork PR: merge locally in a temp worktree, resolve the `## Unreleased`
+  block (combine `### Added` → `### Fixed` → `### Internal` in project order,
+  preserving CRLF), commit with the canonical `Merge pull request #N from
+  owner/branch` message so GitHub marks the PR **MERGED** (not just Closed),
+  then push `git push origin HEAD:refs/heads/main` (never a bare
+  `git push origin main` from a detached worktree — it pushes the stale local
+  branch ref).
+- After any manual main update, sync the local branch by **rebase** onto
+  `origin/main`; expect a CHANGELOG conflict and resolve by combining sections.
+
+### Adding a tool: semantic-cache invalidation duty
+
+- Any NEW tool that mutates KB state **MUST** be registered in
+  `Program.IsMutatingTool` (`src/GxMcp.Gateway/Program.ToolPayload.cs`), or the
+  semantic cache serves stale reads until the gateway restarts (observed:
+  `genexus_read part=Structure` kept returning a deleted object's content with
+  the identical correlationId because `genexus_delete_object` wasn't recognised
+  as mutating).
+- Mechanics: `Program._semanticCache` replays the first successful read per
+  `(kbAlias, tool, args)`; errors are never cached; a mutation clears the whole
+  cache. Keys are KB-scoped (`cKey = "{kbAlias}|{tool}:{args}"`).
+- Enforcement: extend `SemanticCacheInvalidationTests` with the new tool and its
+  read-only counterparts — the test is what catches a miss (it caught
+  `genexus_save_as`). Name-substring verbs cover edit/create/refactor/variable;
+  action-gated tools (`gxserver`, `transfer`, `structure`, `db`, `lifecycle`,
+  `properties`) need explicit action checks against the `tool_definitions.json`
+  enums.
+
+### Proving fixes against a real KB (HTTP live validation)
+
+Unit tests are not enough for SDK-behaviour fixes. Prove against a real KB over
+Streamable HTTP with a scratch gateway:
+
+1. Build Gateway+Worker to `bin/Debug` (has the fresh code).
+2. Write a throwaway config: `HttpPort` e.g. 5001, `McpStdio: false`,
+   `WorkerExecutable` → `src/GxMcp.Worker/bin/Debug/GxMcp.Worker.exe`,
+   `Environment.KBPath` → a scratch KB (`C:\KBs\KBTeste`).
+3. Launch `GxMcp.Gateway.exe` from `bin/Debug/net8.0-windows` with
+   `GX_CONFIG_PATH` set (PowerShell `Start-Process`). The launcher basher will
+   hit the 30s timeout — that's expected (the child holds the pipe); verify the
+   port in a follow-up call.
+4. Handshake: `POST /mcp` `initialize` → reuse the `MCP-Session-Id` header;
+   responses may be SSE (`data:` frames); tool text is JSON-in-JSON
+   (`result.content[0].text`).
+5. Drive the flow (create → read → delete → read). For persistence claims run a
+   **cold cycle** (kill gateway → relaunch → reopen) so the semantic cache can't
+   mask a real read.
+6. Clean up: delete test objects, close the KB, kill the scratch gateway, remove
+   temp files. Never touch the user's running npm/stdio gateways — identify by
+   command line (npm ones live under `%LOCALAPPDATA%\npm-cache\_npx\...`).
+
+### Bash-on-Windows gotchas (each burned multiple turns)
+
+- `$env:VAR=...` and `$_` inside a double-quoted PowerShell command get
+  eaten/expanded by bash — single-quote the whole PS command string.
+- Native Windows Python can't see `/tmp/...` paths — use `cygpath -w` or the
+  real `C:\Users\<user>\AppData\Local\Temp` path.
+- `taskkill` needs double slashes in Git Bash: `taskkill //PID 123 //F`.
+- Long-lived spawned processes keep the basher's pipe open → the command times
+  out even though the spawn succeeded. Treat the timeout as expected and verify
+  state in the next call.
+- `git merge-tree` / `git commit-tree` simulate merges without touching the
+  working tree.
+
 ## Permissions granted to the assistant
 
 Each entry must include: **trigger** (the precise condition that activates the
