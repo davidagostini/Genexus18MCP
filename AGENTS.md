@@ -116,6 +116,10 @@ Whenever the user requests a release (e.g. "cria release", "corta release", "faz
 Rules learned the hard way during the two-issue/two-PR batch of 2026-08-10.
 Follow them so future work doesn't re-burn the same turns.
 
+A concise mirror of these rules — including the CHANGELOG voice rule — lives in
+the global agent guidelines: `~/.claude/AGENTS.md` -> `## CHANGELOG, PRs e merges`
+(symlinked from `.codex-shared/AGENTS.md`, so Claude, Codex and OpenCode all load it).
+
 ### CHANGELOG: PR credit is mandatory
 
 - Every merged PR's user-facing work appears in `## Unreleased` **and** carries
@@ -458,7 +462,7 @@ fixes (in order) are:
 
 **HARD RULE.** When this rule and any AI-agent generation reflex conflict,
 this rule wins. Re-edit until each bullet survives a "would the end user
-care?" reread. The same rule is mirrored at `~/.claude/CLAUDE.md` so it
+care?" reread. The same rule is mirrored (concisely) in the global agent guidelines — `~/.claude/AGENTS.md` is a symlink to `~/.codex-shared/AGENTS.md`, imported by `~/.claude/CLAUDE.md` (`@AGENTS.md`) and shared with Codex/OpenCode — so it
 applies to every project that ships a CHANGELOG.
 
 Entries in `CHANGELOG.md` are read by users on GitHub Releases / npm /
