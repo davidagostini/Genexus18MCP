@@ -9,8 +9,16 @@
   signature. GeneXus 18 Upgrade 16 exposes both four- and five-parameter
   overloads, which made name-only reflection fail with
   `AmbiguousMatchException` when attaching WorkWithPlus to a new WebComponent.
+  WebPanel and WebComponent targets now use the five-parameter
+  `SettingsView.Web` overload; SDPanel keeps the native-mobile overload.
   Success is now confirmed by re-reading the PatternInstance association;
   failures include the selected/found signatures and full inner exception.
+- WorkWithPlus first-attach diagnostics now resolve the effective
+  `Environment.config` from the active GeneXus installation's configured
+  `UserAppDataPath` and verify write access before invoking the package.
+  Missing permission returns `PatternEnvironmentAccessDenied` with the exact
+  path, configuration source, process identity, and complete access exception
+  instead of passing diagnose and failing later as a generic `PatternNoOp`.
 
 ## v2.39.3 — 2026-08-09
 
