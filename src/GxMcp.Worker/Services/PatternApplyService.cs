@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Principal;
+using System.Xml.Linq;
 using Newtonsoft.Json.Linq;
 using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -34,6 +36,35 @@ namespace GxMcp.Worker.Services
             { "WorkWithPlus", WorkWithPlusPatternId },
             { "WWP", WorkWithPlusPatternId },
         };
+
+        internal sealed class WwpEnvironmentContext
+        {
+            public string InstallationPath { get; set; }
+            public string GeneXusConfigPath { get; set; }
+            public string UserAppDataPath { get; set; }
+            public string EnvironmentConfigPath { get; set; }
+            public string ConfigSource { get; set; }
+            public bool EnvironmentConfigExists { get; set; }
+            public bool? EnvironmentConfigWritable { get; set; }
+            public string AccessError { get; set; }
+
+            public JObject ToJson()
+            {
+                return new JObject
+                {
+                    ["installationPath"] = InstallationPath ?? "",
+                    ["geneXusConfigPath"] = GeneXusConfigPath ?? "",
+                    ["userAppDataPath"] = UserAppDataPath ?? "",
+                    ["environmentConfigPath"] = EnvironmentConfigPath ?? "",
+                    ["configSource"] = ConfigSource ?? "",
+                    ["environmentConfigExists"] = EnvironmentConfigExists,
+                    ["environmentConfigWritable"] = EnvironmentConfigWritable.HasValue
+                        ? (JToken)EnvironmentConfigWritable.Value
+                        : JValue.CreateNull(),
+                    ["accessError"] = AccessError ?? ""
+                };
+            }
+        }
 
         private readonly ObjectService _objectService;
         private readonly IPatternEngineAdapter _engine;
@@ -641,11 +672,20 @@ namespace GxMcp.Worker.Services
                     string sett_template = settings != null ? settings["template"]?.ToString() : null;
                     bool packageAttached = false;
                     string packageAttachError = null;
+                    string packageAttachCode = null;
+                    JObject packageEnvironmentContext = null;
                     string createdHostName = null;
                     string usedTemplate = null;
                     try
                     {
-                        packageAttached = TryPackageInterfaceAttach(obj, sett_template, out createdHostName, out usedTemplate, out packageAttachError);
+                        packageAttached = TryPackageInterfaceAttach(
+                            obj,
+                            sett_template,
+                            out createdHostName,
+                            out usedTemplate,
+                            out packageAttachError,
+                            out packageAttachCode,
+                            out packageEnvironmentContext);
                     }
                     catch (Exception ex)
                     {
@@ -679,8 +719,13 @@ namespace GxMcp.Worker.Services
                     else
                     {
                         isNoOp = true;
+                        if (packageEnvironmentContext != null)
+                            patternResult["wwpEnvironment"] = packageEnvironmentContext;
                         patternResult["noOpReason"] = "Engine ApplyPattern void overload no-op'd on this target, and the WWP package's CreatePatternInstanceWithTemplate fallback also failed: " + (packageAttachError ?? "unknown");
-                        patternResult["recommendation"] = IsWwpDirectAttachParentType(obj.TypeDescriptor?.Name)
+                        patternResult["failureCode"] = packageAttachCode ?? "PatternNoOp";
+                        patternResult["recommendation"] = string.Equals(packageAttachCode, "PatternEnvironmentAccessDenied", StringComparison.Ordinal)
+                            ? "Grant Modify permission on the effective Environment.config to the non-elevated MCP identity, then run mode=diagnose again. Do not redirect UserAppDataPath away from the value configured for the GeneXus IDE."
+                            : IsWwpDirectAttachParentType(obj.TypeDescriptor?.Name)
                             ? "Either: (1) pass an explicit `settings.template` matching a `WorkWithPlus for Web Template` object in this KB (we tried auto-discovery first). (2) Apply WorkWithPlus to a Transaction — the engine generates 'WW<Trn>' as a wired WWP screen."
                             : "Apply WorkWithPlus to a Transaction to generate the WWP family.";
 
@@ -717,7 +762,9 @@ namespace GxMcp.Worker.Services
 
             // v2.8.0: convert internal working status to canonical envelope.
             string internalStatus = response["_opStatus"]?.ToString() ?? "Success";
-            string canonicalCode = projectionTimedOutCode ?? (isNoOp ? "PatternNoOp" : "PatternApplied");
+            string canonicalCode = projectionTimedOutCode ?? (isNoOp
+                ? (patternResult["failureCode"]?.ToString() ?? "PatternNoOp")
+                : "PatternApplied");
 
             string canonicalJson;
             if (isNoOp)
@@ -725,13 +772,15 @@ namespace GxMcp.Worker.Services
                 // NoOp: engine completed but nothing was generated — emit as error so the
                 // agent gets actionable nextSteps rather than a misleading ok.
                 canonicalJson = McpResponse.Err(
-                    code: "PatternNoOp",
+                    code: canonicalCode,
                     message: patternResult["noOpReason"]?.ToString() ?? "Pattern apply produced no generated objects.",
                     hint: patternResult["recommendation"]?.ToString() ?? "Apply WorkWithPlus to a Transaction or supply settings.template for a WebPanel.",
                     nextSteps: new JArray(McpResponse.NextStep(
                         tool: "genexus_apply_pattern",
                         args: new JObject { ["name"] = targetName, ["pattern"] = patternKey, ["settings"] = new JObject { ["template"] = "(available template name)" } },
-                        why: "Retry with an explicit template name from patternResult.availableTemplates.")),
+                        why: string.Equals(canonicalCode, "PatternEnvironmentAccessDenied", StringComparison.Ordinal)
+                            ? "After correcting the Environment.config ACL, rerun mode=diagnose before applying."
+                            : "Retry with an explicit template name from patternResult.availableTemplates.")),
                     target: targetName,
                     extra: patternResult);
             }
@@ -966,6 +1015,266 @@ namespace GxMcp.Worker.Services
             try { _engine?.GetPatternDefinition(WorkWithPlusPatternId); } catch { }
         }
 
+        internal static WwpEnvironmentContext InspectWwpEnvironment(
+            string installationPath = null,
+            Func<string, string> writeAccessProbe = null)
+        {
+            var context = new WwpEnvironmentContext();
+            try
+            {
+                context.InstallationPath = string.IsNullOrWhiteSpace(installationPath)
+                    ? ResolveGeneXusInstallationPath()
+                    : Path.GetFullPath(installationPath);
+                if (string.IsNullOrWhiteSpace(context.InstallationPath))
+                {
+                    context.AccessError = "GeneXus installation path could not be resolved from GX_PROGRAM_DIR, GX_PATH, or the loaded Artech SDK assembly.";
+                    return context;
+                }
+
+                context.GeneXusConfigPath = Path.Combine(context.InstallationPath, "GeneXus.exe.config");
+                string userAppDataPath = null;
+                if (File.Exists(context.GeneXusConfigPath))
+                {
+                    var config = XDocument.Load(context.GeneXusConfigPath, LoadOptions.None);
+                    var setting = config.Descendants("add")
+                        .FirstOrDefault(x => string.Equals((string)x.Attribute("key"), "UserAppDataPath", StringComparison.OrdinalIgnoreCase));
+                    userAppDataPath = (string)setting?.Attribute("value");
+                    if (!string.IsNullOrWhiteSpace(userAppDataPath))
+                    {
+                        userAppDataPath = Environment.ExpandEnvironmentVariables(userAppDataPath.Trim());
+                        if (!Path.IsPathRooted(userAppDataPath))
+                            userAppDataPath = Path.GetFullPath(Path.Combine(context.InstallationPath, userAppDataPath));
+                        context.ConfigSource = context.GeneXusConfigPath + " appSettings/UserAppDataPath";
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(userAppDataPath))
+                {
+                    userAppDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                    context.ConfigSource = "Windows ApplicationData fallback";
+                }
+
+                context.UserAppDataPath = userAppDataPath;
+                context.EnvironmentConfigPath = Path.Combine(userAppDataPath, "GeneXus", "GeneXus", "18", "Environment.config");
+                context.EnvironmentConfigExists = File.Exists(context.EnvironmentConfigPath);
+                if (!context.EnvironmentConfigExists)
+                {
+                    context.EnvironmentConfigWritable = null;
+                    return context;
+                }
+
+                string accessError = (writeAccessProbe ?? ProbeWriteAccess)(context.EnvironmentConfigPath);
+                context.AccessError = accessError;
+                context.EnvironmentConfigWritable = string.IsNullOrEmpty(accessError);
+                return context;
+            }
+            catch (Exception ex)
+            {
+                context.AccessError = ex.ToString();
+                context.EnvironmentConfigWritable = false;
+                return context;
+            }
+        }
+
+        private static string ResolveGeneXusInstallationPath()
+        {
+            foreach (var candidate in new[]
+            {
+                Environment.GetEnvironmentVariable("GX_PROGRAM_DIR"),
+                Environment.GetEnvironmentVariable("GX_PATH")
+            })
+            {
+                if (!string.IsNullOrWhiteSpace(candidate) && Directory.Exists(candidate))
+                    return Path.GetFullPath(candidate);
+            }
+
+            try
+            {
+                var sdkAssembly = AppDomain.CurrentDomain.GetAssemblies()
+                    .FirstOrDefault(a => string.Equals(a.GetName().Name, "Artech.Architecture.Common", StringComparison.OrdinalIgnoreCase));
+                if (sdkAssembly != null && !string.IsNullOrWhiteSpace(sdkAssembly.Location))
+                    return Path.GetDirectoryName(sdkAssembly.Location);
+            }
+            catch { }
+            return null;
+        }
+
+        private static string ProbeWriteAccess(string path)
+        {
+            try
+            {
+                using (new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) { }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex.ToString();
+            }
+        }
+
+        internal static MethodInfo ResolveWwpCreateCall(
+            Type interfaceType,
+            string parentType,
+            object model,
+            object parent,
+            string template,
+            out object[] arguments,
+            out int byRefArgumentIndex,
+            out string candidates,
+            out string resolutionError)
+        {
+            bool webView = string.Equals(parentType, "WebPanel", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(parentType, "WebComponent", StringComparison.OrdinalIgnoreCase);
+            if (webView)
+            {
+                var settingsTypes = interfaceType
+                    .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                    .Where(m => string.Equals(m.Name, "CreatePatternInstanceWithTemplate", StringComparison.Ordinal))
+                    .Select(m => m.GetParameters())
+                    .Where(p => p.Length == 5 && p[2].ParameterType.IsEnum && p[3].ParameterType == typeof(string) && p[4].ParameterType.IsByRef)
+                    .Select(p => p[2].ParameterType)
+                    .Distinct()
+                    .ToList();
+                if (settingsTypes.Count != 1 || !Enum.GetNames(settingsTypes[0]).Any(n => string.Equals(n, "Web", StringComparison.OrdinalIgnoreCase)))
+                {
+                    arguments = null;
+                    byRefArgumentIndex = 4;
+                    candidates = string.Join("; ", interfaceType
+                        .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                        .Where(m => string.Equals(m.Name, "CreatePatternInstanceWithTemplate", StringComparison.Ordinal))
+                        .Select(FormatMethodSignature));
+                    resolutionError = "The WWP package does not expose one unambiguous five-parameter SettingsView.Web overload.";
+                    return null;
+                }
+
+                object web = Enum.Parse(settingsTypes[0], "Web", true);
+                arguments = new[] { model, parent, web, template ?? string.Empty, null };
+                byRefArgumentIndex = 4;
+            }
+            else
+            {
+                // The four-parameter overload delegates to SettingsView.NativeMobile
+                // in WWP 16.1, so keep it only for SDPanel/native-mobile targets.
+                arguments = new[] { model, parent, template ?? string.Empty, null };
+                byRefArgumentIndex = 3;
+            }
+
+            return ResolveCompatibleStaticOverload(
+                interfaceType,
+                "CreatePatternInstanceWithTemplate",
+                arguments,
+                byRefArgumentIndex,
+                typeof(bool),
+                out candidates,
+                out resolutionError);
+        }
+
+        // WWP has shipped multiple public overloads with this name. In U16, for
+        // example, both of these are present:
+        //   (KBModel, KBObject, string, out PatternInstance)
+        //   (KBModel, KBObject, SettingsView, string, out PatternInstance)
+        // Type.GetMethod(name) therefore throws AmbiguousMatchException before the
+        // package code is ever reached. Resolve against the complete call shape and
+        // prefer exact runtime-type matches; never pick an arbitrary tied overload.
+        internal static MethodInfo ResolveCompatibleStaticOverload(
+            Type declaringType,
+            string methodName,
+            object[] arguments,
+            int byRefArgumentIndex,
+            Type expectedReturnType,
+            out string candidateSignatures,
+            out string resolutionError)
+        {
+            candidateSignatures = "<none>";
+            resolutionError = null;
+            if (declaringType == null)
+            {
+                resolutionError = "Declaring type is null.";
+                return null;
+            }
+
+            arguments = arguments ?? Array.Empty<object>();
+            var candidates = declaringType
+                .GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .Where(m => string.Equals(m.Name, methodName, StringComparison.Ordinal))
+                .OrderBy(m => m.MetadataToken)
+                .ToList();
+            candidateSignatures = candidates.Count == 0
+                ? "<none>"
+                : string.Join("; ", candidates.Select(FormatMethodSignature));
+
+            var compatible = new List<Tuple<MethodInfo, int>>();
+            foreach (var method in candidates)
+            {
+                if (expectedReturnType != null && method.ReturnType != expectedReturnType) continue;
+                var parameters = method.GetParameters();
+                if (parameters.Length != arguments.Length) continue;
+
+                int score = 0;
+                bool matches = true;
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    bool shouldBeByRef = i == byRefArgumentIndex;
+                    if (parameters[i].ParameterType.IsByRef != shouldBeByRef)
+                    {
+                        matches = false;
+                        break;
+                    }
+
+                    var parameterType = parameters[i].ParameterType.IsByRef
+                        ? parameters[i].ParameterType.GetElementType()
+                        : parameters[i].ParameterType;
+                    var argument = arguments[i];
+                    if (argument == null)
+                    {
+                        if (!parameters[i].IsOut && parameterType.IsValueType && Nullable.GetUnderlyingType(parameterType) == null)
+                        {
+                            matches = false;
+                            break;
+                        }
+                        continue;
+                    }
+
+                    var argumentType = argument.GetType();
+                    if (parameterType == argumentType) score += 100;
+                    else if (parameterType.IsAssignableFrom(argumentType)) score += parameterType == typeof(object) ? 1 : 10;
+                    else
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+
+                if (matches) compatible.Add(Tuple.Create(method, score));
+            }
+
+            if (compatible.Count == 0)
+            {
+                resolutionError = "No compatible overload for the supplied argument types.";
+                return null;
+            }
+
+            int bestScore = compatible.Max(x => x.Item2);
+            var best = compatible.Where(x => x.Item2 == bestScore).Select(x => x.Item1).ToList();
+            if (best.Count != 1)
+            {
+                resolutionError = "Multiple equally compatible overloads: " + string.Join("; ", best.Select(FormatMethodSignature));
+                return null;
+            }
+            return best[0];
+        }
+
+        internal static string FormatMethodSignature(MethodInfo method)
+        {
+            if (method == null) return "<null>";
+            return method.ReturnType.FullName + " " + method.DeclaringType.FullName + "." + method.Name + "(" +
+                string.Join(", ", method.GetParameters().Select(p =>
+                {
+                    var type = p.ParameterType.IsByRef ? p.ParameterType.GetElementType() : p.ParameterType;
+                    return (p.IsOut ? "out " : p.ParameterType.IsByRef ? "ref " : "") + type.FullName;
+                })) + ")";
+        }
+
         // OFFICIAL APPLY PATH for WebPanel/WebComponent/Procedure/SDPanel targets via the WWP
         // package's `PatternInstancePackageInterface` helper. This is the IDE's
         // canonical Right-click → Apply Pattern → WWP route. Three static methods:
@@ -976,11 +1285,20 @@ namespace GxMcp.Worker.Services
         // Resolves a Template (caller hint via settings.template, else auto-discovers
         // a registered `WorkWithPlus for Web Template` in this KB). Falls through to
         // NoOp on any failure with the SDK error message attached.
-        internal bool TryPackageInterfaceAttach(KBObject parent, string preferredTemplate, out string hostName, out string usedTemplate, out string errorMessage)
+        internal bool TryPackageInterfaceAttach(
+            KBObject parent,
+            string preferredTemplate,
+            out string hostName,
+            out string usedTemplate,
+            out string errorMessage,
+            out string errorCode,
+            out JObject environmentContext)
         {
             hostName = null;
             usedTemplate = null;
             errorMessage = null;
+            errorCode = null;
+            environmentContext = null;
             if (parent == null) { errorMessage = "parent KBObject is null"; return false; }
             if (_objectService == null) { errorMessage = "ObjectService unavailable"; return false; }
 
@@ -1021,12 +1339,54 @@ namespace GxMcp.Worker.Services
                 var ifaceType = wwpAsm.GetType("DVelop.Patterns.WorkWithPlus.Helpers.PatternInstancePackageInterface", false);
                 if (ifaceType == null) { errorMessage = "PatternInstancePackageInterface type not found"; return false; }
 
-                var createMethod = ifaceType.GetMethod("CreatePatternInstanceWithTemplate", BindingFlags.Public | BindingFlags.Static);
-                var setApplyMethod = ifaceType.GetMethod("SetPatternApplyOnSave", BindingFlags.Public | BindingFlags.Static);
-                var validateSaveMethod = ifaceType.GetMethod("ValidateAndSave", BindingFlags.Public | BindingFlags.Static);
+                var kb = _objectService.GetKbService()?.GetKB();
+                if (kb == null) { errorMessage = "No KB open"; return false; }
+                object model = kb.DesignModel;
+
+                var environment = InspectWwpEnvironment();
+                environmentContext = environment.ToJson();
+                if (environment.EnvironmentConfigWritable == false)
+                {
+                    errorCode = "PatternEnvironmentAccessDenied";
+                    string identity;
+                    try { identity = WindowsIdentity.GetCurrent()?.Name ?? Environment.UserName; }
+                    catch { identity = Environment.UserName; }
+                    errorMessage = environment.EnvironmentConfigExists
+                        ? "WorkWithPlus resolves Environment.config from " + environment.ConfigSource +
+                          ". The effective path '" + environment.EnvironmentConfigPath + "' exists but identity '" + identity +
+                          "' cannot open it for write. The IDE can appear to work when it runs elevated under a different token. " +
+                          "Grant Modify to the MCP identity (or a group it belongs to) on that file and keep the configured UserAppDataPath aligned with the IDE. Access probe: " +
+                          environment.AccessError
+                        : "The WorkWithPlus environment preflight could not resolve or inspect the effective Environment.config for identity '" +
+                          identity + "'. Confirm the active GeneXus installation and its UserAppDataPath before applying. Preflight error: " +
+                        environment.AccessError;
+                    Logger.Warn(errorCode + ": " + errorMessage);
+                    return false;
+                }
+
+                var createMethod = ResolveWwpCreateCall(
+                    ifaceType,
+                    parent.TypeDescriptor?.Name,
+                    model,
+                    parent,
+                    preferredTemplate,
+                    out var createArgs,
+                    out var createOutIndex,
+                    out var createCandidates,
+                    out var createResolutionError);
+                var oneObjectArg = new object[] { parent };
+                var setApplyMethod = ResolveCompatibleStaticOverload(
+                    ifaceType, "SetPatternApplyOnSave", oneObjectArg, -1, typeof(bool),
+                    out var setApplyCandidates, out var setApplyResolutionError);
+                var validateSaveMethod = ResolveCompatibleStaticOverload(
+                    ifaceType, "ValidateAndSave", oneObjectArg, -1, typeof(bool),
+                    out var validateCandidates, out var validateResolutionError);
                 if (createMethod == null || setApplyMethod == null || validateSaveMethod == null)
                 {
-                    errorMessage = "PatternInstancePackageInterface missing expected statics (CreatePatternInstanceWithTemplate/SetPatternApplyOnSave/ValidateAndSave)";
+                    errorMessage = "PatternInstancePackageInterface overload resolution failed. " +
+                        "CreatePatternInstanceWithTemplate: " + (createResolutionError ?? "ok") + " Candidates: " + createCandidates + ". " +
+                        "SetPatternApplyOnSave: " + (setApplyResolutionError ?? "ok") + " Candidates: " + setApplyCandidates + ". " +
+                        "ValidateAndSave: " + (validateResolutionError ?? "ok") + " Candidates: " + validateCandidates + ".";
                     return false;
                 }
 
@@ -1037,15 +1397,30 @@ namespace GxMcp.Worker.Services
                     return false;
                 }
 
-                var kb = _objectService.GetKbService()?.GetKB();
-                if (kb == null) { errorMessage = "No KB open"; return false; }
-                object model = kb.DesignModel;
-
                 // Invoke: bool CreatePatternInstanceWithTemplate(model, parent, template, out instance)
                 // Empirically the return value is unreliable — false has been observed even
                 // when the host was created on disk (External change detected logs confirm).
                 // So we ALSO check via FindObject(WorkWithPlus<parentName>) after the call.
-                var args = new object[] { model, parent, usedTemplate, null };
+                // Resolve again with the final template so the reflected arguments carry
+                // exactly the value reported to the caller. WebPanel/WebComponent use the
+                // five-parameter SettingsView.Web overload; SDPanel uses the native-mobile
+                // four-parameter overload.
+                createMethod = ResolveWwpCreateCall(
+                    ifaceType,
+                    parent.TypeDescriptor?.Name,
+                    model,
+                    parent,
+                    usedTemplate,
+                    out var args,
+                    out createOutIndex,
+                    out createCandidates,
+                    out createResolutionError);
+                if (createMethod == null)
+                {
+                    errorMessage = "CreatePatternInstanceWithTemplate overload resolution failed after template resolution: " +
+                        (createResolutionError ?? "unknown") + ". Candidates: " + createCandidates;
+                    return false;
+                }
                 object createResult;
                 bool createThrew = false;
                 string createThrowMsg = null;
@@ -1057,11 +1432,11 @@ namespace GxMcp.Worker.Services
                 {
                     var inner = tie.InnerException ?? tie;
                     createThrew = true;
-                    createThrowMsg = inner.GetType().Name + ": " + inner.Message;
+                    createThrowMsg = inner.ToString();
                     createResult = null;
                 }
                 bool createSaid = createResult is bool b && b;
-                var hostObj = args[3] as KBObject;
+                var hostObj = args[createOutIndex] as KBObject;
                 if (hostObj == null)
                 {
                     // Out-parameter null — check disk for the host (the API may have
@@ -1071,8 +1446,11 @@ namespace GxMcp.Worker.Services
                 if (hostObj == null)
                 {
                     errorMessage = createThrew
-                        ? "CreatePatternInstanceWithTemplate threw: " + createThrowMsg
-                        : "CreatePatternInstanceWithTemplate returned " + (createSaid ? "true" : "false") + " but host not present on disk (template='" + usedTemplate + "')";
+                        ? "CreatePatternInstanceWithTemplate threw via " + FormatMethodSignature(createMethod) + ": " + createThrowMsg +
+                          " Available overloads: " + createCandidates
+                        : "CreatePatternInstanceWithTemplate returned " + (createSaid ? "true" : "false") +
+                          " via " + FormatMethodSignature(createMethod) + " but host not present on disk (template='" + usedTemplate +
+                          "'). Available overloads: " + createCandidates;
                     return false;
                 }
                 hostName = hostObj.Name;
@@ -1094,7 +1472,8 @@ namespace GxMcp.Worker.Services
                 catch (TargetInvocationException tie)
                 {
                     var inner = tie.InnerException ?? tie;
-                    errorMessage = "ValidateAndSave threw: " + inner.GetType().Name + ": " + inner.Message;
+                    errorMessage = "ValidateAndSave threw via " + FormatMethodSignature(validateSaveMethod) + ": " + inner.ToString() +
+                        " Available overloads: " + validateCandidates;
                     return false;
                 }
 
@@ -1117,12 +1496,35 @@ namespace GxMcp.Worker.Services
                     Logger.Info("Package-interface attach: UpdateParentObject best-effort failed: " + ex.Message);
                 }
 
+                // A generated WorkWithPlus<Parent> object is not sufficient proof:
+                // the package can create the host and still fail to bind its
+                // PatternInstance to the original WebPanel/WebComponent. Re-read via
+                // the same SDK API used at the beginning of apply_pattern and only
+                // report success when the association is visible.
+                object attachedInstance;
+                try
+                {
+                    attachedInstance = _engine.GetPatternInstance(parent, WorkWithPlusPatternId);
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = "Pattern host '" + hostName + "' was created, but post-attach PatternInstance verification threw: " + ex.ToString();
+                    return false;
+                }
+                if (attachedInstance == null)
+                {
+                    errorMessage = "Pattern host '" + hostName + "' was created and saved via " + FormatMethodSignature(createMethod) +
+                        ", but no WorkWithPlus PatternInstance is associated with parent '" + parent.Name +
+                        "' after the call. Available overloads: " + createCandidates;
+                    return false;
+                }
+
                 Logger.Info("Package-interface attach succeeded: host='" + hostName + "' parent='" + parent.Name + "' template='" + usedTemplate + "'");
                 return true;
             }
             catch (Exception ex)
             {
-                errorMessage = ex.GetType().Name + ": " + ex.Message;
+                errorMessage = ex.ToString();
                 Logger.Warn("TryPackageInterfaceAttach unexpected: " + ex);
                 return false;
             }
@@ -1850,7 +2252,55 @@ namespace GxMcp.Worker.Services
                         "Call genexus_apply_pattern with reapply=true to regenerate the existing pattern instance."));
                 }
 
-                // ── 7. Missing required attribute: template for WebPanel targets ──
+                // ── 7. WWP package environment / ACL preflight ───────────────────
+                // The package resolves Environment.config from GeneXus.exe.config's
+                // UserAppDataPath, which can intentionally point outside the active
+                // installation directory. First-attach writes that file. Validate the
+                // exact effective path without changing its contents.
+                if (patternId == WorkWithPlusPatternId && isWebPanelKind && existingInstance == null)
+                {
+                    var environment = InspectWwpEnvironment();
+                    if (environment.EnvironmentConfigWritable == false)
+                    {
+                        string identity;
+                        try { identity = WindowsIdentity.GetCurrent()?.Name ?? Environment.UserName; }
+                        catch { identity = Environment.UserName; }
+                        var accessFinding = Finding(
+                            environment.EnvironmentConfigExists ? "environmentConfigAccessDenied" : "environmentConfigPreflightFailed",
+                            "critical",
+                            environment.EnvironmentConfigExists
+                                ? "WorkWithPlus will use '" + environment.EnvironmentConfigPath + "' because " +
+                                  environment.ConfigSource + ", but identity '" + identity + "' cannot open the existing file for write."
+                                : "The WorkWithPlus environment preflight failed before it could inspect the effective Environment.config for identity '" + identity + "'.",
+                            environment.EnvironmentConfigExists
+                                ? "Grant Modify to the MCP identity (or one of its groups) on the effective Environment.config. Keep UserAppDataPath aligned with the IDE, then rerun mode=diagnose before apply."
+                                : "Confirm the active GeneXus installation and GeneXus.exe.config UserAppDataPath, then rerun mode=diagnose. The complete preflight exception is included in environment.accessError.");
+                        accessFinding["environment"] = environment.ToJson();
+                        findings.Add(accessFinding);
+                    }
+                    else if (environment.EnvironmentConfigExists && environment.EnvironmentConfigWritable == true)
+                    {
+                        var readyFinding = Finding(
+                            "environmentConfigWritable",
+                            "info",
+                            "WorkWithPlus Environment.config preflight passed for '" + environment.EnvironmentConfigPath + "' (source: " + environment.ConfigSource + ").",
+                            "No environment ACL change is required for first attach.");
+                        readyFinding["environment"] = environment.ToJson();
+                        findings.Add(readyFinding);
+                    }
+                    else
+                    {
+                        var unknownFinding = Finding(
+                            "environmentConfigNotFound",
+                            "warn",
+                            "The effective WorkWithPlus Environment.config was not found at '" + (environment.EnvironmentConfigPath ?? "<unresolved>") + "'.",
+                            "Confirm GeneXus.exe.config UserAppDataPath matches the IDE context and that the MCP identity can create files under that directory.");
+                        unknownFinding["environment"] = environment.ToJson();
+                        findings.Add(unknownFinding);
+                    }
+                }
+
+                // ── 8. Missing required attribute: template for WebPanel targets ──
                 if (isWebPanelKind && string.IsNullOrEmpty(callerTemplate) && typeGateReject == null)
                 {
                     if (availableTemplates != null && availableTemplates.Count > 0)
@@ -1867,7 +2317,7 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                // ── 8. ok — all critical checks passed ──────────────────────────
+                // ── 9. ok — all critical checks passed ──────────────────────────
                 if (!findings.Any(f => f["severity"]?.ToString() == "critical"))
                 {
                     findings.Add(Finding("ok", "info",
