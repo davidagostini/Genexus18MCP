@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- `genexus_lifecycle action=rebuild` now scopes comma-separated target lists through
+  `SpecifyOneOnly` in the in-process runner instead of falling through to a full KB
+  `RebuildAll`.
+
 ## v2.40.0 - 2026-08-10
 
 ### Fixed

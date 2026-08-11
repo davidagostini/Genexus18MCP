@@ -25,7 +25,7 @@ namespace GxMcp.Worker.Services
 
     // v2.6.6 Stream D — orchestrates in-process invocation of the two GeneXus
     // MSBuild tasks the IDE pipeline relies on:
-    //   - Genexus.MsBuild.Tasks.SpecifyOneOnly   (when action=Build with targets)
+    //   - Genexus.MsBuild.Tasks.SpecifyOneOnly   (when Build/RebuildAll has targets)
     //   - Genexus.MsBuild.Tasks.IdeWebBuildAndDeploy
     //
     // The worker already holds the KB open through KbService._kb; this runner
@@ -127,7 +127,8 @@ namespace GxMcp.Worker.Services
                 try
                 {
                     bool isBuildWithTargets = action != null
-                        && action.Equals("Build", StringComparison.OrdinalIgnoreCase)
+                        && (action.Equals("Build", StringComparison.OrdinalIgnoreCase)
+                            || action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase))
                         && targets != null
                         && targets.Count > 0;
                     bool forceRebuild = action != null && action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase);
@@ -158,9 +159,10 @@ namespace GxMcp.Worker.Services
                     // module + runs WebAppConfig and is the ~6.5min bottleneck).
                     //
                     // Path enabled by default for action=Build with explicit targets.
-                    // RebuildAll (force-rebuild whole KB) still goes through
-                    // IdeWebBuildAndDeploy because BuildOne is per-object. Opt-out
-                    // with GXMCP_INPROCESS_BUILD_FASTPATH=0.
+                    // RebuildAll with explicit targets stays on the legacy task pair
+                    // below so SpecifyOneOnly scopes the force rebuild; targetless
+                    // RebuildAll still runs against the whole KB. Opt-out with
+                    // GXMCP_INPROCESS_BUILD_FASTPATH=0.
                     // A2: fullDeploy=true forces the legacy IdeWebBuildAndDeploy path
                     // (module/theme copy → web/bin + WebAppConfig) so a targeted build
                     // produces runnable output, instead of BuildOne's compile-only fast path.
@@ -370,7 +372,8 @@ namespace GxMcp.Worker.Services
                         return InProcessBuildOutcome.Succeeded;
                     }
 
-                    // Legacy path (RebuildAll, opt-out, or empty targets): SpecifyOneOnly + IdeWebBuildAndDeploy.
+                    // Legacy path (targeted RebuildAll, opt-out, or empty targets):
+                    // SpecifyOneOnly + IdeWebBuildAndDeploy.
                     if (isBuildWithTargets)
                     {
                         if (!ExecuteSpecifyOneOnly(kbHandle, targets, engine))

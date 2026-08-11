@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Services;
 using Microsoft.Build.Framework;
@@ -130,6 +131,63 @@ namespace GxMcp.Worker.Tests
             Assert.True(engine.ContinueOnError);
         }
 
+        [Fact]
+        public void RebuildAll_with_multiple_targets_runs_targeted_specify_before_force_rebuild()
+        {
+            var specifyField = typeof(InProcessBuildRunner).GetField(
+                "_typeSpecifyOneOnly", BindingFlags.Static | BindingFlags.NonPublic);
+            var deployField = typeof(InProcessBuildRunner).GetField(
+                "_typeIdeWebBuildAndDeploy", BindingFlags.Static | BindingFlags.NonPublic);
+            var buildOneField = typeof(InProcessBuildRunner).GetField(
+                "_typeBuildOne", BindingFlags.Static | BindingFlags.NonPublic);
+            var attemptedField = typeof(InProcessBuildRunner).GetField(
+                "_assemblyLoadAttempted", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(specifyField);
+            Assert.NotNull(deployField);
+            Assert.NotNull(buildOneField);
+            Assert.NotNull(attemptedField);
+
+            object oldSpecify = specifyField.GetValue(null);
+            object oldDeploy = deployField.GetValue(null);
+            object oldBuildOne = buildOneField.GetValue(null);
+            object oldAttempted = attemptedField.GetValue(null);
+            try
+            {
+                FakeSpecifyOneOnlyTask.Reset();
+                FakeIdeWebBuildAndDeployTask.Reset();
+                specifyField.SetValue(null, typeof(FakeSpecifyOneOnlyTask));
+                deployField.SetValue(null, typeof(FakeIdeWebBuildAndDeployTask));
+                buildOneField.SetValue(null, null);
+                attemptedField.SetValue(null, true);
+
+                var targets = new List<string>
+                {
+                    "ViewProdCatGeneralSDT",
+                    "ViewProdCatGeneralGetP",
+                    "ViewProdCatGeneralHtmlP",
+                    "ProdCatDashboardWC"
+                };
+                var outcome = InProcessBuildRunner.Run(
+                    NewStatus(), "RebuildAll", targets,
+                    (s, l, e) => { },
+                    kbHandle: new object(),
+                    kbLock: new object());
+
+                Assert.Equal(InProcessBuildOutcome.Succeeded, outcome);
+                Assert.True(FakeSpecifyOneOnlyTask.Executed);
+                Assert.Equal(string.Join(";", targets), FakeSpecifyOneOnlyTask.LastObjectNames);
+                Assert.True(FakeIdeWebBuildAndDeployTask.Executed);
+                Assert.True(FakeIdeWebBuildAndDeployTask.LastForceRebuild);
+            }
+            finally
+            {
+                specifyField.SetValue(null, oldSpecify);
+                deployField.SetValue(null, oldDeploy);
+                buildOneField.SetValue(null, oldBuildOne);
+                attemptedField.SetValue(null, oldAttempted);
+            }
+        }
+
         [LiveKbFact]
         public void TryResolveTypes_finds_GeneXus_tasks_when_SDK_installed()
         {
@@ -139,6 +197,55 @@ namespace GxMcp.Worker.Tests
             string error;
             bool resolved = InProcessBuildRunner.TryResolveTypes(out error);
             Assert.True(resolved, "Expected Genexus.MsBuild.Tasks types to resolve: " + error);
+        }
+    }
+
+    public sealed class FakeSpecifyOneOnlyTask
+    {
+        public static bool Executed { get; private set; }
+        public static string LastObjectNames { get; private set; }
+
+        public object KB { get; set; }
+        public string ObjectNames { get; set; }
+        public IBuildEngine BuildEngine { get; set; }
+
+        public bool Execute()
+        {
+            Executed = true;
+            LastObjectNames = ObjectNames;
+            return true;
+        }
+
+        public static void Reset()
+        {
+            Executed = false;
+            LastObjectNames = null;
+        }
+    }
+
+    public sealed class FakeIdeWebBuildAndDeployTask
+    {
+        public static bool Executed { get; private set; }
+        public static bool LastForceRebuild { get; private set; }
+
+        public object KB { get; set; }
+        public bool ForceRebuild { get; set; }
+        public bool CompileMains { get; set; }
+        public string Output { get; set; }
+        public bool EventsSuspended { get; set; }
+        public IBuildEngine BuildEngine { get; set; }
+
+        public bool Execute()
+        {
+            Executed = true;
+            LastForceRebuild = ForceRebuild;
+            return true;
+        }
+
+        public static void Reset()
+        {
+            Executed = false;
+            LastForceRebuild = false;
         }
     }
 }
