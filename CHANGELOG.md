@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.40.0 - 2026-08-10
+
 ### Fixed
 
 - `genexus_search_source` and the `genexus_read` log-grep path no longer hang the
@@ -2206,6 +2208,8 @@ WorkWithPlus on a bare WebPanel now works end-to-end. Apply the pattern, get a h
 
 ## Unreleased
 
+## v2.40.0 - 2026-08-10
+
 ## v2.39.4 - 2026-08-10
 
 (none)
@@ -3325,6 +3329,8 @@ Plan: `docs/superpowers/plans/2026-05-13-mcp-perf-and-tool-stability-v2.2.0.md`.
   process level (single env-flip kill switch).
 
 ## Unreleased
+
+## v2.40.0 - 2026-08-10
 
 ## v2.39.4 - 2026-08-10
 
