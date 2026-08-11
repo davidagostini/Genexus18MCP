@@ -347,6 +347,28 @@ namespace GxMcp.Gateway
             }
         }
 
+        // Plan 069: a job that tripped the async-edit stall watchdog means the worker's
+        // STA thread is stuck inside a blocked SDK call that will never answer the
+        // in-flight command — the old code marked the job 'stalled' but left the KB
+        // wedged until the 15-min health-loop detector force-killed the process. This
+        // drops the live entry AND stops the worker with WorkerStopReason.Wedged so the
+        // OnWorkerExited eager-respawn path (Wedged is NOT in its skip list) immediately
+        // brings up a fresh worker. Like DropLiveEntry, the durable _known record is
+        // kept so the KB stays resolvable. Returns true when a live entry was recycled.
+        public bool RecycleStalledWorker(string alias)
+        {
+            if (alias == null) return false;
+            if (!_entries.TryRemove(alias.ToLowerInvariant(), out var entry)) return false;
+
+            // The kill must succeed for the recycle to be real: if StopWithReason throws
+            // (kill failed / process already gone), let it propagate so the caller does NOT
+            // report recycledWorker:true. The entry is already dropped, so a fresh
+            // AcquireAsync will spawn a replacement while the wedged process, if it still
+            // lives, is reaped by the health-loop detector.
+            entry.Worker?.StopWithReason(WorkerStopReason.Wedged);
+            return true;
+        }
+
         public void StopAll(WorkerStopReason reason = WorkerStopReason.GatewayShutdown)
         {
             foreach (var e in _entries.Values)

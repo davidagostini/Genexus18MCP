@@ -124,15 +124,30 @@ namespace GxMcp.Worker.Services.Structure
                         try { _objectService.GetKbService().GetIndexCache().UpdateEntry(group); }
                         catch (Exception iex) { Logger.Warn("[GroupStructureService] index UpdateEntry failed: " + iex.Message); }
 
+                        // issue #59 (plan 071) — post-save persistence verification. Re-find
+                        // the Group (fresh instance, not the mutated one) and confirm every
+                        // requested member add/removal actually persisted. A save the SDK
+                        // silently drops (the issue-#59 class) returns GroupUpdateNotPersisted
+                        // instead of a false GroupUpdated success.
+                        string verifyErr = VerifyGroupMembersPersisted(groupName, applied, removed, group, out bool membershipVerified);
+                        if (verifyErr != null) return verifyErr;
+
+                        var okResult = new JObject
+                        {
+                            ["group"] = group.Name,
+                            ["members"] = applied,
+                            ["removed"] = removed
+                        };
+                        // Honest flag: only claim the write was verified when a fresh re-read
+                        // actually compared the membership. When the SDK returns the same
+                        // in-memory instance (or none) the re-read is meaningless — surface
+                        // that instead of a false persistedVerified:true.
+                        if (membershipVerified) okResult["persistedVerified"] = true;
+                        else okResult["verificationNote"] = "Post-save re-read returned the same in-memory Group instance (or none) — the membership write could not be independently confirmed; re-read with genexus_structure action=get_visual if in doubt.";
                         return Models.McpResponse.Ok(
                             target: groupName,
                             code: "GroupUpdated",
-                            result: new JObject
-                            {
-                                ["group"] = group.Name,
-                                ["members"] = applied,
-                                ["removed"] = removed
-                            });
+                            result: okResult);
                     }
                     catch (Exception ex)
                     {
@@ -153,6 +168,92 @@ namespace GxMcp.Worker.Services.Structure
                     message: ex.Message,
                     hint: "Ensure the Group exists and payload is valid JSON.",
                     target: groupName);
+            }
+        }
+
+        // Compare the requested membership (adds + removals) against the set that actually
+        // persisted. `missing` = requested members absent from the re-read; `unremoved` =
+        // requested removals still present. Extracted as a pure static seam so the diff logic
+        // is unit-testable without an SDK Group instance.
+        internal static JObject CompareGroupMembership(
+            System.Collections.Generic.IEnumerable<string> requestedMemberNames,
+            System.Collections.Generic.IEnumerable<string> requestedRemovals,
+            System.Collections.Generic.IEnumerable<string> actualMemberNames)
+        {
+            var actual = new System.Collections.Generic.HashSet<string>(
+                actualMemberNames ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            var missing = new JArray((requestedMemberNames ?? Enumerable.Empty<string>())
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Where(n => !actual.Contains(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase));
+            var unremoved = new JArray((requestedRemovals ?? Enumerable.Empty<string>())
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Where(actual.Contains)
+                .Distinct(StringComparer.OrdinalIgnoreCase));
+            return new JObject { ["missing"] = missing, ["unremoved"] = unremoved };
+        }
+
+        // issue #59 (plan 071) — post-save re-read of a Group's membership. Returns a
+        // GroupUpdateNotPersisted envelope when the requested membership differs from the
+        // persisted members, or null when the write is confirmed (or unverifiable — the
+        // same in-memory instance back from FindObject would trivially mirror the mutated
+        // part, so the re-read is only meaningful for a genuinely fresh instance).
+        private string VerifyGroupMembersPersisted(string groupName, JArray applied, JArray removed, Group original, out bool verified)
+        {
+            verified = false;
+            try
+            {
+                var fresh = _objectService.FindObject(groupName) as Group;
+                if (fresh == null) return null; // unverifiable
+
+                // Circularity guard: same in-memory instance back from FindObject means the
+                // re-read would trivially mirror the mutated part — treat as unverifiable.
+                if (original != null && object.ReferenceEquals(fresh, original)) return null;
+
+                var part = fresh.Parts.Get<GroupStructurePart>();
+                if (part == null) return null; // unverifiable
+
+                var actual = new System.Collections.Generic.List<string>();
+                foreach (var member in part.Members)
+                {
+                    if (member?.Subtype?.Name != null) actual.Add(member.Subtype.Name);
+                }
+
+                var requestedAdds = applied == null
+                    ? new System.Collections.Generic.List<string>()
+                    : applied.Select(m => m["name"]?.ToString()).Where(n => n != null).ToList();
+                var requestedRemovals = removed == null
+                    ? new System.Collections.Generic.List<string>()
+                    : removed.Select(r => r.ToString()).ToList();
+
+                verified = true; // a genuinely fresh instance was re-read and compared
+                var diff = CompareGroupMembership(requestedAdds, requestedRemovals, actual);
+                var missing = diff["missing"] as JArray ?? new JArray();
+                var unremoved = diff["unremoved"] as JArray ?? new JArray();
+                if (missing.Count == 0 && unremoved.Count == 0) return null;
+
+                return Models.McpResponse.Err(
+                    code: "GroupUpdateNotPersisted",
+                    message: $"The SDK saved the Group but the re-read did not confirm the requested membership ({missing.Count} member(s) missing, {unremoved.Count} removal(s) not applied).",
+                    hint: "On this GeneXus build the Group-structure write may not have fully survived. Re-read with genexus_structure action=get_visual and fix any missing members in the IDE's Group editor if they recur.",
+                    nextSteps: new JArray(Models.McpResponse.NextStep(
+                        tool: "genexus_structure",
+                        args: new JObject { ["action"] = "get_visual", ["name"] = groupName },
+                        why: "Shows the persisted Group members so you can see exactly which items landed.")),
+                    target: groupName,
+                    extra: new JObject
+                    {
+                        ["missing"] = missing,
+                        ["unremoved"] = unremoved,
+                        ["requested"] = new JArray(requestedAdds),
+                        ["persisted"] = new JArray(actual),
+                        ["saved"] = false
+                    });
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[GROUP-VERIFY] " + ex.Message);
+                return null;
             }
         }
 

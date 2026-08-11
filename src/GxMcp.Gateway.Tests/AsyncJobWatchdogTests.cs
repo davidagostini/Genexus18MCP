@@ -124,5 +124,27 @@ namespace GxMcp.Gateway.Tests
             // The recovery hint must carry the real job id, not a placeholder.
             Assert.Contains("op:job-abc", envelope["hint"]!.ToString());
         }
+
+        // Plan 069: when the watchdog recycles the wedged worker, the envelope must say
+        // so — otherwise the agent sees only "stalled" and assumes the KB is still down.
+        [Fact]
+        public void BuildStalledAsyncMutationEnvelope_RecycledWorker_AddsRecoveryNote()
+        {
+            var envelope = Program.BuildStalledAsyncMutationEnvelope("job-abc", "genexus_edit", 30, 600, workerRecycled: true);
+            Assert.Equal("stalled", envelope["status"]?.ToString());
+            Assert.Equal(true, envelope["recycledWorker"]?.ToObject<bool>());
+            Assert.NotNull(envelope["workerRecovery"]);
+            Assert.Contains("force-recycled", envelope["workerRecovery"]!.ToString());
+            // The recovery note must carry the real job id too.
+            Assert.Contains("op:job-abc", envelope["hint"]!.ToString());
+        }
+
+        [Fact]
+        public void BuildStalledAsyncMutationEnvelope_NoRecycle_OmitsRecoveryNote()
+        {
+            var envelope = Program.BuildStalledAsyncMutationEnvelope("job-abc", "genexus_edit", 30, 600);
+            Assert.Null(envelope["recycledWorker"]);
+            Assert.Null(envelope["workerRecovery"]);
+        }
     }
 }

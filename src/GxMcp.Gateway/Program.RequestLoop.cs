@@ -1792,12 +1792,47 @@ namespace GxMcp.Gateway
                                     {
                                         int boundSeconds = watchdogMs == int.MaxValue ? -1 : watchdogMs / 1000;
                                         string boundText = boundSeconds > 0 ? boundSeconds + "s" : "unbounded (watchdog disabled)";
+                                        // Plan 069: a genuinely stalled job means the worker's STA
+                                        // thread is stuck inside a blocked SDK call that will never
+                                        // answer the in-flight command. Marking the job 'stalled'
+                                        // alone left the KB wedged until the 15-min health-loop
+                                        // detector killed the process. Recycle the worker NOW
+                                        // (force-kill + Wedged → eager respawn) so the KB is usable
+                                        // again right away instead of ~15 minutes later. _currentKb
+                                        // is an AsyncLocal, so it still resolves the KB this job
+                                        // was dispatched against from inside this Task.Run.
+                                        bool workerRecycled = false;
+                                        var stalledKb = _currentKb.Value;
+                                        // A microsecond race: the worker may have answered between
+                                        // WhenAny returning the watchdog and this branch. Never
+                                        // force-kill a worker that just completed its save — only
+                                        // recycle when the command is genuinely still in flight.
+                                        if (stalledKb == null)
+                                        {
+                                            Log($"[AsyncEdit] No KB resolved for job={editJob.Id}; skipping stalled-worker recycle (health loop will reap the wedged process).");
+                                        }
+                                        else if (workerTask.IsCompleted)
+                                        {
+                                            Log($"[AsyncEdit] Job={editJob.Id} worker answered just after the watchdog fired — skipping recycle.");
+                                        }
+                                        else if (_workerPool == null)
+                                        {
+                                            Log($"[AsyncEdit] No worker pool available for job={editJob.Id}; skipping stalled-worker recycle (health loop will reap the wedged process).");
+                                        }
+                                        else
+                                        {
+                                            try { workerRecycled = _workerPool.RecycleStalledWorker(stalledKb.NormalizedAlias); }
+                                            catch (Exception recycleEx)
+                                            {
+                                                Log($"[AsyncEdit] Stalled-worker recycle failed for KB '{stalledKb.Alias}': {recycleEx.Message}");
+                                            }
+                                        }
                                         JobRegistry.Stall(
                                             editJob.Id,
                                             capturedName + " did not return within the " + boundText
                                                 + " time bound; SDK call likely blocked (IDE modal dialog or retrying validation) — see result for recovery steps.",
-                                            BuildStalledAsyncMutationEnvelope(editJob.Id, capturedName, estEdit, boundSeconds));
-                                        Log($"[AsyncEdit] Watchdog fired for job={editJob.Id} tool={capturedName} after {watchdogMs}ms — marked stalled.");
+                                            BuildStalledAsyncMutationEnvelope(editJob.Id, capturedName, estEdit, boundSeconds, workerRecycled));
+                                        Log($"[AsyncEdit] Watchdog fired for job={editJob.Id} tool={capturedName} after {watchdogMs}ms — marked stalled (workerRecycled={workerRecycled}).");
                                     }
                                     return;
                                 }

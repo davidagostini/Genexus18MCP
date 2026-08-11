@@ -168,5 +168,56 @@ namespace GxMcp.Worker.Tests
             Assert.NotNull(result["result"]?["logPath"]?.ToString());
             Assert.NotNull(result["result"]?["logDir"]?.ToString());
         }
+
+        // -----------------------------------------------------------------------
+        // plan 068: bounded regex match timeout on grepPattern
+        // -----------------------------------------------------------------------
+
+        [Fact]
+        public void ReadLogs_PathologicalGrepPattern_DegradesToSubstringInsteadOfHanging()
+        {
+            // A catastrophic-backtracking pattern against a run of 'a' + a non-matching
+            // tail would hang the STA thread under .NET Framework's infinite default
+            // match timeout. The 2s bounded timeout forces the substring fallback inside
+            // the call. Pattern avoids possessive quantifiers ("(a+)++$" is only
+            // catastrophic on .NET Framework) AND identical alternation branches
+            // ("(a|a)+$" is quadratic, not exponential) — "(a|aa)+$" partitions the run
+            // into 1-or-2-char chunks, which is pathological on every regex engine.
+            var longLine = new string('a', 20000) + "b";
+            WriteLog(new[] { $"[2026-05-22 10:00:00.000] [INFO] {longLine}" });
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var result = ParseResult(CallReadLogs(grepPattern: "(a|aa)+$"));
+            sw.Stop();
+
+            Assert.Equal("ok", result["status"]?.ToString());
+            // 2s per-match timeout + small overhead; without the guard this would
+            // never return on the single STA thread.
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(15), $"grep filter took {sw.Elapsed}");
+            var lines = result["result"]?["lines"]?.ToString()
+                .Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            Assert.NotNull(lines);
+            // Substring fallback has no literal "(a|aa)+$" in the line → filtered out.
+            Assert.Empty(lines);
+        }
+
+        [Fact]
+        public void ReadLogs_SimpleGrepPattern_StillFiltersRegexNormally()
+        {
+            // Guard: the bounded timeout must not change behaviour for well-formed
+            // patterns (the common case).
+            WriteLog(new[]
+            {
+                "[2026-05-22 10:00:01.000] [INFO] Processing MyProc start",
+                "[2026-05-22 10:00:02.000] [INFO] Processing OtherProc start",
+            });
+
+            var result = ParseResult(CallReadLogs(grepPattern: "^.*MyProc.*$"));
+            Assert.Equal("ok", result["status"]?.ToString());
+            var lines = result["result"]?["lines"]?.ToString().Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            Assert.NotNull(lines);
+            Assert.Single(lines);
+            Assert.Contains("MyProc", lines![0]);
+        }
     }
 }

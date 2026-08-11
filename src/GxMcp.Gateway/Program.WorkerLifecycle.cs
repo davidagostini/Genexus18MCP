@@ -576,6 +576,18 @@ namespace GxMcp.Gateway
                 return 600000;
             }
 
+            // genexus_db action=reorg_impact / reorg_preview / drift_check with deep=true
+            // runs ISpecifierService.ImpactDatabase — a full specification pass that is
+            // build-heavy and can take minutes on a large KB (the 60s default cut it off
+            // while the worker was still legitimately working). Fast (deep=false) reorg/
+            // drift reads share the tool name, so the generous ceiling is harmless for them.
+            if ((string.Equals(toolName, "genexus_db", StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(toolName, "genexus_db_drift", StringComparison.OrdinalIgnoreCase))
+                && args?["deep"]?.ToObject<bool?>() == true)
+            {
+                return 600000;
+            }
+
             string? part = args?["part"]?.ToString();
             if (string.Equals(toolName, "genexus_edit", StringComparison.OrdinalIgnoreCase))
             {
@@ -673,7 +685,7 @@ namespace GxMcp.Gateway
             payload["stallBoundSeconds"] = boundSeconds;
             payload["hint"] = payload["hint"]!.ToString()
                 + " If it stays 'running' past " + boundSeconds
-                + "s the SDK call is blocked (an IDE modal dialog can hold the model) or retrying a failing validation — the job will be marked 'stalled' with recovery steps; you can also cancel earlier with genexus_lifecycle action=cancel.";
+                + "s the SDK call is blocked (an IDE modal dialog can hold the model) or retrying a failing validation — the job will be marked 'stalled' with recovery steps AND the wedged worker process will be recycled (force-killed and respawned) so the KB stays usable; you can also cancel earlier with genexus_lifecycle action=cancel.";
             return payload;
         }
 
@@ -730,12 +742,16 @@ namespace GxMcp.Gateway
             return (int)(boundSeconds * 1000);
         }
 
-        internal static JObject BuildStalledAsyncMutationEnvelope(string jobId, string toolName, int estimatedSeconds, int boundSeconds)
+        // Plan 069: `workerRecycled` reports whether the wedged worker process was
+        // force-recycled (RecycleStalledWorker) the moment the stall was detected, so
+        // the envelope can tell the agent the KB is coming back instead of leaving it
+        // to rediscover the dead worker on the next call.
+        internal static JObject BuildStalledAsyncMutationEnvelope(string jobId, string toolName, int estimatedSeconds, int boundSeconds, bool workerRecycled = false)
         {
             string boundText = boundSeconds > 0
                 ? "did not return within the " + boundSeconds + "s time bound (caller estimated " + estimatedSeconds + "s)"
                 : "did not return within the configured time bound (caller estimated " + estimatedSeconds + "s; watchdog disabled)";
-            return new JObject
+            var envelope = new JObject
             {
                 ["status"] = "stalled",
                 ["code"] = "AsyncJobStalled",
@@ -747,6 +763,12 @@ namespace GxMcp.Gateway
                     + ". The write is likely blocked by a modal dialog in the GeneXus IDE holding the model (e.g. \"object modified externally — reload?\"), or the SDK is retrying a failing validation internally. This job is now terminal; it will not keep 'running'.",
                 ["hint"] = "1) Run the same edit WITHOUT async=true to get the immediate SDK error (the sync path surfaces TransactionFailed/srcXXXX in seconds). 2) Or cancel with genexus_lifecycle action=cancel target=op:" + jobId + " and check the IDE for a waiting dialog. 3) genexus_read the object before retrying — the write may have partially persisted."
             };
+            if (workerRecycled)
+            {
+                envelope["recycledWorker"] = true;
+                envelope["workerRecovery"] = "The wedged worker process was force-recycled the moment the stall was detected and a replacement worker is respawning for this KB (WorkerStopReason.Wedged → eager respawn). Subsequent tool calls should proceed normally; re-run the edit only after the replacement is up (check genexus_whoami or genexus_kb action=list), and genexus_read the object first — the write may have partially persisted.";
+            }
+            return envelope;
         }
 
         internal static void NormalizeEditAndBuildPayload(JObject? payload)

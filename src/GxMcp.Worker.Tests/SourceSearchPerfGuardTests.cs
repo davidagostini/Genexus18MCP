@@ -174,6 +174,38 @@ namespace GxMcp.Worker.Tests
             Assert.NotSame(a, b);
         }
 
+        // ---- bounded match timeout (plan 068) --------------------------------
+
+        [Fact]
+        public void GetCachedRegex_CarriesBoundedMatchTimeout()
+        {
+            var rx = (System.Text.RegularExpressions.Regex)GetCached("parm", caseSensitive: false);
+            Assert.True(rx.MatchTimeout > TimeSpan.Zero);
+            Assert.True(rx.MatchTimeout <= TimeSpan.FromSeconds(3));
+        }
+
+        [Fact]
+        public void BoundedRegex_ThrowsMatchTimeout_OnCatastrophicInput()
+        {
+            // Plan 068: the 2s per-match timeout is what keeps a pathological LLM-supplied
+            // pattern from hanging the worker's single STA thread (net48 default match
+            // timeout is infinite). Pin the guarantee directly at the regex level: a
+            // catastrophic pattern against a long run must throw RegexMatchTimeoutException
+            // — the exact exception SearchCore's catch maps to the PatternTimeout envelope
+            // (live-verified against a real KB: PatternTimeout at 2.0s, STA responsive).
+            // Pattern choice: "(a|aa)+$" partitions the run into 1-or-2-char chunks
+            // (Fibonacci blow-up) — pathological on every engine; "(a+)++$" is only
+            // pathological on .NET Framework and "(a|a)+$" is merely quadratic.
+            var rx = (System.Text.RegularExpressions.Regex)GetCached("(a|aa)+$", caseSensitive: false);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            Assert.Throws<System.Text.RegularExpressions.RegexMatchTimeoutException>(() =>
+                rx.IsMatch(new string('a', 20000) + "b"));
+            sw.Stop();
+            // Timeout fires around the 2s bound, not after minutes of backtracking.
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(15), $"regex took {sw.Elapsed}");
+        }
+
         [Fact]
         public void FastRegexPath_EmitsOneHitPerMatchingLine()
         {

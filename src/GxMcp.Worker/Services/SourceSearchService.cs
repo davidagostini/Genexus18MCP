@@ -63,11 +63,18 @@ namespace GxMcp.Worker.Services
             new System.Collections.Concurrent.ConcurrentDictionary<string, Regex>(StringComparer.Ordinal);
         private const int CompiledRegexCacheMaxEntries = 16;
 
+        // AVAILABILITY: LLM-supplied patterns must not hang the single STA thread.
+        // .NET Framework defaults to Regex.InfiniteMatchTimeout, so a catastrophic
+        // back-tracking pattern (e.g. "(a+)+$") blocks every later KB call until the
+        // 15-min wedged kill. Bound each match call; the caller maps the resulting
+        // RegexMatchTimeoutException to a structured PatternTimeout envelope.
+        internal static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromSeconds(2);
+
         private static Regex GetCachedRegex(string pattern, RegexOptions opts)
         {
             string key = pattern + "\u0001" + ((int)opts).ToString();
             if (_compiledRegexCache.TryGetValue(key, out var cached)) return cached;
-            var fresh = new Regex(pattern, opts);
+            var fresh = new Regex(pattern, opts, RegexMatchTimeout);
             if (_compiledRegexCache.Count < CompiledRegexCacheMaxEntries)
             {
                 _compiledRegexCache.TryAdd(key, fresh);
@@ -634,6 +641,15 @@ namespace GxMcp.Worker.Services
                 string completionCode = (partialIndex && produced == 0)
                     ? "PartialIndexNoMatch" : "SourceSearchCompleted";
                 return Models.McpResponse.Ok(code: completionCode, result: resultPayload);
+            }
+            catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+            {
+                return Models.McpResponse.Err(
+                    code: "PatternTimeout",
+                    message: "The regex pattern exceeded the " + RegexMatchTimeout.TotalSeconds
+                        + "s match-timeout on one input and was aborted.",
+                    hint: "Simplify the pattern — avoid nested quantifiers like (a+)+ or (\\w+\\s?)+ "
+                        + "that can backtrack exponentially. Prefer literal tokens or atomic groups.");
             }
             catch (Exception ex)
             {

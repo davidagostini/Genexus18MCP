@@ -35,6 +35,12 @@ namespace GxMcp.Worker.Services
     /// </summary>
     public class ReorgImpactService
     {
+        // Plan 070: deep=true runs ISpecifierService.ImpactDatabase — a full specification
+        // pass that can take minutes on a large KB. Shared const so the two emission sites
+        // (reorg_impact + reorg_preview) can't drift.
+        private const string DeepImpactRuntimeNote =
+            "ImpactDatabase runs a full specification pass and can take minutes on a large KB. The gateway sync ceiling for deep=true calls is 10 minutes; prefer deep=false for the fast timestamp heuristic when an instant verdict is enough.";
+
         private readonly KbService _kb;
         private readonly ObjectService _objectService;
 
@@ -225,6 +231,10 @@ namespace GxMcp.Worker.Services
                             string.Equals(analysis.ToString(), "ReorganizationNeeded", StringComparison.OrdinalIgnoreCase);
                         requiresReorg = deepBlock["requiresReorganization"].Value<bool>();
                         source = "sdk:ISpecifierService";
+                        // Plan 070: surface the expected runtime so callers don't mistake a
+                        // multi-minute specification pass for a hung worker — the gateway's
+                        // sync ceiling for deep=true calls is 10 minutes (600s).
+                        deepBlock["runtimeNote"] = DeepImpactRuntimeNote;
                     }
                     catch (Exception ex)
                     {
@@ -738,6 +748,10 @@ namespace GxMcp.Worker.Services
                 result["deepAnalysis"] = analysis.ToString();
                 result["reorgNeeded"] = string.Equals(analysis.ToString(), "ReorganizationNeeded", StringComparison.OrdinalIgnoreCase);
                 result["deepNote"] = "Ran ISpecifierService.ImpactDatabase (specification). AnalysisResult enum reported.";
+                // Plan 070: surface the expected runtime so callers don't mistake a
+                // multi-minute specification pass for a hung worker — the gateway's
+                // sync ceiling for deep=true calls is 10 minutes (600s).
+                result["runtimeNote"] = DeepImpactRuntimeNote;
             }
             catch (Exception ex)
             {

@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### Fixed
+
+- `genexus_search_source` and the `genexus_read` log-grep path no longer hang the
+  whole Knowledge Base on a pathological search pattern. A regex with
+  catastrophic backtracking (e.g. `(a|aa)+$` against a long single line) used to
+  run with no match timeout on the worker's single STA thread, blocking every
+  call to that KB for ~15 minutes until the wedged-worker killer fired. Every
+  LLM-supplied pattern now carries a 2-second per-match timeout; a pattern that
+  exceeds it returns `PatternTimeout` with an explanation, and the worker keeps
+  serving other calls.
+- When an async job's SDK call silently blocks past its watchdog bound, the
+  wedged worker process is now **recycled** instead of leaving the KB unusable.
+  Previously the job was marked `stalled` but the worker's STA thread stayed
+  stuck on the SDK call, so the recovery steps (re-run synchronously, cancel)
+  queued behind the same blockage. Now the watchdog force-kills the wedged
+  worker the moment the stall is detected and a replacement respawns for the KB;
+  the stalled envelope reports `recycledWorker: true` and reads keep working.
+- `genexus_structure action=update_group` now verifies its write like every
+  other write path. A membership change could report `GroupUpdated` even when
+  the SDK dropped part of the update; the service now re-reads the group's
+  members after saving and returns `GroupUpdateNotPersisted` (with the
+  expected vs. actual sets) when the write didn't survive, and only claims
+  `persistedVerified: true` when a genuinely fresh re-read confirmed it.
+- Moving an object into a Folder/Module can no longer bind an unrelated
+  `EntityManager` type. `ObjectMover`'s reflection fallback now constrains the
+  bare simple-name lookup to the `Artech.*` namespace (and logs which binding
+  it resolved), so a coincidentally-named type in another assembly can't be
+  picked over the GeneXus SDK's own class.
+
+### Changed
+
+- `genexus_db action=reorg_impact deep=true` (and `reorg_preview`) now gets a
+  10-minute sync ceiling instead of the generic 60-second default, and the
+  response carries a runtime note explaining that a deep impact analysis runs
+  the specification engine and can legitimately take minutes. A long-running
+  deep analysis no longer times out spuriously while the specifier is still
+  working.
+
+### Internal
+
+- `plans/README.md` marks plans 068–072 DONE with the live-KB validation
+  evidence; regression coverage landed in `SourceSearchPerfGuardTests`,
+  `LogFilteringTests`, `AsyncJobWatchdogTests`, `WorkerPoolTests`,
+  `GroupStructureVerificationTests`, `ObjectMoverHardeningTests`, and
+  `GatewayBudgetTests`.
+
 ## v2.39.4 - 2026-08-10
 
 ### Added

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Reflection;
 
 namespace GxMcp.Worker.Helpers
@@ -102,21 +103,45 @@ namespace GxMcp.Worker.Helpers
             catch (Exception ex) { Logger.Info("[Move] set_Parent threw: " + Unwrap(ex).Message); }
         }
 
-        private static MethodInfo FindMethod(Type emType, string name, object arg0, object arg1 = null)
+        // Plan 072: reflection enumerates methods in an UNSPECIFIED order, so the former
+        // "first match wins" could bind a different SaveWithParent/UpdateParent overload
+        // across runs (a 2-arg vs 3-arg variant) and the move would silently use different
+        // persist semantics. Score candidates deterministically instead: +1 base for a
+        // compatible first param, +2 when the second param accepts the parent, and break
+        // ties by preferring the LONGEST overload (the one declaring the most of the
+        // parameters we can supply — SaveWithParent(entity, parent, prefs) over the 2-arg).
+        // The chosen binding is logged so a wrong pick is diagnosable in the worker log.
+        internal static MethodInfo FindMethod(Type emType, string name, object arg0, object arg1 = null)
         {
+            MethodInfo best = null;
+            int bestScore = -1;
             foreach (var mi in emType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
             {
                 if (mi.Name != name) continue;
                 var ps = mi.GetParameters();
                 if (ps.Length < 1) continue;
                 if (!ps[0].ParameterType.IsInstanceOfType(arg0)) continue;
-                if (arg1 != null)
+                int score = 1;
+                if (arg1 != null && ps.Length >= 2 && ps[1].ParameterType.IsInstanceOfType(arg1)) score += 2;
+                if (score > bestScore
+                    || (score == bestScore && best != null && ps.Length > best.GetParameters().Length))
                 {
-                    if (ps.Length < 2 || !ps[1].ParameterType.IsInstanceOfType(arg1)) continue;
+                    bestScore = score;
+                    best = mi;
                 }
-                return mi;
             }
-            return null;
+            if (best != null)
+            {
+                Logger.Info("[Move] bound " + name + " -> " + Signature(best));
+            }
+            return best;
+        }
+
+        private static string Signature(MethodInfo mi)
+        {
+            var ps = mi.GetParameters();
+            return (mi.DeclaringType?.Name ?? "?") + "." + mi.Name
+                + "(" + string.Join(", ", ps.Select(p => p.ParameterType.Name)) + ")";
         }
 
         // Returns null on success, or the thrown exception on failure.
@@ -206,17 +231,46 @@ namespace GxMcp.Worker.Helpers
             return null;
         }
 
+        // Plan 072: the bare simple-name scan used to accept ANY type named "EntityManager"
+        // in ANY loaded assembly — a non-GeneXus type with the same simple name (e.g. an ORM
+        // or data-access EntityManager) would then have been reflectively invoked as the Udm
+        // EntityManager. Constrain the fallback to GeneXus SDK types: only accept a type
+        // whose namespace is Artech.* (and only scan Artech/GxMcp assemblies for it).
         private static Type FindFirstType(string simpleName)
         {
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
+                if (!IsArtechAssembly(asm)) continue;
                 Type[] types;
                 try { types = asm.GetTypes(); } catch (ReflectionTypeLoadException rtle) { types = rtle.Types; }
                 if (types == null) continue;
                 foreach (var t in types)
-                    if (t != null && t.Name == simpleName) return t;
+                    if (IsArtechSdkType(t) && t.Name == simpleName) return t;
             }
             return null;
+        }
+
+        internal static bool IsArtechAssembly(Assembly asm)
+        {
+            if (asm == null) return false;
+            try
+            {
+                string name = asm.GetName().Name ?? "";
+                return name.StartsWith("Artech", StringComparison.OrdinalIgnoreCase)
+                    || name.StartsWith("GxMcp", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        // Exposed as a seam so tests can pin the namespace constraint without spawning a
+        // fake assembly. OrdinalIgnoreCase to stay consistent with IsArtechAssembly (SDK
+        // assembly/type names are case-stable, but a case-mismatched Artech.* should never
+        // silently fall out of the scan).
+        internal static bool IsArtechSdkType(Type t)
+        {
+            if (t == null) return false;
+            string ns = t.Namespace ?? "";
+            return ns.StartsWith("Artech", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

@@ -525,8 +525,19 @@ namespace GxMcp.Worker.Services
                 {
                     try
                     {
-                        var rx = new System.Text.RegularExpressions.Regex(grepPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                        filtered = filtered.Where(l => rx.IsMatch(l));
+                        var rx = new System.Text.RegularExpressions.Regex(grepPattern,
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase,
+                            GxMcp.Worker.Services.SourceSearchService.RegexMatchTimeout);
+                        // Materialize INSIDE the try: Where() is deferred, so a match-timeout
+                        // thrown by rx.IsMatch would otherwise surface at the later ToList()
+                        // (outside this catch) as a generic error instead of the fallback.
+                        filtered = filtered.Where(l => rx.IsMatch(l)).ToList();
+                    }
+                    catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+                    {
+                        // A valid-but-pathological pattern must not hang the STA thread; degrade
+                        // to the same substring fallback an invalid pattern gets.
+                        filtered = filtered.Where(l => l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0);
                     }
                     catch { /* invalid regex falls back to substring */ filtered = filtered.Where(l => l.IndexOf(grepPattern, StringComparison.OrdinalIgnoreCase) >= 0); }
                 }

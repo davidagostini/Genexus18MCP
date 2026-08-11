@@ -11,6 +11,75 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
 
+## Ninth-pass audit (2026-08-10, against `e756dd2` / v2.39.4) — new-code surface since the last cold audit
+
+First pass to audit the code shipped **after** the v2.33.1 cold audit (the C# core's
+passes 1–7 ledger stands, nexus-ide was cold-audited in pass 8): ~15,354 lines across
+137 files in v2.34→v2.39.4 — write-verification integrity (#59/#70), `ObjectMover`
+folder/module placement (#50), SDT/Domain persistence (#51–#57, #64),
+`SaveSpecifyOrchestrator` (#60), `ReorgImpactService`/`ReorgSqlPreview` (#61),
+`WwpActionService`, `AtomicCreateService`/`AtomicAuthoringService` (#58–#62), async-job
+stall watchdog (#79), semantic-cache invalidation, `scripts/mcp_recover.ps1`. Every
+finding vetted against live code by the advisor (three subagent line leads corrected).
+Verification for the C# plans: `dotnet build Genexus18MCP.sln -v:minimal` + the
+Worker/Gateway test suites from the repo root (Worker needs `$env:GX_PATH =
+'C:\Program Files (x86)\GeneXus\GeneXus18'` first).
+
+**All five selected by the maintainer (2026-08-10); plans 068–072 written and executed 2026-08-10/11.** Executor implemented all five directly on `main` (no worktrees): full solution builds 0 errors; Worker 1811 passed / 4 skipped; Gateway 880 passed (pre-existing skips only). Each change was also **live-validated against a real KB** (`C:\KBs\KBTeste`) over a scratch Streamable-HTTP gateway on port 5001: 068 returned `PatternTimeout` in 2.014s on the pathological `(a|aa)+$` pattern with the STA thread still responsive; 069 forced a genuine SDK stall past the 1s watchdog bound and observed the wedged worker **recycled** (PID change + `recycledWorker: true`) with the KB answering reads afterwards; 070 returned `deepAnalysis` + `runtimeNote`; 071 returned `GroupUpdated` + `persistedVerified: true`; 072 moved the object via `EntityManager.SaveWithParent` with the hardened resolver binding the 3-arg overload. Not yet released (unreleased in CHANGELOG).
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 068 | Bound regex match time on LLM-supplied patterns (search_source + read_logs grep — one pathological pattern wedges the STA worker ~15 min) | P1 | S | LOW | — | DONE |
+| 069 | Recycle the wedged worker when the async-job stall watchdog fires (stalled jobs currently leave the KB blocked ~15 min with unusable recovery steps) | P1 | S-M | MED | — | DONE |
+| 070 | Give `genexus_db deep=true` (reorg_impact/reorg_preview) a 10-min sync ceiling + expected-runtime note (60s default → spurious timeout while spec keeps running) | P2 | S-M | LOW-MED | — | DONE |
+| 071 | Add issue-#59 post-save verification to `GroupStructureService` (membership writes can report false `GroupUpdated`; every other new write path verifies) | P3 | S | LOW | — | DONE |
+| 072 | Harden `ObjectMover`'s EntityManager fallback (bare simple-name scan can bind a non-Artech type; constrain to `Artech.*` + log the binding) | P3 | S | LOW-MED | — | DONE |
+
+Recommended order: **068, 069** (P1 availability — regex hang and stalled-worker
+recycle are the two ways a single call takes down the whole KB) → **070** (P2 UX) →
+**071, 072** (P3 quick wins). File overlap: 069 and 070 both touch
+`Program.WorkerLifecycle.cs` (disjoint locations — the skip list / envelope vs
+`GetToolTimeoutMs`); if run in parallel worktrees, merge 069 first and re-check 070's
+drift excerpt. 068 and 072 both touch `ObjectService.cs` (disjoint: `ReadLogs` grep
+vs `MoveObject`); same rule. 068 and 069 are independent (worker vs gateway).
+
+Grounding evidence (each verified against live code at `e756dd2`):
+- 068: `SourceSearchService.cs:70` builds `new Regex(pattern, opts)` with no match
+  timeout and `App.config` sets no `REGEX_DEFAULT_MATCH_TIMEOUT` (net48 default =
+  infinite); `ObjectService.cs:528` `ReadLogs` grep same. Search runs on the single
+  STA thread (`CommandDispatcher.cs:379-385` `IsThreadSafe` only for control/index),
+  so a catastrophic-backtracking pattern blocks every call to that KB; the 30s
+  budget checks between entries, never inside `IsMatch`, and the gateway 60s timeout
+  can't interrupt the worker — recovery is only the 15-min wedged kill
+  (`WorkerProcess.cs:176-195`).
+- 069: `Program.RequestLoop.cs:1784-1802` watchdog fires → `JobRegistry.Stall` →
+  `return`, with no worker recycle; the stalled envelope tells the user to re-run the
+  edit synchronously, which queues behind the same stuck STA thread. `OnWorkerExited`
+  eager-respawn (`Program.WorkerLifecycle.cs:31-150`) skips only
+  Idle/GatewayShutdown/BusyReject/ExplicitClose/PlannedReload — `Wedged` is not
+  skipped, so a deliberate `StopWithReason(Wedged)` triggers the existing respawn
+  loop. `BackgroundJobRegistry.Complete/Cancel` no-op on a `stalled` job, so the
+  late "crashed/exited" response can't rewrite the terminal verdict.
+- 070: `ReorgImpactService.cs:222,727-746` runs `ISpecifierService.ImpactDatabase`
+  ("build-heavy" per its own doc) with no cancellation; `GetToolTimeoutMs`
+  (`Program.WorkerLifecycle.cs:624`) has no `genexus_db` case → 60s default.
+- 071: `GroupStructureService.cs:131-190` returns `GroupUpdated` after
+  `EnsureSave()`+Commit with no re-read of `GroupStructurePart.Members`; contrast
+  `DomainWriteService.VerifyEnumValuesPersisted` / `WwpActionService` re-read.
+- 072: `ObjectMover.cs:44-46,214-254` `FindFirstType("EntityManager")` scans all
+  loaded assemblies by simple name with no namespace filter.
+
+Considered and rejected / downgraded this pass (so nobody re-audits):
+- **mcp_recover.ps1**: reviewed clean — proper initialize/session handshake,
+  `readOnlyHint` gate before any write (write requires explicit `-AllowWrite`), no
+  injection surface (args flow as JSON body, never shell-interpolated). Not a finding.
+- **SaveSpecifyOrchestrator `Thread.Sleep(250)` poll loop**: bounded (≤120s, clamped)
+  and opt-in (`validationMode=specify`); not worth a plan.
+- **Semantic-cache invalidation**: complete with a guard test
+  (`SemanticCacheInvalidationTests`); the v2.39.4 fix holds — not re-planned.
+- **`PersistenceVerifier` boolean-alias normalization**: correctly gated by
+  `allowBooleanAliases`; enum/string values are not collapsed globally. Not a finding.
+
 ## Eighth-pass audit (2026-07-23, against `98b9a7d` / v2.33.0) — first independent cold audit of `src/nexus-ide`
 
 The C# MCP core is exhaustively covered by passes 1–7 (its "considered/rejected"

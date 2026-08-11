@@ -108,6 +108,39 @@ namespace GxMcp.Gateway.Tests
             Assert.True(pool.IsDrainingForTest("kb1"));
         }
 
+        // Plan 069: RecycleStalledWorker drops the live entry (like DropLiveEntry) but
+        // stops the worker with the Wedged reason so the eager-respawn path fires; the
+        // durable known set still survives so the KB stays resolvable.
+        [Fact]
+        public void RecycleStalledWorker_drops_live_entry_but_keeps_known()
+        {
+            var pool = new WorkerPool(CfgWithMax(3));
+            pool.RegisterForTest(new KbHandle("adhoc", "C:/KB/AdHoc"));
+            Assert.Contains(pool.ListKnown(), h => h.Alias == "adhoc");
+
+            Assert.True(pool.RecycleStalledWorker("adhoc"));
+
+            // Live entry gone (TryGet null), but still resolvable via the known set.
+            Assert.Null(pool.TryGet("adhoc"));
+            Assert.Contains(pool.ListKnown(), h => h.Alias == "adhoc");
+        }
+
+        [Fact]
+        public void RecycleStalledWorker_absent_alias_returns_false()
+        {
+            var pool = new WorkerPool(CfgWithMax(3));
+            Assert.False(pool.RecycleStalledWorker("ghost"));
+            Assert.False(pool.RecycleStalledWorker(null!));
+        }
+
+        [Fact]
+        public void RecycleStalledWorker_is_case_insensitive()
+        {
+            var pool = new WorkerPool(CfgWithMax(3));
+            pool.RegisterForTest(new KbHandle("ProdKb", "C:/P"));
+            Assert.True(pool.RecycleStalledWorker("PRODKB"));
+        }
+
         // issue #26 P3: the durable known set survives a live-entry drop (worker recycle)
         // but is cleared by an explicit Close.
         [Fact]
