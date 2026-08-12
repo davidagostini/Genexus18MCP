@@ -208,6 +208,7 @@ namespace GxMcp.Worker.Services
             _patternApplyService = new PatternApplyService(_objectService);
             _sdtService = new SDTService(_objectService);
             _structureService = new StructureService(_objectService);
+            _writeService.SetStructureService(_structureService);
             _authoringService = new Structure.AuthoringService(_objectService);
             _propertyService = new PropertyService(_objectService);
             _atomicAuthoringService = new AtomicAuthoringService(_objectService, _writeService, _propertyService, _buildService);
@@ -1664,6 +1665,7 @@ namespace GxMcp.Worker.Services
             if (action == "SetDomainProperties") return _structureService.SetDomainProperties(target, payload);
             if (action == "GetLogicStructure") return _structureService.GetLogicStructure(target);
             if (action == "UpdateGroupStructure") return _structureService.UpdateGroupStructure(target, payload);
+            if (action == "MoveAttribute") return _structureService.MoveAttribute(target, args);
             return null;
         }
 

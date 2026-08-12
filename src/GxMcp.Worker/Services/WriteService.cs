@@ -17,6 +17,7 @@ namespace GxMcp.Worker.Services
         private readonly ObjectService _objectService;
         private readonly PatternAnalysisService _patternAnalysisService;
         private ValidationService _validationService;
+        private StructureService _structureService;
         private static readonly object _persistenceWarmupLock = new object();
         private static bool _persistenceWarmupDone = false;
         private static readonly object _flushLock = new object();
@@ -33,6 +34,7 @@ namespace GxMcp.Worker.Services
         }
 
         public void SetValidationService(ValidationService vs) { _validationService = vs; }
+        public void SetStructureService(StructureService structureService) { _structureService = structureService; }
 
 
         private void InitializeFlushTimer()

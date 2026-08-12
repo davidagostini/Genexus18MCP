@@ -3050,9 +3050,27 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable). Write: update_visual (structure DSL for a Transaction; for an SDT it sets the root isCollection/collectionItemName and adds primitive, Domain-based (basedOnDomain) and SDT-reference members plus nested levels); update_group (SubType Group membership — each member {name, subtypeOf} registers the subtype attribute in the Group and asserts its SuperType link, IDE Group-editor parity; remove:[names] detaches); create_index/drop_index (unique/non-unique indexes — the GeneXus way to enforce uniqueness, there is no Unique() rule); set_attribute (Formula, subtype, Title/ColumnTitle, IsCollection, basedOnDomain on a KB-global attribute); set_level (Transaction level DescriptionAttribute/ImageAttribute); set_domain (edit an existing Domain's enumValues/dataType). After index/type changes run genexus_lifecycle action=reorg. For layout control trees use genexus_layout.",
+      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable). Write: move_attribute reorders the existing native TransactionAttribute without deleting/recreating it, with dry-run, optimistic concurrency, snapshot/rollback, nested levels, and post-save integrity verification; update_visual authors a Transaction/SDT structure; update_group edits SubType Group membership; create_index/drop_index manage indexes; set_attribute, set_level, and set_domain edit SDK properties. move_attribute never runs Specify, Generate, Build, Rebuild, reorganization, or Pattern application. After index/type changes run genexus_lifecycle action=reorg. For layout control trees use genexus_layout.",
       "inputSchema": {
         "examples": [
+          {
+            "action": "move_attribute",
+            "after": "SampleReferenceId",
+            "attribute": "SampleSubtypeId",
+            "dryRun": true,
+            "level": "root",
+            "name": "SampleTransaction"
+          },
+          {
+            "action": "move_attribute",
+            "after": "NestedId",
+            "attribute": "NestedDescription",
+            "levelPath": [
+              "Item",
+              "Operation"
+            ],
+            "name": "SampleTransaction"
+          },
           {
             "action": "get_indexes",
             "name": "Customer"
@@ -3071,7 +3089,7 @@
             "action": "set_attribute",
             "name": "CustomerBalance",
             "payload": {
-              "formula": "sum(InvoiceAmount)"
+              "formula": "sum(SampleTransactionAmount)"
             }
           },
           {
@@ -3129,28 +3147,70 @@
               "set_level",
               "set_domain",
               "get_logic",
-              "update_group"
+              "update_group",
+              "move_attribute"
             ],
             "type": "string"
+          },
+          "after": {
+            "description": "move_attribute: place attribute after this attribute in the same level. Mutually exclusive with before/position.",
+            "type": "string"
+          },
+          "attribute": {
+            "description": "move_attribute: existing attribute to reorder by native SDK identity.",
+            "type": "string"
+          },
+          "baseVersion": {
+            "description": "move_attribute: versionToken from a prior read; stale Transactions return StaleObject.",
+            "type": "string"
+          },
+          "before": {
+            "description": "move_attribute: place attribute before this attribute in the same level. Mutually exclusive with after/position.",
+            "type": "string"
+          },
+          "dryRun": {
+            "default": false,
+            "description": "move_attribute: preview old/new positions without saving.",
+            "type": "boolean"
           },
           "kb": {
             "description": "KB alias.",
             "type": "string"
           },
+          "level": {
+            "description": "move_attribute: root (default) or an unambiguous subordinate level name.",
+            "type": "string"
+          },
+          "levelPath": {
+            "description": "move_attribute: nested level path, e.g. [\"Item\",\"Operation\"].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "module": {
+            "description": "move_attribute optional: Transaction module.",
+            "type": "string"
+          },
           "name": {
-            "description": "Object name. For set_attribute it is the attribute name; for set_domain the domain name.",
+            "description": "Object name. move_attribute: Transaction name; set_attribute: attribute name; set_domain: domain name.",
             "type": "string"
           },
           "payload": {
             "description": "update_visual (Transaction):{children:[...]}; update_visual (SDT):{isCollection?,collectionItemName?,children:[{name,type?,length?,decimals?,basedOnDomain?,isCollection?,isLevel?,children?}]}. update_group:{members:[{name,subtypeOf}],remove?:[name]}. create_index:{attributes:[\"Attr\"],unique?:true,name?,order?}. drop_index:{indexName}. set_attribute:{formula?,subtypeOf?,title?,columnTitle?,contextualTitle?,isCollection?,basedOnDomain?}. set_level:{level?,descriptionAttribute?,imageAttribute?}. set_domain:{enumValues:[{name,value,description?}],dataType?,length?,decimals?,signed?}.",
             "type": "object"
           },
+          "position": {
+            "description": "move_attribute: zero-based final attribute position in the level. Mutually exclusive with before/after.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "rollbackOnFailure": {
-            "description": "Issue #60: with validationMode=specify, restore the pre-write state when the specify pass reports errors. Structure/Domain writes have no pre-write snapshot, so rollback reports rolledBack=false (the object keeps the new state) when spec fails.",
+            "description": "Issue #60: with validationMode=specify, restore the pre-write state when supported. move_attribute always snapshots and rolls back automatically on any failed integrity check.",
             "type": "boolean"
           },
           "validationMode": {
-            "description": "Issue #60: run the inline Specify pass (Spec+Gen, no Compile) after a structure write (update_visual / set_domain / set_attribute / set_level / update_group), returning structured spc*/gen* diagnostics in the same call. Combines with rollbackOnFailure.",
+            "description": "Issue #60: run the inline Specify pass (Spec+Gen, no Compile) after update_visual/set_domain/set_attribute/set_level/update_group. Not accepted by move_attribute.",
             "enum": [
               "specify"
             ],

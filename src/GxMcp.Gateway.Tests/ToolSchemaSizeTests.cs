@@ -117,7 +117,10 @@ namespace GxMcp.Gateway.Tests
             //   the compatible mode/baseVersion and expectedVersion/updateExisting
             //   aliases plus native Domain-binding guidance. Measured ~19350; ~150
             //   headroom.
-            Assert.True(approxTokens < 19500, $"tool_definitions.json is ~{approxTokens} tokens; budget 19500.");
+            //   2026-08-12 (move_attribute): 19500 → 19800 for native Transaction
+            //   attribute reordering with before/after/position, nested level paths,
+            //   dry-run, module lookup and baseVersion. Measured ~19637; ~163 headroom.
+            Assert.True(approxTokens < 19800, $"tool_definitions.json is ~{approxTokens} tokens; budget 19800.");
         }
     }
 }
