@@ -281,7 +281,8 @@ namespace GxMcp.Gateway
                        string.Equals(action, "set_attribute", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(action, "set_level", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(action, "set_domain", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(action, "update_group", StringComparison.OrdinalIgnoreCase);
+                       string.Equals(action, "update_group", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "move_attribute", StringComparison.OrdinalIgnoreCase);
             }
 
             if (string.Equals(toolName, "genexus_layout", StringComparison.OrdinalIgnoreCase))

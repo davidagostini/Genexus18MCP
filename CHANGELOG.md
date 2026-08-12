@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **`genexus_structure action=move_attribute` reorders an existing Transaction attribute without recreating it.** Place an attribute `before` or `after` another attribute in the same level, or at a zero-based `position`; root, named, and nested `levelPath` levels are supported. Dry runs show only the affected positions, `baseVersion` rejects stale edits, and effective writes snapshot every Transaction part, re-read after save, verify native identities/properties and relative order, and restore the complete snapshot if GeneXus normalizes the move or changes anything else. The operation never specifies, generates, builds, reorganizes, or reapplies a Pattern.
+
+### Internal
+
+- Raised the tool-schema budget from 19,500 to 19,800 tokens for the `move_attribute` action and its module, attribute, before/after/position, level/levelPath, dry-run, and optimistic-concurrency fields (measured about 19,637 tokens).
+
 ## v2.40.1 - 2026-08-11
 
 ### Fixed

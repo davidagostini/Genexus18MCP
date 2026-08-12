@@ -1207,6 +1207,7 @@ namespace GxMcp.Gateway.Routers
                 "set_domain" => "SetDomainProperties",
                 "get_logic" => "GetLogicStructure",
                 "update_group" => "UpdateGroupStructure",
+                "move_attribute" => "MoveAttribute",
                 _ => null
             };
 
@@ -1218,6 +1219,15 @@ namespace GxMcp.Gateway.Routers
                 action = mappedAction,
                 target = args?["name"]?.ToString(),
                 payload = args?["payload"]?.ToString(),
+                transactionModule = args?["module"]?.ToString(),
+                attribute = args?["attribute"]?.ToString(),
+                before = args?["before"]?.ToString(),
+                after = args?["after"]?.ToString(),
+                position = args?["position"]?.ToObject<int?>(),
+                level = args?["level"]?.ToString(),
+                levelPath = args?["levelPath"],
+                dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                baseVersion = args?["baseVersion"]?.ToString(),
                 // issue #60 — validationMode="specify" runs the inline Specify pass after a
                 // structure write; rollbackOnFailure restores the pre-write state on spec errors.
                 validationMode = args?["validationMode"]?.ToString(),
