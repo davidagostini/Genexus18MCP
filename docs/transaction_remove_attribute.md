@@ -6,7 +6,7 @@ change its SubType Group membership.
 
 ```json
 {
-  "name": "Invoice",
+  "name": "SampleTransaction",
   "type": "Transaction",
   "part": "Structure",
   "mode": "ops",
@@ -14,12 +14,12 @@ change its SubType Group membership.
     {
       "op": "remove_attribute",
       "args": {
-        "name": "InvoiceLegacyCode"
+        "name": "SampleLegacyAttribute"
       }
     }
   ],
   "dryRun": true,
-  "baseVersion": "639221476170000000",
+  "baseVersion": "VERSION_TOKEN_FROM_PREVIEW",
   "rollbackOnFailure": true
 }
 ```

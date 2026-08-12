@@ -3055,21 +3055,21 @@
         "examples": [
           {
             "action": "move_attribute",
-            "after": "InvoiceRouteProcessId",
-            "attribute": "InvoiceProcess_SubtypeId",
+            "after": "SampleReferenceId",
+            "attribute": "SampleSubtypeId",
             "dryRun": true,
             "level": "root",
-            "name": "Invoice"
+            "name": "SampleTransaction"
           },
           {
             "action": "move_attribute",
-            "after": "OperationId",
-            "attribute": "OperationDescription",
+            "after": "NestedId",
+            "attribute": "NestedDescription",
             "levelPath": [
               "Item",
               "Operation"
             ],
-            "name": "Invoice"
+            "name": "SampleTransaction"
           },
           {
             "action": "get_indexes",
@@ -3089,7 +3089,7 @@
             "action": "set_attribute",
             "name": "CustomerBalance",
             "payload": {
-              "formula": "sum(InvoiceAmount)"
+              "formula": "sum(SampleTransactionAmount)"
             }
           },
           {

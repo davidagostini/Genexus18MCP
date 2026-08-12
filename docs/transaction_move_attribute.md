@@ -6,9 +6,9 @@
 ```json
 {
   "action": "move_attribute",
-  "name": "Invoice",
-  "attribute": "InvoiceProcess_SubtypeId",
-  "after": "InvoiceRouteProcessId",
+  "name": "SampleTransaction",
+  "attribute": "SampleSubtypeId",
+  "after": "SampleReferenceId",
   "level": "root",
   "dryRun": true
 }

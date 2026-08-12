@@ -8,37 +8,37 @@ namespace GxMcp.Worker.Tests
     {
         private static readonly string[] Before =
         {
-            "ProcessoID",
-            "ProcessoRPI_ProcessoID",
-            "ProcessoNome",
-            "ProcessoArmazemID",
-            "ProcessoTipoOperacao",
-            "RoteiroProcessoID",
-            "RoteiroProcessoDescricao"
+            "SampleId",
+            "SampleSubtypeId",
+            "SampleName",
+            "SampleLocationId",
+            "SampleOperationType",
+            "SampleRouteId",
+            "SampleRouteDescription"
         };
 
         [Fact]
         public void After_MovesOnlyTargetAndKeepsRelativeOrder()
         {
-            var plan = AttributeMovePlanner.Create(Before, "ProcessoRPI_ProcessoID",
-                before: null, after: "RoteiroProcessoID", position: null);
+            var plan = AttributeMovePlanner.Create(Before, "SampleSubtypeId",
+                before: null, after: "SampleRouteId", position: null);
 
             Assert.Equal(1, plan.OldPosition);
             Assert.Equal(5, plan.NewPosition);
             Assert.Equal(new[]
             {
-                "ProcessoID", "ProcessoNome", "ProcessoArmazemID",
-                "ProcessoTipoOperacao", "RoteiroProcessoID",
-                "ProcessoRPI_ProcessoID", "RoteiroProcessoDescricao"
+                "SampleId", "SampleName", "SampleLocationId",
+                "SampleOperationType", "SampleRouteId",
+                "SampleSubtypeId", "SampleRouteDescription"
             }, plan.OrderedNames);
         }
 
         [Fact]
         public void Before_AndPosition_AreZeroBased()
         {
-            var before = AttributeMovePlanner.Create(Before, "ProcessoRPI_ProcessoID",
-                before: "RoteiroProcessoDescricao", after: null, position: null);
-            var position = AttributeMovePlanner.Create(Before, "ProcessoRPI_ProcessoID",
+            var before = AttributeMovePlanner.Create(Before, "SampleSubtypeId",
+                before: "SampleRouteDescription", after: null, position: null);
+            var position = AttributeMovePlanner.Create(Before, "SampleSubtypeId",
                 before: null, after: null, position: 5);
 
             Assert.Equal(before.OrderedNames, position.OrderedNames);
@@ -48,18 +48,18 @@ namespace GxMcp.Worker.Tests
         public void RequiresExactlyOneSelector()
         {
             Assert.Throws<ArgumentException>(() => AttributeMovePlanner.Create(
-                Before, "ProcessoID", null, null, null));
+                Before, "SampleId", null, null, null));
             Assert.Throws<ArgumentException>(() => AttributeMovePlanner.Create(
-                Before, "ProcessoID", "ProcessoNome", null, 0));
+                Before, "SampleId", "SampleName", null, 0));
         }
 
         [Fact]
         public void RejectsMissingReferenceAndOutOfRangePosition()
         {
             Assert.Throws<InvalidOperationException>(() => AttributeMovePlanner.Create(
-                Before, "ProcessoID", null, "Missing", null));
+                Before, "SampleId", null, "Missing", null));
             Assert.Throws<ArgumentOutOfRangeException>(() => AttributeMovePlanner.Create(
-                Before, "ProcessoID", null, null, 99));
+                Before, "SampleId", null, null, 99));
         }
     }
 }

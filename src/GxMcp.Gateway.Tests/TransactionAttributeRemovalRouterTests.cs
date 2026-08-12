@@ -10,16 +10,16 @@ namespace GxMcp.Gateway.Tests
         public void GenexusEdit_RemoveAttribute_ForwardsPersistenceSafetyArguments()
         {
             var args = JObject.Parse(@"{
-              'name':'Invoice',
+              'name':'SampleTransaction',
               'part':'Structure',
               'mode':'ops',
               'type':'Transaction',
               'ops':[{'op':'remove_attribute','args':{
-                'name':'InvoiceLegacyCode',
+                'name':'SampleLegacyAttribute',
                 'levelPath':['Item','Operation']
               }}],
               'dryRun':true,
-              'baseVersion':'638905012345678901',
+              'baseVersion':'sample-version-token',
               'rollbackOnFailure':true
             }");
 
@@ -28,21 +28,21 @@ namespace GxMcp.Gateway.Tests
 
             Assert.Equal("SemanticOps", json["module"]!.ToString());
             Assert.Equal("Apply", json["action"]!.ToString());
-            Assert.Equal("Invoice", json["target"]!.ToString());
+            Assert.Equal("SampleTransaction", json["target"]!.ToString());
             Assert.Equal("Structure", json["part"]!.ToString());
             Assert.Equal("remove_attribute", json["ops"]![0]!["op"]!.ToString());
             Assert.Equal("Operation", json["ops"]![0]!["args"]!["levelPath"]![1]!.ToString());
             Assert.True(json["dryRun"]!.Value<bool>());
             Assert.True(json["rollbackOnFailure"]!.Value<bool>());
-            Assert.Equal("638905012345678901", json["baseVersion"]!.ToString());
+            Assert.Equal("sample-version-token", json["baseVersion"]!.ToString());
         }
 
         [Fact]
         public void GenexusEdit_RemoveAttribute_DefaultsRollbackOnFailureToTrue()
         {
             var args = JObject.Parse(@"{
-              'name':'Invoice','part':'Structure','mode':'ops',
-              'ops':[{'op':'remove_attribute','name':'InvoiceLegacyCode'}]
+              'name':'SampleTransaction','part':'Structure','mode':'ops',
+              'ops':[{'op':'remove_attribute','name':'SampleLegacyAttribute'}]
             }");
 
             var json = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args)!);

@@ -11,10 +11,10 @@ namespace GxMcp.Gateway.Tests
         {
             var args = JObject.Parse(@"{
               'action':'move_attribute',
-              'name':'Invoice',
-              'module':'Operational',
-              'attribute':'InvoiceProcess_SubtypeId',
-              'after':'InvoiceRouteProcessId',
+              'name':'SampleTransaction',
+              'module':'SampleModule',
+              'attribute':'SampleSubtypeId',
+              'after':'SampleReferenceId',
               'levelPath':['Item','Operation'],
               'dryRun':true,
               'baseVersion':'12345'
@@ -25,10 +25,10 @@ namespace GxMcp.Gateway.Tests
 
             Assert.Equal("Structure", json["module"]!.ToString());
             Assert.Equal("MoveAttribute", json["action"]!.ToString());
-            Assert.Equal("Invoice", json["target"]!.ToString());
-            Assert.Equal("Operational", json["transactionModule"]!.ToString());
-            Assert.Equal("InvoiceProcess_SubtypeId", json["attribute"]!.ToString());
-            Assert.Equal("InvoiceRouteProcessId", json["after"]!.ToString());
+            Assert.Equal("SampleTransaction", json["target"]!.ToString());
+            Assert.Equal("SampleModule", json["transactionModule"]!.ToString());
+            Assert.Equal("SampleSubtypeId", json["attribute"]!.ToString());
+            Assert.Equal("SampleReferenceId", json["after"]!.ToString());
             Assert.Equal("Operation", json["levelPath"]![1]!.ToString());
             Assert.True(json["dryRun"]!.Value<bool>());
             Assert.Equal("12345", json["baseVersion"]!.ToString());
