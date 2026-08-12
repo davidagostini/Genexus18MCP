@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.40.2 - 2026-08-12
+
 ### Added
 
 - **`genexus_edit` can persistently remove an Attribute reference from a Transaction Structure.** A single `remove_attribute` semantic operation now detaches the native `TransactionAttribute`, saves and re-reads the Transaction, and returns a before/after diff. The KB-global Attribute and its SubType Group memberships are hash/membership verified as preserved; `dryRun`, `baseVersion`, and automatic snapshot rollback are supported.
@@ -2247,6 +2249,8 @@ WorkWithPlus on a bare WebPanel now works end-to-end. Apply the pattern, get a h
 
 ## Unreleased
 
+## v2.40.2 - 2026-08-12
+
 ## v2.40.1 - 2026-08-11
 
 ## v2.40.0 - 2026-08-10
@@ -3370,6 +3374,8 @@ Plan: `docs/superpowers/plans/2026-05-13-mcp-perf-and-tool-stability-v2.2.0.md`.
   process level (single env-flip kill switch).
 
 ## Unreleased
+
+## v2.40.2 - 2026-08-12
 
 ## v2.40.1 - 2026-08-11
 
