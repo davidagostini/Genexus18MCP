@@ -1,6 +1,6 @@
 param(
     [string]$CoverageRoot = "",
-    [double]$MinLineRatePercent = 50
+    [double]$MinLineRatePercent = 60
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)

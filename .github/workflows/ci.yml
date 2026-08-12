@@ -53,7 +53,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/coverage/collect.ps1 -OutputRoot "$env:RUNNER_TEMP\gx-coverage-artifacts"
-          ./scripts/coverage/assert-threshold.ps1 -CoverageRoot "$env:RUNNER_TEMP\gx-coverage-artifacts" -MinLineRatePercent 50
+          ./scripts/coverage/assert-threshold.ps1 -CoverageRoot "$env:RUNNER_TEMP\gx-coverage-artifacts" -MinLineRatePercent 60
 
       - name: Upload coverage artifacts
         if: always()
