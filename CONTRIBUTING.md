@@ -51,7 +51,17 @@ $coverageRoot = Join-Path $env:TEMP 'gx-coverage-pr'
 cd src\nexus-ide; npm run lint
 ```
 
-`collect.ps1` skips the Worker half when GeneXus 18 isn't installed locally (it drops a `worker.skipped.txt` marker and `assert-threshold.ps1` enforces only the Gateway floor in that case) — so without a local GeneXus install you exercise the Gateway coverage gate only, same as a GitHub-hosted runner.
+`collect.ps1` resolves the GeneXus SDK from `-GxPath`, then `GX_PATH`, then the default installation directory. For a non-default installation, use either form:
+
+```pwsh
+$env:GX_PATH = 'C:\GeneXus\GeneXus18U16'
+.\scripts\coverage\collect.ps1 -OutputRoot $coverageRoot
+
+# Or keep the setting scoped to this invocation.
+.\scripts\coverage\collect.ps1 -OutputRoot $coverageRoot -GxPath 'C:\GeneXus\GeneXus18U16'
+```
+
+An explicitly configured path that does not contain `Artech.Architecture.Common.dll` fails immediately instead of silently skipping Worker coverage. When no path is configured and the default installation is absent, the script drops a `worker.skipped.txt` marker and `assert-threshold.ps1` enforces only the Gateway floor — the same behavior as a GitHub-hosted runner.
 
 If a tool schema or description changed, update and verify the discovery golden before running coverage:
 
