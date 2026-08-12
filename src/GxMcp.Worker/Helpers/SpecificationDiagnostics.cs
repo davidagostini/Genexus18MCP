@@ -18,7 +18,7 @@ namespace GxMcp.Worker.Helpers
     /// </summary>
     public static class SpecificationDiagnostics
     {
-        // "error spc0056: ..." / "error gen0022: ..." / "error CS0246: ..." / "error MSB3027: ..."
+        // "error spc0056: ..." / "error src0294: ..." / "error CS0246: ..." / "error gtm0092: ..."
         private static readonly Regex _rxErrorCode = new Regex(
             @"\berror\s+(?<code>[A-Za-z]{2,4}\d+)\s*:",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -91,11 +91,12 @@ namespace GxMcp.Worker.Helpers
         }
 
         /// <summary>
-        /// True when the envelope carries any spec/gen error (spc#### / gen####) —
-        /// the diagnostic family issue #60 cares about. Environment (MSB/CS) and
-        /// authored-code (CS) errors are surfaced separately by the parser but do
-        /// not, by themselves, flip this to true (a KB environment gap is not the
-        /// edited object's fault).
+        /// True when the envelope carries any source/specification error
+        /// (spc#### / gen#### / src#### / qry####) —
+        /// the diagnostic families issue #60 cares about. Environment (MSB/CS/gtm and
+        /// related infrastructure families) and authored-code (CS) errors are surfaced
+        /// separately by the parser but do not, by themselves, flip this to true (a KB
+        /// environment gap is not the edited object's fault).
         /// </summary>
         public static bool HasSpecErrors(string statusJson)
         {
@@ -105,7 +106,9 @@ namespace GxMcp.Worker.Helpers
             {
                 string code = d["code"]?.ToString() ?? string.Empty;
                 if (code.StartsWith("spc", StringComparison.OrdinalIgnoreCase)
-                    || code.StartsWith("gen", StringComparison.OrdinalIgnoreCase))
+                    || code.StartsWith("gen", StringComparison.OrdinalIgnoreCase)
+                    || code.StartsWith("src", StringComparison.OrdinalIgnoreCase)
+                    || code.StartsWith("qry", StringComparison.OrdinalIgnoreCase))
                     return true;
             }
             return false;

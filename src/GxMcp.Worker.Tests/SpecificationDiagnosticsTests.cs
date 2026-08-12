@@ -114,16 +114,22 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void HasSpecErrors_OnlySpcGenCodesCount()
+        public void HasSpecErrors_CountsSourceAndQueryFamilies_ButNotInfrastructure()
         {
             string spc = "{\"Errors\":[\"error spc0056: bad\"]}";
             string gen = "{\"Errors\":[\"error gen0022: bad\"]}";
+            string src = "{\"Errors\":[\"error src0294: bad\"]}";
+            string qry = "{\"Errors\":[\"error qry0001: bad\"]}";
             string cs = "{\"Errors\":[\"error CS0246: bad\"]}";
             string msb = "{\"Errors\":[\"error MSB3027: locked\"]}";
+            string gtm = "{\"Errors\":[\"error gtm0092: restore failed\"]}";
             Assert.True(SpecificationDiagnostics.HasSpecErrors(spc));
             Assert.True(SpecificationDiagnostics.HasSpecErrors(gen));
+            Assert.True(SpecificationDiagnostics.HasSpecErrors(src));
+            Assert.True(SpecificationDiagnostics.HasSpecErrors(qry));
             Assert.False(SpecificationDiagnostics.HasSpecErrors(cs));
             Assert.False(SpecificationDiagnostics.HasSpecErrors(msb));
+            Assert.False(SpecificationDiagnostics.HasSpecErrors(gtm));
         }
     }
 }

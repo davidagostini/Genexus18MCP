@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- Build diagnostics now classify GeneXus source/query errors (`src####`, `qry####`)
+  as specification failures and build-infrastructure errors (`gtm####`, `mtd####`,
+  `pmm####`, `rgz####`, `rgo####`) as environment failures, so recovery guidance
+  points to the correct cause.
+- WorkWithPlus `userAction` bindings now persist the `gxobject` target through the
+  SDK PatternInstance change command when the XML deserializer drops it.
+
 ## v2.40.1 - 2026-08-11
 
 ### Fixed

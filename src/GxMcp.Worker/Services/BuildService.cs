@@ -444,14 +444,15 @@ namespace GxMcp.Worker.Services
         //   environment: CS2001 (missing generated .cs, e.g. GxWebServicesConfig.cs),
         //                MSB3245 (unresolved DLL ref), MSB3027/MSB3021 (locked output),
         //                MSB4018/MSB4062 (task crash), CS0006 (missing metadata file),
-        //                NU#### (NuGet restore).
-        //   spec:        spc####, gen####.
+        //                NU#### (NuGet restore), gtm####/mtd####/pmm#### (build infrastructure),
+        //                rgz####/rgo#### (reorganization infrastructure).
+        //   spec:        spc####, gen####, src####, qry####.
         //   code:        everything else that matched _rxError (authored-code CS####).
         private static readonly Regex _rxEnvError = new Regex(
-            @"\b(CS2001|CS0006|MSB3245|MSB3027|MSB3021|MSB4018|MSB4062|NU\d{3,4})\b",
+            @"\b(CS2001|CS0006|MSB3245|MSB3027|MSB3021|MSB4018|MSB4062|NU\d{3,4}|gtm\d+|mtd\d+|pmm\d+|rgz\d+|rgo\d+)\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex _rxSpecError = new Regex(
-            @"\berror\s+(spc|gen)\d+\b",
+            @"\berror\s+(spc|gen|src|qry)\d+\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         internal static string ClassifyErrorCategory(string line)
@@ -551,12 +552,12 @@ namespace GxMcp.Worker.Services
             [JsonProperty("envErrorsHint")]
             public string EnvErrorsHint =>
                 (EnvErrorCount > 0 && CodeErrorCount == 0)
-                    ? "Build failed only on environment/infra errors (missing generated sources, unresolved DLL references, locked outputs, or NuGet restore) — not on the edited object's spec/code. Fix the KB environment (regenerate/restore) and rebuild; the authored object may already be correct."
+                    ? "Build failed only on environment/infra errors (missing generated sources, unresolved DLL references, locked outputs, metadata/package generation, reorganization, or NuGet restore) — not on the edited object's spec/code. Fix the KB environment (regenerate/restore) and rebuild; the authored object may already be correct."
                     : null;
             [JsonProperty("specErrorCount")]
             public int SpecErrorCount =>
                 (ErrorsDetailed ?? new List<ErrorDetail>()).Count(e => e.category == "spec");
-            // spc####/gen#### diagnostics are only trustworthy when the build environment
+            // spc####/gen####/src####/qry#### diagnostics are only trustworthy when the build environment
             // is fully generated. In an ungenerated/broken environment the specifier can
             // emit a spurious spc#### that is invariant to the Source (fixed line number,
             // fires even on known-good objects). Surface a hint whenever spec errors appear
@@ -566,8 +567,8 @@ namespace GxMcp.Worker.Services
             public string SpecErrorsHint =>
                 (SpecErrorCount > 0)
                     ? ((EnvErrorCount > 0
-                            ? "Both spec (spc####/gen####) and environment/infra errors are present — the spec errors are likely INDUCED by the ungenerated/broken build environment, not by the object's Source. "
-                            : "Spec diagnostics (spc####/gen####) depend on a fully generated build environment. ")
+                            ? "Both spec (spc####/gen####/src####/qry####) and environment/infra errors are present — the spec errors are likely INDUCED by the ungenerated/broken build environment, not by the object's Source. "
+                            : "Spec diagnostics (spc####/gen####/src####/qry####) depend on a fully generated build environment. ")
                        + "If a spc#### cites a fixed line unrelated to the actual Source, or fires regardless of what the Source contains (even on known-good objects), regenerate the environment (genexus_lifecycle action=rebuild, then action=reorg) before treating it as an authored-code error. For build-independent Source validation use genexus_lifecycle action=validate (save-time SDK check).")
                     : null;
             // FR#9 (v2.6.6 Stream E): CS2001 errors referencing "<obj>_bc.cs" where

@@ -142,6 +142,11 @@ namespace GxMcp.Worker.Services
                     // unchanged in memory — Save() was a no-op and persistedHash kept matching the pre-write
                     // value. BuildPatternPartEnvelope already produced the wrapped form; route it through.
                     ApplyPatternEnvelope(resolvedPart, envelope, normalizedInput);
+                    int semanticGxObjectRepairs = PatternSemanticAttributeWriter.ApplyGxObjectAttributes(resolvedPart, normalizedInput);
+                    if (semanticGxObjectRepairs > 0)
+                    {
+                        Logger.Info("[PATTERN-WRITE] Repaired " + semanticGxObjectRepairs + " userAction gxobject attribute(s) through the Pattern change command.");
+                    }
                     LogPatternInMemoryStateIfEnabled(obj, resolvedPart, partName, normalizedInput);
                     LogPatternValidationState("after apply before presave", resolvedObject);
                     RunPatternPreSaveExperimentIfEnabled(resolvedObject, resolvedPart, normalizedInput);
