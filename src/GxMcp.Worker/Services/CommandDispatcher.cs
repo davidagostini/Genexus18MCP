@@ -1367,7 +1367,10 @@ namespace GxMcp.Worker.Services
                     args?["verifyRollback"]?.ToObject<bool?>() ?? false,
                     args?["return_post_state"]?.ToObject<bool?>() ?? true,
                     args?["verbose"]?.ToObject<bool?>() ?? false,
-                    args?["replaceAll"]?.ToObject<bool?>() ?? false);
+                    args?["replaceAll"]?.ToObject<bool?>() ?? false,
+                    args?["verifyMode"]?.ToString(),
+                    args?["baseVersion"]?.ToString(),
+                    args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false);
                 // issue #60 — validationMode="specify" runs the inline Specify pass after the
                 // write and surfaces structured diagnostics (or rolls back).
                 patchResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(patchResp, target, args, args?["part"]?.ToString());

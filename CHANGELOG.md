@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed
+
+- `genexus_edit mode=patch` now always re-reads Source/Rules after the SDK save
+  and supports `verifyMode=normalized|semantic|exact` (`normalized` by default).
+  Harmless SDK normalization of EOLs, encoding markers, trailing whitespace, or
+  repeated blank lines no longer produces a false `WriteNotPersisted`. Responses
+  include raw and normalized SHA-256 hashes plus re-read, match, replacement, and
+  normalization evidence. A real mismatch performs no implicit second write;
+  rollback occurs only when explicitly requested with a valid snapshot.
+- Patch-mode edits now enforce `baseVersion` optimistic concurrency at entry and
+  again immediately before the single write. `dryRun` remains non-persistent and
+  does not claim a post-save re-read.
+
 ## v2.40.1 - 2026-08-11
 
 ### Fixed

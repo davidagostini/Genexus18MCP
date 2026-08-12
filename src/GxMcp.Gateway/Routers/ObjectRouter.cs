@@ -262,7 +262,9 @@ namespace GxMcp.Gateway.Routers
                             // issue #60 — save+specify: run the inline Specify pass after the
                             // write when validationMode="specify" (rollback on spec errors).
                             validationMode = args?["validationMode"]?.ToString(),
-                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
+                            verifyMode = args?["verifyMode"]?.ToString(),
+                            baseVersion = args?["baseVersion"]?.ToString()
                         };
                     }
                     else
@@ -300,7 +302,10 @@ namespace GxMcp.Gateway.Routers
                         context = args?["context"]?.ToString(),
                         expectedCount = args?["expectedCount"]?.ToObject<int?>() ?? 1,
                         dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
-                        verifyRollback = args?["verifyRollback"]?.ToObject<bool?>() ?? false
+                        verifyRollback = args?["verifyRollback"]?.ToObject<bool?>() ?? false,
+                        verifyMode = args?["verifyMode"]?.ToString(),
+                        baseVersion = args?["baseVersion"]?.ToString(),
+                        rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                     };
                 case "genexus_write_object":
                     return new { module = "Write", action = part, target = target, payload = args?["code"]?.ToString() };
