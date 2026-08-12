@@ -1067,7 +1067,7 @@
             "type": "boolean"
           },
           "baseVersion": {
-            "description": "Optimistic concurrency: pass the versionToken from the genexus_read this edit is based on. If the object changed since (e.g. edited in the IDE), the write is refused with StaleObject instead of overwriting the newer version. Omit to skip the check.",
+            "description": "Optimistic concurrency: pass the versionToken from the genexus_read this edit is based on. If the object changed since (e.g. edited in the IDE), the write is refused with VersionConflict instead of overwriting the newer version. Omit to skip the check.",
             "type": "string"
           },
           "content": {
