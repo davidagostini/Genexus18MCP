@@ -41,6 +41,11 @@ namespace GxMcp.Worker.Services
                 // the v2.6.5 abort-on-first-failure semantics so existing callers are
                 // unaffected.
                 string validate = req["validate"]?.ToString();
+                string baseVersion = req["baseVersion"]?.ToString()
+                    ?? req["expectedVersion"]?.ToString()
+                    ?? req["versionToken"]?.ToString();
+                bool rollbackOnFailure = req["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
+                string transactionModule = req["transactionModule"]?.ToString();
 
                 if (string.IsNullOrEmpty(target))
                     throw new UsageException("usage_error", "target required");
@@ -53,7 +58,8 @@ namespace GxMcp.Worker.Services
                 if (!_objectService.GetKbService().IsOpen)
                     throw new UsageException("usage_error", "object '" + target + "' not found");
 
-                return ApplySemanticOpsCore(target, partName, opsRaw, dryRun, returnPostState, verbose, validate, typeFilter);
+                return ApplySemanticOpsCore(target, partName, opsRaw, dryRun, returnPostState, verbose,
+                    validate, typeFilter, baseVersion, rollbackOnFailure, transactionModule);
             }
             catch (UsageException ux)
             {
@@ -82,7 +88,10 @@ namespace GxMcp.Worker.Services
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        private string ApplySemanticOpsCore(string target, string partName, JArray opsRaw, bool dryRun, bool returnPostState = true, bool verbose = false, string validate = null, string typeFilter = null)
+        private string ApplySemanticOpsCore(string target, string partName, JArray opsRaw, bool dryRun,
+            bool returnPostState = true, bool verbose = false, string validate = null,
+            string typeFilter = null, string baseVersion = null, bool rollbackOnFailure = true,
+            string transactionModule = null)
         {
             var obj = _objectService.FindObject(target, typeFilter);
             if (obj == null)
@@ -99,6 +108,21 @@ namespace GxMcp.Worker.Services
                 && (partName.Equals("Structure", StringComparison.OrdinalIgnoreCase));
             if (isTrnStructure && ops.Count > 0)
             {
+                // Native GX18 persistent removal. TransactionLevel.Attributes has no public
+                // Remove API in v2.40.1; the StructureService detaches the exact
+                // TransactionAttribute from TransactionLevel.Items, snapshots first, re-reads,
+                // and verifies that the global Attribute/SubType Group remain untouched.
+                if (ops.Count == 1 && string.Equals(ops[0].Op, "remove_attribute", StringComparison.OrdinalIgnoreCase))
+                {
+                    var removeArgs = (JObject)ops[0].Args.DeepClone();
+                    removeArgs["attribute"] = ops[0].Args["name"]?.ToString();
+                    removeArgs["dryRun"] = dryRun || string.Equals(validate, "only", StringComparison.OrdinalIgnoreCase);
+                    removeArgs["rollbackOnFailure"] = rollbackOnFailure;
+                    if (!string.IsNullOrWhiteSpace(baseVersion)) removeArgs["baseVersion"] = baseVersion;
+                    if (!string.IsNullOrWhiteSpace(transactionModule)) removeArgs["transactionModule"] = transactionModule;
+                    return (_structureService ?? new StructureService(_objectService)).RemoveAttribute(target, removeArgs);
+                }
+
                 // B11: a Transaction Structure does NOT serialize to a <Structure>-rooted XML
                 // document, so ANY op that reaches the XML path below fails with the cryptic
                 // "<Structure> not found". Route attribute ops to the DSL path; if the batch

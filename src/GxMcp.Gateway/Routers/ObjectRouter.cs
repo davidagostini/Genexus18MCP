@@ -164,7 +164,9 @@ namespace GxMcp.Gateway.Routers
                             // issue #60 — save+specify: run the inline Specify pass after the
                             // write when validationMode="specify" (rollback on spec errors).
                             validationMode = args?["validationMode"]?.ToString(),
-                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                            baseVersion = args?["baseVersion"]?.ToString(),
+                            transactionModule = args?["module"]?.ToString()
                         };
                     }
                     if (mode == "patch")

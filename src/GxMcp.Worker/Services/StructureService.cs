@@ -352,6 +352,206 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// Removes one native TransactionAttribute reference from a Transaction level while
+        /// preserving the KB-global Attribute and every SubType Group membership.  GeneXus 18
+        /// does not expose a removal method on TransactionLevel.Attributes, so this uses the
+        /// same native TransactionLevel.Items storage as MoveAttribute and verifies a fresh
+        /// post-save read before reporting success.
+        /// </summary>
+        public string RemoveAttribute(string targetName, JObject args)
+        {
+            args = args ?? new JObject();
+            string moduleName = args["transactionModule"]?.ToString();
+            string attributeName = args["attribute"]?.ToString() ?? args["name"]?.ToString();
+            bool dryRun = args["dryRun"]?.ToObject<bool?>() ?? false;
+            bool rollbackOnFailure = args["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
+            string baseVersion = args["baseVersion"]?.ToString()
+                ?? args["expectedVersion"]?.ToString()
+                ?? args["versionToken"]?.ToString();
+
+            try
+            {
+                var trn = ResolveTransaction(targetName, moduleName);
+                if (trn == null)
+                    return Models.McpResponse.Err(
+                        code: "TransactionNotFound",
+                        message: string.IsNullOrWhiteSpace(moduleName)
+                            ? $"Transaction '{targetName}' was not found."
+                            : $"Transaction '{targetName}' was not found in module '{moduleName}'.",
+                        target: targetName);
+
+                string versionBefore = WriteService.ComputeVersionToken(trn);
+                if (!string.IsNullOrWhiteSpace(baseVersion)
+                    && !string.IsNullOrWhiteSpace(versionBefore)
+                    && !string.Equals(baseVersion, versionBefore, StringComparison.Ordinal))
+                    return Models.McpResponse.Err(
+                        code: "StaleObject",
+                        message: "The Transaction changed after the version supplied in baseVersion. The attribute reference was not removed.",
+                        hint: "Re-read the Transaction and retry with its current versionToken.",
+                        target: targetName,
+                        extra: new JObject
+                        {
+                            ["expectedVersion"] = baseVersion,
+                            ["currentVersion"] = versionBefore
+                        });
+
+                ResolvedLevel resolved;
+                string levelError;
+                if (!TryResolveLevel(trn, args, out resolved, out levelError))
+                    return Models.McpResponse.Err(
+                        code: "LevelNotFound",
+                        message: levelError,
+                        hint: "Use level=\"root\", an unambiguous level name, or levelPath=[\"Item\",\"Operation\"].",
+                        target: targetName);
+
+                var attributes = resolved.Level.Attributes.Cast<TransactionAttribute>().ToList();
+                int oldPosition = attributes.FindIndex(a => string.Equals(a.Name, attributeName, StringComparison.OrdinalIgnoreCase));
+                if (oldPosition < 0)
+                    return Models.McpResponse.Err(
+                        code: "AttributeNotFound",
+                        message: $"Attribute '{attributeName}' does not belong to level '{resolved.DisplayName}'.",
+                        target: targetName);
+
+                var targetAttribute = attributes[oldPosition];
+                var globalAttribute = targetAttribute.Attribute;
+                if (globalAttribute == null)
+                    return Models.McpResponse.Err(
+                        code: "GlobalAttributeNotResolved",
+                        message: $"The Transaction member '{attributeName}' is not bound to a KB-global Attribute; no write was attempted.",
+                        target: targetName);
+
+                string removedIdentity = AttributeIdentity(targetAttribute);
+                string globalGuid = globalAttribute.Guid.ToString("D");
+                string globalHash = Hash(CaptureEntity(globalAttribute).Data);
+                JArray groupsBefore = CaptureSubtypeGroups(globalAttribute);
+                var beforeNames = attributes.Select(a => a.Name).ToList();
+                var afterNames = beforeNames.Where((n, i) => i != oldPosition).ToList();
+                var result = BuildRemovalResult(targetName, moduleName, resolved, attributeName,
+                    oldPosition, beforeNames, afterNames, globalAttribute.Name, globalGuid,
+                    groupsBefore, dryRun, rollbackOnFailure, versionBefore);
+
+                if (dryRun)
+                    return Models.McpResponse.Ok(target: targetName, code: "AttributeRemovalPreview", result: result);
+
+                TransactionSnapshot snapshot;
+                try { snapshot = CaptureTransactionSnapshot(trn, removedIdentity, excludeIdentityDetails: true); }
+                catch (Exception ex)
+                {
+                    return Models.McpResponse.Err(
+                        code: "SnapshotFailed",
+                        message: "The Transaction could not be snapshotted safely; no write was attempted. " + ex.Message,
+                        target: targetName);
+                }
+
+                string snapshotPath = PersistStructureSnapshot(trn, snapshot, "remove-attribute");
+                string writeFailure = null;
+                using (var sdkTrans = trn.Model.KB.BeginTransaction())
+                {
+                    try
+                    {
+                        RemoveExistingAttribute(resolved.Level, targetAttribute);
+                        trn.Structure.Dirty = true;
+                        var preservedDefaults = trn.Parts.Cast<KBObjectPart>()
+                            .Where(p => !(p is StructurePart))
+                            .OfType<Artech.Architecture.Common.Defaults.IApplyDefaultTarget>()
+                            .ToList();
+                        foreach (var preserved in preservedDefaults) preserved.PreserveDefaultLock();
+                        try
+                        {
+                            trn.Save(new KBObjectSavePreferences
+                            {
+                                ForceSave = true,
+                                ForceSaveDefaultParts = false,
+                                SkipValidation = true
+                            });
+                        }
+                        finally
+                        {
+                            foreach (var preserved in preservedDefaults) preserved.PreserveDefaultUnlock();
+                        }
+                        sdkTrans.Commit();
+                    }
+                    catch (Exception ex)
+                    {
+                        try { sdkTrans.Rollback(); } catch { }
+                        writeFailure = ex.Message;
+                    }
+                }
+
+                if (writeFailure != null)
+                {
+                    var restored = rollbackOnFailure
+                        ? RestoreTransactionSnapshot(trn, snapshot)
+                        : new RestoreResult { Error = "rollbackOnFailure=false" };
+                    return Models.McpResponse.Err(
+                        code: "AttributeRemovalFailed",
+                        message: writeFailure,
+                        hint: rollbackOnFailure
+                            ? "The pre-write snapshot was restored; inspect rollbackVerified before retrying."
+                            : "Rollback was disabled; re-read the Transaction before retrying.",
+                        target: targetName,
+                        extra: new JObject
+                        {
+                            ["snapshot"] = snapshotPath,
+                            ["rollbackRequested"] = rollbackOnFailure,
+                            ["rolledBack"] = restored.Success,
+                            ["rollbackVerified"] = restored.Verified,
+                            ["rollbackError"] = restored.Error
+                        });
+                }
+
+                var persisted = ResolveTransaction(targetName, moduleName);
+                if (persisted != null)
+                    foreach (KBObjectPart part in persisted.Parts)
+                        try { ReloadEntity(part); } catch { }
+
+                string verificationError;
+                JObject verification;
+                bool verified = VerifyRemoval(persisted, resolved.Path, removedIdentity,
+                    attributeName, globalGuid, globalHash, groupsBefore, snapshot,
+                    out verification, out verificationError);
+                if (!verified)
+                {
+                    var restored = rollbackOnFailure
+                        ? RestoreTransactionSnapshot(persisted ?? trn, snapshot)
+                        : new RestoreResult { Error = "rollbackOnFailure=false" };
+                    return Models.McpResponse.Err(
+                        code: "AttributeRemovalNotPersisted",
+                        message: verificationError,
+                        hint: rollbackOnFailure
+                            ? "The complete pre-write Transaction snapshot was restored."
+                            : "Rollback was disabled; inspect the persisted diff before making another edit.",
+                        target: targetName,
+                        extra: new JObject
+                        {
+                            ["snapshot"] = snapshotPath,
+                            ["verification"] = verification,
+                            ["rollbackRequested"] = rollbackOnFailure,
+                            ["rolledBack"] = restored.Success,
+                            ["rollbackVerified"] = restored.Verified,
+                            ["rollbackError"] = restored.Error
+                        });
+                }
+
+                _objectService.GetKbService().GetIndexCache().UpdateEntry(persisted ?? trn);
+                result["snapshot"] = snapshotPath;
+                result["saved"] = true;
+                result["persistedVerified"] = true;
+                result["verification"] = verification;
+                result["versionToken"] = WriteService.ComputeVersionToken(persisted ?? trn);
+                return Models.McpResponse.Ok(target: targetName, code: "AttributeRemoved", result: result);
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "AttributeRemovalFailed",
+                    message: ex.Message,
+                    hint: "No global Attribute or SubType Group is deleted by this operation.",
+                    target: targetName);
+            }
+        }
+
         private Transaction ResolveTransaction(string name, string moduleName)
         {
             if (string.IsNullOrWhiteSpace(moduleName))
@@ -478,6 +678,114 @@ namespace GxMcp.Worker.Services
             dirtyProperty?.SetValue(items, true, null);
         }
 
+        private static void RemoveExistingAttribute(TransactionLevel level, TransactionAttribute target)
+        {
+            var items = level.Items;
+            var innerField = FindField(items.GetType(), "m_Inner");
+            var inner = innerField?.GetValue(items) as System.Collections.IList;
+            if (inner == null)
+                throw new InvalidOperationException("The SDK's native Structure item storage could not be resolved.");
+
+            int itemIndex = -1;
+            for (int i = 0; i < inner.Count; i++)
+            {
+                if (object.ReferenceEquals(inner[i], target)) { itemIndex = i; break; }
+            }
+            if (itemIndex < 0)
+                throw new InvalidOperationException("The native TransactionAttribute is not present in its level Items collection.");
+
+            // Remove only the TransactionAttribute reference.  Calling Delete/Remove on the
+            // KB-global Attribute is intentionally never part of this path.
+            inner.RemoveAt(itemIndex);
+            var dirtyProperty = items.GetType().GetProperty("Dirty",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            dirtyProperty?.SetValue(items, true, null);
+        }
+
+        private static JObject BuildRemovalResult(string targetName, string moduleName,
+            ResolvedLevel resolved, string attributeName, int oldPosition,
+            IList<string> beforeNames, IList<string> afterNames,
+            string globalName, string globalGuid, JArray subtypeGroups,
+            bool dryRun, bool rollbackOnFailure, string versionBefore)
+        {
+            return new JObject
+            {
+                ["operation"] = "remove_attribute",
+                ["transaction"] = targetName,
+                ["module"] = moduleName,
+                ["level"] = resolved.DisplayName,
+                ["levelPath"] = new JArray(resolved.Path ?? new List<string>()),
+                ["attribute"] = attributeName,
+                ["dryRun"] = dryRun,
+                ["rollbackOnFailure"] = rollbackOnFailure,
+                ["versionBefore"] = versionBefore,
+                ["before"] = new JObject
+                {
+                    ["position"] = oldPosition,
+                    ["attributes"] = new JArray(beforeNames)
+                },
+                ["after"] = new JObject
+                {
+                    ["position"] = null,
+                    ["attributes"] = new JArray(afterNames)
+                },
+                ["diff"] = new JObject
+                {
+                    ["removed"] = new JArray(new JObject
+                    {
+                        ["name"] = attributeName,
+                        ["position"] = oldPosition,
+                        ["level"] = resolved.DisplayName
+                    }),
+                    ["added"] = new JArray(),
+                    ["moved"] = new JArray()
+                },
+                ["globalAttribute"] = new JObject
+                {
+                    ["name"] = globalName,
+                    ["guid"] = globalGuid,
+                    ["preserved"] = true
+                },
+                ["subtypeGroups"] = new JObject
+                {
+                    ["before"] = subtypeGroups.DeepClone(),
+                    ["after"] = subtypeGroups.DeepClone(),
+                    ["preserved"] = true
+                }
+            };
+        }
+
+        private JArray CaptureSubtypeGroups(Artech.Genexus.Common.Objects.Attribute attribute)
+        {
+            var memberships = new JArray();
+            if (attribute == null) return memberships;
+            var kb = _objectService.GetKbService().GetKB();
+            if (kb == null) return memberships;
+
+            foreach (KBObject candidate in kb.DesignModel.Objects.GetAll())
+            {
+                var group = candidate as Group;
+                if (group == null) continue;
+                var part = group.Parts.Get<GroupStructurePart>();
+                if (part == null) continue;
+                foreach (var member in part.Members)
+                {
+                    if (member?.Subtype == null || member.Subtype.Guid != attribute.Guid) continue;
+                    memberships.Add(new JObject
+                    {
+                        ["group"] = group.Name,
+                        ["groupGuid"] = group.Guid.ToString("D"),
+                        ["subtype"] = member.Subtype.Name,
+                        ["supertype"] = member.Supertype?.Name
+                    });
+                }
+            }
+
+            return new JArray(memberships.OfType<JObject>()
+                .OrderBy(m => m["group"]?.ToString(), StringComparer.OrdinalIgnoreCase)
+                .Select(m => (JToken)m));
+        }
+
         private static FieldInfo FindField(Type type, string name)
         {
             while (type != null)
@@ -512,7 +820,8 @@ namespace GxMcp.Worker.Services
             public string Error { get; set; }
         }
 
-        private static TransactionSnapshot CaptureTransactionSnapshot(Transaction trn, string movedIdentity)
+        private static TransactionSnapshot CaptureTransactionSnapshot(Transaction trn, string movedIdentity,
+            bool excludeIdentityDetails = false)
         {
             var snapshot = new TransactionSnapshot();
             foreach (KBObjectPart part in trn.Parts)
@@ -523,41 +832,44 @@ namespace GxMcp.Worker.Services
             }
             if (string.IsNullOrWhiteSpace(snapshot.StructurePartKey))
                 throw new InvalidOperationException("The Transaction Structure part was not found.");
-            snapshot.Integrity = CaptureStructureIntegrity(trn, movedIdentity);
+            snapshot.Integrity = CaptureStructureIntegrity(trn, movedIdentity, excludeIdentityDetails);
             return snapshot;
         }
 
-        private static JObject CaptureStructureIntegrity(Transaction trn, string movedIdentity)
+        private static JObject CaptureStructureIntegrity(Transaction trn, string movedIdentity,
+            bool excludeIdentityDetails = false)
         {
             var details = new JObject();
             var order = new JObject();
-            CaptureLevelIntegrity(trn.Structure.Root, "root", movedIdentity, details, order);
+            CaptureLevelIntegrity(trn.Structure.Root, "root", movedIdentity, details, order, excludeIdentityDetails);
             return new JObject { ["details"] = details, ["orderWithoutMovedAttribute"] = order };
         }
 
-        private static void CaptureLevelIntegrity(TransactionLevel level, string path, string movedIdentity, JObject details, JObject order)
+        private static void CaptureLevelIntegrity(TransactionLevel level, string path, string movedIdentity,
+            JObject details, JObject order, bool excludeIdentityDetails = false)
         {
             string levelIdentity = "level:" + level.Guid.ToString("D");
             var attrOrder = new JArray();
             foreach (TransactionAttribute attr in level.Attributes)
             {
                 string id = AttributeIdentity(attr);
-                details[id] = new JObject
-                {
-                    ["name"] = attr.Name,
-                    ["level"] = levelIdentity,
-                    ["transactionAttributeId"] = attr.Id,
-                    ["transactionAttributeGuid"] = attr.Guid.ToString("D"),
-                    ["globalAttributeGuid"] = attr.Attribute?.Guid.ToString("D"),
-                    ["itemHash"] = Hash(SerializeItem(attr)),
-                    ["globalAttributeHash"] = attr.Attribute == null ? null : Hash(CaptureEntity(attr.Attribute).Data)
-                };
+                if (!excludeIdentityDetails || !string.Equals(id, movedIdentity, StringComparison.OrdinalIgnoreCase))
+                    details[id] = new JObject
+                    {
+                        ["name"] = attr.Name,
+                        ["level"] = levelIdentity,
+                        ["transactionAttributeId"] = attr.Id,
+                        ["transactionAttributeGuid"] = attr.Guid.ToString("D"),
+                        ["globalAttributeGuid"] = attr.Attribute?.Guid.ToString("D"),
+                        ["itemHash"] = Hash(SerializeItem(attr)),
+                        ["globalAttributeHash"] = attr.Attribute == null ? null : Hash(CaptureEntity(attr.Attribute).Data)
+                    };
                 if (!string.Equals(id, movedIdentity, StringComparison.OrdinalIgnoreCase)) attrOrder.Add(id);
             }
             var levelOrder = new JArray(level.Levels.Cast<TransactionLevel>().Select(l => l.Guid.ToString("D")));
             order[levelIdentity] = new JObject { ["attributes"] = attrOrder, ["levels"] = levelOrder, ["path"] = path };
             foreach (TransactionLevel child in level.Levels)
-                CaptureLevelIntegrity(child, path + "/" + child.Name, movedIdentity, details, order);
+                CaptureLevelIntegrity(child, path + "/" + child.Name, movedIdentity, details, order, excludeIdentityDetails);
         }
 
         private static byte[] SerializeItem(Artech.Common.Helpers.Structure.IStructureItem item)
@@ -580,13 +892,13 @@ namespace GxMcp.Worker.Services
                 return BitConverter.ToString(sha.ComputeHash(data ?? new byte[0])).Replace("-", string.Empty);
         }
 
-        private string PersistStructureSnapshot(Transaction trn, TransactionSnapshot snapshot)
+        private string PersistStructureSnapshot(Transaction trn, TransactionSnapshot snapshot, string operation = "move-attribute")
         {
             try
             {
                 string root = EditSnapshotStore.ResolveRoot(_objectService.GetKbService().GetKbPath());
                 string content = Convert.ToBase64String(snapshot.Parts[snapshot.StructurePartKey].Data);
-                var info = EditSnapshotStore.SaveSnapshot(root, trn.Guid.ToString(), "StructureBinary", content);
+                var info = EditSnapshotStore.SaveSnapshot(root, trn.Guid.ToString(), "StructureBinary-" + operation, content);
                 return info?.Path;
             }
             catch (Exception ex)
@@ -640,6 +952,78 @@ namespace GxMcp.Worker.Services
                     return false;
                 }
             }
+            return true;
+        }
+
+        private bool VerifyRemoval(Transaction persisted, List<string> levelPath, string removedIdentity,
+            string attributeName, string globalGuid, string globalHash, JArray groupsBefore,
+            TransactionSnapshot before, out JObject verification, out string error)
+        {
+            verification = new JObject
+            {
+                ["referenceRemoved"] = false,
+                ["globalAttributePreserved"] = false,
+                ["subtypeGroupsPreserved"] = false,
+                ["otherStructureMembersPreserved"] = false,
+                ["authoredPartsPreserved"] = false
+            };
+            error = null;
+            if (persisted == null) { error = "The Transaction could not be re-read after save."; return false; }
+
+            var levelArgs = new JObject { ["levelPath"] = new JArray(levelPath ?? new List<string>()) };
+            ResolvedLevel resolved;
+            string levelError;
+            if (!TryResolveLevel(persisted, levelArgs, out resolved, out levelError))
+            { error = levelError; return false; }
+
+            bool stillPresent = resolved.Level.Attributes.Cast<TransactionAttribute>()
+                .Any(a => string.Equals(AttributeIdentity(a), removedIdentity, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(a.Name, attributeName, StringComparison.OrdinalIgnoreCase));
+            if (stillPresent)
+            {
+                error = $"Attribute '{attributeName}' is still present in the persisted level '{resolved.DisplayName}'.";
+                return false;
+            }
+            verification["referenceRemoved"] = true;
+
+            JObject afterIntegrity = CaptureStructureIntegrity(persisted, removedIdentity, excludeIdentityDetails: true);
+            if (!JToken.DeepEquals(before.Integrity, afterIntegrity))
+            {
+                error = "A Structure member other than the requested attribute changed unexpectedly.";
+                return false;
+            }
+            verification["otherStructureMembersPreserved"] = true;
+
+            var global = Artech.Genexus.Common.Objects.Attribute.Get(persisted.Model, attributeName);
+            if (global == null || !string.Equals(global.Guid.ToString("D"), globalGuid, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(Hash(CaptureEntity(global).Data), globalHash, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "The KB-global Attribute was removed or changed while detaching the Transaction reference.";
+                return false;
+            }
+            verification["globalAttributePreserved"] = true;
+
+            JArray groupsAfter = CaptureSubtypeGroups(global);
+            verification["subtypeGroupsBefore"] = groupsBefore.DeepClone();
+            verification["subtypeGroupsAfter"] = groupsAfter.DeepClone();
+            if (!JToken.DeepEquals(groupsBefore, groupsAfter))
+            {
+                error = "A SubType Group membership changed while detaching the Transaction reference.";
+                return false;
+            }
+            verification["subtypeGroupsPreserved"] = true;
+
+            foreach (KBObjectPart part in persisted.Parts)
+            {
+                if (part is StructurePart || part.IsDefault) continue;
+                EntitySnapshot expected;
+                if (!before.Parts.TryGetValue(part.Type.ToString("D"), out expected) || !EntityMatches(part, expected))
+                {
+                    error = $"Part '{part.TypeDescriptor?.Name ?? part.Type.ToString("D")}' changed unexpectedly.";
+                    return false;
+                }
+            }
+            verification["authoredPartsPreserved"] = true;
             return true;
         }
 

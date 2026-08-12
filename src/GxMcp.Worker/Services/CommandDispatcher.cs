@@ -208,6 +208,7 @@ namespace GxMcp.Worker.Services
             _patternApplyService = new PatternApplyService(_objectService);
             _sdtService = new SDTService(_objectService);
             _structureService = new StructureService(_objectService);
+            _writeService.SetStructureService(_structureService);
             _authoringService = new Structure.AuthoringService(_objectService);
             _propertyService = new PropertyService(_objectService);
             _atomicAuthoringService = new AtomicAuthoringService(_objectService, _writeService, _propertyService, _buildService);

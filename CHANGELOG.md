@@ -4,6 +4,7 @@
 
 ### Added
 
+- **`genexus_edit` can persistently remove an Attribute reference from a Transaction Structure.** A single `remove_attribute` semantic operation now detaches the native `TransactionAttribute`, saves and re-reads the Transaction, and returns a before/after diff. The KB-global Attribute and its SubType Group memberships are hash/membership verified as preserved; `dryRun`, `baseVersion`, and automatic snapshot rollback are supported.
 - **`genexus_structure action=move_attribute` reorders an existing Transaction attribute without recreating it.** Place an attribute `before` or `after` another attribute in the same level, or at a zero-based `position`; root, named, and nested `levelPath` levels are supported. Dry runs show only the affected positions, `baseVersion` rejects stale edits, and effective writes snapshot every Transaction part, re-read after save, verify native identities/properties and relative order, and restore the complete snapshot if GeneXus normalizes the move or changes anything else. The operation never specifies, generates, builds, reorganizes, or reapplies a Pattern.
 
 ### Internal
