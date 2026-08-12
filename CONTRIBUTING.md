@@ -17,6 +17,7 @@ The Worker references DLLs from `C:\Program Files (x86)\GeneXus\GeneXus18`. **Yo
 - **Bug fix or doc tweak** — go ahead, open the PR.
 - **New tool, refactor, behavior change, anything user-facing** — open an issue first so we can agree on the shape. I'd rather discuss for 10 minutes than ask you to rewrite a 400-line PR.
 - **CLAUDE.md / GEMINI.md / skill changes** — these are agent-facing instructions, not generic docs. If you change them, say which agent/scenario you tested against.
+- **Run the complete CI-equivalent checks before every PR and again before each push that changes code or tool schemas.** Do not rely on a narrower project test: the coverage step also runs the Gateway contract-golden tests and fails on stale discovery fixtures.
 
 ## Dev loop
 
@@ -38,9 +39,10 @@ If you only touched `cli/`, `npm test` is enough. If you touched the Gateway or 
 CI (`.github/workflows/ci.yml`) also runs steps not in the dev loop above, so a green local run can still hit CI-only failures. To reproduce them locally:
 
 ```pwsh
-# Coverage collection + threshold gate (50% line rate)
-.\scripts\coverage\collect.ps1
-.\scripts\coverage\assert-threshold.ps1
+# Coverage collection + threshold gate (50% line rate), exactly as CI runs it
+$coverageRoot = Join-Path $env:TEMP 'gx-coverage-pr'
+.\scripts\coverage\collect.ps1 -OutputRoot $coverageRoot
+.\scripts\coverage\assert-threshold.ps1 -CoverageRoot $coverageRoot -MinLineRatePercent 50
 
 # LLM tool-contract smoke
 .\scripts\mcp_llm_contract_smoke.ps1
@@ -50,6 +52,22 @@ cd src\nexus-ide; npm run lint
 ```
 
 `collect.ps1` skips the Worker half when GeneXus 18 isn't installed locally (it drops a `worker.skipped.txt` marker and `assert-threshold.ps1` enforces only the Gateway floor in that case) — so without a local GeneXus install you exercise the Gateway coverage gate only, same as a GitHub-hosted runner.
+
+If a tool schema or description changed, update and verify the discovery golden before running coverage:
+
+```pwsh
+$env:GXMCP_UPDATE_GOLDEN = '1'
+dotnet test src\GxMcp.Gateway.Tests\GxMcp.Gateway.Tests.csproj --filter "FullyQualifiedName~McpDiscoveryContractTests"
+Remove-Item Env:GXMCP_UPDATE_GOLDEN
+
+# Review this diff; commit only the intended, anonymized contract changes.
+git diff -- src\GxMcp.Gateway.Tests\Fixtures\Contract\Discovery\tools-list.response.json
+
+# Prove the checked-in fixture matches without update mode.
+dotnet test src\GxMcp.Gateway.Tests\GxMcp.Gateway.Tests.csproj --filter "FullyQualifiedName~McpDiscoveryContractTests"
+```
+
+Never leave `GXMCP_UPDATE_GOLDEN=1` set while validating: update mode overwrites the expected fixture and can hide an unintended contract change.
 
 ## Code style
 

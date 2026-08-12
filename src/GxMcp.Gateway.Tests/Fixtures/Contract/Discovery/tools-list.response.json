@@ -1067,7 +1067,7 @@
             "type": "boolean"
           },
           "baseVersion": {
-            "description": "Optimistic concurrency: pass the versionToken from the genexus_read this edit is based on. If the object changed since (e.g. edited in the IDE), the write is refused with StaleObject instead of overwriting the newer version. Omit to skip the check.",
+            "description": "Optimistic concurrency: pass the versionToken from the genexus_read this edit is based on. If the object changed since (e.g. edited in the IDE), the write is refused with VersionConflict instead of overwriting the newer version. Omit to skip the check.",
             "type": "string"
           },
           "content": {
@@ -1152,7 +1152,7 @@
             "type": "boolean"
           },
           "rollbackOnFailure": {
-            "description": "Issue #60: with validationMode=specify, restore the pre-write state (from the edit snapshot) when the specify pass reports errors.",
+            "description": "Explicit rollback only: restore a valid pre-write snapshot when post-save verification or validationMode=specify fails. No rollback occurs when false or omitted.",
             "type": "boolean"
           },
           "targets": {
@@ -1195,6 +1195,16 @@
           "verbose": {
             "description": "Add ±15-line slices to post_state.",
             "type": "boolean"
+          },
+          "verifyMode": {
+            "default": "normalized",
+            "description": "Post-save text comparison for patch mode. Source/Rules default to normalized (EOL, encoding marker, trailing whitespace and repeated blank lines); exact compares raw text; semantic also tolerates SDK casing/spacing format changes. The part is always re-read after Save.",
+            "enum": [
+              "semantic",
+              "normalized",
+              "exact"
+            ],
+            "type": "string"
           },
           "verifyRollback": {
             "type": "boolean"

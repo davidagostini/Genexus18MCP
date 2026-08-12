@@ -7,10 +7,6 @@
 - **`genexus_edit` can persistently remove an Attribute reference from a Transaction Structure.** A single `remove_attribute` semantic operation now detaches the native `TransactionAttribute`, saves and re-reads the Transaction, and returns a before/after diff. The KB-global Attribute and its SubType Group memberships are hash/membership verified as preserved; `dryRun`, `baseVersion`, and automatic snapshot rollback are supported.
 - **`genexus_structure action=move_attribute` reorders an existing Transaction attribute without recreating it.** Place an attribute `before` or `after` another attribute in the same level, or at a zero-based `position`; root, named, and nested `levelPath` levels are supported. Dry runs show only the affected positions, `baseVersion` rejects stale edits, and effective writes snapshot every Transaction part, re-read after save, verify native identities/properties and relative order, and restore the complete snapshot if GeneXus normalizes the move or changes anything else. The operation never specifies, generates, builds, reorganizes, or reapplies a Pattern.
 
-### Internal
-
-- Raised the tool-schema budget from 19,500 to 19,800 tokens for the `move_attribute` action and its module, attribute, before/after/position, level/levelPath, dry-run, and optimistic-concurrency fields (measured about 19,637 tokens).
-
 ### Fixed
 
 - Build diagnostics now classify GeneXus source/query errors (`src####`, `qry####`)
@@ -19,6 +15,21 @@
   points to the correct cause.
 - WorkWithPlus `userAction` bindings now persist the `gxobject` target through the
   SDK PatternInstance change command when the XML deserializer drops it.
+- `genexus_edit mode=patch` now always re-reads Source/Rules after the SDK save
+  and supports `verifyMode=normalized|semantic|exact` (`normalized` by default).
+  Harmless SDK normalization of EOLs, encoding markers, trailing whitespace, or
+  repeated blank lines no longer produces a false `WriteNotPersisted`. Responses
+  include raw and normalized SHA-256 hashes plus re-read, match, replacement, and
+  normalization evidence. A real mismatch performs no implicit second write;
+  rollback occurs only when explicitly requested with a valid snapshot.
+- Patch-mode edits now enforce `baseVersion` optimistic concurrency at entry and
+  again immediately before the single write. `dryRun` remains non-persistent and
+  does not claim a post-save re-read.
+
+### Internal
+
+- Raised the tool-schema budget from 19,500 to 19,800 tokens for the `move_attribute` action and its module, attribute, before/after/position, level/levelPath, dry-run, and optimistic-concurrency fields (measured about 19,637 tokens).
+- Thanks to [@davidagostini](https://github.com/davidagostini) for transaction structure editing and normalized patch verification improvements — see PRs [#83](https://github.com/lennix1337/Genexus18MCP/pull/83) and [#84](https://github.com/lennix1337/Genexus18MCP/pull/84).
 
 ## v2.40.1 - 2026-08-11
 

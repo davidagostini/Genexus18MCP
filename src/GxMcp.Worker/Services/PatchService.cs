@@ -149,7 +149,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false)
+        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false, string verifyMode = null, string baseVersion = null, bool rollbackOnFailure = false)
         {
             // Friction 2026-05-22: capture entry timestamp so a NoMatch we see at
             // the end can be cross-checked against WriteService.WasTargetWrittenSince
@@ -161,6 +161,30 @@ namespace GxMcp.Worker.Services
             DateTime patchEnteredAtUtc = DateTime.UtcNow;
             try
             {
+                string resolvedVerifyMode;
+                try
+                {
+                    resolvedVerifyMode = TextPersistenceVerifier.ResolveMode(verifyMode, partName);
+                }
+                catch (ArgumentException ex)
+                {
+                    return Models.McpResponse.Err(code: "InvalidVerifyMode", message: ex.Message, target: target);
+                }
+
+                if (!string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    var versionedObject = _objectService.FindObject(target, typeFilter);
+                    if (versionedObject == null)
+                        return Models.McpResponse.Err(code: "ObjectNotFound", message: "The target object was not found.", target: target);
+                    string currentVersion = WriteService.ComputeVersionToken(versionedObject);
+                    if (!string.Equals(baseVersion, currentVersion, StringComparison.Ordinal))
+                        return Models.McpResponse.Err(
+                            code: "VersionConflict",
+                            message: "The object changed after the caller read it.",
+                            target: target,
+                            extra: new JObject { ["baseVersion"] = baseVersion, ["currentVersion"] = currentVersion });
+                }
+
                 // Probe pattern-shadow warning ONCE before doing any work. If the agent
                 // is patching a WebForm/Layout on an object whose WorkWithPlus host has
                 // a populated PatternInstance, attach a warning to the terminal response
@@ -184,7 +208,10 @@ namespace GxMcp.Worker.Services
                 // we drop the cache + force a fresh read. The 20s TTL is the
                 // last-resort safety net for edits the worker didn't observe
                 // at all (e.g. straight filesystem touches).
-                if (_sourceCache.TryGetValue(cacheKey, out var cacheEntry) && cacheEntry != null)
+                // A caller that requests optimistic concurrency or rollback needs a
+                // fresh snapshot; a cache entry is not sufficient evidence for either.
+                bool requireFreshSnapshot = !string.IsNullOrWhiteSpace(baseVersion) || rollbackOnFailure || verifyRollback;
+                if (!requireFreshSnapshot && _sourceCache.TryGetValue(cacheKey, out var cacheEntry) && cacheEntry != null)
                 {
                     bool ttlOk = (DateTime.UtcNow - cacheEntry.UpdatedUtc) < SourceCacheTtl;
                     bool noConcurrentWrite = !WriteService.WasTargetWrittenSince(target, cacheEntry.UpdatedUtc);
@@ -524,6 +551,21 @@ namespace GxMcp.Worker.Services
                 if (dryRun)
                 {
                     string dryRunResult = BuildPatchResult("Applied", partName, normalizedOperation, expectedCount, matchCount, "Dry-run succeeded. Write skipped.");
+                    try
+                    {
+                        var dryRunJson = JObject.Parse(dryRunResult);
+                        var dryRunBody = dryRunJson["result"] as JObject ?? dryRunJson;
+                        dryRunBody["persisted"] = false;
+                        dryRunBody["verification"] = new JObject
+                        {
+                            ["mode"] = resolvedVerifyMode,
+                            ["matchCount"] = matchCount,
+                            ["reReadConfirmed"] = false,
+                            ["skipped"] = "dryRun"
+                        };
+                        dryRunResult = dryRunJson.ToString();
+                    }
+                    catch { }
                     dryRunResult = AttachWarningsToJson(dryRunResult, patternShadowWarnings);
                     return AttachTimings(dryRunResult, readMs, patchMs, 0, sourceFromCache);
                 }
@@ -603,6 +645,20 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
+                // Re-check at the write boundary as well as entry, reducing the
+                // read/patch/write race window for optimistic concurrency callers.
+                if (!string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    var currentObject = _objectService.FindObject(target, typeFilter);
+                    string currentVersion = currentObject == null ? null : WriteService.ComputeVersionToken(currentObject);
+                    if (!string.Equals(baseVersion, currentVersion, StringComparison.Ordinal))
+                        return Models.McpResponse.Err(
+                            code: "VersionConflict",
+                            message: "The object changed while the patch was being prepared; no write was attempted.",
+                            target: target,
+                            extra: new JObject { ["baseVersion"] = baseVersion, ["currentVersion"] = currentVersion });
+                }
+
                 // 3. Write Back (re-normalize to CRLF for GeneXus)
                 string finalCode = updatedSource.Replace("\n", Environment.NewLine);
                 var writeStopwatch = Stopwatch.StartNew();
@@ -612,212 +668,95 @@ namespace GxMcp.Worker.Services
                 JObject writePayload = ParseWriteResult(writeResult);
 
                 bool primaryWriteSuccess = string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
+                bool writeReportedVerificationMismatch = string.Equals(writePayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
                 bool persistedMatches = false;
-                // Pattern parts: trust WriteService's own XmlEquivalence verification (it runs
-                // INSIDE WritePatternPart after the SDK save). PatchService's byte-level re-verify
-                // here would compare against `finalCode` — the pre-reconciler input — and would
-                // flag legitimate childrenOrderedList rewrites and SDK attribute reordering as
-                // false negatives. The WriteService payload already says Success only when the
-                // persisted pattern XML matches the saved content semantically.
                 bool isPatternPart = Services.PatternAnalysisService.IsPatternPart(partName);
+
                 if (primaryWriteSuccess && isPatternPart)
                 {
+                    // Pattern XML is reconciled before persistence and is already checked with
+                    // XML equivalence inside WriteService. Text verify modes intentionally apply
+                    // only to Source/Rules-like parts.
                     persistedMatches = true;
                     writePayload["persistedVerified"] = true;
-                    writePayload["persistedVerifyNote"] = "Pattern parts use WriteService's internal XmlEquivalence verification; byte-level re-verify was skipped because the auto-reconcile of childrenOrderedList legitimately reshapes the input.";
+                    writePayload["persisted"] = true;
                 }
-                else if (primaryWriteSuccess)
+                else if (primaryWriteSuccess || writeReportedVerificationMismatch)
                 {
-                    // v2.6.9 perf: skip the post-write SDK re-read (~85 ms per call)
-                    // when WriteService returned a clean Success envelope — meaning
-                    // its own internal Save() returned without throwing AND the
-                    // payload doesn't carry warnings that hint at a partial flush.
-                    // The verify path was originally there to defend against the
-                    // SDK Save-returns-before-flush quirk (FR#2 2026-05-14); but on
-                    // a clean Success WriteService already exercised the flush
-                    // sequence (EnsureSave, etc.) before returning Success. When
-                    // the payload carries `warnings`, `partialFlush`, an explicit
-                    // `persistedVerified=false`, or `noChange`, fall back to the
-                    // full verify so the safety net stays in place for the cases
-                    // that historically tripped it. Net: bench-measured patch p50
-                    // 197 ms -> 122 ms for the happy path, no behaviour change for
-                    // the suspect path.
-                    bool writeHasWarnings = writePayload["warnings"] is JArray warnArr && warnArr.Count > 0;
-                    bool writeFlaggedUnverified =
-                        writePayload["persistedVerified"]?.Type == JTokenType.Boolean
-                        && writePayload["persistedVerified"]!.Value<bool>() == false;
-                    bool writeFlaggedPartial = writePayload["partialFlush"]?.Value<bool>() == true
-                        || writePayload["postWriteHashDrift"]?.Value<bool>() == true;
-                    bool writeFlaggedNoChange = string.Equals(writePayload["details"]?.ToString(), "No change", StringComparison.OrdinalIgnoreCase);
-                    bool trustClean = !writeHasWarnings && !writeFlaggedUnverified && !writeFlaggedPartial && !writeFlaggedNoChange;
-                    string verifyError = null;
-                    if (trustClean)
+                    string persistedSource;
+                    string verifyError;
+                    TextPersistenceVerifier.Result verification = ReadAndVerifyPersistedSource(
+                        target, partName, typeFilter, finalCode, resolvedVerifyMode, out persistedSource, out verifyError);
+
+                    if (verification != null)
                     {
-                        persistedMatches = true;
-                        writePayload["persistedVerified"] = true;
-                        writePayload["persistedVerifyNote"] = "Skipped byte-level re-verify: WriteService returned clean Success.";
+                        persistedMatches = verification.Matches;
+                        writePayload["requestedHash"] = verification.RequestedHash;
+                        writePayload["persistedHash"] = verification.PersistedHash;
+                        writePayload["normalizedRequestedHash"] = verification.NormalizedRequestedHash;
+                        writePayload["normalizedPersistedHash"] = verification.NormalizedPersistedHash;
+                        JObject verificationJson = verification.ToJson(reReadConfirmed: true);
+                        string canonicalReplacement = TextPersistenceVerifier.Canonicalize(content, resolvedVerifyMode, partName);
+                        string canonicalPersisted = TextPersistenceVerifier.Canonicalize(persistedSource, resolvedVerifyMode, partName);
+                        int replacementMatchCount = canonicalReplacement.Length == 0
+                            ? 0
+                            : CountOccurrences(canonicalPersisted, canonicalReplacement);
+                        bool replacementPresent = canonicalReplacement.Length == 0 || replacementMatchCount > 0;
+                        persistedMatches = verification.Matches && replacementPresent;
+                        verificationJson["matchCount"] = matchCount;
+                        verificationJson["replacementMatchCount"] = replacementMatchCount;
+                        verificationJson["replacementPresent"] = replacementPresent;
+                        writePayload["verification"] = verificationJson;
                     }
                     else
                     {
-                        persistedMatches = VerifyPersistedSource(target, partName, typeFilter, finalCode, out verifyError);
-                        writePayload["persistedVerified"] = persistedMatches;
-                    }
-                    if (!string.IsNullOrWhiteSpace(verifyError))
-                    {
-                        writePayload["persistedVerifyError"] = verifyError;
-                    }
-
-                    if (!persistedMatches)
-                    {
-                        AttachPersistedSnippet(writePayload, target, partName, typeFilter, finalCode);
-                        // Fast path can report success before the physical source part is fully persisted.
-                        string fallbackWrite = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
-                        JObject fallbackPayload = ParseWriteResult(fallbackWrite);
-
-                        bool fallbackSuccess = string.Equals(fallbackPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
-                        writePayload["fallbackWriteStatus"] = fallbackPayload["status"]?.ToString() ?? "Error";
-                        // Friction 2026-05-22 #8: classifier helper extracted so the envelope shape
-                        // is unit-testable without standing up an SDK. See ClassifyFallbackFailure.
-                        if (!fallbackSuccess)
+                        writePayload["verification"] = new JObject
                         {
-                            // Friction 2026-05-22 #8: differentiate two distinct failure modes
-                            // the agent previously couldn't tell apart from this single error.
-                            //
-                            // (a) write_not_persisted — neither write reached disk. Retry-safe
-                            //     because the on-disk source is still the original. SDK
-                            //     reported failure on the fallback AND a re-verify shows the
-                            //     persisted bytes still match the original.
-                            //
-                            // (b) persisted_with_concurrent_change — the primary write DID land
-                            //     (or a sibling write landed) and the persisted bytes diverge
-                            //     from the original (and from finalCode). Hash drifted *post-
-                            //     write*. Returning Error here forced the agent to retry,
-                            //     which then either no-op'd or clobbered the sibling. Surface
-                            //     as Success + postWriteHashDrift warning so the agent knows
-                            //     to re-read instead of re-write.
-                            string fallbackErrText = fallbackPayload["error"]?.ToString() ?? "Unknown fallback write error.";
-                            try
-                            {
-                                bool matchesOriginal = VerifyPersistedSource(target, partName, typeFilter, originalSource, out _);
-                                bool matchesFinal = VerifyPersistedSource(target, partName, typeFilter, finalCode, out _);
-                                var classification = ClassifyFallbackFailure(matchesOriginal, matchesFinal, fallbackErrText);
-                                writePayload["_internalStatus"] = classification.Status;
-                                writePayload["code"] = classification.Code;
-                                if (classification.PatchLanded)
-                                {
-                                    writePayload["persistedVerified"] = true;
-                                    writePayload["persistedVerifyError"] = null;
-                                    persistedMatches = true;
-                                    UpdateCachedSource(cacheKey, finalCode);
-                                }
-                                else if (string.Equals(classification.Status, "Success", StringComparison.Ordinal))
-                                {
-                                    // Concurrent write without our content — keep persistedVerified=false
-                                    // and surface a re-read hint.
-                                    writePayload["persistedVerified"] = false;
-                                    writePayload["persistedVerifyError"] = "concurrent write detected; persisted bytes diverged from both original and patched content.";
-                                }
-                                if (string.Equals(classification.Status, "Success", StringComparison.Ordinal))
-                                {
-                                    var meta = writePayload["_meta"] as JObject ?? new JObject();
-                                    var drift = new JObject
-                                    {
-                                        ["code"] = classification.Code,
-                                        ["mode"] = classification.Mode,
-                                        ["message"] = classification.Message,
-                                        ["fallbackWriteError"] = fallbackErrText
-                                    };
-                                    if (classification.RequiresReread)
-                                    {
-                                        drift["suggestedAction"] = "re-read target then re-targeted patch (do not blindly retry the same patch).";
-                                    }
-                                    meta["postWriteHashDrift"] = drift;
-                                    writePayload["_meta"] = meta;
-                                }
-                                else
-                                {
-                                    writePayload["message"] = classification.Message;
-                                    writePayload["fallbackWriteError"] = fallbackErrText;
-                                    writePayload["suggested_next_step"] = "Retry the same patch — on-disk source is the same as before the attempt.";
-                                }
-                            }
-                            catch (Exception verifyEx)
-                            {
-                                // Verify itself failed — fall back to the legacy generic error so
-                                // we don't lose the signal. Keep status=Error.
-                                Logger.Debug("[PATCH] post-fallback verify failed: " + verifyEx.Message);
-                                writePayload["_internalStatus"] = "Error";
-                                writePayload["message"] = "Patch write fallback failed after persistence mismatch.";
-                                writePayload["fallbackWriteError"] = fallbackErrText;
-                            }
-                        }
-                        else
+                            ["mode"] = resolvedVerifyMode,
+                            ["matchCount"] = matchCount,
+                            ["reReadConfirmed"] = false
+                        };
+                    }
+
+                    writePayload["persistedVerified"] = persistedMatches;
+                    writePayload["persisted"] = persistedMatches;
+                    if (persistedMatches)
+                    {
+                        // A WriteService false negative is superseded by the mandatory forced
+                        // re-read. No second write is performed.
+                        writePayload["_internalStatus"] = "Success";
+                        writePayload["code"] = "Applied";
+                        writePayload["message"] = "Patch persisted and was confirmed by post-save re-read.";
+                    }
+                    else
+                    {
+                        writePayload["_internalStatus"] = "Error";
+                        writePayload["code"] = "WriteNotPersisted";
+                        writePayload["message"] = "The post-save re-read does not contain the requested patched content.";
+                        if (!string.IsNullOrWhiteSpace(verifyError)) writePayload["persistedVerifyError"] = verifyError;
+
+                        // Rollback is never implicit. It is attempted once only when explicitly
+                        // requested and the fresh pre-write snapshot is available.
+                        if (rollbackOnFailure && originalSource != null)
                         {
-                            persistedMatches = VerifyPersistedSource(target, partName, typeFilter, finalCode, out string fallbackVerifyError);
-                            writePayload["persistedVerified"] = persistedMatches;
-                            if (!string.IsNullOrWhiteSpace(fallbackVerifyError))
+                            string rollbackResult = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
+                            JObject rollbackPayload = ParseWriteResult(rollbackResult);
+                            bool rollbackSaved = string.Equals(rollbackPayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
+                            string rollbackPersisted = null;
+                            string rollbackError = null;
+                            TextPersistenceVerifier.Result rollbackVerification = null;
+                            if (rollbackSaved)
+                                rollbackVerification = ReadAndVerifyPersistedSource(target, partName, typeFilter, originalSource, resolvedVerifyMode, out rollbackPersisted, out rollbackError);
+                            bool rollbackVerified = rollbackVerification != null && rollbackVerification.Matches;
+                            writePayload["rollback"] = new JObject
                             {
-                                writePayload["persistedVerifyError"] = fallbackVerifyError;
-                            }
-
-                            if (!persistedMatches)
-                            {
-                                // v2.3.8 Task 4.6 (friction-report #13 / #6): before rolling back,
-                                // classify the divergence. If every hunk between the source we asked
-                                // the SDK to save (`finalCode`) and the actual persisted source lies
-                                // OUTSIDE the lines we actually edited, this is an SDK
-                                // side-effect normalization (e.g. `DATETIME(10,5)` → `DATETIME(8,5)`
-                                // on an untouched line) and not a verification failure. Surface the
-                                // normalizations under `_meta.sideEffectNormalizations` and keep
-                                // status=Success. Only when an in-window hunk diverges do we treat
-                                // it as a real divergence and roll back.
-                                if (TryClassifyOutOfWindowOnly(target, partName, typeFilter, workSource, updatedSource, finalCode, out var sideEffects))
-                                {
-                                    writePayload["_internalStatus"] = "Success";
-                                    writePayload["persistedVerified"] = true;
-                                    writePayload["persistedVerifyError"] = null;
-                                    var meta = writePayload["_meta"] as JObject ?? new JObject();
-                                    meta["sideEffectNormalizations"] = sideEffects;
-                                    writePayload["_meta"] = meta;
-                                    persistedMatches = true;
-                                    UpdateCachedSource(cacheKey, finalCode);
-                                }
-                                else
-                                {
-                                writePayload["_internalStatus"] = "Error";
-                                writePayload["message"] = "Patch write verification mismatch after fallback write.";
-                                AttachPersistedSnippet(writePayload, target, partName, typeFilter, finalCode);
-
-                                // Restore original source: without this, a fallback write that reports
-                                // success but fails verification leaves the matched context deleted and
-                                // the replacement missing (data loss).
-                                try
-                                {
-                                    string rollbackBody = originalSource.Replace("\n", Environment.NewLine);
-                                    string rollbackResult = _writeService.WriteObject(target, partName, rollbackBody, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
-                                    JObject rbPayload = ParseWriteResult(rollbackResult);
-                                    bool rbSuccess = string.Equals(rbPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
-                                    bool rbVerified = false;
-                                    if (rbSuccess)
-                                    {
-                                        rbVerified = VerifyPersistedSource(target, partName, typeFilter, originalSource, out _);
-                                    }
-                                    writePayload["autoRollbackStatus"] = rbSuccess ? (rbVerified ? "Restored" : "WriteSucceededVerifyFailed") : "Failed";
-                                    writePayload["message"] = rbVerified
-                                        ? "Patch write verification mismatch after fallback write. Original source restored — re-read and retry."
-                                        : "Patch write verification mismatch after fallback write. Auto-rollback could not be verified — re-read source to confirm state.";
-                                    if (rbVerified)
-                                    {
-                                        UpdateCachedSource(cacheKey, originalSource);
-                                    }
-                                }
-                                catch (Exception rbEx)
-                                {
-                                    writePayload["autoRollbackStatus"] = "Failed";
-                                    writePayload["autoRollbackError"] = rbEx.Message;
-                                }
-                                }
-                            }
+                                ["requested"] = true,
+                                ["snapshotValid"] = true,
+                                ["saved"] = rollbackSaved,
+                                ["verified"] = rollbackVerified,
+                                ["error"] = rollbackVerified ? JValue.CreateNull() : (JToken)(rollbackError ?? rollbackPayload["message"]?.ToString() ?? "Rollback could not be verified.")
+                            };
+                            if (rollbackVerified) UpdateCachedSource(cacheKey, originalSource);
                         }
                     }
                 }
@@ -914,7 +853,7 @@ namespace GxMcp.Worker.Services
 
                 if (finalSuccess)
                 {
-                    string finalCode2 = finalSuccess ? "PatchApplied" : "PatchFailed";
+                    string finalCode2 = "Applied";
                     var canonical = JObject.Parse(Models.McpResponse.Ok(target: target, code: finalCode2, result: resultObj));
                     if (patternShadowWarnings != null && patternShadowWarnings.Count > 0)
                         canonical["warnings"] = patternShadowWarnings;
@@ -1666,6 +1605,39 @@ namespace GxMcp.Worker.Services
             {
                 if (key.IndexOf("|" + normalizedTarget + "|", StringComparison.OrdinalIgnoreCase) >= 0)
                     _sourceCache.TryRemove(key, out _);
+            }
+        }
+
+        private TextPersistenceVerifier.Result ReadAndVerifyPersistedSource(
+            string target,
+            string partName,
+            string typeFilter,
+            string expectedSource,
+            string verifyMode,
+            out string persistedSource,
+            out string error)
+        {
+            persistedSource = null;
+            error = null;
+            try
+            {
+                string verifyKey = BuildCacheKey(target, partName, typeFilter);
+                _sourceCache.TryRemove(verifyKey, out _);
+                var verifyObject = _objectService.FindObject(target, typeFilter);
+                if (verifyObject != null) _objectService.MarkReadCacheDirty(verifyObject, partName);
+
+                string readResponse = ReadSourceFast(target, partName, typeFilter);
+                error = TryExtractError(readResponse);
+                if (!string.IsNullOrWhiteSpace(error)) return null;
+
+                var readJson = JObject.Parse(readResponse);
+                persistedSource = readJson["source"]?.ToString() ?? string.Empty;
+                return TextPersistenceVerifier.Evaluate(expectedSource, persistedSource, verifyMode, partName);
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return null;
             }
         }
 
