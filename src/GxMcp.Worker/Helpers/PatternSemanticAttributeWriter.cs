@@ -63,17 +63,6 @@ namespace GxMcp.Worker.Helpers
                         && string.Equals(e.ElementName, "userAction", StringComparison.OrdinalIgnoreCase)
                         && PathsEqual(e.Path, wanted.Path));
 
-                    // Keep a narrow fallback for SDK versions that omit an
-                    // intermediate element from Children during deserialization.
-                    if (target == null)
-                    {
-                        var namedMatches = native.Where(e =>
-                            !used.Contains(e.Value)
-                            && string.Equals(e.ElementName, "userAction", StringComparison.OrdinalIgnoreCase)
-                            && string.Equals(e.Name, GetNamedSegment(wanted.Path), StringComparison.OrdinalIgnoreCase)).ToList();
-                        if (namedMatches.Count == 1) target = namedMatches[0];
-                    }
-
                     if (target == null)
                     {
                         Logger.Debug("[PATTERN-WRITE] Semantic gxobject repair could not locate userAction '" +
