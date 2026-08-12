@@ -175,7 +175,15 @@ namespace GxMcp.Worker.Services
                 {
                     var versionedObject = _objectService.FindObject(target, typeFilter);
                     if (versionedObject == null)
-                        return Models.McpResponse.Err(code: "ObjectNotFound", message: "The target object was not found.", target: target);
+                        return Models.McpResponse.Err(
+                            code: "ObjectNotFound",
+                            message: "The target object was not found.",
+                            hint: "Use genexus_list_objects to verify the exact object name, then retry the patch.",
+                            nextSteps: new JArray(Models.McpResponse.NextStep(
+                                tool: "genexus_list_objects",
+                                args: new JObject { ["name_contains"] = target ?? string.Empty },
+                                why: "Lists objects whose names contain the target so the patch can be retried with the exact name.")),
+                            target: target);
                     string currentVersion = WriteService.ComputeVersionToken(versionedObject);
                     if (!string.Equals(baseVersion, currentVersion, StringComparison.Ordinal))
                         return Models.McpResponse.Err(

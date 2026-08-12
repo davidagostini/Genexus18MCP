@@ -25,6 +25,8 @@
 - Patch-mode edits now enforce `baseVersion` optimistic concurrency at entry and
   again immediately before the single write. `dryRun` remains non-persistent and
   does not claim a post-save re-read.
+- Patch-mode optimistic-concurrency misses now include a concrete object-list
+  recovery step instead of returning an uncured `ObjectNotFound` error.
 
 ### Internal
 
