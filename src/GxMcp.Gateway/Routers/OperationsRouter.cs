@@ -1231,7 +1231,8 @@ namespace GxMcp.Gateway.Routers
                 // issue #60 — validationMode="specify" runs the inline Specify pass after a
                 // structure write; rollbackOnFailure restores the pre-write state on spec errors.
                 validationMode = args?["validationMode"]?.ToString(),
-                rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
+                rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>()
+                    ?? string.Equals(action, "create_index", StringComparison.OrdinalIgnoreCase)
             };
         }
 

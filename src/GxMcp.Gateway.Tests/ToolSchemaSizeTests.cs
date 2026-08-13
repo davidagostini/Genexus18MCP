@@ -120,7 +120,10 @@ namespace GxMcp.Gateway.Tests
             //   2026-08-12 (move_attribute): 19500 → 19800 for native Transaction
             //   attribute reordering with before/after/position, nested level paths,
             //   dry-run, module lookup and baseVersion. Measured ~19637; ~163 headroom.
-            Assert.True(approxTokens < 19800, $"tool_definitions.json is ~{approxTokens} tokens; budget 19800.");
+            //   2026-08-13 (create_index dry-run safety): 19800 → 20000 for the
+            //   get_indexes versionToken/baseVersion contract, projected diff,
+            //   exact post-save verification and rollback semantics. Measured ~19875.
+            Assert.True(approxTokens < 20000, $"tool_definitions.json is ~{approxTokens} tokens; budget 20000.");
         }
     }
 }

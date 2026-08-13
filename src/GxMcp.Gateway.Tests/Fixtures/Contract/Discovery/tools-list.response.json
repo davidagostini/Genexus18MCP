@@ -3057,7 +3057,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable). Write: move_attribute reorders the existing native TransactionAttribute without deleting/recreating it, with dry-run, optimistic concurrency, snapshot/rollback, nested levels, and post-save integrity verification; update_visual authors a Transaction/SDT structure; update_group edits SubType Group membership; create_index/drop_index manage indexes; set_attribute, set_level, and set_domain edit SDK properties. move_attribute never runs Specify, Generate, Build, Rebuild, reorganization, or Pattern application. After index/type changes run genexus_lifecycle action=reorg. For layout control trees use genexus_layout.",
+      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable; response includes versionToken). Write: move_attribute reorders the existing native TransactionAttribute; update_visual authors a Transaction/SDT structure; update_group edits SubType Group membership; create_index plans or creates an index with optimistic concurrency, exact post-save verification and rollback; drop_index removes an index; set_attribute, set_level, and set_domain edit SDK properties. move_attribute and create_index never run Specify, Generate, Build, Rebuild, compilation, reorganization, execution, tests, or Pattern application. Run genexus_lifecycle action=reorg separately after persisted index/type changes. For layout control trees use genexus_layout.",
       "inputSchema": {
         "examples": [
           {
@@ -3084,13 +3084,17 @@
           },
           {
             "action": "create_index",
+            "baseVersion": "<get_indexes versionToken>",
+            "dryRun": true,
             "name": "Country",
             "payload": {
               "attributes": [
                 "CountryName"
               ],
+              "name": "UCountryName",
               "unique": true
-            }
+            },
+            "rollbackOnFailure": true
           },
           {
             "action": "set_attribute",
@@ -3168,7 +3172,7 @@
             "type": "string"
           },
           "baseVersion": {
-            "description": "move_attribute: versionToken from a prior read; stale Transactions return StaleObject.",
+            "description": "move_attribute/create_index optimistic-concurrency token. For create_index, use versionToken returned by get_indexes; stale state returns VersionConflict before mutation.",
             "type": "string"
           },
           "before": {
@@ -3177,7 +3181,7 @@
           },
           "dryRun": {
             "default": false,
-            "description": "move_attribute: preview old/new positions without saving.",
+            "description": "move_attribute/create_index: validate and return the projected diff without saving. create_index re-reads the SDK state and reports DryRunMutationDetected if persistence changed.",
             "type": "boolean"
           },
           "kb": {
@@ -3200,11 +3204,11 @@
             "type": "string"
           },
           "name": {
-            "description": "Object name. move_attribute: Transaction name; set_attribute: attribute name; set_domain: domain name.",
+            "description": "Object name. move_attribute: Transaction name; create_index/get_indexes: Transaction or Table name; set_attribute: attribute name; set_domain: domain name.",
             "type": "string"
           },
           "payload": {
-            "description": "update_visual (Transaction):{children:[...]}; update_visual (SDT):{isCollection?,collectionItemName?,children:[{name,type?,length?,decimals?,basedOnDomain?,isCollection?,isLevel?,children?}]}. update_group:{members:[{name,subtypeOf}],remove?:[name]}. create_index:{attributes:[\"Attr\"],unique?:true,name?,order?}. drop_index:{indexName}. set_attribute:{formula?,subtypeOf?,title?,columnTitle?,contextualTitle?,isCollection?,basedOnDomain?}. set_level:{level?,descriptionAttribute?,imageAttribute?}. set_domain:{enumValues:[{name,value,description?}],dataType?,length?,decimals?,signed?}.",
+            "description": "update_visual (Transaction):{children:[...]}; update_visual (SDT):{isCollection?,collectionItemName?,children:[{name,type?,length?,decimals?,basedOnDomain?,isCollection?,isLevel?,children?}]}. update_group:{members:[{name,subtypeOf}],remove?:[name]}. create_index:{attributes:[\"Attr\"],unique?:true,name?,order?:\"Ascending\"|\"Descending\"}; requested attribute order is preserved. drop_index:{indexName}. set_attribute:{formula?,subtypeOf?,title?,columnTitle?,contextualTitle?,isCollection?,basedOnDomain?}. set_level:{level?,descriptionAttribute?,imageAttribute?}. set_domain:{enumValues:[{name,value,description?}],dataType?,length?,decimals?,signed?}.",
             "type": "object"
           },
           "position": {
@@ -3213,11 +3217,12 @@
             "type": "integer"
           },
           "rollbackOnFailure": {
-            "description": "Issue #60: with validationMode=specify, restore the pre-write state when supported. move_attribute always snapshots and rolls back automatically on any failed integrity check.",
+            "default": true,
+            "description": "create_index: restore the captured index snapshot if save or exact post-save verification fails. move_attribute always snapshots and rolls back automatically on failed integrity checks.",
             "type": "boolean"
           },
           "validationMode": {
-            "description": "Issue #60: run the inline Specify pass (Spec+Gen, no Compile) after update_visual/set_domain/set_attribute/set_level/update_group. Not accepted by move_attribute.",
+            "description": "Issue #60: run the inline Specify pass (Spec+Gen, no Compile) after update_visual/set_domain/set_attribute/set_level/update_group. Not accepted by move_attribute/create_index.",
             "enum": [
               "specify"
             ],
