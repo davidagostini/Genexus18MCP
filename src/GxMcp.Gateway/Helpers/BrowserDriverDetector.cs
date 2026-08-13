@@ -31,21 +31,21 @@ namespace GxMcp.Gateway.Helpers
         public sealed class DetectionResult
         {
             public DriverKind Kind { get; set; }
-            public string ResolvedPath { get; set; }   // absolute path of the executable (axi) or "npx" (Playwright)
-            public string Command { get; set; }        // the canonical command to invoke
-            public string Hint { get; set; }           // install hint when Kind == None
+            public string? ResolvedPath { get; set; }   // absolute path of the executable (axi) or "npx" (Playwright)
+            public string? Command { get; set; }        // the canonical command to invoke
+            public string? Hint { get; set; }           // install hint when Kind == None
         }
 
         // Public so tests can inject a fake probe / PATH.
         public interface IPathProbe
         {
-            string Which(string command);     // returns absolute path or null
+            string? Which(string command);     // returns absolute path or null
             bool FileExists(string path);
         }
 
         private sealed class DefaultProbe : IPathProbe
         {
-            public string Which(string command)
+            public string? Which(string command)
             {
                 var pathEnv = Environment.GetEnvironmentVariable("PATH");
                 if (string.IsNullOrEmpty(pathEnv)) return null;
@@ -70,7 +70,7 @@ namespace GxMcp.Gateway.Helpers
             public bool FileExists(string path) => !string.IsNullOrEmpty(path) && File.Exists(path);
         }
 
-        private static DetectionResult _cached;
+        private static DetectionResult? _cached;
         private static readonly object _lock = new object();
 
         /// <summary>

@@ -108,7 +108,8 @@ namespace GxMcp.Gateway
             if (arguments == null) return false;
 
             // Already has a type? Don't override caller.
-            if (arguments["type"] != null && arguments["type"].Type != JTokenType.Null)
+            var suppliedType = arguments["type"];
+            if (suppliedType != null && suppliedType.Type != JTokenType.Null)
                 return false;
 
             // Is this tool exempt?

@@ -85,7 +85,7 @@ export class SyncManager {
                 if (data.method === "notifications/resources/updated") {
                     this.handleUpdateNotification(data.params.uri); // Pass uri string directly
                 }
-            } catch (e) {
+            } catch {
                 // Not JSON or partial JSON, ignore
             }
         }

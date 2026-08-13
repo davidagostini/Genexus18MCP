@@ -65,18 +65,6 @@ function sendNotification(method, params) {
     child.stdin.write(JSON.stringify(env) + '\n');
 }
 
-function waitForNotification(predicate, timeoutMs) {
-    return new Promise((resolve) => {
-        const t = setTimeout(() => resolve(null), timeoutMs);
-        const hit = inbox.find(predicate);
-        if (hit) { clearTimeout(t); resolve(hit); return; }
-        waiters.push((msg) => {
-            if (predicate(msg)) { clearTimeout(t); resolve(msg); }
-            else { waiters.push(arguments.callee); }
-        });
-    });
-}
-
 function check(label, cond, detail) {
     const tag = cond ? 'PASS' : 'FAIL';
     console.error(`[${tag}] ${label}${detail ? ' — ' + detail : ''}`);

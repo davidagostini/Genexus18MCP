@@ -11,6 +11,8 @@
 
 ### Internal
 
+- **Testes locais do Worker agora carregam o SDK GeneXus configurado sem preparação manual.** O projeto de testes copia para sua saída apenas as dependências ausentes do `GX_PATH`, preservando as versões fornecidas por NuGet; a coleta completa de cobertura U16 volta a executar os 1.912 cenários. Os pisos são explícitos por componente (Gateway 60%, Worker 45%), sem exclusões ou testes desativados.
+- **Higiene incremental de CI e análise estática.** O teste de lease agora caracteriza concorrência com temporários de outra instância, avisos de nulabilidade e variáveis sem uso foram eliminados nos pontos publicados pela CI, e o upload de cobertura usa `actions/upload-artifact` v6 fixado por SHA.
 - **Zero-warning test hygiene and async task execution.** Converted blocking `.Wait()` / `.Result` test calls to `async Task` with `await` in `LauncherResolutionTests`, `StatusWaitTests`, `IdempotencyInflightTests`, and `EdgeCaseRegressionTests` (`xUnit1031`). Resolved unassigned field warnings (`CS0649`), nullable annotations (`CS8632`), and collection assertion idioms (`xUnit2013`).
 - **Codebase architectural deepening plan executed.** Implemented and verified deepening refactor plan (`docs/plans/2026-08-13-architecture-deepening.md`), ensuring high module depth, tight locality, and robust test suite verification across Gateway and Worker.
 

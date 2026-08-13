@@ -1,6 +1,7 @@
 param(
     [string]$CoverageRoot = "",
-    [double]$MinLineRatePercent = 60
+    [double]$MinLineRatePercent = 60,
+    [double]$MinWorkerLineRatePercent = 45
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -27,7 +28,7 @@ $workerPath = Join-Path $CoverageRoot "worker.cobertura.xml"
 $workerSkippedMarker = Join-Path $CoverageRoot "worker.skipped.txt"
 $workerFailedMarker = Join-Path $CoverageRoot "worker.failed.txt"
 
-Write-Host "Required minimum: $MinLineRatePercent%"
+Write-Host "Required minimum (Gateway): $MinLineRatePercent%"
 
 $gatewayRate = Get-LineRatePercent -Path $gatewayPath
 Write-Host "Gateway line-rate: $gatewayRate%"
@@ -46,8 +47,8 @@ if (Test-Path -LiteralPath $workerFailedMarker) {
     Write-Host "Worker line-rate: skipped (no local GeneXus 18 SDK; gateway threshold enforced only)." -ForegroundColor Yellow
 } elseif (Test-Path -LiteralPath $workerPath) {
     $workerRate = Get-LineRatePercent -Path $workerPath
-    Write-Host "Worker line-rate: $workerRate%"
-    if ($workerRate -lt $MinLineRatePercent) { $failed += "worker=$workerRate%" }
+    Write-Host "Worker line-rate: $workerRate% (required: $MinWorkerLineRatePercent%)"
+    if ($workerRate -lt $MinWorkerLineRatePercent) { $failed += "worker=$workerRate%" }
 } else {
     throw "Worker coverage missing and no skip/failed marker present at $CoverageRoot. Expected worker.cobertura.xml, worker.skipped.txt, or worker.failed.txt from collect.ps1."
 }

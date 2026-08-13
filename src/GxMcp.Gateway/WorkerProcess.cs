@@ -703,7 +703,7 @@ namespace GxMcp.Gateway
                 {
                     foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
                     {
-                        string key = entry.Key?.ToString();
+                        string? key = entry.Key?.ToString();
                         if (!string.IsNullOrEmpty(key)
                             && key.StartsWith("GXMCP_", StringComparison.OrdinalIgnoreCase)
                             && !startInfo.EnvironmentVariables.ContainsKey(key))

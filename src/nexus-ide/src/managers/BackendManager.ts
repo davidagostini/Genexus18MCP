@@ -18,7 +18,6 @@ import {
   CONFIG_AUTO_START, 
   CONFIG_KB_PATH,
   CONFIG_INSTALL_PATH,
-  MODULE_HEALTH,
   HEALTH_CHECK_INTERVAL,
   HEALTH_CHECK_TIMEOUT,
   HEALTH_CHECK_TIMEOUT_INDEXING
@@ -45,8 +44,8 @@ export class BackendManager {
     const autoStart = config.get(CONFIG_AUTO_START);
 
     const resolvedBackend = this.resolveBackendDirectory();
-    let backendDir = resolvedBackend.backendDir;
-    let gatewayExe = resolvedBackend.gatewayExe;
+    const backendDir = resolvedBackend.backendDir;
+    const gatewayExe = resolvedBackend.gatewayExe;
 
     const configFile = resolveGatewayConfigPath(this.context.extensionPath);
 
@@ -192,7 +191,7 @@ export class BackendManager {
 
   private async findBestKbPath(): Promise<string> {
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
-    let kbPath = config.get<string>(CONFIG_KB_PATH, "");
+    const kbPath = config.get<string>(CONFIG_KB_PATH, "");
 
     if (kbPath && fs.existsSync(kbPath)) {
       return kbPath;
@@ -501,7 +500,7 @@ class BackendHealthMonitor {
       } else {
         throw new Error("No response");
       }
-    } catch (e) {
+    } catch {
       if (isIndexing) return;
 
       this._consecutiveFailures++;

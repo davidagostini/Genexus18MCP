@@ -101,6 +101,7 @@ namespace GxMcp.Gateway.Tests
             );
             var leasePath = GatewayProcessLease.GetLeasePath(GatewayProcessLease.BuildInstanceKey(config));
             var leaseDir = Path.GetDirectoryName(leasePath)!;
+            string? unrelatedTempPath = null;
             try
             {
                 var reg = GatewayProcessLease.TryRegisterCurrentProcess(config);   // create branch
@@ -112,15 +113,21 @@ namespace GxMcp.Gateway.Tests
                 var parsed2 = JsonConvert.DeserializeObject<GatewayLeaseRecord>(File.ReadAllText(leasePath));
                 Assert.Equal(Environment.ProcessId, parsed2!.ProcessId);
 
+                unrelatedTempPath = Path.Combine(leaseDir, "unrelated.tmp." + Guid.NewGuid().ToString("N"));
+                File.WriteAllText(unrelatedTempPath, "concurrent gateway scratch file");
+
                 // No scratch file for this lease is left behind. Other gateway
                 // instances may legitimately publish their own lease concurrently.
                 var leaseTempPattern = Path.GetFileName(leasePath) + ".tmp.*";
                 Assert.Empty(Directory.GetFiles(leaseDir, leaseTempPattern));
+                Assert.True(File.Exists(unrelatedTempPath));
             }
             finally
             {
                 GatewayProcessLease.ReleaseCurrentProcess(config);
                 TryDelete(leasePath);
+                if (unrelatedTempPath != null)
+                    TryDelete(unrelatedTempPath);
             }
         }
 

@@ -220,7 +220,7 @@ namespace GxMcp.Gateway
             lock (_loadLock)
             {
                 if (_toolDefs != null) return;
-                string path = LocateToolDefinitions();
+                string? path = LocateToolDefinitions();
                 if (path == null) return;
                 try
                 {

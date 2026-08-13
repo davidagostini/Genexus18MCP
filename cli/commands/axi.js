@@ -1010,7 +1010,7 @@ async function runLayoutAutomation(payload, cwd) {
             timer = setTimeout(() => {
                 try {
                     child.kill();
-                } catch (e) {}
+                } catch {}
                 finish({ ok: false, error: `Layout automation timed out after ${timeoutMs}ms` });
             }, timeoutMs);
 
