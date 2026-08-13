@@ -112,8 +112,10 @@ namespace GxMcp.Gateway.Tests
                 var parsed2 = JsonConvert.DeserializeObject<GatewayLeaseRecord>(File.ReadAllText(leasePath));
                 Assert.Equal(Environment.ProcessId, parsed2!.ProcessId);
 
-                // No .tmp.* scratch files left in the lease directory.
-                Assert.Empty(Directory.GetFiles(leaseDir, "*.tmp.*"));
+                // No scratch file for this lease is left behind. Other gateway
+                // instances may legitimately publish their own lease concurrently.
+                var leaseTempPattern = Path.GetFileName(leasePath) + ".tmp.*";
+                Assert.Empty(Directory.GetFiles(leaseDir, leaseTempPattern));
             }
             finally
             {

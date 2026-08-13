@@ -1,8 +1,36 @@
 param(
-    [string]$OutputRoot = ""
+    [string]$OutputRoot = "",
+    [string]$GxPath = ""
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$defaultGxPath = "C:\Program Files (x86)\GeneXus\GeneXus18"
+
+function Resolve-GxSdkPath {
+    $configuredPath = if (-not [string]::IsNullOrWhiteSpace($GxPath)) {
+        $GxPath
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) {
+        $env:GX_PATH
+    } else {
+        ""
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($configuredPath)) {
+        $resolvedPath = [System.IO.Path]::GetFullPath($configuredPath.Trim().Trim('"'))
+        $sdkAssembly = Join-Path $resolvedPath "Artech.Architecture.Common.dll"
+        if (-not (Test-Path -LiteralPath $sdkAssembly -PathType Leaf)) {
+            throw "GeneXus SDK not found under configured GX_PATH '$resolvedPath'. Expected '$sdkAssembly'."
+        }
+        return $resolvedPath
+    }
+
+    $defaultAssembly = Join-Path $defaultGxPath "Artech.Architecture.Common.dll"
+    if (Test-Path -LiteralPath $defaultAssembly -PathType Leaf) {
+        return $defaultGxPath
+    }
+
+    return $null
+}
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     if ($env:RUNNER_TEMP) {
@@ -20,14 +48,25 @@ function Invoke-CoverageTest {
         [Parameter(Mandatory = $true)][string]$ProjectPath,
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$BaseOutputPath,
-        [Parameter(Mandatory = $true)][string]$SettingsPath
+        [Parameter(Mandatory = $true)][string]$SettingsPath,
+        [string[]]$BuildProperties = @()
     )
 
     $resultsDir = Join-Path $OutputRoot $Label
     New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
 
     Write-Host "Running $Label tests with coverage..."
-    & dotnet test $ProjectPath -v minimal "-p:BaseOutputPath=$BaseOutputPath" --collect "XPlat Code Coverage" --settings $SettingsPath --results-directory $resultsDir
+    $testArguments = @(
+        "test",
+        $ProjectPath,
+        "-v", "minimal",
+        "-p:BaseOutputPath=$BaseOutputPath"
+    ) + $BuildProperties + @(
+        "--collect", "XPlat Code Coverage",
+        "--settings", $SettingsPath,
+        "--results-directory", $resultsDir
+    )
+    & dotnet @testArguments
     if ($LASTEXITCODE -ne 0) {
         throw "$Label tests failed."
     }
@@ -52,27 +91,34 @@ function Get-BaseOutputPath {
     return $baseOutput
 }
 
+$resolvedGxPath = Resolve-GxSdkPath
+
 Invoke-CoverageTest `
     -ProjectPath (Join-Path $repoRoot "src\GxMcp.Gateway.Tests\GxMcp.Gateway.Tests.csproj") `
     -Label "gateway" `
     -BaseOutputPath (Get-BaseOutputPath -Label "gateway") `
     -SettingsPath (Join-Path $PSScriptRoot "gateway.runsettings")
 
-$workerSdk = "C:\Program Files (x86)\GeneXus\GeneXus18\Artech.Architecture.Common.dll"
-if (Test-Path $workerSdk) {
+$previousGxPath = $env:GX_PATH
+if ($resolvedGxPath) {
+    Write-Host "Using GeneXus SDK from '$resolvedGxPath'."
+    $env:GX_PATH = $resolvedGxPath
     try {
         Invoke-CoverageTest `
             -ProjectPath (Join-Path $repoRoot "src\GxMcp.Worker.Tests\GxMcp.Worker.Tests.csproj") `
             -Label "worker" `
             -BaseOutputPath (Get-BaseOutputPath -Label "worker") `
-            -SettingsPath (Join-Path $PSScriptRoot "worker.runsettings")
+            -SettingsPath (Join-Path $PSScriptRoot "worker.runsettings") `
+            -BuildProperties @("-p:Platform=x86", "-p:GX_PATH=$resolvedGxPath")
     } catch {
         New-Item -ItemType File -Path (Join-Path $OutputRoot "worker.failed.txt") -Force | Out-Null
         Write-Host $_.Exception.Message -ForegroundColor Yellow
+    } finally {
+        $env:GX_PATH = $previousGxPath
     }
 } else {
     New-Item -ItemType File -Path (Join-Path $OutputRoot "worker.skipped.txt") -Force | Out-Null
-    Write-Host "GeneXus 18 SDK not installed; skipping Worker.Tests."
+    Write-Host "GeneXus 18 SDK not found. Set GX_PATH or pass -GxPath to include Worker.Tests."
 }
 
 Get-ChildItem -Path $OutputRoot -Recurse | ForEach-Object {
