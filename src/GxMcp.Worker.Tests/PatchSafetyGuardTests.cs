@@ -87,14 +87,11 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void PatchService_TextWritesUseTransactionalPartSaveAndExposeVerificationReceipt_ViaConvention()
         {
+            string repoRoot = TestFixtures.FindRepoRoot();
             string patchSource = System.IO.File.ReadAllText(
-                System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services", "PatchService.cs"));
+                System.IO.Path.Combine(repoRoot, "src", "GxMcp.Worker", "Services", "PatchService.cs"));
             string receiptSource = System.IO.File.ReadAllText(
-                System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services", "PatchPersistenceReceipt.cs"));
+                System.IO.Path.Combine(repoRoot, "src", "GxMcp.Worker", "Services", "PatchPersistenceReceipt.cs"));
 
             Assert.DoesNotContain("preferFastSourceSave: true", patchSource);
             Assert.Contains("preferFastSourceSave: false", patchSource);
