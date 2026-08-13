@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading.Tasks;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -29,15 +30,13 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void Run_NoTarget_ResolvesViaLauncherResolver()
+        public async Task Run_NoTarget_ResolvesViaLauncherResolver()
         {
             var dir = TempDir();
             var svc = new PreviewService(null, null, new FakeRunner(), Path.Combine(dir, "preview.config.json"), dir);
             svc.SetLauncherResolverForTest(() => "MainWebPanel");
 
-            var task = svc.RunAsync(null);
-            task.Wait();
-            var r = task.Result;
+            var r = await svc.RunAsync(null);
             Assert.Equal("MainWebPanel", r["resolvedLauncher"]?.ToString());
             // PreviewSync proceeds past resolution; cli_missing is fine — the
             // assertion is that resolution worked.
@@ -46,46 +45,40 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void Run_NoTarget_NoCandidate_ReturnsNoLauncherHint()
+        public async Task Run_NoTarget_NoCandidate_ReturnsNoLauncherHint()
         {
             var dir = TempDir();
             var svc = new PreviewService(null, null, new FakeRunner(), Path.Combine(dir, "preview.config.json"), dir);
             svc.SetLauncherResolverForTest(() => null);
 
-            var task = svc.RunAsync(null);
-            task.Wait();
-            var r = task.Result;
+            var r = await svc.RunAsync(null);
             Assert.Equal("error", r["status"]?.ToString());
             Assert.Equal("NoLauncher", r["error"]?["code"]?.ToString());
             Assert.Contains("Pass explicit target", r["error"]?["hint"]?.ToString() ?? "");
         }
 
         [Fact]
-        public void Run_ExplicitTarget_SkipsResolver()
+        public async Task Run_ExplicitTarget_SkipsResolver()
         {
             var dir = TempDir();
             var svc = new PreviewService(null, null, new FakeRunner(), Path.Combine(dir, "preview.config.json"), dir);
             int resolverCalls = 0;
             svc.SetLauncherResolverForTest(() => { resolverCalls++; return "ResolverChoice"; });
 
-            var task = svc.RunAsync("ExplicitPanel");
-            task.Wait();
-            var r = task.Result;
+            var r = await svc.RunAsync("ExplicitPanel");
             Assert.Equal(0, resolverCalls);
             Assert.Equal("ExplicitPanel", r["name"]?.ToString());
             Assert.Equal("ExplicitPanel", r["resolvedLauncher"]?.ToString());
         }
 
         [Fact]
-        public void Run_EmptyStringTarget_TriggersResolution()
+        public async Task Run_EmptyStringTarget_TriggersResolution()
         {
             var dir = TempDir();
             var svc = new PreviewService(null, null, new FakeRunner(), Path.Combine(dir, "preview.config.json"), dir);
             svc.SetLauncherResolverForTest(() => "ResolvedPanel");
 
-            var task = svc.RunAsync("");
-            task.Wait();
-            var r = task.Result;
+            var r = await svc.RunAsync("");
             Assert.Equal("ResolvedPanel", r["resolvedLauncher"]?.ToString());
         }
     }

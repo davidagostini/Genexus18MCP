@@ -82,7 +82,7 @@ namespace GxMcp.Worker.Tests
         {
             public int Status = 200;
             public string Body = "<html>ok</html>";
-            public string Err;
+            public string Err = null;
             public SmokeTestService.ProbeResult Fetch(string url)
                 => new SmokeTestService.ProbeResult { StatusCode = Status, Body = Body, Error = Err };
         }

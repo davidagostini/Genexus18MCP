@@ -16,7 +16,7 @@ namespace GxMcp.Worker.Tests
         {
             public readonly Dictionary<string, (WarmIndexSnapshotMetadata m, byte[] p)> Items
                 = new Dictionary<string, (WarmIndexSnapshotMetadata, byte[])>();
-            public bool ThrowOnSave;
+            public bool ThrowOnSave = false;
 
             public void Save(string path, WarmIndexSnapshotMetadata metadata, byte[] payload)
             {

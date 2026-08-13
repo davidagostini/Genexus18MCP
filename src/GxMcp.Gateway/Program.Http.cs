@@ -271,6 +271,10 @@ namespace GxMcp.Gateway
                         {
                             request.HttpContext.Response.StatusCode = StatusCodes.Status404NotFound;
                         }
+                        if (method == "tools/list" || method == "resources/list" || method == "prompts/list")
+                        {
+                            request.HttpContext.Response.Headers["Cache-Control"] = "public, max-age=3600";
+                        }
                         return Results.Content(jsonResponse, "application/json; charset=utf-8", Encoding.UTF8);
                     }
 

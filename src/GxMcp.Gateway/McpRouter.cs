@@ -64,6 +64,7 @@ namespace GxMcp.Gateway
         private static readonly string[] _promptNames = _promptDefinitions.Keys.ToArray();
         private static readonly List<IMcpModuleRouter> _routers;
         private static JArray _toolDefinitions = new JArray();
+        private static JObject? _cachedToolsListResponse;
         // PERFORMANCE (G-B3): hot-reload tool_definitions.json without restarting the gateway.
         // The watcher is kept in a static field so it is rooted for the lifetime of the process.
         // Debounced with a System.Threading.Timer because editors (e.g. VS Code) often fire
@@ -191,6 +192,13 @@ namespace GxMcp.Gateway
                     // the source JSON is edited in a different order.
                     _toolDefinitions = new JArray(parsed.OfType<JObject>()
                         .OrderBy(definition => definition["name"]?.ToString() ?? string.Empty, StringComparer.Ordinal));
+                    _cachedToolsListResponse = new JObject
+                    {
+                        ["resultType"] = "complete",
+                        ["tools"] = _toolDefinitions,
+                        ["ttlMs"] = 3600000,
+                        ["cacheScope"] = "public"
+                    };
                     Program.Log($"[McpRouter] Loaded {_toolDefinitions.Count} tool definitions from JSON.");
                 }
                 else
@@ -371,10 +379,10 @@ namespace GxMcp.Gateway
                 case "server/discover":
                     return BuildServerDiscoverResponse();
                 case "tools/list":
-                    return new JObject
+                    return _cachedToolsListResponse ?? new JObject
                     {
                         ["resultType"] = "complete",
-                        ["tools"] = _toolDefinitions.DeepClone(),
+                        ["tools"] = _toolDefinitions,
                         ["ttlMs"] = 3600000,
                         ["cacheScope"] = "public"
                     };

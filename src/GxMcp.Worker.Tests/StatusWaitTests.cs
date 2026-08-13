@@ -69,7 +69,7 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void StatusWaitBlocksUntilPhaseChange()
+        public async Task StatusWaitBlocksUntilPhaseChange()
         {
             var (svc, status, taskId) = NewRunningTask();
             string baseline;
@@ -83,18 +83,20 @@ namespace GxMcp.Worker.Tests
             var waitTask = Task.Run(() => svc.GetStatusWait(taskId, waitSeconds: 10, sinceBaseline: baseline));
 
             // Give the wait a moment to start blocking.
-            Thread.Sleep(100);
+            await Task.Delay(100);
 
             var sw = Stopwatch.StartNew();
             // Feed a Generating line — HandleLine should flip Phase=Generating and Set the signal.
             handleLine!.Invoke(svc, new object[] { status, "Generating MyProc ...", false });
 
-            Assert.True(waitTask.Wait(2000), "Wait did not complete after phase change");
+            var completedTask = await Task.WhenAny(waitTask, Task.Delay(2000));
+            Assert.Same(waitTask, completedTask);
             sw.Stop();
 
             Assert.True(sw.ElapsedMilliseconds < 1000,
                 $"Wait took too long after phase change: {sw.ElapsedMilliseconds} ms");
-            string newBaseline = BaselineFromJson(waitTask.Result);
+            string waitResult = await waitTask;
+            string newBaseline = BaselineFromJson(waitResult);
             Assert.NotEqual(baseline, newBaseline);
         }
 

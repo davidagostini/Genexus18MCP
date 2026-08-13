@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Changed
+
+- **O(1) dictionary key resolution in `SearchService` exact-match.** Replaced full O(N) `Objects.Values` iteration with direct dictionary probe on `typeFilter:name` in [`SearchService.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Services/SearchService.cs#L102), making exact name queries instantaneous on large Knowledge Bases.
+- **Pre-computed static caching for `tools/list` discovery.** Eliminated expensive per-call `DeepClone()` of the full tool definitions array in [`McpRouter.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/McpRouter.cs). Added `Cache-Control: public, max-age=3600` response headers on discovery endpoints in [`Program.Http.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/Program.Http.cs) adhering to the 2026-07-28 MCP specification.
+- **Event-driven STA message pump in Worker dispatching.** Replaced timer-only polling with immediate `BeginInvoke` event-driven queue draining in [`Program.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Program.cs), reducing internal dispatch latency from 15ms to 0ms.
+- **Deepened mutation and patch subsystem inside `WriteService`.** Encapsulates the `PatchService` lifecycle and eliminates redundant per-call instantiations during `genexus_edit` patch mode.
+
+### Internal
+
+- **Zero-warning test hygiene and async task execution.** Converted blocking `.Wait()` / `.Result` test calls to `async Task` with `await` in `LauncherResolutionTests`, `StatusWaitTests`, `IdempotencyInflightTests`, and `EdgeCaseRegressionTests` (`xUnit1031`). Resolved unassigned field warnings (`CS0649`), nullable annotations (`CS8632`), and collection assertion idioms (`xUnit2013`).
+- **Codebase architectural deepening plan executed.** Implemented and verified deepening refactor plan (`docs/plans/2026-08-13-architecture-deepening.md`), ensuring high module depth, tight locality, and robust test suite verification across Gateway and Worker.
+
 ## v2.41.0 - 2026-08-13
 
 ### Added

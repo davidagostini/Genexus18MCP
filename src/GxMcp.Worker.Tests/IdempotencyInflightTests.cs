@@ -16,7 +16,7 @@ namespace GxMcp.Worker.Tests
         public IdempotencyInflightTests() => IdempotencyCache.Clear();
 
         [Fact]
-        public void Duplicate_Inflight_BlocksAndReplays()
+        public async Task TryServe_WhileInflight_WaitsAndReplays()
         {
             const string id = "race-1";
             string firstResponse = "{\"status\":\"ok\",\"code\":\"WriteApplied\",\"target\":\"X\"}";
@@ -35,7 +35,7 @@ namespace GxMcp.Worker.Tests
 
             // Wait until the duplicate is parked on the signal.
             dupReady.Wait();
-            Thread.Sleep(80); // give the dup time to actually call TryServe
+            await Task.Delay(80); // give the dup time to actually call TryServe
 
             // The duplicate has NOT received anything yet — store hasn't happened.
             Assert.Null(sawByDuplicate);
@@ -44,7 +44,8 @@ namespace GxMcp.Worker.Tests
             IdempotencyCache.Store(id, firstResponse);
 
             // Duplicate must wake up and pick up the replay within a sane budget.
-            Assert.True(t.Wait(TimeSpan.FromSeconds(2)), "duplicate did not wake from in-flight signal");
+            var completed = await Task.WhenAny(t, Task.Delay(2000));
+            Assert.Same(t, completed);
             Assert.NotNull(sawByDuplicate);
             var obj = JObject.Parse(sawByDuplicate);
             Assert.Equal("WriteApplied", (string)obj["code"]);
@@ -52,20 +53,21 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void Abort_ReleasesInflightWithoutCaching()
+        public async Task Abort_ReleasesInflightWithoutCaching()
         {
             const string id = "abort-1";
             IdempotencyCache.BeginInflight(id);
 
             string seen = null;
             var t = Task.Run(() => { seen = IdempotencyCache.TryServe(id); });
-            Thread.Sleep(50);
+            await Task.Delay(50);
 
             // Abort instead of Store — the duplicate should wake but find no
             // cache entry, so it returns null and the caller will execute
             // fresh.
             IdempotencyCache.AbortInflight(id);
-            Assert.True(t.Wait(TimeSpan.FromSeconds(2)));
+            var completed = await Task.WhenAny(t, Task.Delay(2000));
+            Assert.Same(t, completed);
             Assert.Null(seen);
             Assert.Null(IdempotencyCache.TryServe(id));
         }
@@ -82,7 +84,7 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void Multiple_Waiters_AllReceiveSameReplay()
+        public async Task Multiple_Waiters_AllReceiveSameReplay()
         {
             const string id = "many-1";
             IdempotencyCache.BeginInflight(id);
@@ -96,10 +98,12 @@ namespace GxMcp.Worker.Tests
                 Task.Run(() => { ready.Signal(); seen[2] = IdempotencyCache.TryServe(id); }),
             };
             ready.Wait();
-            Thread.Sleep(80);
+            await Task.Delay(80);
             IdempotencyCache.Store(id, "{\"status\":\"ok\",\"code\":\"OnceOnly\"}");
 
-            Task.WaitAll(tasks, TimeSpan.FromSeconds(3));
+            var allTasks = Task.WhenAll(tasks);
+            var completed = await Task.WhenAny(allTasks, Task.Delay(3000));
+            Assert.Same(allTasks, completed);
             foreach (var s in seen)
             {
                 Assert.NotNull(s);

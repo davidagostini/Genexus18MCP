@@ -101,11 +101,28 @@ namespace GxMcp.Worker.Services
 
                 if (exactMatch && criteria.Terms.Count > 0)
                 {
-                    var exactCandidates = index.Objects.Values
-                        .Where(e => criteria.Terms.Any(t => string.Equals(e.Name, t, StringComparison.OrdinalIgnoreCase)));
-                    if (!string.IsNullOrEmpty(criteria.TypeFilter))
-                        exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
-                    var exactList = exactCandidates.ToList();
+                    List<SearchIndex.IndexEntry> exactList = null;
+                    if (!string.IsNullOrEmpty(criteria.TypeFilter) && index.Objects != null)
+                    {
+                        exactList = new List<SearchIndex.IndexEntry>();
+                        foreach (var t in criteria.Terms)
+                        {
+                            string key = criteria.TypeFilter + ":" + t;
+                            if (index.Objects.TryGetValue(key, out var directEntry) && directEntry != null)
+                            {
+                                exactList.Add(directEntry);
+                            }
+                        }
+                    }
+
+                    if (exactList == null || exactList.Count == 0)
+                    {
+                        var exactCandidates = index.Objects.Values
+                            .Where(e => criteria.Terms.Any(t => string.Equals(e.Name, t, StringComparison.OrdinalIgnoreCase)));
+                        if (!string.IsNullOrEmpty(criteria.TypeFilter))
+                            exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
+                        exactList = exactCandidates.ToList();
+                    }
                     var exactObj = JObject.FromObject(new {
                         count = exactList.Count,
                         total = exactList.Count,

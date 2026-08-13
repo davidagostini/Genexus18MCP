@@ -28,7 +28,7 @@ namespace GxMcp.Worker.Tests
         {
             public List<(string fileName, string arguments)> Calls = new List<(string, string)>();
             public string WhichResult = "C:/fake/chrome-devtools-axi.cmd";
-            public Func<string, string, (int exit, string stderr)> RunHandler;
+            public Func<string, string, (int exit, string stderr)> RunHandler = null;
             public Action<string> OnScreenshot; // optional override for screenshot side-effect
 
             public VisualVerifyService.CliResult Run(string fileName, string arguments, int timeoutMs)

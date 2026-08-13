@@ -16,6 +16,7 @@ namespace GxMcp.Worker.Services
     {
         private readonly ObjectService _objectService;
         private readonly PatternAnalysisService _patternAnalysisService;
+        private readonly PatchService _patchService;
         private ValidationService _validationService;
         private StructureService _structureService;
         private static readonly object _persistenceWarmupLock = new object();
@@ -29,6 +30,7 @@ namespace GxMcp.Worker.Services
             _objectService = objectService;
             _objectServiceRef = objectService; // v2.6.9 — static handle for NotePerTargetWrite → EditDirtyTracker
             _patternAnalysisService = new PatternAnalysisService(objectService);
+            _patchService = new PatchService(objectService, this, _patternAnalysisService);
             InitializeFlushTimer();
             AppDomain.CurrentDomain.ProcessExit += (s, e) => FlushBackground();
         }
@@ -594,8 +596,7 @@ namespace GxMcp.Worker.Services
             string raw;
             if (string.Equals(facadeArgs.Mode, "patch", StringComparison.OrdinalIgnoreCase))
             {
-                var patchService = new PatchService(_objectService, this, _patternAnalysisService);
-                raw = patchService.ApplyPatch(
+                raw = _patchService.ApplyPatch(
                     target,
                     facadeArgs.PartName,
                     facadeArgs.Operation,

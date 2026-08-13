@@ -335,7 +335,7 @@ namespace GxMcp.Worker.Tests
         // ── Stream F — concurrent waiters wake on a single state change ─────
 
         [Fact]
-        public void StatusWait_ConcurrentWaiters_BothWake_OnSinglePhaseChange()
+        public async Task StatusWait_ConcurrentWaiters_BothWake_OnSinglePhaseChange()
         {
             // Two callers polling the same taskId with wait=10 must both
             // observe the next state change. The signal must NOT auto-reset
@@ -361,14 +361,13 @@ namespace GxMcp.Worker.Tests
             string baseline = status.ComputeBaseline();
             var waitA = Task.Run(() => svc.GetStatusWait(taskId, 10, baseline, 1, 50));
             var waitB = Task.Run(() => svc.GetStatusWait(taskId, 10, baseline, 1, 50));
-            Thread.Sleep(120); // let both threads enter Wait
+            await Task.Delay(120); // let both threads enter Wait
             status.Phase = "Specifying";
             status.StateChangeSignal.Set();
 
-            bool aDone = waitA.Wait(TimeSpan.FromSeconds(3));
-            bool bDone = waitB.Wait(TimeSpan.FromSeconds(3));
-            Assert.True(aDone, "waiter A timed out — signal failed to propagate");
-            Assert.True(bDone, "waiter B timed out — signal didn't reach second waiter");
+            var allWaits = Task.WhenAll(waitA, waitB);
+            var completed = await Task.WhenAny(allWaits, Task.Delay(3000));
+            Assert.Same(allWaits, completed);
         }
 
         // ── Stream E (FR#7) — Normalizer edges ──────────────────────────────

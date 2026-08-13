@@ -373,29 +373,8 @@ namespace GxMcp.Worker
                     };
                     
                     // The 'Quiet Mode' loop: process commands on the UI thread
-                    var pollTimer = new System.Windows.Forms.Timer { Interval = 10 };
-                    pollTimer.Tick += (s, e) => {
-                        if (SdkCommandQueue.TryTake(out string line))
-                        {
-                            // Bug #4: publish in-flight state so the main dispatch loop can
-                            // fast-reject a heavy command that races in behind this one.
-                            // (x86 worker: 64-bit writes need Interlocked to be atomic.)
-                            Interlocked.Exchange(ref _sdkBusySinceTicks, DateTime.UtcNow.Ticks);
-                            _sdkBusyOp = DescribeCommand(line);
-                            _sdkBusyOperationId = ExtractOperationId(line);
-                            _sdkBusy = 1;
-                            try { ProcessCommand(line); }
-                            catch (Exception ex) { Logger.Error("SDK Command Error: " + ex.Message); }
-                            finally { _sdkBusy = 0; _sdkBusyOp = null; _sdkBusyOperationId = null; }
-                        }
-                        // Plan 037: low-priority SDK jobs (KbWatcher polling) only run when no
-                        // real dispatched command is waiting this tick — never starves normal traffic.
-                        else if (SdkActionQueue.TryDequeue(out var job))
-                        {
-                            try { job(); }
-                            catch (Exception ex) { Logger.Error("SDK Action Error: " + ex.Message); }
-                        }
-                    };
+                    var pollTimer = new System.Windows.Forms.Timer { Interval = 15 };
+                    pollTimer.Tick += (s, e) => DrainSdkCommands();
                     
                     _bridgeForm.Load += (s, e) => {
                         pollTimer.Start();
@@ -445,7 +424,7 @@ namespace GxMcp.Worker
                         else if (TryRejectBusy(line))
                         { /* answered with a WorkerBusy envelope — do not queue behind the long op */ }
                         else
-                            SdkCommandQueue.Add(line);
+                            EnqueueSdkCommand(line);
                     }
                 }
 
@@ -458,6 +437,38 @@ namespace GxMcp.Worker
                 Logger.Info("Worker shutting down safely.");
             } catch (Exception ex) {
                 Logger.Error($"Main FATAL: {ex.Message}");
+            }
+        }
+
+        private static void EnqueueSdkCommand(string line)
+        {
+            SdkCommandQueue.Add(line);
+            try
+            {
+                if (_bridgeForm != null && _bridgeForm.IsHandleCreated)
+                {
+                    _bridgeForm.BeginInvoke((Action)DrainSdkCommands);
+                }
+            }
+            catch { }
+        }
+
+        private static void DrainSdkCommands()
+        {
+            while (SdkCommandQueue.TryTake(out string line))
+            {
+                Interlocked.Exchange(ref _sdkBusySinceTicks, DateTime.UtcNow.Ticks);
+                _sdkBusyOp = DescribeCommand(line);
+                _sdkBusyOperationId = ExtractOperationId(line);
+                _sdkBusy = 1;
+                try { ProcessCommand(line); }
+                catch (Exception ex) { Logger.Error("SDK Command Error: " + ex.Message); }
+                finally { _sdkBusy = 0; _sdkBusyOp = null; _sdkBusyOperationId = null; }
+            }
+            while (SdkActionQueue.TryDequeue(out var job))
+            {
+                try { job(); }
+                catch (Exception ex) { Logger.Error("SDK Action Error: " + ex.Message); }
             }
         }
 
