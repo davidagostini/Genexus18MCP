@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.41.0 - 2026-08-13
+
 ### Added
 
 - `genexus_read` now exposes persisted Data Selector definitions through the
