@@ -225,6 +225,7 @@ namespace GxMcp.Gateway
                 try
                 {
                     _toolDefs = JArray.Parse(File.ReadAllText(path));
+                    ToolSchemaCompatibility.Apply(_toolDefs);
                 }
                 catch
                 {

@@ -185,6 +185,7 @@ namespace GxMcp.Gateway
                 {
                     string json = File.ReadAllText(defPath);
                     var parsed = JArray.Parse(json);
+                    ToolSchemaCompatibility.Apply(parsed);
                     // MCP clients cache tools/list aggressively; deterministic ordering
                     // keeps discovery diffs stable and avoids model-visible churn when
                     // the source JSON is edited in a different order.
