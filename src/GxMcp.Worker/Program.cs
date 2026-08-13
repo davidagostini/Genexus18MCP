@@ -630,6 +630,12 @@ namespace GxMcp.Worker
                     t?.GetMethod("Initialize", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
                 });
 
+                Step("UIServices.SetDisableUI", () => {
+                    var uiAsm = Assembly.LoadFrom(Path.Combine(gxPath, "Artech.Architecture.UI.Framework.dll"));
+                    var t = uiAsm.GetType("Artech.Architecture.UI.Framework.Services.UIServices");
+                    t?.GetMethod("SetDisableUI", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, new object[] { true });
+                });
+
                 Step("UIServices.Initialize", () => {
                     var uiAsm = Assembly.LoadFrom(Path.Combine(gxPath, "Artech.Architecture.UI.Framework.dll"));
                     var t = uiAsm.GetType("Artech.Architecture.UI.Framework.Services.UIServices");

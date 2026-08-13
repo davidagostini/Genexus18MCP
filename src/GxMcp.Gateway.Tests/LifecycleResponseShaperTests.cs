@@ -387,6 +387,40 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("MyProc", obj["hint"]!.ToString());
         }
 
+        // Issue #86: specify on unreachable object returns generateEvidence with ok=false
+        // and effective_status=SucceededWithGaps.
+        [Fact]
+        public void Compact_SpecifyEvidenceUnreachable_SurfacesSucceededWithGaps()
+        {
+            var rawObj = JObject.Parse(MakeBuildStatus(0, 1));
+            rawObj["Status"] = "Succeeded";
+            rawObj["Action"] = "Build";
+            rawObj["Warnings"] = new JArray { "[specify-gap] Object unreachable or not found during specify: UnreachableProc" };
+            rawObj["GenerateEvidence"] = new JObject
+            {
+                ["ok"] = false,
+                ["objectsChecked"] = 1,
+                ["objectsSpecified"] = 0,
+                ["unreachable"] = new JArray
+                {
+                    new JObject { ["object"] = "UnreachableProc", ["reason"] = "unreachable" }
+                },
+                ["note"] = "Specify reported success but 1 object(s) were unreachable or not found in the Knowledge Base: UnreachableProc. The object was not specified by GeneXus."
+            };
+            rawObj["Hint"] = "Specification gap: object UnreachableProc was unreachable (spc0217) or not found.";
+
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+
+            Assert.Equal("SucceededWithGaps", obj["effective_status"]!.ToString());
+            var ev = obj["generateEvidence"] as JObject;
+            Assert.NotNull(ev);
+            Assert.False(ev!["ok"]!.Value<bool>());
+            var un = ev!["unreachable"] as JArray;
+            Assert.NotNull(un);
+            Assert.Single(un!);
+            Assert.Equal("UnreachableProc", un![0]?["object"]?.ToString());
+        }
+
         // A Succeeded build whose gate passed (ok=true) passes evidence through
         // but must NOT stamp effective_status — it's a clean success.
         [Fact]

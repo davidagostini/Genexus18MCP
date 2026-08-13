@@ -9,6 +9,19 @@ namespace GxMcp.Worker.Tests
     // internal test seam LoadFromEntries.
     public static class TestFixtures
     {
+        public static string FindRepoRoot()
+        {
+            string dir = System.AppDomain.CurrentDomain.BaseDirectory;
+            for (int i = 0; i < 10; i++)
+            {
+                if (System.IO.File.Exists(System.IO.Path.Combine(dir, "Genexus18MCP.sln")))
+                    return dir;
+                dir = System.IO.Path.GetDirectoryName(dir);
+                if (string.IsNullOrEmpty(dir)) break;
+            }
+            return System.IO.Path.GetFullPath(System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", ".."));
+        }
+
         public class CallGraphFixture
         {
             public IndexCacheService Index;

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`genexus_lifecycle action=specify` surfaces structured evidence and `effective_status=SucceededWithGaps` for unreachable or not found objects.** When GeneXus skips specification because an object is unreachable (`spc0217`) or not found in the Knowledge Base, the worker now captures `generateEvidence` (`ok=false`, `unreachable`/`notFound` lists, note) and emits a `[specify-gap]` warning, allowing the gateway to surface `effective_status="SucceededWithGaps"` instead of a false clean success. Fixes [#86](https://github.com/lennix1337/Genexus18MCP/issues/86).
+- **`UIServices.SetDisableUI(true)` invoked during worker bootstrap.** Explicitly disables interactive modal dialogs prior to `UIServices.Initialize`, preventing blocked STA threads during headless execution. Fixes [#88](https://github.com/lennix1337/Genexus18MCP/issues/88).
+- **`genexus_sdk_probe` pre-loads and scans unreferenced GeneXus/WWP SDK assemblies from disk.** Discovers and loads assemblies from the GeneXus installation, `Packages`, and `Patterns` directories into the AppDomain prior to probing so that unreferenced tools and generators are discovered. Also cleaned up duplicate merge header artifacts in `CHANGELOG.md`. Fixes [#87](https://github.com/lennix1337/Genexus18MCP/issues/87).
+
 ## v2.40.2 - 2026-08-12
 
 ### Added
@@ -2247,18 +2253,6 @@ WorkWithPlus on a bare WebPanel now works end-to-end. Apply the pattern, get a h
 - New `Microsoft.Build.Framework` reference in the worker csproj so the MSBuild-style `WWP_ApplyTemplate` task's `IBuildEngine` contract resolves (the task's ctor still fails headlessly; we keep the route as a fallback in case future SDK versions relax the requirement).
 - Tests: worker 379 → 382 (3 new `ApplySettings` projection tests, integration smokes env-gated via `LiveKbFact`), gateway 252 → 252 (golden discovery fixture regenerated for the new `genexus_sdk_probe` tool). All green; 2 worker tests skipped by design when `GXMCP_TEST_KB` is unset.
 
-## Unreleased
-
-## v2.40.2 - 2026-08-12
-
-## v2.40.1 - 2026-08-11
-
-## v2.40.0 - 2026-08-10
-
-## v2.39.4 - 2026-08-10
-
-(none)
-
 ## v2.5.3 — 2026-05-19
 
 ### Added
@@ -3372,14 +3366,6 @@ Plan: `docs/superpowers/plans/2026-05-13-mcp-perf-and-tool-stability-v2.2.0.md`.
   work unchanged.
 - Set `MCP_PERF_PROFILE=legacy` to restore pre-v2.2.0 behavior at the
   process level (single env-flip kill switch).
-
-## Unreleased
-
-## v2.40.2 - 2026-08-12
-
-## v2.40.1 - 2026-08-11
-
-## v2.40.0 - 2026-08-10
 
 ## v2.39.4 - 2026-08-10
 

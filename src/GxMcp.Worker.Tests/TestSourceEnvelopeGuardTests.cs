@@ -15,9 +15,7 @@ namespace GxMcp.Worker.Tests
     public class TestSourceEnvelopeGuardTests
     {
         private static readonly string WorkerTestsDir = Path.GetFullPath(
-            Path.Combine(
-                System.AppDomain.CurrentDomain.BaseDirectory,
-                "..", "..", ".."));
+            Path.Combine(TestFixtures.FindRepoRoot(), "src", "GxMcp.Worker.Tests"));
 
         // Files that ARE allowed to mention the legacy literals because they
         // are the regression guards themselves OR they exercise translation

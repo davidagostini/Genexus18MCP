@@ -70,6 +70,10 @@ namespace GxMcp.Worker.Services
                 : outputDirOverride;
             Directory.CreateDirectory(outDir);
 
+            // Pre-load unreferenced GeneXus/WWP SDK assemblies from disk so that tools
+            // and generators not yet loaded into the AppDomain are also discovered.
+            TryPreloadSdkAssemblies(result);
+
             var raw = new JObject();
             var asmArr = new JArray();
             int totalTypes = 0;
@@ -363,6 +367,66 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrEmpty(fullName)) return "(global)";
             int i = fullName.LastIndexOf('.');
             return i > 0 ? fullName.Substring(0, i) : "(global)";
+        }
+
+        private static void TryPreloadSdkAssemblies(ProbeResult result)
+        {
+            try
+            {
+                string gxPath = Environment.GetEnvironmentVariable("GX_PROGRAM_DIR")
+                    ?? Environment.GetEnvironmentVariable("GX_PATH")
+                    ?? @"C:\Program Files (x86)\GeneXus\GeneXus18";
+
+                if (!Directory.Exists(gxPath)) return;
+
+                var dirsToScan = new List<string> { gxPath };
+                string packagesDir = Path.Combine(gxPath, "Packages");
+                if (Directory.Exists(packagesDir)) dirsToScan.Add(packagesDir);
+                string patternsDir = Path.Combine(gxPath, "Patterns");
+                if (Directory.Exists(patternsDir)) dirsToScan.Add(patternsDir);
+
+                var loadedAssemblies = new HashSet<string>(
+                    AppDomain.CurrentDomain.GetAssemblies()
+                        .Select(a =>
+                        {
+                            try { return a.GetName().Name; }
+                            catch { return null; }
+                        })
+                        .Where(n => !string.IsNullOrEmpty(n)),
+                    StringComparer.OrdinalIgnoreCase);
+
+                foreach (var dir in dirsToScan)
+                {
+                    string[] files;
+                    try { files = Directory.GetFiles(dir, "*.dll"); }
+                    catch { continue; }
+
+                    foreach (var file in files)
+                    {
+                        string fileName = Path.GetFileNameWithoutExtension(file);
+                        if (!AssemblyPrefixes.Any(p => fileName.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+                            continue;
+
+                        if (loadedAssemblies.Contains(fileName))
+                            continue;
+
+                        try
+                        {
+                            var loaded = Assembly.LoadFrom(file);
+                            string loadedName = loaded.GetName().Name;
+                            if (!string.IsNullOrEmpty(loadedName)) loadedAssemblies.Add(loadedName);
+                        }
+                        catch (Exception ex)
+                        {
+                            result.Warnings.Add("Preload " + fileName + " failed: " + ex.Message);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                result.Warnings.Add("SDK preloading failed: " + ex.Message);
+            }
         }
     }
 }

@@ -518,6 +518,10 @@ namespace GxMcp.Worker.Services
             /// </summary>
             public HashSet<string> SuggestedRebuildTargets { get; set; } =
                 new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            public HashSet<string> NotFoundTargets { get; set; } =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            public HashSet<string> UnreachableTargets { get; set; } =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             public int LineCount { get; set; }
             public string LastLine { get; set; }
             public List<string> TailLines { get; set; } = new List<string>();
@@ -1694,26 +1698,109 @@ namespace GxMcp.Worker.Services
         private void AttachGenerateEvidence(BuildTaskStatus status, string action, List<string> targets)
         {
             if (status == null) return;
-            // Only meaningful for a successful (or partial-success) build of a
-            // code-emitting action. specifyOnly never compiles/generates .cs to disk.
-            if (status.SpecifyOnly) return;
-            if (!IsCodeEmittingAction(action)) return;
             bool succeeded = string.Equals(status.Status, "Succeeded", StringComparison.OrdinalIgnoreCase)
                              || (status.PartialSuccess == true);
             if (!succeeded) return;
 
-            string kbPath = GetKBPath();
-            if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) return;
-
-            // Which targets do we expect to have regenerated?
-            //  - explicit Build targets → those objects.
-            //  - RebuildAll / Sync / targetless Build → the dirty-at-start set (objects
-            //    edited via MCP that the build was supposed to flush). If nothing was
-            //    tracked dirty, we can't cheaply enumerate the whole KB — skip quietly.
+            // Which targets do we expect to have regenerated / specified?
             var checkList = (targets != null && targets.Count > 0)
                 ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
                 : (status.DirtyAtStart ?? new List<string>());
             if (checkList.Count == 0) return;
+
+            var unreachableSet = ParseUnreachableFromLog(status.FullLogPath);
+            var notFoundSet = ParseNotFoundFromLog(status.FullLogPath);
+            if (status.NotFoundTargets != null)
+            {
+                foreach (var nf in status.NotFoundTargets) notFoundSet.Add(nf);
+            }
+            if (status.UnreachableTargets != null)
+            {
+                foreach (var un in status.UnreachableTargets) unreachableSet.Add(un);
+            }
+
+            // issue #86: action=specify (specifyOnly) verification
+            if (status.SpecifyOnly)
+            {
+                var specifyUnreachable = new JArray();
+                var specifyNotFound = new JArray();
+                var specifySpecified = new JArray();
+
+                foreach (var t in checkList)
+                {
+                    string bare = BareName(t);
+                    if (string.IsNullOrEmpty(bare)) continue;
+
+                    if (notFoundSet.Contains(bare))
+                    {
+                        specifyNotFound.Add(new JObject
+                        {
+                            ["object"] = bare,
+                            ["reason"] = "notFoundInKnowledgeBase"
+                        });
+                    }
+                    else if (unreachableSet.Contains(bare))
+                    {
+                        specifyUnreachable.Add(new JObject
+                        {
+                            ["object"] = bare,
+                            ["reason"] = "unreachable"
+                        });
+                    }
+                    else
+                    {
+                        specifySpecified.Add(new JObject
+                        {
+                            ["object"] = bare
+                        });
+                    }
+                }
+
+                bool ok = specifyUnreachable.Count == 0 && specifyNotFound.Count == 0;
+                var specifyEvidence = new JObject
+                {
+                    ["ok"] = ok,
+                    ["objectsChecked"] = checkList.Count,
+                    ["objectsSpecified"] = specifySpecified.Count,
+                    ["specified"] = specifySpecified
+                };
+
+                if (specifyUnreachable.Count > 0) specifyEvidence["unreachable"] = specifyUnreachable;
+                if (specifyNotFound.Count > 0) specifyEvidence["notFound"] = specifyNotFound;
+
+                if (!ok)
+                {
+                    var gapNames = specifyUnreachable.Select(x => (string)x["object"])
+                        .Concat(specifyNotFound.Select(x => (string)x["object"]))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    string joinedNames = string.Join(", ", gapNames);
+
+                    specifyEvidence["note"] = "Specify reported success but " + gapNames.Count
+                        + " object(s) were unreachable or not found in the Knowledge Base: " + joinedNames
+                        + ". The object was not specified by GeneXus.";
+
+                    lock (status._lock)
+                    {
+                        if (status.Warnings.Count < 50)
+                            status.Warnings.Add("[specify-gap] Object unreachable or not found during specify: " + joinedNames);
+                        status.WarningCount++;
+                        if (string.IsNullOrEmpty(status.Hint))
+                        {
+                            status.Hint = "Specification gap: object " + joinedNames
+                                + " was unreachable (spc0217) or not found. Give it a caller or set as Main object to specify. See generateEvidence.unreachable / generateEvidence.notFound.";
+                        }
+                    }
+                }
+
+                status.GenerateEvidence = specifyEvidence;
+                return;
+            }
+
+            if (!IsCodeEmittingAction(action)) return;
+
+            string kbPath = GetKBPath();
+            if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) return;
 
             // issue #42 hardening (A) — set of objects that were dirty (edited via MCP
             // but not yet successfully built) when the build started. GeneXus generation
@@ -1734,7 +1821,7 @@ namespace GxMcp.Worker.Services
             // "rebuild with deploy=true" hint misleads the agent (a rebuild won't
             // generate an unreachable object). Parse the build log for spc0217 so those
             // objects land in their own bucket with an accurate reason/hint.
-            var unreachableSet = ParseUnreachableFromLog(status.FullLogPath);
+            // unreachableSet already parsed above
 
             var filesWritten = new JArray();
             var staleOrMissing = new JArray();
@@ -1932,26 +2019,63 @@ namespace GxMcp.Worker.Services
                 {
                     if (line.IndexOf("spc0217", StringComparison.OrdinalIgnoreCase) < 0) continue;
                     int a = line.IndexOf("<FullName>", StringComparison.OrdinalIgnoreCase);
-                    if (a < 0) continue;
-                    a += "<FullName>".Length;
-                    int b = line.IndexOf("</FullName>", a, StringComparison.OrdinalIgnoreCase);
-                    if (b < 0) continue;
-                    string full = line.Substring(a, b - a).Trim();
-                    if (full.Length == 0) continue;
-                    string name;
-                    int q1 = full.IndexOf('\'');
-                    int q2 = q1 >= 0 ? full.IndexOf('\'', q1 + 1) : -1;
-                    if (q1 >= 0 && q2 > q1)
-                        name = full.Substring(q1 + 1, q2 - q1 - 1).Trim();     // Procedure 'Foo' → Foo
-                    else
+                    if (a >= 0)
                     {
-                        var parts = full.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        name = parts.Length > 0 ? parts[parts.Length - 1] : full;
+                        a += "<FullName>".Length;
+                        int b = line.IndexOf("</FullName>", a, StringComparison.OrdinalIgnoreCase);
+                        if (b >= 0)
+                        {
+                            string full = line.Substring(a, b - a).Trim();
+                            if (full.Length > 0)
+                            {
+                                string name;
+                                int q1 = full.IndexOf('\'');
+                                int q2 = q1 >= 0 ? full.IndexOf('\'', q1 + 1) : -1;
+                                if (q1 >= 0 && q2 > q1)
+                                    name = full.Substring(q1 + 1, q2 - q1 - 1).Trim();     // Procedure 'Foo' → Foo
+                                else
+                                {
+                                    var parts = full.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                                    name = parts.Length > 0 ? parts[parts.Length - 1] : full;
+                                }
+                                if (!string.IsNullOrEmpty(name)) set.Add(name);
+                                continue;
+                            }
+                        }
                     }
-                    if (!string.IsNullOrEmpty(name)) set.Add(name);
+                    int quote1 = line.IndexOf('\'');
+                    int quote2 = quote1 >= 0 ? line.IndexOf('\'', quote1 + 1) : -1;
+                    if (quote1 >= 0 && quote2 > quote1)
+                    {
+                        string name = line.Substring(quote1 + 1, quote2 - quote1 - 1).Trim();
+                        if (!string.IsNullOrEmpty(name)) set.Add(name);
+                    }
                 }
             }
             catch { /* best-effort — empty set on any error */ }
+            return set;
+        }
+
+        private static HashSet<string> ParseNotFoundFromLog(string logPath)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(logPath)) return set;
+            try
+            {
+                if (!File.Exists(logPath)) return set;
+                var info = new FileInfo(logPath);
+                if (info.Length > 8 * 1024 * 1024) return set;
+                foreach (var line in File.ReadLines(logPath))
+                {
+                    var m = _rxObjectNotFoundWarning.Match(line);
+                    if (m.Success)
+                    {
+                        string obj = m.Groups["obj"].Value;
+                        if (!string.IsNullOrEmpty(obj)) set.Add(obj);
+                    }
+                }
+            }
+            catch { }
             return set;
         }
 
@@ -2562,13 +2686,31 @@ namespace GxMcp.Worker.Services
                 }
                 else if (_rxWarning.IsMatch(line))
                 {
+                    if (line.IndexOf("spc0217", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        int q1 = line.IndexOf('\'');
+                        int q2 = q1 >= 0 ? line.IndexOf('\'', q1 + 1) : -1;
+                        if (q1 >= 0 && q2 > q1)
+                        {
+                            string unObj = line.Substring(q1 + 1, q2 - q1 - 1).Trim();
+                            if (!string.IsNullOrEmpty(unObj)) status.UnreachableTargets.Add(unObj);
+                        }
+                    }
+
                     // issue #32 item 5: drop the spurious "<obj> not found in the Knowledge
                     // Base" warning when <obj> is one of the objects we're building — the
                     // object exists (it's the spec target); the warning is misleading noise.
+                    // issue #86: do NOT suppress when specifyOnly=true, because GeneXus skips
+                    // specifying unreachable/uncalled objects entirely.
                     var nf = _rxObjectNotFoundWarning.Match(line);
-                    if (nf.Success && IsBuildTarget(nf.Groups["obj"].Value, status))
+                    if (nf.Success)
                     {
-                        return;
+                        string objName = nf.Groups["obj"].Value;
+                        status.NotFoundTargets.Add(objName);
+                        if (!status.SpecifyOnly && IsBuildTarget(objName, status))
+                        {
+                            return;
+                        }
                     }
                     status.WarningCount++;
                     if (status.Warnings.Count < 50) status.Warnings.Add(line.Trim());
