@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- **`genexus_structure action=create_index` no longer persists during `dryRun=true`.** The Worker now keeps validation/projection separate from SDK mutation, verifies the persisted index snapshot and composite `versionToken` after every preview, and returns `DryRunMutationDetected` with rollback details if any state changes. Effective writes support `baseVersion` optimistic concurrency, preserve the requested attribute order, re-read and verify the exact index, and restore the prior snapshot on save/verification failure when `rollbackOnFailure=true`. The action does not implicitly Specify, Generate, Build, Rebuild, compile, reorganize, execute, or test.
+
 - Build diagnostics now classify GeneXus source/query errors (`src####`, `qry####`)
   as specification failures and build-infrastructure errors (`gtm####`, `mtd####`,
   `pmm####`, `rgz####`, `rgo####`) as environment failures, so recovery guidance

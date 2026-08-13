@@ -1404,7 +1404,8 @@ namespace GxMcp.Worker.Services
 
         public string GetVisualIndexes(string targetName) => _indexService.GetVisualIndexes(targetName);
 
-        public string CreateIndex(string targetName, string payload) => _indexService.CreateIndex(targetName, payload);
+        public string CreateIndex(string targetName, string payload, JObject args) =>
+            _indexService.CreateIndex(targetName, payload, args);
 
         public string DropIndex(string targetName, string payload) => _indexService.DropIndex(targetName, payload);
 

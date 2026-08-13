@@ -1661,7 +1661,7 @@ namespace GxMcp.Worker.Services
                 return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(structResp, target, args, "Structure");
             }
             if (action == "GetVisualIndexes") return _structureService.GetVisualIndexes(target);
-            if (action == "CreateIndex") return _structureService.CreateIndex(target, payload);
+            if (action == "CreateIndex") return _structureService.CreateIndex(target, payload, args);
             if (action == "DropIndex") return _structureService.DropIndex(target, payload);
             if (action == "SetAttributeProperties") return _structureService.SetAttributeProperties(target, payload);
             if (action == "SetLevelProperties") return _structureService.SetLevelProperties(target, payload);
