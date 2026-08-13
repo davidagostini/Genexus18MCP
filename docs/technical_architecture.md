@@ -50,6 +50,33 @@ The extension uses this MCP discovery flow directly.
 - Execute analysis, refactor, formatting, lifecycle, history, structure, and property operations
 - Isolate GeneXus runtime constraints from the gateway process
 
+### Text patch responsibilities
+
+The `genexus_edit mode=patch` implementation keeps its external contract in
+`PatchService`, but separates deterministic work from SDK side effects:
+
+- `PatchTextEditor` owns pure context matching, Replace, InsertAfter, fuzzy
+  matching, diagnostics, and edit-distance calculations.
+- `PatchService` orchestrates snapshots, optimistic concurrency, the single
+  write attempt, forced post-save reads, cache invalidation, and rollback.
+- `PatchPersistenceReceipt` builds the stable persistence evidence (`saved`,
+  `verified`, hashes, old-context presence, and rollback status).
+- `TextPersistenceVerifier` owns exact, normalized, and semantic equivalence.
+- `CommentOnlyPatch` classifies line/block comment replacements and counts the
+  previous statement only when it remains active outside comments or strings.
+
+For Source/Rules, `exact` compares every logical character while treating CRLF
+and LF as equivalent SDK renderings. This prevents a persisted comment from
+being rolled back solely because U16 returned a different line-ending style.
+Comment-only writes require `baseVersion`; a divergent forced re-read returns
+`CommentOnlyWriteNotPersisted`, and an explicitly requested rollback restores
+and verifies the pre-write snapshot.
+
+These boundaries are internal. Refactoring them must preserve tool arguments,
+write count, transaction behavior, and the prohibition on implicit KB lifecycle
+actions. New typed failure codes may be added only when they replace an
+ambiguous or false-success result without changing the write semantics.
+
 ## Gateway responsibilities
 
 - MCP routing

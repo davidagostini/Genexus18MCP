@@ -2,7 +2,6 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
-using System.Text.RegularExpressions;
 using System.Diagnostics;
 using GxMcp.Worker.Helpers;
 using Newtonsoft.Json.Linq;
@@ -281,7 +280,12 @@ namespace GxMcp.Worker.Services
                 string workContent = (content ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n");
 
                 var sourceLines = workSource.Split('\n');
-                var contextLines = workContext?.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                // Preserve blank lines, including a terminal newline. Removing empty
+                // entries changed the matched byte range: a context ending in CRLF
+                // matched only the visible lines, then a replacement that also ended
+                // in CRLF left the original terminator behind and produced an extra
+                // blank line. That breaks exact verification and empty deletions.
+                var contextLines = workContext?.Split(new[] { '\n' }, StringSplitOptions.None);
                 string normalizedOperation = NormalizeOperation(operation);
 
                 // 2. Matching Logic
@@ -372,7 +376,13 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                if (string.IsNullOrEmpty(updatedSource))
+                // An empty updated source is a valid result when Replace matched the
+                // complete part and the requested replacement is empty. Match failures
+                // also return an empty string, so status (not payload length) is the
+                // discriminator that keeps the no-match safety guard intact.
+                if (updatedSource == null ||
+                    (!string.Equals(status, "Applied", StringComparison.OrdinalIgnoreCase) &&
+                     string.IsNullOrEmpty(updatedSource)))
                 {
                     string dbg = string.Empty;
                     if (sourceLines.Length > 0 && contextLines?.Length > 0)
@@ -411,7 +421,7 @@ namespace GxMcp.Worker.Services
                         // "not found" and no diagnostics. Raised to 120.
                         var near = contextLines.Length <= 120
                             ? FindNearMatches(sourceLines, contextLines, topN: 3)
-                            : new List<NearMatch>();
+                            : new List<PatchTextEditor.NearMatch>();
                         if (near.Count == 0)
                         {
                             // Issue #27 item 6: previously, when no similar window was found the
@@ -556,6 +566,33 @@ namespace GxMcp.Worker.Services
                     return AttachTimings(noChange, readMs, patchMs, 0, sourceFromCache);
                 }
 
+                bool commentOnlyChange = CommentOnlyPatch.TryClassify(
+                    partName, normalizedOperation, workContext, workContent, out string commentStyle);
+                if (commentOnlyChange && !dryRun && string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    string missingVersion = Models.McpResponse.Err(
+                        code: "BaseVersionRequired",
+                        message: "Comment-only Source replacements require baseVersion; no write was attempted.",
+                        hint: "Re-read the Source, then retry with the returned versionToken as baseVersion.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep(
+                            tool: "genexus_read",
+                            args: new JObject { ["name"] = target, ["part"] = partName },
+                            why: "Obtains the current Source and versionToken for optimistic concurrency.")),
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["part"] = partName,
+                            ["operation"] = normalizedOperation,
+                            ["commentOnly"] = true,
+                            ["commentStyle"] = commentStyle,
+                            ["matchCount"] = matchCount,
+                            ["saved"] = false,
+                            ["verified"] = false,
+                            ["implicitOperations"] = new JArray()
+                        });
+                    return AttachTimings(missingVersion, readMs, patchMs, 0, sourceFromCache);
+                }
+
                 if (dryRun)
                 {
                     string dryRunResult = BuildPatchResult("Applied", partName, normalizedOperation, expectedCount, matchCount, "Dry-run succeeded. Write skipped.");
@@ -563,7 +600,28 @@ namespace GxMcp.Worker.Services
                     {
                         var dryRunJson = JObject.Parse(dryRunResult);
                         var dryRunBody = dryRunJson["result"] as JObject ?? dryRunJson;
+                        var dryRunEvidence = TextPersistenceVerifier.Evaluate(requested: updatedSource.Replace("\n", Environment.NewLine), persisted: originalSource, requestedMode: resolvedVerifyMode, partName: partName);
                         dryRunBody["persisted"] = false;
+                        dryRunBody["saved"] = false;
+                        dryRunBody["verified"] = false;
+                        dryRunBody["requestedHash"] = dryRunEvidence.RequestedHash;
+                        dryRunBody["persistedHash"] = dryRunEvidence.PersistedHash;
+                        dryRunBody["commentOnly"] = commentOnlyChange;
+                        if (commentOnlyChange)
+                        {
+                            dryRunBody["commentStyle"] = commentStyle;
+                            dryRunBody["before"] = context;
+                            dryRunBody["after"] = content ?? string.Empty;
+                            dryRunBody["matchedCount"] = matchCount;
+                        }
+                        dryRunBody["implicitOperations"] = new JArray();
+                        try
+                        {
+                            var dryRunObject = _objectService.FindObject(target, typeFilter);
+                            string dryRunVersion = dryRunObject == null ? null : WriteService.ComputeVersionToken(dryRunObject);
+                            if (!string.IsNullOrWhiteSpace(dryRunVersion)) dryRunBody["versionToken"] = dryRunVersion;
+                        }
+                        catch { }
                         dryRunBody["verification"] = new JObject
                         {
                             ["mode"] = resolvedVerifyMode,
@@ -670,14 +728,29 @@ namespace GxMcp.Worker.Services
                 // 3. Write Back (re-normalize to CRLF for GeneXus)
                 string finalCode = updatedSource.Replace("\n", Environment.NewLine);
                 var writeStopwatch = Stopwatch.StartNew();
-                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
+                // Do not use the object-only fast path for textual patches. On GX18 U16,
+                // obj.Save() can advance the object's version and leave the changed ISource
+                // only in the live SDK instance. The full path saves the part explicitly and
+                // commits the object transaction, matching mode=full persistence semantics.
+                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
                 writeStopwatch.Stop();
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
                 JObject writePayload = ParseWriteResult(writeResult);
+                writePayload["implicitOperations"] = new JArray();
+                if (commentOnlyChange)
+                {
+                    writePayload["commentOnly"] = true;
+                    writePayload["commentStyle"] = commentStyle;
+                    writePayload["before"] = context;
+                    writePayload["after"] = content ?? string.Empty;
+                    writePayload["matchedCount"] = matchCount;
+                }
 
                 bool primaryWriteSuccess = string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
                 bool writeReportedVerificationMismatch = string.Equals(writePayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
                 bool persistedMatches = false;
+                bool saveReported = primaryWriteSuccess || writeReportedVerificationMismatch;
+                string confirmedPersistedSource = null;
                 bool isPatternPart = Services.PatternAnalysisService.IsPatternPart(partName);
 
                 if (primaryWriteSuccess && isPatternPart)
@@ -698,23 +771,17 @@ namespace GxMcp.Worker.Services
 
                     if (verification != null)
                     {
-                        persistedMatches = verification.Matches;
-                        writePayload["requestedHash"] = verification.RequestedHash;
-                        writePayload["persistedHash"] = verification.PersistedHash;
-                        writePayload["normalizedRequestedHash"] = verification.NormalizedRequestedHash;
-                        writePayload["normalizedPersistedHash"] = verification.NormalizedPersistedHash;
-                        JObject verificationJson = verification.ToJson(reReadConfirmed: true);
-                        string canonicalReplacement = TextPersistenceVerifier.Canonicalize(content, resolvedVerifyMode, partName);
-                        string canonicalPersisted = TextPersistenceVerifier.Canonicalize(persistedSource, resolvedVerifyMode, partName);
-                        int replacementMatchCount = canonicalReplacement.Length == 0
-                            ? 0
-                            : CountOccurrences(canonicalPersisted, canonicalReplacement);
-                        bool replacementPresent = canonicalReplacement.Length == 0 || replacementMatchCount > 0;
-                        persistedMatches = verification.Matches && replacementPresent;
-                        verificationJson["matchCount"] = matchCount;
-                        verificationJson["replacementMatchCount"] = replacementMatchCount;
-                        verificationJson["replacementPresent"] = replacementPresent;
-                        writePayload["verification"] = verificationJson;
+                        confirmedPersistedSource = persistedSource;
+                        persistedMatches = PatchPersistenceReceipt.AttachVerification(
+                            writePayload,
+                            verification,
+                            content,
+                            context,
+                            persistedSource,
+                            resolvedVerifyMode,
+                            partName,
+                            matchCount,
+                            commentOnlyChange);
                     }
                     else
                     {
@@ -726,44 +793,39 @@ namespace GxMcp.Worker.Services
                         };
                     }
 
-                    writePayload["persistedVerified"] = persistedMatches;
-                    writePayload["persisted"] = persistedMatches;
                     if (persistedMatches)
                     {
                         // A WriteService false negative is superseded by the mandatory forced
                         // re-read. No second write is performed.
-                        writePayload["_internalStatus"] = "Success";
-                        writePayload["code"] = "Applied";
-                        writePayload["message"] = "Patch persisted and was confirmed by post-save re-read.";
+                        PatchPersistenceReceipt.MarkVerified(writePayload, saveReported);
                     }
                     else
                     {
-                        writePayload["_internalStatus"] = "Error";
-                        writePayload["code"] = "WriteNotPersisted";
-                        writePayload["message"] = "The post-save re-read does not contain the requested patched content.";
-                        if (!string.IsNullOrWhiteSpace(verifyError)) writePayload["persistedVerifyError"] = verifyError;
+                        PatchPersistenceReceipt.MarkNotPersisted(writePayload, saveReported, verifyError, commentOnlyChange);
 
                         // Rollback is never implicit. It is attempted once only when explicitly
                         // requested and the fresh pre-write snapshot is available.
                         if (rollbackOnFailure && originalSource != null)
                         {
-                            string rollbackResult = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
+                            string rollbackResult = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
                             JObject rollbackPayload = ParseWriteResult(rollbackResult);
-                            bool rollbackSaved = string.Equals(rollbackPayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
+                            // WriteService's legacy verifier may call a durable rollback
+                            // WriteNotPersisted solely because it applies a different text
+                            // equivalence rule. In both cases the SDK save completed, so always
+                            // perform this operation's selected-mode forced re-read.
+                            bool rollbackSaved = string.Equals(rollbackPayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(rollbackPayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
                             string rollbackPersisted = null;
                             string rollbackError = null;
                             TextPersistenceVerifier.Result rollbackVerification = null;
                             if (rollbackSaved)
                                 rollbackVerification = ReadAndVerifyPersistedSource(target, partName, typeFilter, originalSource, resolvedVerifyMode, out rollbackPersisted, out rollbackError);
                             bool rollbackVerified = rollbackVerification != null && rollbackVerification.Matches;
-                            writePayload["rollback"] = new JObject
-                            {
-                                ["requested"] = true,
-                                ["snapshotValid"] = true,
-                                ["saved"] = rollbackSaved,
-                                ["verified"] = rollbackVerified,
-                                ["error"] = rollbackVerified ? JValue.CreateNull() : (JToken)(rollbackError ?? rollbackPayload["message"]?.ToString() ?? "Rollback could not be verified.")
-                            };
+                            writePayload["rollback"] = PatchPersistenceReceipt.BuildRollback(
+                                rollbackSaved,
+                                rollbackVerification,
+                                rollbackError ?? rollbackPayload["message"]?.ToString());
+                            writePayload["rolledBack"] = rollbackVerified;
                             if (rollbackVerified) UpdateCachedSource(cacheKey, originalSource);
                         }
                     }
@@ -798,7 +860,7 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
-                    string rollbackWrite = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
+                    string rollbackWrite = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
                     JObject rollbackPayload = ParseWriteResult(rollbackWrite);
 
                     bool rollbackSuccess = string.Equals(rollbackPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
@@ -832,6 +894,18 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
+                // Always expose the save/verification distinction, including SDK-save
+                // failures where no post-save comparison could run.
+                if (writePayload["saved"] == null) writePayload["saved"] = saveReported;
+                if (writePayload["verified"] == null) writePayload["verified"] = persistedMatches;
+                try
+                {
+                    var versionObject = _objectService.FindObject(target, typeFilter);
+                    string versionToken = versionObject == null ? null : WriteService.ComputeVersionToken(versionObject);
+                    if (!string.IsNullOrWhiteSpace(versionToken)) writePayload["versionToken"] = versionToken;
+                }
+                catch { }
+
                 // v2.8.0: convert the WriteService legacy envelope (status=Success/Error) to canonical shape.
                 // WriteService is out-of-scope for this migration; we lift its fields into result/error here.
                 bool finalSuccess = string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
@@ -857,7 +931,11 @@ namespace GxMcp.Worker.Services
                     if (resultObj[pn] == null) resultObj[pn] = prop.Value;
                 }
                 if (returnPostState && finalSuccess && updatedSource != null)
-                    resultObj["post_state"] = GxMcp.Worker.Services.JsonPatchService.BuildPostState(originalSource, updatedSource, verbose);
+                    resultObj["post_state"] = GxMcp.Worker.Services.JsonPatchService.BuildPostState(
+                        originalSource,
+                        updatedSource,
+                        verbose,
+                        persistedAfter: confirmedPersistedSource);
 
                 if (finalSuccess)
                 {
@@ -896,363 +974,31 @@ namespace GxMcp.Worker.Services
 
         private string TryReplace(string[] sourceLines, string[] contextLines, string newContent, int expectedCount, out string status, out string details, out int matchCount, bool replaceAll = false)
         {
-            status = "Applied";
-            details = string.Empty;
-            matchCount = 0;
-
-            string source = string.Join("\n", sourceLines);
-            string context = string.Join("\n", contextLines);
-
-            // 1. Exact match attempt
-            int exactCount = CountOccurrences(source, context);
-            matchCount = exactCount;
-            // Item 9: replaceAll=true → treat expectedCount as "however many exist"
-            int effectiveExpected = replaceAll && exactCount > 0 ? exactCount : expectedCount;
-            if (exactCount == effectiveExpected && exactCount > 0)
-            {
-                Logger.Info("[PATCH] Exact match found.");
-                return source.Replace(context, newContent);
-            }
-            if (exactCount > 0 && !replaceAll)
-            {
-                status = "Ambiguous";
-                details = $"Ambiguous patch: Found {exactCount} exact matches, but expected {expectedCount}. Provide more context to uniquely identify the block, or pass replaceAll=true to apply to all occurrences.";
-                return string.Empty;
-            }
-
-            // 2. Fuzzy match attempt
-            Logger.Info("[PATCH] Exact match failed or count mismatch (" + exactCount + " vs " + expectedCount + "). Attempting fuzzy match.");
-            var indices = FindFuzzyMatches(sourceLines, contextLines);
-            matchCount = indices.Count;
-            int fuzzyEffective = replaceAll && indices.Count > 0 ? indices.Count : expectedCount;
-
-            if (indices.Count == fuzzyEffective && indices.Count > 0)
-            {
-                var resultLines = new List<string>(sourceLines);
-                var replacementLines = newContent.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
-                indices.Sort();
-                indices.Reverse();
-                foreach (int idx in indices)
-                {
-                    Logger.Info($"[PATCH] Fuzzy match found at line {idx}.");
-                    resultLines.RemoveRange(idx, contextLines.Length);
-                    resultLines.InsertRange(idx, replacementLines);
-                }
-                return string.Join("\n", resultLines);
-            }
-
-            if (indices.Count > 0 && !replaceAll)
-            {
-                status = "Ambiguous";
-                details = $"Ambiguous patch: Found {indices.Count} fuzzy matches, but expected {expectedCount}. Provide more context to uniquely identify the block, or pass replaceAll=true to apply to all occurrences.";
-                return string.Empty;
-            }
-
-            // FR#17 (friction-report 2026-05-14): last-resort whitespace-normalized match.
-            // Handles the tab-vs-space context case where the user's context is semantically
-            // identical to source but used different indentation characters than the file.
-            // We collapse runs of whitespace on both sides, find the unique block window,
-            // then apply the replacement preserving source's original characters.
-            string normalizedSource = NormalizeWhitespace(source);
-            string normalizedContext = NormalizeWhitespace(context);
-            if (!string.IsNullOrEmpty(normalizedContext))
-            {
-                int normalizedHits = CountOccurrences(normalizedSource, normalizedContext);
-                // Item 9 follow-up: honor replaceAll on the whitespace-normalized fallback too,
-                // so the flag isn't silently ignored when only this last-resort path finds matches.
-                int normalizedExpected = replaceAll && normalizedHits > 0 ? normalizedHits : expectedCount;
-                if (normalizedHits == normalizedExpected && normalizedHits > 0)
-                {
-                    // Walk source line-by-line accumulating windows until a window's collapsed
-                    // form equals the normalized context, then splice in the replacement.
-                    var rebuilt = TryWhitespaceNormalizedReplace(sourceLines, contextLines, newContent);
-                    if (rebuilt != null)
-                    {
-                        Logger.Info("[PATCH] Whitespace-normalized match applied.");
-                        matchCount = normalizedHits;
-                        return rebuilt;
-                    }
-                }
-                else if (normalizedHits > 0 && !replaceAll)
-                {
-                    status = "Ambiguous";
-                    matchCount = normalizedHits;
-                    details = $"Ambiguous patch (whitespace-normalized): {normalizedHits} matches, expected {expectedCount}. Pass replaceAll=true to apply to every match.";
-                    return string.Empty;
-                }
-            }
-
-            // v2.3.8 Task 3.1 (friction-report #4): final EOL-normalized fallback.
-            // Both the exact match and the prior fuzzy/whitespace-normalized passes
-            // already collapse CRLF→LF up-front (workContext is normalized at entry),
-            // but they do NOT tolerate per-line trailing whitespace differences. The
-            // helper below normalizes both axes (EOL + trailing whitespace) and maps
-            // the normalized hit back to original-source indices so the splice
-            // preserves the on-disk bytes outside the matched window.
-            if (expectedCount == 1 && contextLines != null && contextLines.Length > 0)
-            {
-                if (WriteService.TryMatch(source, context, out int splStart, out int splEnd) && splEnd > splStart)
-                {
-                    Logger.Info("[PATCH] EOL/trailing-whitespace normalized match applied.");
-                    matchCount = 1;
-                    string replacement = (newContent ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n");
-                    return source.Substring(0, splStart) + replacement + source.Substring(splEnd);
-                }
-            }
-
-            status = "NoMatch";
-            details = "Context block not found.";
-            return string.Empty;
-        }
-
-        private static string TryWhitespaceNormalizedReplace(string[] sourceLines, string[] contextLines, string newContent)
-        {
-            // Slide a window of contextLines.Length over source; compare collapsed text.
-            if (sourceLines == null || contextLines == null || contextLines.Length == 0) return null;
-            if (sourceLines.Length < contextLines.Length) return null;
-
-            string normalizedTarget = NormalizeWhitespace(string.Join("\n", contextLines));
-            for (int i = 0; i <= sourceLines.Length - contextLines.Length; i++)
-            {
-                string window = string.Join("\n", sourceLines, i, contextLines.Length);
-                if (NormalizeWhitespace(window) == normalizedTarget)
-                {
-                    var resultLines = new List<string>(sourceLines);
-                    var replacementLines = newContent.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
-                    resultLines.RemoveRange(i, contextLines.Length);
-                    resultLines.InsertRange(i, replacementLines);
-                    return string.Join("\n", resultLines);
-                }
-            }
-            return null;
+            return PatchTextEditor.TryReplace(
+                sourceLines, contextLines, newContent, expectedCount,
+                out status, out details, out matchCount, replaceAll);
         }
 
         private string TryInsertAfter(string[] sourceLines, string[] contextLines, string newContent, int expectedCount, out string status, out string details, out int matchCount)
         {
-            status = "Applied";
-            details = string.Empty;
-            matchCount = 0;
-
-            var exactIndices = FindExactMatches(sourceLines, contextLines);
-            matchCount = exactIndices.Count;
-            if (exactIndices.Count == expectedCount && exactIndices.Count > 0)
-            {
-                return InsertAfterIndices(sourceLines, contextLines, newContent, exactIndices);
-            }
-
-            if (exactIndices.Count > 0)
-            {
-                status = "Ambiguous";
-                details = $"Ambiguous anchor: Found {exactIndices.Count} exact matches for the anchor, expected {expectedCount}.";
-                return string.Empty;
-            }
-
-            var fuzzyIndices = FindFuzzyMatches(sourceLines, contextLines);
-            matchCount = fuzzyIndices.Count;
-            if (fuzzyIndices.Count == expectedCount && fuzzyIndices.Count > 0)
-            {
-                return InsertAfterIndices(sourceLines, contextLines, newContent, fuzzyIndices);
-            }
-
-            if (fuzzyIndices.Count > 0)
-            {
-                status = "Ambiguous";
-                details = $"Ambiguous anchor: Found {fuzzyIndices.Count} fuzzy matches for the anchor, expected {expectedCount}.";
-                return string.Empty;
-            }
-
-            status = "NoMatch";
-            details = "Anchor block not found.";
-            return string.Empty;
+            return PatchTextEditor.TryInsertAfter(
+                sourceLines, contextLines, newContent, expectedCount,
+                out status, out details, out matchCount);
         }
 
-        private List<int> FindFuzzyMatches(string[] sourceLines, string[] targetLines)
+        private static List<PatchTextEditor.NearMatch> FindNearMatches(string[] sourceLines, string[] contextLines, int topN)
         {
-            var matches = new List<int>();
-            if (targetLines.Length == 0 || sourceLines.Length < targetLines.Length) return matches;
-
-            string normalizedFirst = NormalizeWhitespace(targetLines[0]);
-            string normalizedLast = NormalizeWhitespace(targetLines[targetLines.Length - 1]);
-
-            for (int i = 0; i <= sourceLines.Length - targetLines.Length; i++)
-            {
-                if (!string.Equals(NormalizeWhitespace(sourceLines[i]), normalizedFirst, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                int tailIndex = i + targetLines.Length - 1;
-                if (!string.Equals(NormalizeWhitespace(sourceLines[tailIndex]), normalizedLast, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                bool match = true;
-                for (int j = 0; j < targetLines.Length; j++)
-                {
-                    if (!LinesMatchFuzzy(sourceLines[i + j], targetLines[j]))
-                    {
-                        match = false;
-                        break;
-                    }
-                }
-                if (match) matches.Add(i);
-            }
-            return matches;
+            return PatchTextEditor.FindNearMatches(sourceLines, contextLines, topN);
         }
 
-        private List<int> FindExactMatches(string[] sourceLines, string[] targetLines)
+        private static string ShowControlChars(string value)
         {
-            var matches = new List<int>();
-            if (targetLines.Length == 0 || sourceLines.Length < targetLines.Length) return matches;
-
-            for (int i = 0; i <= sourceLines.Length - targetLines.Length; i++)
-            {
-                bool match = true;
-                for (int j = 0; j < targetLines.Length; j++)
-                {
-                    if (!string.Equals(sourceLines[i + j], targetLines[j], StringComparison.Ordinal))
-                    {
-                        match = false;
-                        break;
-                    }
-                }
-
-                if (match)
-                {
-                    matches.Add(i);
-                }
-            }
-
-            return matches;
+            return PatchTextEditor.ShowControlChars(value);
         }
 
-        private string InsertAfterIndices(string[] sourceLines, string[] contextLines, string newContent, List<int> indices)
-        {
-            var resultLines = new List<string>(sourceLines);
-            var insertLinesRaw = newContent.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
-
-            indices.Sort();
-            indices.Reverse();
-            foreach (int idx in indices)
-            {
-                resultLines.InsertRange(idx + contextLines.Length, insertLinesRaw);
-            }
-
-            return string.Join("\n", resultLines);
-        }
-
-        // FR#18 (friction-report 2026-05-14): produce a small list of "looks-similar" windows
-        // when an exact/fuzzy match fails. Score = ratio of fuzzy-matching lines per window;
-        // we keep the top-N. Only the first line is used as the snippet to keep responses small.
-        private sealed class NearMatch
-        {
-            public int StartLine;
-            public double Similarity;
-            public string Snippet = string.Empty;
-        }
-
-        private List<NearMatch> FindNearMatches(string[] sourceLines, string[] contextLines, int topN)
-        {
-            var hits = new List<NearMatch>();
-            if (sourceLines == null || contextLines == null) return hits;
-            if (contextLines.Length == 0 || sourceLines.Length < contextLines.Length) return hits;
-
-            // Pre-normalize both sides once; the inner comparison drops from a regex+trim per
-            // call to a direct OrdinalIgnoreCase string equals.
-            string[] normalizedSource = new string[sourceLines.Length];
-            for (int i = 0; i < sourceLines.Length; i++) normalizedSource[i] = NormalizeWhitespace(sourceLines[i]);
-            string[] normalizedContext = new string[contextLines.Length];
-            for (int j = 0; j < contextLines.Length; j++) normalizedContext[j] = NormalizeWhitespace(contextLines[j]);
-
-            int maxStart = sourceLines.Length - contextLines.Length;
-            for (int i = 0; i <= maxStart; i++)
-            {
-                int matches = 0;
-                for (int j = 0; j < contextLines.Length; j++)
-                {
-                    if (string.Equals(normalizedSource[i + j], normalizedContext[j], StringComparison.OrdinalIgnoreCase))
-                        matches++;
-                }
-                double similarity = (double)matches / contextLines.Length;
-                if (similarity < 0.4) continue; // ignore noise
-
-                string snippet = sourceLines[i].Trim();
-                if (snippet.Length > 120) snippet = snippet.Substring(0, 117) + "...";
-
-                hits.Add(new NearMatch { StartLine = i, Similarity = similarity, Snippet = snippet });
-            }
-
-            hits.Sort((a, b) => b.Similarity.CompareTo(a.Similarity));
-            if (hits.Count > topN) hits = hits.GetRange(0, topN);
-            return hits;
-        }
-
-        // Item 4 (friction 2026-05-22): render control characters visibly so the
-        // agent can see CRLF vs LF differences in the eolDiff output.
-        private static string ShowControlChars(string s)
-        {
-            if (s == null) return string.Empty;
-            return s.Replace("\r\n", "↵\n").Replace("\r", "←").Replace("\t", "→");
-        }
-
-        // Item 17 (friction 2026-05-22): Levenshtein edit distance with early-exit
-        // when the running minimum exceeds maxDist (avoids O(n²) on large mismatches).
-        // maxDist = -1 means "no limit".
         internal static int LevenshteinDistance(string a, string b, int maxDist = -1)
         {
-            if (a == null) a = string.Empty;
-            if (b == null) b = string.Empty;
-            int m = a.Length, n = b.Length;
-            bool hasLimit = maxDist >= 0;
-            if (hasLimit && Math.Abs(m - n) > maxDist) return maxDist + 1;
-            if (m == 0) return n;
-            if (n == 0) return m;
-
-            // Use two rows to limit memory; strings > 4 KB are capped to avoid O(n²) pathology.
-            const int MaxLen = 4096;
-            if (m > MaxLen || n > MaxLen) return hasLimit ? maxDist + 1 : int.MaxValue;
-
-            var prev = new int[n + 1];
-            var curr = new int[n + 1];
-            for (int j = 0; j <= n; j++) prev[j] = j;
-
-            for (int i = 1; i <= m; i++)
-            {
-                curr[0] = i;
-                int rowMin = curr[0];
-                for (int j = 1; j <= n; j++)
-                {
-                    int cost = a[i - 1] == b[j - 1] ? 0 : 1;
-                    curr[j] = Math.Min(Math.Min(prev[j] + 1, curr[j - 1] + 1), prev[j - 1] + cost);
-                    if (curr[j] < rowMin) rowMin = curr[j];
-                }
-                if (hasLimit && rowMin > maxDist) return maxDist + 1;
-                var tmp = prev; prev = curr; curr = tmp;
-            }
-            return prev[n];
-        }
-
-        private static bool LinesMatchFuzzy(string s1, string s2)
-        {
-            string n1 = NormalizeWhitespace(s1);
-            string n2 = NormalizeWhitespace(s2);
-            return string.Equals(n1, n2, StringComparison.OrdinalIgnoreCase);
-        }
-
-        // Trim + collapse runs of whitespace to a single space.
-        private static string NormalizeWhitespace(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return string.Empty;
-            return Regex.Replace(s.Trim(), @"\s+", " ");
-        }
-
-        private int CountOccurrences(string text, string pattern)
-        {
-            if (string.IsNullOrEmpty(pattern)) return 0;
-            int count = 0, i = 0;
-            while ((i = text.IndexOf(pattern, i)) != -1) { i += pattern.Length; count++; }
-            return count;
+            return PatchTextEditor.LevenshteinDistance(a, b, maxDist);
         }
 
         private static string NormalizeOperation(string operation)

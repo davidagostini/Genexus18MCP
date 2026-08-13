@@ -119,6 +119,41 @@ Depois que o "list 5 objects" funcionou, teste esses:
 
 > *"No procedure CriarPedido, renomeia a variável &qtd pra &quantidade."*
 
+#### Comentar uma instrução com segurança
+
+Para desativar uma instrução no `Source`, leia primeiro a parte e reutilize o
+`versionToken` como `baseVersion`. Em `mode="patch"`, a substituição
+`msg(...)` → `//msg(...)` é tratada como alteração somente de comentário:
+
+- `dryRun=true` mostra o diff e não salva nem altera o token;
+- a gravação exige `baseVersion` para evitar sobrescrever uma edição concorrente;
+- o MCP salva uma vez, invalida os caches, relê a parte pelo SDK e confirma o
+  comentário solicitado;
+- a resposta separa `saved` de `verified`, inclui os hashes solicitado e relido
+  e informa `implicitOperations: []`;
+- se a releitura divergir, retorna `CommentOnlyWriteNotPersisted`; com
+  `rollbackOnFailure=true`, restaura e verifica o snapshot anterior.
+
+Esse fluxo não executa implicitamente Specify, Generate, Build, Rebuild,
+compilação, reorganização, execução nem testes da KB.
+
+```json
+{
+  "name": "MeuProcedure",
+  "type": "Procedure",
+  "part": "Source",
+  "mode": "patch",
+  "operation": "Replace",
+  "context": "msg(&Guid.ToString(),nowait)",
+  "content": "//msg(&Guid.ToString(),nowait)",
+  "expectedCount": 1,
+  "baseVersion": "<versionToken da leitura>",
+  "dryRun": false,
+  "verifyMode": "exact",
+  "rollbackOnFailure": true
+}
+```
+
 ### Editar telas WorkWithPlus (patterns)
 
 O MCP edita o XML completo de `PatternInstance` / `PatternVirtual`: adicionar, remover e reordenar controles (textBlock, atributos, botões, grupos, ordens, filtros), aplicar classes de tema (`themeClass`, `buttonClass`, `groupThemeClass`), e reorganizar as visões **Transaction** e **Selection** de forma independente.

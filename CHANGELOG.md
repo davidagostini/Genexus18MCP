@@ -15,12 +15,21 @@
   `structure` is marked as a semantic projection of those typed SDK elements,
   avoiding U16's internal collection type names.
 
+### Changed
+
+- **The text-patch pipeline now separates matching from orchestration and persistence evidence.** `PatchTextEditor` owns pure Replace/InsertAfter matching, while `PatchPersistenceReceipt` owns the stable saved/verified/hash/rollback response fields. The public `genexus_edit` contract and GeneXus SDK save path are unchanged.
+
 ### Fixed
 
+- **`genexus_edit mode=patch operation=Replace` now reports success only after a durable Source/Rules save.** Text patches use the same explicit part-save and transaction path as full edits, so GeneXus 18 U16 can no longer advance the object version and leave the replacement only in the live SDK instance. Empty replacements are supported, and the response separates `saved` from `verified`, includes requested/re-read hashes and old-context evidence, and reports rollback verification when requested.
 - **`genexus_structure action=create_index` no longer persists during `dryRun=true`.** The Worker now keeps validation/projection separate from SDK mutation, verifies the persisted index snapshot and composite `versionToken` after every preview, and returns `DryRunMutationDetected` with rollback details if any state changes. Effective writes support `baseVersion` optimistic concurrency, preserve the requested attribute order, re-read and verify the exact index, and restore the prior snapshot on save/verification failure when `rollbackOnFailure=true`. The action does not implicitly Specify, Generate, Build, Rebuild, compile, reorganize, execute, or test.
 - **`genexus_lifecycle action=specify` surfaces structured evidence and `effective_status=SucceededWithGaps` for unreachable or not found objects.** When GeneXus skips specification because an object is unreachable (`spc0217`) or not found in the Knowledge Base, the worker now captures `generateEvidence` (`ok=false`, `unreachable`/`notFound` lists, note) and emits a `[specify-gap]` warning, allowing the gateway to surface `effective_status="SucceededWithGaps"` instead of a false clean success. Fixes [#86](https://github.com/lennix1337/Genexus18MCP/issues/86).
 - **`UIServices.SetDisableUI(true)` invoked during worker bootstrap.** Explicitly disables interactive modal dialogs prior to `UIServices.Initialize`, preventing blocked STA threads during headless execution. Fixes [#88](https://github.com/lennix1337/Genexus18MCP/issues/88).
 - **`genexus_sdk_probe` pre-loads and scans unreferenced GeneXus/WWP SDK assemblies from disk.** Discovers and loads assemblies from the GeneXus installation, `Packages`, and `Patterns` directories into the AppDomain prior to probing so that unreferenced tools and generators are discovered. Also cleaned up duplicate merge header artifacts in `CHANGELOG.md`. Fixes [#87](https://github.com/lennix1337/Genexus18MCP/issues/87).
+
+### Internal
+
+- Thanks to [@davidagostini](https://github.com/davidagostini) for Data Selector reading, patch replace durability, create_index dry-run safety, and test coverage improvements — see PRs [#85](https://github.com/lennix1337/Genexus18MCP/pull/85), [#89](https://github.com/lennix1337/Genexus18MCP/pull/89), [#90](https://github.com/lennix1337/Genexus18MCP/pull/90), [#91](https://github.com/lennix1337/Genexus18MCP/pull/91), and [#92](https://github.com/lennix1337/Genexus18MCP/pull/92).
 
 ## v2.40.2 - 2026-08-12
 
