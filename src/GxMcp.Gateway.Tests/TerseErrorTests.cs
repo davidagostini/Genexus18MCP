@@ -51,6 +51,29 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void TrimErrorEnvelope_CommentOnlyFailure_PreservesTypedReceipt()
+        {
+            var input = JObject.Parse(@"{
+                ""code"":""CommentOnlyWriteNotPersisted"",""message"":""comment mismatch"",
+                ""saved"":true,""verified"":false,""commentOnly"":true,""commentStyle"":""line"",
+                ""before"":""msg()"",""after"":""//msg()"",""matchedCount"":1,
+                ""replacementPresent"":false,""reReadConfirmed"":true,""implicitOperations"":[]
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            Assert.Equal("CommentOnlyWriteNotPersisted", trimmed["code"]!.ToString());
+            Assert.True(trimmed["commentOnly"]!.ToObject<bool>());
+            Assert.Equal("line", trimmed["commentStyle"]!.ToString());
+            Assert.Equal("msg()", trimmed["before"]!.ToString());
+            Assert.Equal("//msg()", trimmed["after"]!.ToString());
+            Assert.Equal(1, trimmed["matchedCount"]!.ToObject<int>());
+            Assert.False(trimmed["replacementPresent"]!.ToObject<bool>());
+            Assert.True(trimmed["reReadConfirmed"]!.ToObject<bool>());
+            Assert.Empty((JArray)trimmed["implicitOperations"]!);
+        }
+
+        [Fact]
         public void TrimErrorEnvelope_VerbosePassesThrough()
         {
             var input = JObject.Parse(@"{""message"":""x"",""stack"":""trace""}");

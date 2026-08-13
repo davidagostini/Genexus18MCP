@@ -59,7 +59,10 @@ namespace GxMcp.Worker.Services
             string np = Normalize(persisted);
             bool matches;
             if (mode == "exact")
-                matches = string.Equals(requested, persisted, StringComparison.Ordinal);
+                matches = string.Equals(
+                    ExactCanonicalize(requested, partName),
+                    ExactCanonicalize(persisted, partName),
+                    StringComparison.Ordinal);
             else if (mode == "semantic")
                 matches = string.Equals(SemanticCanonicalize(nr), SemanticCanonicalize(np), StringComparison.Ordinal);
             else
@@ -83,7 +86,7 @@ namespace GxMcp.Worker.Services
         internal static string Canonicalize(string text, string requestedMode, string partName)
         {
             string mode = ResolveMode(requestedMode, partName);
-            if (mode == "exact") return text ?? string.Empty;
+            if (mode == "exact") return ExactCanonicalize(text, partName);
             string normalized = Normalize(text);
             return mode == "semantic" ? SemanticCanonicalize(normalized) : normalized;
         }
@@ -104,6 +107,19 @@ namespace GxMcp.Worker.Services
                 output.Add(line);
             }
             return string.Join("\n", output);
+        }
+
+        private static string ExactCanonicalize(string text, string partName)
+        {
+            string value = text ?? string.Empty;
+            // ISource.Source is a logical text API. GX18 U16 can return LF from the
+            // forced post-save SDK read even when the pre-save read and requested
+            // payload used CRLF. Preserve every character relevant to Source identity
+            // (including comments, spaces, blank lines and terminal newline), while
+            // canonicalizing only the platform representation of line endings.
+            return IsSourceOrRules(partName)
+                ? value.Replace("\r\n", "\n").Replace("\r", "\n")
+                : value;
         }
 
         private static string SemanticCanonicalize(string text)

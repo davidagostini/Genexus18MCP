@@ -1705,7 +1705,9 @@ namespace GxMcp.Gateway
                 "saved", "verified", "persisted", "persistedVerified", "requestedHash",
                 "persistedHash", "normalizedRequestedHash", "normalizedPersistedHash",
                 "persistedMatchCount", "oldContentPresent", "verification", "rollback",
-                "rolledBack", "versionToken", "persistedVerifyError"
+                "rolledBack", "versionToken", "persistedVerifyError", "replacementPresent",
+                "reReadConfirmed", "commentOnly", "commentStyle", "before", "after",
+                "matchedCount", "implicitOperations"
             };
             foreach (var k in diagnosticKeys)
             {

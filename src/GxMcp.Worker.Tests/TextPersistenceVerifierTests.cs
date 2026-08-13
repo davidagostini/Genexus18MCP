@@ -61,9 +61,29 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void Exact_RejectsEolNormalization()
+        public void Exact_SourceAcceptsSdkEolRenderingButPreservesRawHashes()
         {
             var result = TextPersistenceVerifier.Evaluate("A\r\nB", "A\nB", "exact", "Rules");
+            Assert.True(result.Matches);
+            Assert.NotEqual(result.RequestedHash, result.PersistedHash);
+            Assert.Contains("EOL", result.NormalizationApplied);
+        }
+
+        [Fact]
+        public void Exact_NonSourcePartStillRejectsEolDifference()
+        {
+            var result = TextPersistenceVerifier.Evaluate("A\r\nB", "A\nB", "exact", "Structure");
+            Assert.False(result.Matches);
+        }
+
+        [Fact]
+        public void Exact_SourceStillRejectsCommentLoss()
+        {
+            var result = TextPersistenceVerifier.Evaluate(
+                "//msg(\"comment-only\",nowait)",
+                "msg(\"comment-only\",nowait)",
+                "exact",
+                "Source");
             Assert.False(result.Matches);
         }
 

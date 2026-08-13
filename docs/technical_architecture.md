@@ -62,9 +62,20 @@ The `genexus_edit mode=patch` implementation keeps its external contract in
 - `PatchPersistenceReceipt` builds the stable persistence evidence (`saved`,
   `verified`, hashes, old-context presence, and rollback status).
 - `TextPersistenceVerifier` owns exact, normalized, and semantic equivalence.
+- `CommentOnlyPatch` classifies line/block comment replacements and counts the
+  previous statement only when it remains active outside comments or strings.
 
-These boundaries are internal. They must not change tool arguments, response
-codes, write count, transaction behavior, or invoke any KB lifecycle action.
+For Source/Rules, `exact` compares every logical character while treating CRLF
+and LF as equivalent SDK renderings. This prevents a persisted comment from
+being rolled back solely because U16 returned a different line-ending style.
+Comment-only writes require `baseVersion`; a divergent forced re-read returns
+`CommentOnlyWriteNotPersisted`, and an explicitly requested rollback restores
+and verifies the pre-write snapshot.
+
+These boundaries are internal. Refactoring them must preserve tool arguments,
+write count, transaction behavior, and the prohibition on implicit KB lifecycle
+actions. New typed failure codes may be added only when they replace an
+ambiguous or false-success result without changing the write semantics.
 
 ## Gateway responsibilities
 

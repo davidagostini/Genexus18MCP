@@ -103,6 +103,9 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("payload[\"persistedMatchCount\"]", receiptSource);
             Assert.Contains("payload[\"oldContentPresent\"]", receiptSource);
             Assert.Contains("writePayload[\"versionToken\"]", patchSource);
+            Assert.Contains("BaseVersionRequired", patchSource);
+            Assert.Contains("CommentOnlyWriteNotPersisted", receiptSource);
+            Assert.Contains("implicitOperations", patchSource);
             Assert.Contains("StringSplitOptions.None", patchSource);
             Assert.DoesNotContain("context?.Split(new[] { '\\n' }, StringSplitOptions.RemoveEmptyEntries)", patchSource);
         }

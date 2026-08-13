@@ -1198,7 +1198,7 @@
           },
           "verifyMode": {
             "default": "normalized",
-            "description": "Post-save text comparison for patch mode. Source/Rules default to normalized (EOL, encoding marker, trailing whitespace and repeated blank lines); exact compares raw text; semantic also tolerates SDK casing/spacing format changes. The part is always re-read after Save.",
+            "description": "Post-save text comparison for patch mode. Source/Rules default to normalized (EOL, encoding marker, trailing whitespace and repeated blank lines); exact preserves logical text but treats CRLF/LF as the same SDK Source rendering; semantic also tolerates SDK casing/spacing format changes. Comment-only Replace writes require baseVersion and return CommentOnlyWriteNotPersisted on a divergent forced re-read. The part is always re-read after Save.",
             "enum": [
               "semantic",
               "normalized",

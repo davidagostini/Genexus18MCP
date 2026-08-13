@@ -566,6 +566,33 @@ namespace GxMcp.Worker.Services
                     return AttachTimings(noChange, readMs, patchMs, 0, sourceFromCache);
                 }
 
+                bool commentOnlyChange = CommentOnlyPatch.TryClassify(
+                    partName, normalizedOperation, workContext, workContent, out string commentStyle);
+                if (commentOnlyChange && !dryRun && string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    string missingVersion = Models.McpResponse.Err(
+                        code: "BaseVersionRequired",
+                        message: "Comment-only Source replacements require baseVersion; no write was attempted.",
+                        hint: "Re-read the Source, then retry with the returned versionToken as baseVersion.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep(
+                            tool: "genexus_read",
+                            args: new JObject { ["name"] = target, ["part"] = partName },
+                            why: "Obtains the current Source and versionToken for optimistic concurrency.")),
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["part"] = partName,
+                            ["operation"] = normalizedOperation,
+                            ["commentOnly"] = true,
+                            ["commentStyle"] = commentStyle,
+                            ["matchCount"] = matchCount,
+                            ["saved"] = false,
+                            ["verified"] = false,
+                            ["implicitOperations"] = new JArray()
+                        });
+                    return AttachTimings(missingVersion, readMs, patchMs, 0, sourceFromCache);
+                }
+
                 if (dryRun)
                 {
                     string dryRunResult = BuildPatchResult("Applied", partName, normalizedOperation, expectedCount, matchCount, "Dry-run succeeded. Write skipped.");
@@ -579,6 +606,15 @@ namespace GxMcp.Worker.Services
                         dryRunBody["verified"] = false;
                         dryRunBody["requestedHash"] = dryRunEvidence.RequestedHash;
                         dryRunBody["persistedHash"] = dryRunEvidence.PersistedHash;
+                        dryRunBody["commentOnly"] = commentOnlyChange;
+                        if (commentOnlyChange)
+                        {
+                            dryRunBody["commentStyle"] = commentStyle;
+                            dryRunBody["before"] = context;
+                            dryRunBody["after"] = content ?? string.Empty;
+                            dryRunBody["matchedCount"] = matchCount;
+                        }
+                        dryRunBody["implicitOperations"] = new JArray();
                         try
                         {
                             var dryRunObject = _objectService.FindObject(target, typeFilter);
@@ -700,6 +736,15 @@ namespace GxMcp.Worker.Services
                 writeStopwatch.Stop();
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
                 JObject writePayload = ParseWriteResult(writeResult);
+                writePayload["implicitOperations"] = new JArray();
+                if (commentOnlyChange)
+                {
+                    writePayload["commentOnly"] = true;
+                    writePayload["commentStyle"] = commentStyle;
+                    writePayload["before"] = context;
+                    writePayload["after"] = content ?? string.Empty;
+                    writePayload["matchedCount"] = matchCount;
+                }
 
                 bool primaryWriteSuccess = string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
                 bool writeReportedVerificationMismatch = string.Equals(writePayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
@@ -735,7 +780,8 @@ namespace GxMcp.Worker.Services
                             persistedSource,
                             resolvedVerifyMode,
                             partName,
-                            matchCount);
+                            matchCount,
+                            commentOnlyChange);
                     }
                     else
                     {
@@ -755,7 +801,7 @@ namespace GxMcp.Worker.Services
                     }
                     else
                     {
-                        PatchPersistenceReceipt.MarkNotPersisted(writePayload, saveReported, verifyError);
+                        PatchPersistenceReceipt.MarkNotPersisted(writePayload, saveReported, verifyError, commentOnlyChange);
 
                         // Rollback is never implicit. It is attempted once only when explicitly
                         // requested and the fresh pre-write snapshot is available.

@@ -17,7 +17,8 @@ namespace GxMcp.Worker.Services
             string persistedSource,
             string verifyMode,
             string partName,
-            int matchCount)
+            int matchCount,
+            bool commentOnly = false)
         {
             if (payload == null) throw new ArgumentNullException(nameof(payload));
             if (verification == null) throw new ArgumentNullException(nameof(verification));
@@ -35,7 +36,9 @@ namespace GxMcp.Worker.Services
                 : PatchTextEditor.CountOccurrences(canonicalPersisted, canonicalReplacement);
             int persistedMatchCount = canonicalOldContext.Length == 0
                 ? 0
-                : PatchTextEditor.CountOccurrences(canonicalPersisted, canonicalOldContext);
+                : commentOnly
+                    ? CommentOnlyPatch.CountActiveOccurrences(canonicalPersisted, canonicalOldContext)
+                    : PatchTextEditor.CountOccurrences(canonicalPersisted, canonicalOldContext);
             bool replacementPresent = canonicalReplacement.Length == 0 || replacementMatchCount > 0;
             bool verified = verification.Matches && replacementPresent;
 
@@ -47,6 +50,8 @@ namespace GxMcp.Worker.Services
             verificationJson["oldContentPresent"] = persistedMatchCount > 0;
             payload["persistedMatchCount"] = persistedMatchCount;
             payload["oldContentPresent"] = persistedMatchCount > 0;
+            payload["replacementPresent"] = replacementPresent;
+            payload["reReadConfirmed"] = true;
             payload["verification"] = verificationJson;
             return verified;
         }
@@ -62,11 +67,13 @@ namespace GxMcp.Worker.Services
             AttachOutcome(payload, saved, verified: true);
         }
 
-        internal static void MarkNotPersisted(JObject payload, bool saved, string verifyError)
+        internal static void MarkNotPersisted(JObject payload, bool saved, string verifyError, bool commentOnly = false)
         {
             payload["_internalStatus"] = "Error";
-            payload["code"] = "WriteNotPersisted";
-            payload["message"] = "The post-save re-read does not contain the requested patched content.";
+            payload["code"] = commentOnly ? "CommentOnlyWriteNotPersisted" : "WriteNotPersisted";
+            payload["message"] = commentOnly
+                ? "The SDK save completed, but the forced Source re-read did not contain the requested comment-only change."
+                : "The post-save re-read does not contain the requested patched content.";
             if (!string.IsNullOrWhiteSpace(verifyError)) payload["persistedVerifyError"] = verifyError;
             AttachOutcome(payload, saved, verified: false);
         }
