@@ -111,9 +111,10 @@ namespace GxMcp.Worker.Services
             int origLen = originalContent?.Length ?? 0;
             int newLen = proposedContent.Length;
 
-            // Empty proposal with non-empty original is always a patch failure;
-            // never let an empty payload reach the SDK save path.
-            if (origLen > 0 && newLen == 0)
+            // Empty proposal with non-empty original is unsafe only when no patch
+            // operation was actually applied. A confirmed Replace of the complete
+            // part with content="" is an intentional deletion and must reach the SDK.
+            if (origLen > 0 && newLen == 0 && !anyOpApplied)
             {
                 reason = "patch_no_match";
                 return false;

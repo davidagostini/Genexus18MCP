@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`genexus_edit mode=patch operation=Replace` now reports success only after a durable Source/Rules save.** Text patches use the same explicit part-save and transaction path as full edits, so GeneXus 18 U16 can no longer advance the object version and leave the replacement only in the live SDK instance. Empty replacements are supported, and the response separates `saved` from `verified`, includes requested/re-read hashes and old-context evidence, and reports rollback verification when requested.
+
 ## v2.40.2 - 2026-08-12
 
 ### Added

@@ -54,9 +54,53 @@ namespace GxMcp.Worker.Tests
         public void IsPatchWriteSafe_EmptyPayload_NonEmptyOriginal_Rejects()
         {
             string original = "lots of content\nspanning many\nlines\n";
-            bool ok = WriteService.IsPatchWriteSafe(original, "", anyOpApplied: true, out string reason);
+            bool ok = WriteService.IsPatchWriteSafe(original, "", anyOpApplied: false, out string reason);
             Assert.False(ok);
             Assert.Equal("patch_no_match", reason);
+        }
+
+        [Fact]
+        public void IsPatchWriteSafe_EmptyPayload_WithConfirmedReplace_Allows()
+        {
+            bool ok = WriteService.IsPatchWriteSafe("the complete source", "", anyOpApplied: true, out string reason);
+            Assert.True(ok);
+            Assert.Null(reason);
+        }
+
+        [Fact]
+        public void ApplyFindReplace_CompleteSource_WithEmptyReplacement_ReturnsIntentionalEmptyResult()
+        {
+            string source = "line one\r\nline two\r\n";
+            var patch = new JObject
+            {
+                ["find"] = source,
+                ["replace"] = ""
+            };
+
+            var (ok, result, reason) = PatchService.ApplyFindReplace(source, patch);
+
+            Assert.True(ok);
+            Assert.Equal(string.Empty, result);
+            Assert.Null(reason);
+        }
+
+        [Fact]
+        public void PatchService_TextWritesUseTransactionalPartSaveAndExposeVerificationReceipt_ViaConvention()
+        {
+            string patchSource = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(
+                    System.AppDomain.CurrentDomain.BaseDirectory,
+                    "..", "..", "..", "..", "GxMcp.Worker", "Services", "PatchService.cs"));
+
+            Assert.DoesNotContain("preferFastSourceSave: true", patchSource);
+            Assert.Contains("preferFastSourceSave: false", patchSource);
+            Assert.Contains("writePayload[\"saved\"]", patchSource);
+            Assert.Contains("writePayload[\"verified\"]", patchSource);
+            Assert.Contains("writePayload[\"persistedMatchCount\"]", patchSource);
+            Assert.Contains("writePayload[\"oldContentPresent\"]", patchSource);
+            Assert.Contains("writePayload[\"versionToken\"]", patchSource);
+            Assert.Contains("StringSplitOptions.None", patchSource);
+            Assert.DoesNotContain("context?.Split(new[] { '\\n' }, StringSplitOptions.RemoveEmptyEntries)", patchSource);
         }
 
         [Fact]

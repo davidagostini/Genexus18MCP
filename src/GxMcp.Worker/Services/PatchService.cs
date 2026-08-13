@@ -281,7 +281,12 @@ namespace GxMcp.Worker.Services
                 string workContent = (content ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n");
 
                 var sourceLines = workSource.Split('\n');
-                var contextLines = workContext?.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                // Preserve blank lines, including a terminal newline. Removing empty
+                // entries changed the matched byte range: a context ending in CRLF
+                // matched only the visible lines, then a replacement that also ended
+                // in CRLF left the original terminator behind and produced an extra
+                // blank line. That breaks exact verification and empty deletions.
+                var contextLines = workContext?.Split(new[] { '\n' }, StringSplitOptions.None);
                 string normalizedOperation = NormalizeOperation(operation);
 
                 // 2. Matching Logic
@@ -372,7 +377,13 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                if (string.IsNullOrEmpty(updatedSource))
+                // An empty updated source is a valid result when Replace matched the
+                // complete part and the requested replacement is empty. Match failures
+                // also return an empty string, so status (not payload length) is the
+                // discriminator that keeps the no-match safety guard intact.
+                if (updatedSource == null ||
+                    (!string.Equals(status, "Applied", StringComparison.OrdinalIgnoreCase) &&
+                     string.IsNullOrEmpty(updatedSource)))
                 {
                     string dbg = string.Empty;
                     if (sourceLines.Length > 0 && contextLines?.Length > 0)
@@ -563,7 +574,19 @@ namespace GxMcp.Worker.Services
                     {
                         var dryRunJson = JObject.Parse(dryRunResult);
                         var dryRunBody = dryRunJson["result"] as JObject ?? dryRunJson;
+                        var dryRunEvidence = TextPersistenceVerifier.Evaluate(requested: updatedSource.Replace("\n", Environment.NewLine), persisted: originalSource, requestedMode: resolvedVerifyMode, partName: partName);
                         dryRunBody["persisted"] = false;
+                        dryRunBody["saved"] = false;
+                        dryRunBody["verified"] = false;
+                        dryRunBody["requestedHash"] = dryRunEvidence.RequestedHash;
+                        dryRunBody["persistedHash"] = dryRunEvidence.PersistedHash;
+                        try
+                        {
+                            var dryRunObject = _objectService.FindObject(target, typeFilter);
+                            string dryRunVersion = dryRunObject == null ? null : WriteService.ComputeVersionToken(dryRunObject);
+                            if (!string.IsNullOrWhiteSpace(dryRunVersion)) dryRunBody["versionToken"] = dryRunVersion;
+                        }
+                        catch { }
                         dryRunBody["verification"] = new JObject
                         {
                             ["mode"] = resolvedVerifyMode,
@@ -670,7 +693,11 @@ namespace GxMcp.Worker.Services
                 // 3. Write Back (re-normalize to CRLF for GeneXus)
                 string finalCode = updatedSource.Replace("\n", Environment.NewLine);
                 var writeStopwatch = Stopwatch.StartNew();
-                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
+                // Do not use the object-only fast path for textual patches. On GX18 U16,
+                // obj.Save() can advance the object's version and leave the changed ISource
+                // only in the live SDK instance. The full path saves the part explicitly and
+                // commits the object transaction, matching mode=full persistence semantics.
+                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
                 writeStopwatch.Stop();
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
                 JObject writePayload = ParseWriteResult(writeResult);
@@ -678,6 +705,8 @@ namespace GxMcp.Worker.Services
                 bool primaryWriteSuccess = string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
                 bool writeReportedVerificationMismatch = string.Equals(writePayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
                 bool persistedMatches = false;
+                bool saveReported = primaryWriteSuccess || writeReportedVerificationMismatch;
+                string confirmedPersistedSource = null;
                 bool isPatternPart = Services.PatternAnalysisService.IsPatternPart(partName);
 
                 if (primaryWriteSuccess && isPatternPart)
@@ -698,6 +727,7 @@ namespace GxMcp.Worker.Services
 
                     if (verification != null)
                     {
+                        confirmedPersistedSource = persistedSource;
                         persistedMatches = verification.Matches;
                         writePayload["requestedHash"] = verification.RequestedHash;
                         writePayload["persistedHash"] = verification.PersistedHash;
@@ -706,14 +736,22 @@ namespace GxMcp.Worker.Services
                         JObject verificationJson = verification.ToJson(reReadConfirmed: true);
                         string canonicalReplacement = TextPersistenceVerifier.Canonicalize(content, resolvedVerifyMode, partName);
                         string canonicalPersisted = TextPersistenceVerifier.Canonicalize(persistedSource, resolvedVerifyMode, partName);
+                        string canonicalOldContext = TextPersistenceVerifier.Canonicalize(context, resolvedVerifyMode, partName);
                         int replacementMatchCount = canonicalReplacement.Length == 0
                             ? 0
                             : CountOccurrences(canonicalPersisted, canonicalReplacement);
+                        int persistedMatchCount = canonicalOldContext.Length == 0
+                            ? 0
+                            : CountOccurrences(canonicalPersisted, canonicalOldContext);
                         bool replacementPresent = canonicalReplacement.Length == 0 || replacementMatchCount > 0;
                         persistedMatches = verification.Matches && replacementPresent;
                         verificationJson["matchCount"] = matchCount;
                         verificationJson["replacementMatchCount"] = replacementMatchCount;
                         verificationJson["replacementPresent"] = replacementPresent;
+                        verificationJson["persistedMatchCount"] = persistedMatchCount;
+                        verificationJson["oldContentPresent"] = persistedMatchCount > 0;
+                        writePayload["persistedMatchCount"] = persistedMatchCount;
+                        writePayload["oldContentPresent"] = persistedMatchCount > 0;
                         writePayload["verification"] = verificationJson;
                     }
                     else
@@ -728,10 +766,18 @@ namespace GxMcp.Worker.Services
 
                     writePayload["persistedVerified"] = persistedMatches;
                     writePayload["persisted"] = persistedMatches;
+                    writePayload["saved"] = saveReported;
+                    writePayload["verified"] = persistedMatches;
                     if (persistedMatches)
                     {
                         // A WriteService false negative is superseded by the mandatory forced
                         // re-read. No second write is performed.
+                        // Drop its raw-text mismatch diagnostics: they compare with the legacy
+                        // verifier and contradict the selected verifyMode (for example when
+                        // normalized verification legitimately accepts SDK EOL rendering).
+                        writePayload.Remove("error");
+                        writePayload.Remove("mutation");
+                        writePayload.Remove("verificationWarning");
                         writePayload["_internalStatus"] = "Success";
                         writePayload["code"] = "Applied";
                         writePayload["message"] = "Patch persisted and was confirmed by post-save re-read.";
@@ -747,9 +793,14 @@ namespace GxMcp.Worker.Services
                         // requested and the fresh pre-write snapshot is available.
                         if (rollbackOnFailure && originalSource != null)
                         {
-                            string rollbackResult = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
+                            string rollbackResult = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
                             JObject rollbackPayload = ParseWriteResult(rollbackResult);
-                            bool rollbackSaved = string.Equals(rollbackPayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
+                            // WriteService's legacy verifier may call a durable rollback
+                            // WriteNotPersisted solely because it applies a different text
+                            // equivalence rule. In both cases the SDK save completed, so always
+                            // perform this operation's selected-mode forced re-read.
+                            bool rollbackSaved = string.Equals(rollbackPayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(rollbackPayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
                             string rollbackPersisted = null;
                             string rollbackError = null;
                             TextPersistenceVerifier.Result rollbackVerification = null;
@@ -762,8 +813,11 @@ namespace GxMcp.Worker.Services
                                 ["snapshotValid"] = true,
                                 ["saved"] = rollbackSaved,
                                 ["verified"] = rollbackVerified,
+                                ["requestedHash"] = rollbackVerification?.RequestedHash,
+                                ["persistedHash"] = rollbackVerification?.PersistedHash,
                                 ["error"] = rollbackVerified ? JValue.CreateNull() : (JToken)(rollbackError ?? rollbackPayload["message"]?.ToString() ?? "Rollback could not be verified.")
                             };
+                            writePayload["rolledBack"] = rollbackVerified;
                             if (rollbackVerified) UpdateCachedSource(cacheKey, originalSource);
                         }
                     }
@@ -798,7 +852,7 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
-                    string rollbackWrite = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
+                    string rollbackWrite = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
                     JObject rollbackPayload = ParseWriteResult(rollbackWrite);
 
                     bool rollbackSuccess = string.Equals(rollbackPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
@@ -832,6 +886,18 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
+                // Always expose the save/verification distinction, including SDK-save
+                // failures where no post-save comparison could run.
+                if (writePayload["saved"] == null) writePayload["saved"] = saveReported;
+                if (writePayload["verified"] == null) writePayload["verified"] = persistedMatches;
+                try
+                {
+                    var versionObject = _objectService.FindObject(target, typeFilter);
+                    string versionToken = versionObject == null ? null : WriteService.ComputeVersionToken(versionObject);
+                    if (!string.IsNullOrWhiteSpace(versionToken)) writePayload["versionToken"] = versionToken;
+                }
+                catch { }
+
                 // v2.8.0: convert the WriteService legacy envelope (status=Success/Error) to canonical shape.
                 // WriteService is out-of-scope for this migration; we lift its fields into result/error here.
                 bool finalSuccess = string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
@@ -857,7 +923,11 @@ namespace GxMcp.Worker.Services
                     if (resultObj[pn] == null) resultObj[pn] = prop.Value;
                 }
                 if (returnPostState && finalSuccess && updatedSource != null)
-                    resultObj["post_state"] = GxMcp.Worker.Services.JsonPatchService.BuildPostState(originalSource, updatedSource, verbose);
+                    resultObj["post_state"] = GxMcp.Worker.Services.JsonPatchService.BuildPostState(
+                        originalSource,
+                        updatedSource,
+                        verbose,
+                        persistedAfter: confirmedPersistedSource);
 
                 if (finalSuccess)
                 {

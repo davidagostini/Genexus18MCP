@@ -1696,7 +1696,17 @@ namespace GxMcp.Gateway
             // dropped `details` + `verifyDiff` so the agent saw only "Pattern
             // write verification failed" with no clue what was rejected.
             // Allowlist these when present — they're small structured objects.
-            string[] diagnosticKeys = { "details", "verifyDiff", "suggestion", "persistedSnippet", "requestedSnippet", "availableParts", "part", "objectName", "objectType" };
+            string[] diagnosticKeys = {
+                "details", "verifyDiff", "suggestion", "persistedSnippet", "requestedSnippet",
+                "availableParts", "part", "objectName", "objectType",
+                // Patch persistence receipt: these fields must survive terse error
+                // projection so WriteNotPersisted still tells the caller what the SDK
+                // saved, what the forced re-read proved, and whether rollback landed.
+                "saved", "verified", "persisted", "persistedVerified", "requestedHash",
+                "persistedHash", "normalizedRequestedHash", "normalizedPersistedHash",
+                "persistedMatchCount", "oldContentPresent", "verification", "rollback",
+                "rolledBack", "versionToken", "persistedVerifyError"
+            };
             foreach (var k in diagnosticKeys)
             {
                 if (error[k] != null) trimmed[k] = error[k];

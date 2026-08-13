@@ -28,6 +28,29 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void TrimErrorEnvelope_WriteNotPersisted_PreservesPatchReceipt()
+        {
+            var input = JObject.Parse(@"{
+                ""code"":""WriteNotPersisted"",""message"":""post-save mismatch"",
+                ""saved"":true,""verified"":false,""requestedHash"":""req"",""persistedHash"":""disk"",
+                ""persistedMatchCount"":1,""oldContentPresent"":true,""versionToken"":""123"",
+                ""rollback"":{""requested"":true,""saved"":true,""verified"":true},""rolledBack"":true
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            Assert.True(trimmed["saved"]!.ToObject<bool>());
+            Assert.False(trimmed["verified"]!.ToObject<bool>());
+            Assert.Equal("req", trimmed["requestedHash"]!.ToString());
+            Assert.Equal("disk", trimmed["persistedHash"]!.ToString());
+            Assert.Equal(1, trimmed["persistedMatchCount"]!.ToObject<int>());
+            Assert.True(trimmed["oldContentPresent"]!.ToObject<bool>());
+            Assert.True(trimmed["rollback"]!["verified"]!.ToObject<bool>());
+            Assert.True(trimmed["rolledBack"]!.ToObject<bool>());
+            Assert.Equal("123", trimmed["versionToken"]!.ToString());
+        }
+
+        [Fact]
         public void TrimErrorEnvelope_VerbosePassesThrough()
         {
             var input = JObject.Parse(@"{""message"":""x"",""stack"":""trace""}");
