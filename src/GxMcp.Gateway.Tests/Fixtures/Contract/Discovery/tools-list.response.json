@@ -746,9 +746,6 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "varName"
-              ],
               "type": "object"
             },
             "type": "array"
