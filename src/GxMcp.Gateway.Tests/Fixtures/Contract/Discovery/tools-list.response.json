@@ -2657,7 +2657,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Read parts of objects. name or targets + parts=[...]. Paginate via offset/limit. Response carries versionToken — pass it as baseVersion on genexus_edit for a safe (optimistic-concurrency) write. See genexus://kb/tool-help/genexus_read.",
+      "description": "Read object parts, including DataSelector definitions. name or targets + parts=[...]. Paginate via offset/limit. Response carries versionToken — pass it as baseVersion on genexus_edit for a safe write. See genexus://kb/tool-help/genexus_read.",
       "inputSchema": {
         "examples": [
           {
@@ -2683,10 +2683,11 @@
             "type": "integer"
           },
           "part": {
+            "description": "DataSelector: parameters|conditions|orders|projection|definedBy|baseTransaction|baseTable|joins|structure.",
             "type": "string"
           },
           "parts": {
-            "description": "When set, only the listed parts are returned in a combined response. Mutually exclusive with part/offset/limit.",
+            "description": "Selected parts; unavailable DataSelector parts appear in unsupportedParts. Mutually exclusive with part/offset/limit.",
             "items": {
               "type": "string"
             },

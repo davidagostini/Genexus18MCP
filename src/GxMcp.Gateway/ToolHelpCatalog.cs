@@ -147,12 +147,18 @@ namespace GxMcp.Gateway
                 "## Required\n" +
                 "- Either `name` (single) **or** `targets` (array). Never both.\n" +
                 "- `parts`: array of part names. Common: `Source`, `Variables`, `Rules`, `Events`, `Structure`, `Layout`. Omitting `parts` returns the canonical default set for the object type.\n\n" +
+                "## Data Selectors\n" +
+                "- Use `type: 'DataSelector'` with `parameters`, `conditions`, `orders`, `definedBy`, `baseTransaction`, `baseTable`, or `structure`. The SDK order and complete expressions are preserved.\n" +
+                "- `projection` and resolved `joins` are not exposed by the GeneXus 18 U16 public SDK. Requests return a technical reason in `unsupportedParts`, never a misleading empty value.\n" +
+                "- Base table and Transaction are returned only when attribute coverage resolves them unambiguously. Declared indexes may be listed, but this read never runs Specify to claim which index is used.\n\n" +
+                "- `structure.expressionKind: 'semanticProjection'` means the complete view was composed from typed SDK elements; U16's raw structure `ToString()` is not returned because it leaks internal collection type names.\n\n" +
                 "## Pagination\n" +
                 "- `offset` and `limit` apply to the **source** part for large objects.\n" +
                 "- `_meta.partial: true` and `_meta.nextOffset` signal more content available.\n\n" +
                 "## Examples\n" +
                 "- `{ name: 'InvoiceProc', parts: ['Source', 'Variables'] }`\n" +
                 "- `{ name: 'OrderTrn', parts: ['Rules'], offset: 0, limit: 200 }`\n" +
+                "- `{ name: 'OrderFilter', type: 'DataSelector', parts: ['parameters', 'conditions', 'orders', 'definedBy', 'baseTable'] }`\n" +
                 "- `{ targets: [{ name: 'A' }, { name: 'B' }], parts: ['Source'] }`\n",
 
             ["genexus_apply_pattern"] =

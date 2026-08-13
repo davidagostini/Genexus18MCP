@@ -1844,6 +1844,11 @@ namespace GxMcp.Worker.Services
             var obj = FindObject(target, typeFilter);
             if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
 
+            if (DataSelectorReadService.IsDataSelector(obj))
+            {
+                return DataSelectorReadService.Read((DataSelector)obj, requestedParts);
+            }
+
             string[] partsToFetch = (requestedParts != null && requestedParts.Any())
                 ? requestedParts.Select(p => p.Trim()).Where(p => !string.IsNullOrEmpty(p)).ToArray()
                 : new[] { "Source", "Rules", "Events", "Variables", "Documentation", "Help" };
@@ -2113,6 +2118,18 @@ namespace GxMcp.Worker.Services
 
         private string ReadObjectSourceInternal(KBObject obj, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false)
         {
+            if (DataSelectorReadService.IsDataSelector(obj)
+                && (string.IsNullOrWhiteSpace(partName)
+                    || partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
+                    || DataSelectorReadService.IsVirtualPart(partName)))
+            {
+                IEnumerable<string> requested = string.IsNullOrWhiteSpace(partName)
+                    || partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
+                        ? null
+                        : new[] { partName };
+                return DataSelectorReadService.Read((DataSelector)obj, requested);
+            }
+
             partName = ResolvePartName(obj, partName);
 
             Logger.Info($"ReadObjectSourceInternal: {obj.Name} (Part: {partName}, Client: {client})");
@@ -2362,6 +2379,9 @@ namespace GxMcp.Worker.Services
 
             if (obj is Procedure) return "Source";
             if (obj is Transaction || obj is WebPanel) return defaulted ? "Events" : "Source";
+            // Data Selectors have no ISource part. Keep the generic alias so the
+            // typed read path can return their complete persisted definition.
+            if (DataSelectorReadService.IsDataSelector(obj)) return "Source";
 
             // issue #31.5: SDTs (and other objects without a Source part) previously errored
             // "Part 'Source' not found". Fall back to the object's primary part instead:

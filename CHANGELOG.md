@@ -2,8 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- `genexus_read` now exposes persisted Data Selector definitions through the
+  GeneXus 18 U16 public SDK: ordered parameters, complete conditions, orders,
+  `Defined By`, referenced attributes, and unambiguous base Table/Transaction
+  resolution with declared indexes. The path is strictly read-only, returns a
+  `versionToken`, and never runs Specify, Generate, Build, Rebuild, compilation,
+  reorganization, execution, or tests. SDK capabilities that do not exist for
+  Data Selectors (`projection` and resolved `joins`) are reported explicitly in
+  `unsupportedParts` instead of appearing as empty data. The combined
+  `structure` is marked as a semantic projection of those typed SDK elements,
+  avoiding U16's internal collection type names.
+
 ### Fixed
 
+- **`genexus_structure action=create_index` no longer persists during `dryRun=true`.** The Worker now keeps validation/projection separate from SDK mutation, verifies the persisted index snapshot and composite `versionToken` after every preview, and returns `DryRunMutationDetected` with rollback details if any state changes. Effective writes support `baseVersion` optimistic concurrency, preserve the requested attribute order, re-read and verify the exact index, and restore the prior snapshot on save/verification failure when `rollbackOnFailure=true`. The action does not implicitly Specify, Generate, Build, Rebuild, compile, reorganize, execute, or test.
 - **`genexus_lifecycle action=specify` surfaces structured evidence and `effective_status=SucceededWithGaps` for unreachable or not found objects.** When GeneXus skips specification because an object is unreachable (`spc0217`) or not found in the Knowledge Base, the worker now captures `generateEvidence` (`ok=false`, `unreachable`/`notFound` lists, note) and emits a `[specify-gap]` warning, allowing the gateway to surface `effective_status="SucceededWithGaps"` instead of a false clean success. Fixes [#86](https://github.com/lennix1337/Genexus18MCP/issues/86).
 - **`UIServices.SetDisableUI(true)` invoked during worker bootstrap.** Explicitly disables interactive modal dialogs prior to `UIServices.Initialize`, preventing blocked STA threads during headless execution. Fixes [#88](https://github.com/lennix1337/Genexus18MCP/issues/88).
 - **`genexus_sdk_probe` pre-loads and scans unreferenced GeneXus/WWP SDK assemblies from disk.** Discovers and loads assemblies from the GeneXus installation, `Packages`, and `Patterns` directories into the AppDomain prior to probing so that unreferenced tools and generators are discovered. Also cleaned up duplicate merge header artifacts in `CHANGELOG.md`. Fixes [#87](https://github.com/lennix1337/Genexus18MCP/issues/87).
