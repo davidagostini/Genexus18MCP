@@ -91,13 +91,17 @@ namespace GxMcp.Worker.Tests
                 System.IO.Path.Combine(
                     System.AppDomain.CurrentDomain.BaseDirectory,
                     "..", "..", "..", "..", "GxMcp.Worker", "Services", "PatchService.cs"));
+            string receiptSource = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(
+                    System.AppDomain.CurrentDomain.BaseDirectory,
+                    "..", "..", "..", "..", "GxMcp.Worker", "Services", "PatchPersistenceReceipt.cs"));
 
             Assert.DoesNotContain("preferFastSourceSave: true", patchSource);
             Assert.Contains("preferFastSourceSave: false", patchSource);
             Assert.Contains("writePayload[\"saved\"]", patchSource);
             Assert.Contains("writePayload[\"verified\"]", patchSource);
-            Assert.Contains("writePayload[\"persistedMatchCount\"]", patchSource);
-            Assert.Contains("writePayload[\"oldContentPresent\"]", patchSource);
+            Assert.Contains("payload[\"persistedMatchCount\"]", receiptSource);
+            Assert.Contains("payload[\"oldContentPresent\"]", receiptSource);
             Assert.Contains("writePayload[\"versionToken\"]", patchSource);
             Assert.Contains("StringSplitOptions.None", patchSource);
             Assert.DoesNotContain("context?.Split(new[] { '\\n' }, StringSplitOptions.RemoveEmptyEntries)", patchSource);

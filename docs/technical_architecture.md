@@ -50,6 +50,22 @@ The extension uses this MCP discovery flow directly.
 - Execute analysis, refactor, formatting, lifecycle, history, structure, and property operations
 - Isolate GeneXus runtime constraints from the gateway process
 
+### Text patch responsibilities
+
+The `genexus_edit mode=patch` implementation keeps its external contract in
+`PatchService`, but separates deterministic work from SDK side effects:
+
+- `PatchTextEditor` owns pure context matching, Replace, InsertAfter, fuzzy
+  matching, diagnostics, and edit-distance calculations.
+- `PatchService` orchestrates snapshots, optimistic concurrency, the single
+  write attempt, forced post-save reads, cache invalidation, and rollback.
+- `PatchPersistenceReceipt` builds the stable persistence evidence (`saved`,
+  `verified`, hashes, old-context presence, and rollback status).
+- `TextPersistenceVerifier` owns exact, normalized, and semantic equivalence.
+
+These boundaries are internal. They must not change tool arguments, response
+codes, write count, transaction behavior, or invoke any KB lifecycle action.
+
 ## Gateway responsibilities
 
 - MCP routing

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **The text-patch pipeline now separates matching from orchestration and persistence evidence.** `PatchTextEditor` owns pure Replace/InsertAfter matching, while `PatchPersistenceReceipt` owns the stable saved/verified/hash/rollback response fields. The public `genexus_edit` contract and GeneXus SDK save path are unchanged.
+
 ### Fixed
 
 - **`genexus_edit mode=patch operation=Replace` now reports success only after a durable Source/Rules save.** Text patches use the same explicit part-save and transaction path as full edits, so GeneXus 18 U16 can no longer advance the object version and leave the replacement only in the live SDK instance. Empty replacements are supported, and the response separates `saved` from `verified`, includes requested/re-read hashes and old-context evidence, and reports rollback verification when requested.
