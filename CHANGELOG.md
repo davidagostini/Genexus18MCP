@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.41.1 - 2026-08-13
+
 ### Changed
 
 - **O(1) dictionary key resolution in `SearchService` exact-match.** Replaced full O(N) `Objects.Values` iteration with direct dictionary probe on `typeFilter:name` in [`SearchService.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Services/SearchService.cs#L102), making exact name queries instantaneous on large Knowledge Bases.
