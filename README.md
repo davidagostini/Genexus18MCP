@@ -250,6 +250,18 @@ The worker exposes **47 tools** to the MCP router, grouped by capability below. 
 - `genexus_search_source` — regex/semantic search across Procedure/DataProvider/WebPanel/Transaction source
 - `genexus_navigation` — the IDE "View Navigation" report
 
+For a GeneXus 18 U16 Data Selector, `genexus_read type=DataSelector` also accepts
+`parameters`, `conditions`, `orders`, `definedBy`, `baseTransaction`,
+`baseTable`, and `structure`. It preserves SDK order and complete expressions,
+returns a `versionToken`, and performs no lifecycle operation. The public U16
+SDK does not expose a projected-attribute collection or resolved joins for this
+object type, so `projection` and `joins` are returned in `unsupportedParts` with
+the technical reason instead of misleading empty arrays. Base objects and
+declared indexes are reported only when they can be resolved without Specify.
+`structure.expression` is identified as a `semanticProjection`: it combines the
+typed public SDK elements and never exposes the internal collection type names
+produced by `DataSelectorStructurePart.ToString()` on U16.
+
 **Editing**
 - `genexus_edit` — edit any object part; modes `full` / `patch` / `ops`
 - `genexus_edit_and_build` — edit + optional specification + rebuild callers in one call, with compensating rollback on validation failure

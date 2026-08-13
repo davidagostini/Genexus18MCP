@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- `genexus_read` now exposes persisted Data Selector definitions through the
+  GeneXus 18 U16 public SDK: ordered parameters, complete conditions, orders,
+  `Defined By`, referenced attributes, and unambiguous base Table/Transaction
+  resolution with declared indexes. The path is strictly read-only, returns a
+  `versionToken`, and never runs Specify, Generate, Build, Rebuild, compilation,
+  reorganization, execution, or tests. SDK capabilities that do not exist for
+  Data Selectors (`projection` and resolved `joins`) are reported explicitly in
+  `unsupportedParts` instead of appearing as empty data. The combined
+  `structure` is marked as a semantic projection of those typed SDK elements,
+  avoiding U16's internal collection type names.
+
 ## v2.40.2 - 2026-08-12
 
 ### Added
