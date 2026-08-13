@@ -51,6 +51,20 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Classify_LineComment_RecognizesFormattedMessageStatement()
+        {
+            const string statement = "msg(Format(!'%1' , &TemporaryId),nowait)";
+            const string commented = "//msg(Format(!'%1' , &TemporaryId),nowait)";
+
+            bool classified = CommentOnlyPatch.TryClassify(
+                "Source", "replace", statement, commented, out string style);
+
+            Assert.True(classified);
+            Assert.Equal("line", style);
+            Assert.Equal(0, CommentOnlyPatch.CountActiveOccurrences(commented, statement));
+        }
+
+        [Fact]
         public void CountActiveOccurrences_IgnoresLineAndBlockCommentsAndStringLiterals()
         {
             const string statement = "msg(&Guid.ToString(),nowait)";
