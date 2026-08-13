@@ -387,6 +387,40 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ConvertToolCall_MoveObject_ForwardsSafetyOptions()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"move","name":"InvoiceHelper","type":"Procedure","targetModule":"operacional","baseVersion":"639222302350000000","dryRun":true,"rollbackOnFailure":true}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Move", json["action"]?.ToString());
+            Assert.Equal("InvoiceHelper", json["target"]?.ToString());
+            Assert.Equal("operacional", json["targetModule"]?.ToString());
+            Assert.Equal("operacional", json["destination"]?.ToString());
+            Assert.Equal("Module", json["destKind"]?.ToString());
+            Assert.Equal("639222302350000000", json["baseVersion"]?.ToString());
+            Assert.True(json["dryRun"]?.ToObject<bool>());
+            Assert.True(json["rollbackOnFailure"]?.ToObject<bool>());
+        }
+
+        [Fact]
+        public void ConvertToolCall_MoveObject_ExplicitDestinationDoesNotInheritTargetModuleKind()
+        {
+            var request = JObject.Parse(
+                """{"method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"move","name":"InvoiceHelper","destination":"Archive","targetModule":"ignored-alias"}}}"""
+            );
+
+            var json = JObject.FromObject(McpRouter.ConvertToolCall(request)!);
+
+            Assert.Equal("Archive", json["destination"]?.ToString());
+            Assert.True(json["destKind"]?.Type is JTokenType.Null or JTokenType.Undefined);
+        }
+
+        [Fact]
         public void ConvertToolCall_RemovedOpenKbToolMapsToNull()
         {
             // genexus_open_kb was removed in v2.3.0; it now lives in RemovedToolsRegistry

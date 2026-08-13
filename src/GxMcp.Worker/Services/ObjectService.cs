@@ -1491,7 +1491,8 @@ namespace GxMcp.Worker.Services
         // Move an object into a Folder or Module (its KB Explorer parent). Replaces the
         // old FolderPlacementUnsupported/FolderMoveNotSupported rejects — see ObjectMover
         // for why the "SDK can't do it" verdict was wrong (facade-DLL decompilation).
-        public string MoveObject(string target, string destination, string typeFilter = null, string destKind = null, bool dryRun = false)
+        public string MoveObject(string target, string destination, string typeFilter = null, string destKind = null,
+            bool dryRun = false, string baseVersion = null, bool rollbackOnFailure = true)
         {
             var sw = Stopwatch.StartNew();
             try
@@ -1535,31 +1536,182 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Err(code: "BadArgs", message: "Cannot move an object into itself.", target: target);
 
                 string from = ImmediateParentName(obj);
+                string beforeVersion = WriteService.ComputeVersionToken(obj);
+                if (!string.IsNullOrWhiteSpace(baseVersion)
+                    && !string.Equals(baseVersion, beforeVersion, StringComparison.Ordinal))
+                {
+                    return McpResponse.Err(code: "VersionConflict",
+                        message: "The object changed after it was read; the move was not attempted.",
+                        hint: "Re-read the object and retry with the new versionToken.",
+                        target: target,
+                        extra: new JObject { ["baseVersion"] = baseVersion, ["currentVersion"] = beforeVersion });
+                }
+
+                ObjectMoveSnapshot snapshot;
+                try { snapshot = ObjectMoveSnapshot.Capture(obj); }
+                catch (Exception ex)
+                {
+                    return McpResponse.Err(code: "MoveSnapshotFailed",
+                        message: "Could not capture every object part before moving: " + ex.Message,
+                        hint: "No move was attempted.", target: target);
+                }
 
                 if (dryRun)
                 {
+                    MarkReadCacheDirty(obj);
+                    KBObject dryFresh = null;
+                    try { dryFresh = kb.DesignModel.Objects.Get(obj.Guid); } catch { }
+                    string afterDryVersion = WriteService.ComputeVersionToken(dryFresh ?? obj);
+                    var dryComparison = snapshot.Compare(dryFresh ?? obj);
+                    bool versionUnchanged = string.Equals(beforeVersion, afterDryVersion, StringComparison.Ordinal);
+                    if (!versionUnchanged || !dryComparison.Equal)
+                    {
+                        return McpResponse.Err(code: "DryRunMutationDetected",
+                            message: "The persisted object changed while evaluating the move preview.",
+                            hint: "The move was not executed. Re-read the object before retrying.",
+                            target: target,
+                            extra: new JObject
+                            {
+                                ["persisted"] = false,
+                                ["versionUnchanged"] = versionUnchanged,
+                                ["beforeVersion"] = beforeVersion,
+                                ["afterVersion"] = afterDryVersion,
+                                ["requestedHash"] = snapshot.Hash,
+                                ["persistedHash"] = dryComparison.PersistedHash,
+                                ["changedParts"] = dryComparison.ChangedParts,
+                                ["implicitOperations"] = new JArray()
+                            });
+                    }
                     return McpResponse.Ok(target: target, code: "DryRun", result: new JObject
                     {
                         ["move"] = target,
                         ["from"] = from,
                         ["to"] = destination,
                         ["containerType"] = containerType,
+                        ["persisted"] = false,
+                        ["verified"] = true,
+                        ["preservedParts"] = snapshot.PreservedParts,
+                        ["before"] = new JObject { ["parent"] = from, ["hash"] = snapshot.Hash },
+                        ["afterProjected"] = new JObject { ["parent"] = destination, ["hash"] = snapshot.Hash },
+                        ["versionToken"] = beforeVersion,
+                        ["versionUnchanged"] = true,
+                        ["implicitOperations"] = new JArray(),
                         ["hint"] = "Re-run without dryRun to persist the move."
                     });
                 }
 
-                var res = Helpers.ObjectMover.SetParentAndSave(obj, container);
-                if (!res.Ok)
-                    return McpResponse.Err(code: "MoveFailed",
-                        message: "Could not persist the move of '" + target + "' into '" + destination + "': " + res.Error,
-                        target: target);
+                Helpers.ObjectMover.MoveResult res = default(Helpers.ObjectMover.MoveResult);
+                KBObject fresh = null;
+                KBObject originalParent = null;
+                try { originalParent = obj.Parent; } catch { }
+                string to = null;
+                ObjectMoveSnapshot.Comparison comparison = null;
+                bool committed = false;
+                using (var tx = kb.BeginTransaction())
+                {
+                    try
+                    {
+                        MarkReadCacheDirty(obj);
+                        var current = kb.DesignModel.Objects.Get(obj.Guid) ?? obj;
+                        string transactionVersion = WriteService.ComputeVersionToken(current);
+                        if (!string.IsNullOrWhiteSpace(baseVersion)
+                            && !string.Equals(baseVersion, transactionVersion, StringComparison.Ordinal))
+                        {
+                            return McpResponse.Err(code: "VersionConflict",
+                                message: "The object changed before the move transaction acquired it; no write was committed.",
+                                hint: "Re-read the object and retry with the new versionToken.", target: target,
+                                extra: new JObject { ["baseVersion"] = baseVersion, ["currentVersion"] = transactionVersion });
+                        }
 
-                // Verify against a freshly-fetched instance — a Save that "succeeds" but
-                // leaves the parent unchanged must be reported as a failure, not success.
-                KBObject fresh = obj;
-                try { var f = kb.DesignModel.Objects.Get(obj.Guid); if (f != null) fresh = f; } catch { }
-                string to = ImmediateParentName(fresh);
-                bool moved = string.Equals(to, destination, StringComparison.OrdinalIgnoreCase);
+                        res = Helpers.ObjectMover.SetParentAndSave(current, container);
+                        if (!res.Ok) throw new InvalidOperationException(res.Error ?? "The SDK move failed.");
+
+                        // Validate inside the transaction before exposing the new placement.
+                        // This is especially important for the SaveWithParent fallback on U16,
+                        // which can rebuild default Procedure parts while reporting success.
+                        MarkReadCacheDirty(current);
+                        var pending = kb.DesignModel.Objects.Get(obj.Guid) ?? current;
+                        var pendingComparison = snapshot.Compare(pending);
+                        string pendingParent = ImmediateParentName(pending);
+                        if (!string.Equals(pendingParent, destination, StringComparison.OrdinalIgnoreCase))
+                            throw new InvalidOperationException("The SDK did not persist the requested parent inside the move transaction.");
+                        if (!pendingComparison.Equal)
+                            throw new InvalidOperationException("The SDK changed object content inside the move transaction: "
+                                + string.Join(", ", pendingComparison.ChangedParts.Values<string>()));
+
+                        tx.Commit();
+                        committed = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        if (!committed) try { tx.Rollback(); } catch { }
+                        var rollback = VerifyMoveRollback(kb, obj, snapshot, from);
+                        if (!(rollback["verified"]?.ToObject<bool>() ?? false) && rollbackOnFailure)
+                            rollback = CompensateMoveRollback(kb, obj.Guid, originalParent, snapshot, from);
+                        return McpResponse.Err(code: "MoveFailed",
+                            message: "Could not safely persist the move: " + ex.Message,
+                            target: target,
+                            extra: new JObject
+                            {
+                                ["saved"] = res.Ok,
+                                ["persisted"] = false,
+                                ["verified"] = false,
+                                ["requestedHash"] = snapshot.Hash,
+                                ["persistedHash"] = rollback["persistedHash"]?.DeepClone(),
+                                ["rollback"] = rollback,
+                                ["implicitOperations"] = new JArray()
+                            });
+                    }
+                }
+
+                // Re-read after commit as an independent persistence barrier. If the SDK
+                // reports a different persisted state now, restore the complete snapshot.
+                try
+                {
+                    MarkReadCacheDirty(obj);
+                    fresh = kb.DesignModel.Objects.Get(obj.Guid) ?? obj;
+                    to = ImmediateParentName(fresh);
+                    comparison = snapshot.Compare(fresh);
+                }
+                catch (Exception ex)
+                {
+                    var rollback = rollbackOnFailure
+                        ? CompensateMoveRollback(kb, obj.Guid, originalParent, snapshot, from)
+                        : VerifyMoveRollback(kb, obj, snapshot, from, attempted: false);
+                    return McpResponse.Err(code: "MoveVerificationFailed",
+                        message: "The moved object could not be re-read for persistence verification: " + ex.Message,
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["saved"] = true, ["persisted"] = false, ["verified"] = false,
+                            ["requestedHash"] = snapshot.Hash,
+                            ["persistedHash"] = rollback["persistedHash"]?.DeepClone(),
+                            ["rollback"] = rollback,
+                            ["implicitOperations"] = new JArray()
+                        });
+                }
+
+                bool finalMoved = string.Equals(to, destination, StringComparison.OrdinalIgnoreCase);
+                if (!finalMoved || !comparison.Equal)
+                {
+                    var rollback = rollbackOnFailure
+                        ? CompensateMoveRollback(kb, obj.Guid, originalParent, snapshot, from)
+                        : VerifyMoveRollback(kb, obj, snapshot, from, attempted: false);
+                    return McpResponse.Err(code: !finalMoved ? "MoveNotPersisted" : "MoveContentNotPreserved",
+                        message: !finalMoved
+                            ? "The SDK reported success, but the destination was not persisted."
+                            : "The object moved, but persisted content changed (" +
+                              string.Join(", ", comparison.ChangedParts.Values<string>()) + "); success was withheld.",
+                        hint: "The pre-move snapshot was restored when rollbackOnFailure was enabled.", target: target,
+                        extra: new JObject
+                        {
+                            ["saved"] = true, ["persisted"] = false, ["verified"] = false,
+                            ["from"] = from, ["to"] = to, ["requestedHash"] = snapshot.Hash,
+                            ["persistedHash"] = comparison.PersistedHash,
+                            ["changedParts"] = comparison.ChangedParts, ["rollback"] = rollback,
+                            ["implicitOperations"] = new JArray()
+                        });
+                }
 
                 try
                 {
@@ -1575,27 +1727,101 @@ namespace GxMcp.Worker.Services
                 }
                 catch (Exception ex) { Logger.Error("MoveObject: index refresh failed for " + target + ": " + ex.Message); }
 
-                if (!moved)
-                    return McpResponse.Err(code: "MoveNotPersisted",
-                        message: "Save reported success via '" + res.Strategy + "' but '" + target +
-                                 "' still reads parent '" + to + "', not '" + destination + "'.",
-                        hint: "The parent write did not stick. Report this — the persist path may need a different SDK call for this object type.",
-                        target: target);
-
                 Logger.Info(string.Format("Moved '{0}' from '{1}' to '{2}' via {3} in {4}ms", target, from, to, res.Strategy, sw.ElapsedMilliseconds));
-                return McpResponse.Ok(target: target, code: "Moved", result: new JObject
+                return McpResponse.Ok(target: target, code: "ObjectMovedAndVerified", result: new JObject
                 {
                     ["moved"] = target,
                     ["from"] = from,
                     ["to"] = to,
                     ["containerType"] = containerType,
-                    ["strategy"] = res.Strategy
+                    ["strategy"] = res.Strategy,
+                    ["saved"] = true,
+                    ["persisted"] = true,
+                    ["verified"] = true,
+                    ["preservedParts"] = snapshot.PreservedParts,
+                    ["requestedHash"] = snapshot.Hash,
+                    ["persistedHash"] = comparison?.PersistedHash,
+                    ["previousVersionToken"] = beforeVersion,
+                    ["versionToken"] = WriteService.ComputeVersionToken(fresh),
+                    ["generated"] = false,
+                    ["implicitOperations"] = new JArray()
                 });
             }
             catch (Exception ex)
             {
                 Logger.Error("MoveObject failed for '" + target + "': " + ex.Message);
                 return McpResponse.Err(code: "MoveError", message: ex.Message, target: target);
+            }
+        }
+
+        private JObject VerifyMoveRollback(KnowledgeBase kb, KBObject seed, ObjectMoveSnapshot snapshot,
+            string expectedParent, bool attempted = true)
+        {
+            try
+            {
+                MarkReadCacheDirty(seed);
+                var restored = kb.DesignModel.Objects.Get(seed.Guid) ?? seed;
+                var comparison = snapshot.Compare(restored);
+                bool parentRestored = string.Equals(ImmediateParentName(restored), expectedParent, StringComparison.OrdinalIgnoreCase);
+                bool stateMatchesSnapshot = parentRestored && comparison.Equal;
+                return new JObject
+                {
+                    ["attempted"] = attempted,
+                    ["verified"] = attempted && stateMatchesSnapshot,
+                    ["stateMatchesSnapshot"] = stateMatchesSnapshot,
+                    ["parentRestored"] = parentRestored,
+                    ["contentRestored"] = comparison.Equal,
+                    ["persistedHash"] = comparison.PersistedHash,
+                    ["changedParts"] = comparison.ChangedParts
+                };
+            }
+            catch (Exception ex)
+            {
+                return new JObject { ["attempted"] = attempted, ["verified"] = false, ["error"] = ex.Message };
+            }
+        }
+
+        private JObject CompensateMoveRollback(KnowledgeBase kb, Guid objectGuid, KBObject originalParent,
+            ObjectMoveSnapshot snapshot, string expectedParent)
+        {
+            try
+            {
+                using (var tx = kb.BeginTransaction())
+                {
+                    bool committed = false;
+                    try
+                    {
+                        var current = kb.DesignModel.Objects.Get(objectGuid);
+                        if (current == null) throw new InvalidOperationException("The moved object no longer exists.");
+                        snapshot.RestoreObject(current);
+                        current.Dirty = true;
+                        current.Save();
+                        snapshot.RestoreParts(current);
+                        if (originalParent != null)
+                        {
+                            var moveBack = Helpers.ObjectMover.SetParentAndSave(current, originalParent);
+                            if (!moveBack.Ok) throw new InvalidOperationException("Parent rollback failed: " + moveBack.Error);
+                        }
+                        tx.Commit();
+                        committed = true;
+                    }
+                    finally { if (!committed) try { tx.Rollback(); } catch { } }
+                }
+
+                var seed = kb.DesignModel.Objects.Get(objectGuid);
+                var verified = VerifyMoveRollback(kb, seed, snapshot, expectedParent);
+                verified["compensating"] = true;
+                return verified;
+            }
+            catch (Exception ex)
+            {
+                return new JObject
+                {
+                    ["attempted"] = true,
+                    ["compensating"] = true,
+                    ["verified"] = false,
+                    ["error"] = ex.Message
+                };
             }
         }
 

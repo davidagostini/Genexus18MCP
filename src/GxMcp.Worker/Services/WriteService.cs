@@ -689,7 +689,26 @@ namespace GxMcp.Worker.Services
         internal static string ComputeVersionToken(global::Artech.Architecture.Common.Objects.KBObject obj)
         {
             if (obj == null) return null;
-            try { return obj.LastUpdate.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture); }
+            try
+            {
+                string ticks = obj.LastUpdate.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                // Parent changes are persisted separately by EntityManager.UpdateParent and
+                // do not consistently advance LastUpdate on GeneXus 18 U16. Include the
+                // parent identity so a move invalidates optimistic-concurrency tokens just
+                // like a normal content save. The token is intentionally opaque to clients.
+                string parentIdentity = "root";
+                try
+                {
+                    var parent = obj.Parent;
+                    if (parent != null)
+                    {
+                        try { parentIdentity = parent.Guid.ToString("N"); }
+                        catch { parentIdentity = parent.Name ?? "root"; }
+                    }
+                }
+                catch { }
+                return ticks + ":" + parentIdentity;
+            }
             catch { return null; }
         }
 

@@ -57,7 +57,7 @@ Known honest caveats (in-code): `genexus_gxserver` `lock` FilePath semantics + `
 | Patterns core | 🟡 | `genexus_apply_pattern` | Only `UpdateParentObject` of 9 `IPatternBuildProcess` hooks; no full build sequence |
 | WorkWithPlus settings/components | ⛔ BLOCKED | — | Build works; **persist blocked** — typed `AddComponent` never flushes to the element tree; WWP persistence obfuscated. See `project_wwp_settings_components_persist_blocked`. |
 | WWP instance apply/update (MSBuild) | 🟡 | `genexus_apply_pattern` | `WWP_UpdateInstance/UpdateAllInstances/ApplyAllInstances/GenerateSecurityPrograms` tasks |
-| Refactor / rename / impact | 🟡 | `genexus_refactor`, `analyze` | Hand-rolled over index edges; **Move object** to folder/module has no path |
+| Refactor / rename / impact | 🟡 | `genexus_refactor`, `analyze`, `genexus_properties action=move` | Refactor/impact remains hand-rolled over index edges; move is SDK-backed with full snapshot verification |
 | Properties (resolver-driven) | 🟡 | `genexus_properties` | Valid-values / visibility / readonly via `IResolverFactory` not surfaced |
 | Build / Specify / Generate | 🟡 | `genexus_lifecycle`, `edit_and_build` | Reflection into MsBuild tasks; native `SpecifierService`/`BuildDaemon` not used |
 | Deploy (Library / Azure / Cloud) | ❌ | — | `IDeploymentService.Deploy`, `LibraryDeployer.*`, `IAzureDeploymentService` |
@@ -128,7 +128,7 @@ Ranking = how much each blocks a real team from dropping the IDE. Not effort.
 
 11. **Native build daemon.** Replace reflection-into-MsBuild-tasks with `SpecifierService.{SpecifyAll,SpecifyObjects,RebuildArtifacts,CreateDatabase}` + `BuildDaemonClient*` for cleaner, cancelable builds.
 12. **Resolver-driven properties.** Surface valid-values / visibility / readonly via `IResolverFactory.{GetValuesResolver,GetVisibleResolver,GetReadOnlyResolver}` so agents get the same constrained property choices the IDE grid shows — not blind set.
-13. **Move object** to folder/module — no SDK method surfaced (IDE-tree-only via `KBObjectParentHelper`). Needs a dig; may require `ObjectNameResolver.Qualify` + re-parent + save.
+13. ~~**Move object** to folder/module~~ — shipped in v2.35.0 and hardened after U16 exposed destructive `SaveWithParent` behavior. It now prefers `EntityManager.UpdateParent`, snapshots and verifies every part, supports dry-run/concurrency, and rolls back divergence.
 14. **CI pipelines** from the Team Dev client (`IContinuousIntegrationService.RunPipeline/…`) — nice-to-have once Commit/Update land.
 15. **New-object templates catalog** (`ObjectDefinitionHelper.LoadDefinitionsFor`) to mirror the IDE "New Object" template picker.
 

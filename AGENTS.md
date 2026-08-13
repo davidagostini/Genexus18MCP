@@ -337,11 +337,19 @@ Objects **can** be placed into a Folder or Module through the tools — the same
 operation as KB Explorer drag-and-drop / right-click → Move in the IDE.
 
 - **Move an existing object:** `genexus_properties action=move name=<obj>
-  destination=<Folder or Module>`. The container kind is auto-detected; pass
+  destination=<Folder or Module>`. For a Module, `targetModule=<name>` is the
+  typed alias. The container kind is auto-detected; pass
   `destKind=Folder|Module` only to disambiguate a shared name. `dryRun=true`
-  previews `from` / `to` without writing.
-- **Write-back is verified.** The parent is re-read after the save, so a write
-  the SDK silently drops returns `MoveNotPersisted` rather than a false success.
+  previews `from` / `to`, preserved parts and hashes without writing or changing
+  the `versionToken`.
+- **Write-back is verified completely.** Pass the opaque `versionToken` from a
+  prior read as `baseVersion`. The operation snapshots every persisted part and
+  authored property, compares them inside the SDK transaction, then re-reads the
+  committed object. A dropped parent returns `MoveNotPersisted`; changed content
+  returns `MoveContentNotPreserved`; neither can report success. With
+  `rollbackOnFailure=true` (default), parent and content are restored and verified.
+- **No implicit lifecycle work.** Move never runs Specify, Generate, Build,
+  Rebuild, compilation, reorganization, execution, or tests.
 - **Create directly in a container:** `genexus_create … folder=<name>` or
   `module=<name>` creates the object in Root Module and then moves it, reporting
   the outcome under `placement`.
@@ -359,9 +367,10 @@ Create the containers themselves with `genexus_create type=Folder|Module`.
 > `Module` setters *do* read as empty stubs at the IL level — but only in the
 > facade/reference assembly. Decompiling that assembly is what produced the
 > earlier "placement is unsupported" verdict. The runtime persist goes through
-> `Artech.Udm.Framework.EntityManager.SaveWithParent` (see
-> `src/GxMcp.Worker/Helpers/ObjectMover.cs`, with `UpdateParent` and `KBObject.Save`
-> as fallbacks). Don't re-derive the old conclusion from a reference-assembly
+> `Artech.Udm.Framework.EntityManager.UpdateParent` (see
+> `src/GxMcp.Worker/Helpers/ObjectMover.cs`). `SaveWithParent` and `KBObject.Save`
+> are compatibility fallbacks guarded by full snapshot verification. Don't
+> re-derive the old conclusion from a reference-assembly
 > decompile.
 
 ### Control-bound events must be written AFTER the layout

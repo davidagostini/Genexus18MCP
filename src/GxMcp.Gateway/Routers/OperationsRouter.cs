@@ -1148,17 +1148,24 @@ namespace GxMcp.Gateway.Routers
 
             if (action.Equals("move", System.StringComparison.OrdinalIgnoreCase))
             {
+                string? targetModule = args?["targetModule"]?.ToString();
+                string? explicitDestination = args?["destination"]?.ToString();
                 return new
                 {
                     module = "Property",
                     action = "Move",
                     target = args?["name"]?.ToString(),
-                    destination = args?["destination"]?.ToString(),
+                    destination = explicitDestination ?? targetModule,
+                    targetModule,
                     folder = args?["folder"]?.ToString(),
                     module_ = args?["module"]?.ToString(),
                     destModule = args?["destModule"]?.ToString(),
-                    destKind = args?["destKind"]?.ToString(),
+                    destKind = args?["destKind"]?.ToString()
+                        ?? (string.IsNullOrWhiteSpace(explicitDestination)
+                            && !string.IsNullOrWhiteSpace(targetModule) ? "Module" : null),
                     dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                    baseVersion = args?["baseVersion"]?.ToString(),
+                    rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
                     type = args?["type"]?.ToString()
                 };
             }
