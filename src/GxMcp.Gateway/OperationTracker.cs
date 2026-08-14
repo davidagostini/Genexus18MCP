@@ -129,7 +129,7 @@ namespace GxMcp.Gateway
             metric.RegisterCompletion(elapsedMs, string.Equals(record.Status, "Failed", StringComparison.OrdinalIgnoreCase), record.WorkerPayload, reqBytes, respBytes);
         }
 
-        private static long SafeJsonLength(JToken token)
+        private static long SafeJsonLength(JToken? token)
         {
             if (token == null) return 0;
             try { return token.ToString(Newtonsoft.Json.Formatting.None).Length; }
@@ -196,7 +196,7 @@ namespace GxMcp.Gateway
         // (genexus_lifecycle action=status target=op:<id>) shows real liveness
         // instead of a frozen timestamp for the whole run. Optional phase/message
         // are surfaced for the poller. No-op once terminal.
-        public void TouchProgress(string operationId, string phase = null, string message = null)
+        public void TouchProgress(string operationId, string? phase = null, string? message = null)
         {
             if (string.IsNullOrWhiteSpace(operationId)) return;
             if (!_operations.TryGetValue(operationId, out var record)) return;
@@ -461,7 +461,7 @@ namespace GxMcp.Gateway
             {
                 if (!string.IsNullOrWhiteSpace(targetName))
                 {
-                    string recTarget = rec.ToolArguments?["target"]?.ToString()
+                    string? recTarget = rec.ToolArguments?["target"]?.ToString()
                                    ?? rec.ToolArguments?["name"]?.ToString();
                     if (string.IsNullOrEmpty(recTarget)) continue;
                     if (!string.Equals(recTarget, targetName, StringComparison.OrdinalIgnoreCase)) continue;
@@ -516,7 +516,7 @@ namespace GxMcp.Gateway
                 if (!watchTools.Contains(rec.ToolName)) continue;
                 if (!string.IsNullOrWhiteSpace(targetName))
                 {
-                    string recTarget = rec.ToolArguments?["target"]?.ToString()
+                    string? recTarget = rec.ToolArguments?["target"]?.ToString()
                                    ?? rec.ToolArguments?["name"]?.ToString();
                     if (string.IsNullOrEmpty(recTarget)) continue;
                     if (!string.Equals(recTarget, targetName, StringComparison.OrdinalIgnoreCase)) continue;
@@ -607,7 +607,7 @@ namespace GxMcp.Gateway
 
         // Test seam: record a tool invocation synthetically (no worker round-trip required).
         // Used by HeatmapBlockTests and ExecutionHistoryTests to keep them hermetic.
-        internal void RecordSyntheticCompletion(string toolName, long elapsedMs, bool isError, JObject toolArguments = null)
+        internal void RecordSyntheticCompletion(string toolName, long elapsedMs, bool isError, JObject? toolArguments = null)
         {
             string requestId = Guid.NewGuid().ToString("N");
             string opId = StartOperation(requestId, toolName, toolArguments, Guid.NewGuid().ToString("N"));
@@ -649,8 +649,8 @@ namespace GxMcp.Gateway
                 };
                 // Item 75: tokensIn / tokensOut percentiles, omitted when no
                 // payload was ever observed (cancellation-only history).
-                JToken tIn = j["tokensIn"];
-                JToken tOut = j["tokensOut"];
+                JToken? tIn = j["tokensIn"];
+                JToken? tOut = j["tokensOut"];
                 if (tIn is JObject) entry["tokensIn"] = tIn;
                 if (tOut is JObject) entry["tokensOut"] = tOut;
                 toolsObj[kvp.Key] = entry;

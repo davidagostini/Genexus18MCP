@@ -36,10 +36,10 @@ namespace GxMcp.Gateway
         public static TimeSpan DefaultTtl { get; } = TimeSpan.FromSeconds(60);
 
         private readonly object _envLock = new object();
-        private string _cachedEnv;
-        private string _cachedEnvVersion;
+        private string? _cachedEnv;
+        private string? _cachedEnvVersion;
         private DateTime _cachedAtUtc = DateTime.MinValue;
-        private Func<(string env, string version)> _envFetcher;
+        private Func<(string env, string version)>? _envFetcher;
         private TimeSpan _ttl = DefaultTtl;
 
         /// <summary>
@@ -59,7 +59,7 @@ namespace GxMcp.Gateway
         /// Cache-hit on read within TTL; cache-miss pays one worker round-trip.
         /// Returns <c>null</c> when no fetcher has been wired (degraded mode).
         /// </summary>
-        public string ActiveEnvironment
+        public string? ActiveEnvironment
         {
             get
             {
@@ -68,7 +68,7 @@ namespace GxMcp.Gateway
             }
         }
 
-        public string ActiveEnvironmentVersion
+        public string? ActiveEnvironmentVersion
         {
             get
             {
@@ -101,7 +101,7 @@ namespace GxMcp.Gateway
 
         private void EnsureFresh()
         {
-            Func<(string env, string version)> fetcher;
+            Func<(string env, string version)>? fetcher;
             lock (_envLock)
             {
                 if (_cachedAtUtc != DateTime.MinValue && (DateTime.UtcNow - _cachedAtUtc) < _ttl)
@@ -126,10 +126,10 @@ namespace GxMcp.Gateway
         // Record-style equality preserved so existing call sites comparing two
         // KbHandle values keep working. Compare on Alias only (the path may
         // differ in case/trailing slash for the same logical KB).
-        public bool Equals(KbHandle other) =>
+        public bool Equals(KbHandle? other) =>
             other != null && string.Equals(NormalizedAlias, other.NormalizedAlias, StringComparison.Ordinal);
 
-        public override bool Equals(object obj) => Equals(obj as KbHandle);
+        public override bool Equals(object? obj) => Equals(obj as KbHandle);
 
         public override int GetHashCode() =>
             NormalizedAlias?.GetHashCode() ?? 0;

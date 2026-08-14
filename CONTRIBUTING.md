@@ -39,10 +39,10 @@ If you only touched `cli/`, `npm test` is enough. If you touched the Gateway or 
 CI (`.github/workflows/ci.yml`) also runs steps not in the dev loop above, so a green local run can still hit CI-only failures. To reproduce them locally:
 
 ```pwsh
-# Coverage collection + threshold gate (60% line rate), exactly as CI runs it
+# Coverage collection + component thresholds, exactly as CI runs it
 $coverageRoot = Join-Path $env:TEMP 'gx-coverage-pr'
 .\scripts\coverage\collect.ps1 -OutputRoot $coverageRoot
-.\scripts\coverage\assert-threshold.ps1 -CoverageRoot $coverageRoot -MinLineRatePercent 60
+.\scripts\coverage\assert-threshold.ps1 -CoverageRoot $coverageRoot -MinLineRatePercent 60 -MinWorkerLineRatePercent 45
 
 # LLM tool-contract smoke
 .\scripts\mcp_llm_contract_smoke.ps1
@@ -63,7 +63,7 @@ $env:GX_PATH = 'C:\GeneXus\GeneXus18U16'
 
 An explicitly configured path that does not contain `Artech.Architecture.Common.dll` fails immediately instead of silently skipping Worker coverage. When no path is configured and the default installation is absent, the script drops a `worker.skipped.txt` marker and `assert-threshold.ps1` enforces only the Gateway floor — the same behavior as a GitHub-hosted runner.
 
-Do not add coverage exclusions merely to satisfy the floor. Add tests that execute the affected contract, run the complete command above, and confirm that `Gateway line-rate` (and `Worker line-rate` when an SDK is configured) is at least 60% before pushing.
+Do not add coverage exclusions merely to satisfy a floor. Add tests that execute the affected contract, run the complete command above, and confirm the current component baselines before pushing: at least 60% for Gateway and 45% for Worker when an SDK is configured. Raise each floor as its exercised surface grows; never lower it or skip tests to make a change pass.
 
 If a tool schema or description changed, update and verify the discovery golden before running coverage:
 

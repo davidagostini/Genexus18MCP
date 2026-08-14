@@ -57,7 +57,7 @@ export class GxCodeLensProvider implements vscode.CodeLensProvider {
                 command: 'gx.showReferences',
                 arguments: [objName]
             };
-        } catch (e) {
+        } catch {
             codeLens.command = {
                 title: "0 references",
                 command: ""

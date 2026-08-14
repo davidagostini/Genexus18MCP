@@ -153,7 +153,7 @@ function isDisabled(opts) {
     return false;
 }
 
-function maybePrintCachedBanner(opts) {
+function maybePrintCachedBanner(_opts) {
     const current = getPackageVersion();
     if (!current) return;
     const cache = readCache();

@@ -91,16 +91,6 @@ function getErrorMessage(error: unknown): string {
   return String(error ?? "");
 }
 
-function isSearchIndexUnavailable(error: unknown): boolean {
-  const message = getErrorMessage(error).toLowerCase();
-  return message.includes("index missing") || message.includes("index empty");
-}
-
-function isRootBrowseEmpty(error: unknown): boolean {
-  const message = getErrorMessage(error).toLowerCase();
-  return message.includes("root browse returned 0 objects");
-}
-
 function isGatewayTimeout(error: unknown): boolean {
   const message = getErrorMessage(error).toLowerCase();
   return message.includes("timeout gateway");
@@ -582,7 +572,7 @@ export async function addKbFolder(
           DEFAULT_STATUS_BAR_TIMEOUT,
         );
         return; // Success, exit retry loop
-      } catch (e) {
+      } catch {
         Logger.warn(
           `[Nexus IDE] Mirror mount point not ready yet (Attempt ${attempt}/${maxRetries}). Retrying in ${delayMs}ms...`,
         );

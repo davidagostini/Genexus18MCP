@@ -36,4 +36,15 @@
     </Reference>
     <Reference Include="Microsoft.Build.Framework" />
   </ItemGroup>
+
+  <Target Name="CopyGeneXusSdkDependencies" AfterTargets="Build" Condition="Exists('$(GX_PATH)\Artech.Architecture.Common.dll')">
+    <ItemGroup>
+      <GeneXusSdkDependency Include="$(GX_PATH)\*.dll;$(GX_PATH)\Packages\*.dll" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(GeneXusSdkDependency)"
+      DestinationFolder="$(TargetDir)"
+      SkipUnchangedFiles="true"
+      Condition="!Exists('$(TargetDir)%(GeneXusSdkDependency.Filename)%(GeneXusSdkDependency.Extension)')" />
+  </Target>
 </Project>

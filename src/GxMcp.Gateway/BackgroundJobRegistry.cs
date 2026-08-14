@@ -105,7 +105,7 @@ namespace GxMcp.Gateway
             if (shouldRecordDuration)
             {
                 int elapsed = (int)Math.Round((completedAt - startedAt).TotalSeconds);
-                RecordBuildDuration(job.Kind, elapsed);
+                RecordBuildDuration(job.Kind!, elapsed);
             }
             DisposeCts(jobId);
         }
@@ -241,7 +241,7 @@ namespace GxMcp.Gateway
             if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("path required", nameof(path));
             try
             {
-                string dir = Path.GetDirectoryName(path);
+                string? dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 var list = _jobs.Values.ToList();
                 string json = JsonConvert.SerializeObject(list, Formatting.Indented);
