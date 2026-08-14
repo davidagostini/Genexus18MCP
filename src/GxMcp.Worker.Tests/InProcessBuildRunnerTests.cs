@@ -188,6 +188,14 @@ namespace GxMcp.Worker.Tests
             }
         }
 
+        [Fact]
+        public void BuildWithTheseOnly_Reflection_FieldResolved()
+        {
+            var field = typeof(InProcessBuildRunner).GetField(
+                "_miBuildWithTheseOnly", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(field);
+        }
+
         [LiveKbFact]
         public void TryResolveTypes_finds_GeneXus_tasks_when_SDK_installed()
         {

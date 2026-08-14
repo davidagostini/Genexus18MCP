@@ -1728,8 +1728,8 @@ namespace GxMcp.Worker.Services
                 bool fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false;
                 // A2: deploy=true forces the full IdeWebBuildAndDeploy (copy to web/bin)
                 // so the built object is runnable, not just compiled.
-                bool fullDeploy = args?["deploy"]?.ToObject<bool?>() ?? false;
-                bool buildDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
+                bool fullDeploy = (args?["deploy"]?.ToObject<bool?>() ?? false) || (request["deploy"]?.ToObject<bool?>() ?? false);
+                bool buildDryRun = (request["dryRun"]?.ToObject<bool?>() ?? false) || (args?["dryRun"]?.ToObject<bool?>() ?? false);
                 if (buildDryRun)
                     return _buildService.BuildDryRun(action, target, includeCallees, cap);
                 return _buildService.Build(action, target, includeCallees, cap, skipFullDeploy, notifyOnFailure, fastIncremental, fullDeploy);

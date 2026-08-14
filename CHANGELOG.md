@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **Multi-target batched build via `BuildWithTheseOnly` on `includeCallees=none`.** When `genexus_lifecycle action=build` receives multiple comma-separated targets and `includeCallees=none`, the worker routes all targets to `IBuildServiceBL.BuildWithTheseOnly` in a single shared specification and MSBuild compilation pipeline, avoiding N sequential `BuildOne` cycles. Fixes [#96](https://github.com/lennix1337/Genexus18MCP/issues/96).
+
+### Fixed
+
+- **Lifecycle router forwards `dryRun` and `deploy` parameters.** `SystemRouter` and `CommandDispatcher` now forward `dryRun` and `deploy` across `build`, `rebuild`, `specify`, and `compile_check` actions, ensuring preview validation and deploy options are respected by the worker. Fixes [#96](https://github.com/lennix1337/Genexus18MCP/issues/96).
+- **`SdkSurfaceProbe` surfaces warning when GeneXus path does not resolve.** Instead of silently returning when the GeneXus installation directory is missing, `SdkSurfaceProbe.TryPreloadSdkAssemblies` now appends an explicit warning to `result.Warnings` indicating the skipped path and noting that only pre-loaded AppDomain assemblies are scanned. Fixes [#94](https://github.com/lennix1337/Genexus18MCP/issues/94).
+- **Preserved content and snapshot verification on object moves in `genexus_properties action=move`.** Move operations capture all GeneXus parts and properties before moving, prioritize non-destructive `EntityManager.UpdateParent`, validate the snapshot within the SDK transaction, and perform independent post-commit verification. Thanks to [@davidagostini](https://github.com/davidagostini) — see PR [#95](https://github.com/lennix1337/Genexus18MCP/pull/95).
+
+### Internal
+
+- **Worker local test isolation and coverage strengthening.** Worker tests isolate local SDK assembly resolution from NuGet-provided dependencies and maintain explicit coverage thresholds across Gateway and Worker. Thanks to [@williamgarciadev](https://github.com/williamgarciadev), [@danielkrueger](https://github.com/danielkrueger), and [@davidagostini](https://github.com/davidagostini) — see PR [#93](https://github.com/lennix1337/Genexus18MCP/pull/93).
+
 ## v2.41.1 - 2026-08-13
 
 ### Changed

@@ -377,7 +377,11 @@ namespace GxMcp.Worker.Services
                     ?? Environment.GetEnvironmentVariable("GX_PATH")
                     ?? @"C:\Program Files (x86)\GeneXus\GeneXus18";
 
-                if (!Directory.Exists(gxPath)) return;
+                if (!Directory.Exists(gxPath))
+                {
+                    result.Warnings.Add("SDK preloading skipped: GeneXus path not found (" + gxPath + "). Probe reflects only already-loaded assemblies.");
+                    return;
+                }
 
                 var dirsToScan = new List<string> { gxPath };
                 string packagesDir = Path.Combine(gxPath, "Packages");

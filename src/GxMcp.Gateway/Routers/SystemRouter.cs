@@ -25,25 +25,43 @@ namespace GxMcp.Gateway.Routers
                                     module = "Build",
                                     action = "CompileCheck",
                                     target = target,
-                                    buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>()
+                                    buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
+                                    dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                                    deploy = args?["deploy"]?.ToObject<bool?>() ?? false
                                 };
                             }
                             return new {
+                                module = "Build",
+                                action = "Build",
+                                target = target,
+                                includeCallees = args?["includeCallees"]?.ToString(),
+                                buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
+                                // Item 72 (friction 2026-05-22) — Slack/Discord webhook on terminal Failed state.
+                                notifyOnFailure = args?["notifyOnFailure"]?.ToString(),
+                                skipFullDeploy = args?["skipFullDeploy"]?.ToObject<bool?>() ?? false,
+                                // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental opt-in.
+                                fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false,
+                                dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                                deploy = args?["deploy"]?.ToObject<bool?>() ?? false
+                            };
+                        case "cancel": return new { module = "Build", action = "Cancel", target = target };
+                        // issue #28 item 12: spec-check only — Spec+Gen, no Compile/deploy.
+                        case "specify": return new {
                             module = "Build",
-                            action = "Build",
+                            action = "Specify",
+                            target = target,
+                            buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                        };
+                        case "rebuild": return new {
+                            module = "Build",
+                            action = "RebuildAll",
                             target = target,
                             includeCallees = args?["includeCallees"]?.ToString(),
                             buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
-                            // Item 72 (friction 2026-05-22) — Slack/Discord webhook on terminal Failed state.
-                            notifyOnFailure = args?["notifyOnFailure"]?.ToString(),
-                            skipFullDeploy = args?["skipFullDeploy"]?.ToObject<bool?>() ?? false,
-                            // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental opt-in.
-                            fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                            deploy = args?["deploy"]?.ToObject<bool?>() ?? false
                         };
-                        case "cancel": return new { module = "Build", action = "Cancel", target = target };
-                        // issue #28 item 12: spec-check only — Spec+Gen, no Compile/deploy.
-                        case "specify": return new { module = "Build", action = "Specify", target = target };
-                        case "rebuild": return new { module = "Build", action = "RebuildAll", target = target };
                         case "reorg": return new { module = "Build", action = "Reorg", target = target };
                         // Item 43 (friction 2026-05-22) — DDL diff/preview pre-reorg.
                         case "reorg_preview": return new { module = "Build", action = "ReorgPreview", target = target };
