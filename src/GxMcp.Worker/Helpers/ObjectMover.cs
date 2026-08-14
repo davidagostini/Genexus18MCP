@@ -53,21 +53,24 @@ namespace GxMcp.Worker.Helpers
 
             object prefs = BuildSavePreferences();
 
-            // 3a. SaveWithParent(entity, parentEntity[, prefs]) — preferred: parent explicit.
-            var swp = FindMethod(emType, "SaveWithParent", obj, container);
-            if (swp != null)
-            {
-                var inv = InvokeSave(emType, swp, BuildArgs(swp, obj, container, prefs));
-                if (inv == null) return new MoveResult { Ok = true, Strategy = "EntityManager.SaveWithParent" };
-                // fall through to try UpdateParent if SaveWithParent threw
-            }
-
-            // 3b. UpdateParent(entity[, prefs]) — relies on the parent set in step 1.
+            // 3a. UpdateParent changes only placement metadata. Prefer it over
+            // SaveWithParent: GeneXus 18 U16 can rebuild default Procedure parts during
+            // SaveWithParent, emptying Source/Rules/Variables on a freshly-created object.
             var up = FindMethod(emType, "UpdateParent", obj);
             if (up != null)
             {
                 var inv = InvokeSave(emType, up, BuildArgs(up, obj, null, prefs));
                 if (inv == null) return new MoveResult { Ok = true, Strategy = "EntityManager.UpdateParent" };
+            }
+
+            // 3b. SaveWithParent(entity, parentEntity[, prefs]) — compatibility fallback
+            // for SDK builds without a usable UpdateParent overload. The caller snapshots
+            // and verifies every part, so any destructive normalization is rejected.
+            var swp = FindMethod(emType, "SaveWithParent", obj, container);
+            if (swp != null)
+            {
+                var inv = InvokeSave(emType, swp, BuildArgs(swp, obj, container, prefs));
+                if (inv == null) return new MoveResult { Ok = true, Strategy = "EntityManager.SaveWithParent" };
             }
 
             // 3c. Last resort: plain Save on the object (some SDK builds persist the

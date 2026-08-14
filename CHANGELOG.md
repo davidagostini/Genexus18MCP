@@ -11,6 +11,10 @@
 - **Event-driven STA message pump in Worker dispatching.** Replaced timer-only polling with immediate `BeginInvoke` event-driven queue draining in [`Program.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Program.cs), reducing internal dispatch latency from 15ms to 0ms.
 - **Deepened mutation and patch subsystem inside `WriteService`.** Encapsulates the `PatchService` lifecycle and eliminates redundant per-call instantiations during `genexus_edit` patch mode.
 
+### Fixed
+
+- **`genexus_properties action=move` now preserves and verifies the complete object.** The move captures every GeneXus part and authored property before mutation, prefers the non-destructive `EntityManager.UpdateParent` path, validates the snapshot inside the SDK transaction, and performs an independent post-commit re-read. `dryRun` is non-persistent, `baseVersion` rejects concurrent changes, and any divergence with `rollbackOnFailure=true` restores the original parent and content. Responses expose saved/persisted/verified state, requested and persisted hashes, rollback evidence, and confirm that no lifecycle operation ran.
+
 ### Internal
 
 - **Testes locais do Worker agora carregam o SDK GeneXus configurado sem preparação manual.** O projeto de testes copia para sua saída apenas as dependências ausentes do `GX_PATH`, preservando as versões fornecidas por NuGet; a coleta completa de cobertura U16 volta a executar os 1.912 cenários. Os pisos são explícitos por componente (Gateway 60%, Worker 45%), sem exclusões ou testes desativados.

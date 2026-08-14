@@ -2503,7 +2503,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or update GeneXus object properties. action=get|set|move. move places the object into a Folder or Module — pass destination=<Folder or Module name> (add destKind=Folder|Module only to disambiguate a shared name); re-read to confirm, so a no-op returns MoveNotPersisted not a false success. (To create an object directly in a folder, use genexus_create folder=/module=.) Description is the title-bar text when a WebPanel/Popup opens via .Popup(). Uncertain a property exists or its values? → resources/read uri=genexus://kb/skills/navigation (CallProtocol does NOT apply to Web/SD Panels; 'Modal' is not a value). Use genexus_layout set_property for layout control properties.",
+      "description": "Read/update object properties. action=get|set|move. move snapshots every persisted part, checks baseVersion, verifies inside the SDK transaction and after commit, and rolls back divergence. Use destination for a Folder/Module or targetModule for a Module; destKind disambiguates equal names. dryRun does not save or change the token. Move never runs lifecycle, compilation, execution, or tests. Description is the WebPanel/Popup title-bar text. Use genexus_layout set_property for layout controls.",
       "inputSchema": {
         "examples": [
           {
@@ -2512,8 +2512,12 @@
           },
           {
             "action": "move",
-            "destination": "Lixeira",
-            "name": "ZeferinoMonstrao"
+            "baseVersion": "<versionToken from genexus_read>",
+            "dryRun": true,
+            "name": "InvoiceHelper",
+            "rollbackOnFailure": true,
+            "targetModule": "operacional",
+            "type": "Procedure"
           }
         ],
         "properties": {
@@ -2523,6 +2527,10 @@
               "set",
               "move"
             ],
+            "type": "string"
+          },
+          "baseVersion": {
+            "description": "move: opaque optimistic concurrency token returned by a prior read.",
             "type": "string"
           },
           "control": {
@@ -2542,7 +2550,7 @@
             "type": "string"
           },
           "dryRun": {
-            "description": "move: preview from/to without persisting.",
+            "description": "move: preview from/to and preserved parts without persisting.",
             "type": "boolean"
           },
           "kb": {
@@ -2556,8 +2564,16 @@
             "type": "string"
           },
           "rollbackOnFailure": {
-            "description": "Issue #60: with action=set and validationMode=specify, restore the pre-write state when the specify pass reports errors. Property writes have no pre-write snapshot, so rollback reports rolledBack=false (the object keeps the new value) when spec fails.",
+            "description": "move: attempt compensating snapshot restoration if the SDK transaction rollback is insufficient (default true). set+validationMode=specify: request rollback after validation failure.",
             "type": "boolean"
+          },
+          "targetModule": {
+            "description": "move: typed alias for a Module destination.",
+            "type": "string"
+          },
+          "type": {
+            "description": "Optional object type disambiguator.",
+            "type": "string"
           },
           "validationMode": {
             "description": "Issue #60: with action=set, run the inline Specify pass (Spec+Gen, no Compile) after the property write, returning structured spc*/gen* diagnostics in the same call. Combines with rollbackOnFailure.",

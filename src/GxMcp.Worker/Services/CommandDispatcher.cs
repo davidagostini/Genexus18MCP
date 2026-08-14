@@ -1839,13 +1839,16 @@ namespace GxMcp.Worker.Services
                 string destFolder = args?["folder"]?.ToString();
                 string destModule = args?["destModule"]?.ToString() ?? args?["module_"]?.ToString();
                 string destination = args?["destination"]?.ToString()
+                    ?? args?["targetModule"]?.ToString()
                     ?? (!string.IsNullOrWhiteSpace(destFolder) ? destFolder : destModule)
                     ?? args?["value"]?.ToString();
                 string destKind = args?["destKind"]?.ToString()
                     ?? (!string.IsNullOrWhiteSpace(destFolder) ? "Folder"
                         : !string.IsNullOrWhiteSpace(destModule) ? "Module" : null);
                 bool moveDry = args?["dryRun"]?.ToObject<bool?>() ?? false;
-                return _objectService.MoveObject(target, destination, propType, destKind, moveDry);
+                string baseVersion = args?["baseVersion"]?.ToString();
+                bool rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
+                return _objectService.MoveObject(target, destination, propType, destKind, moveDry, baseVersion, rollbackOnFailure);
             }
             if (action == "Set")
             {
