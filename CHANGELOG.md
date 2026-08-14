@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.41.2 - 2026-08-14
+
 ### Added
 
 - **Multi-target batched build via `BuildWithTheseOnly` on `includeCallees=none`.** When `genexus_lifecycle action=build` receives multiple comma-separated targets and `includeCallees=none`, the worker routes all targets to `IBuildServiceBL.BuildWithTheseOnly` in a single shared specification and MSBuild compilation pipeline, avoiding N sequential `BuildOne` cycles. Fixes [#96](https://github.com/lennix1337/Genexus18MCP/issues/96).
