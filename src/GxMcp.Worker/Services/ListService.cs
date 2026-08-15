@@ -713,14 +713,7 @@ namespace GxMcp.Worker.Services
             foreach (var item in items.Cast<JObject>())
             {
                 var type = item["type"]?.ToString() ?? "Unknown";
-                if (typeGrouping.ContainsKey(type))
-                {
-                    typeGrouping[type]++;
-                }
-                else
-                {
-                    typeGrouping[type] = 1;
-                }
+                typeGrouping[type] = typeGrouping.TryGetValue(type, out int c) ? c + 1 : 1;
             }
 
             var byTypeObj = new JObject();
@@ -1004,10 +997,14 @@ namespace GxMcp.Worker.Services
             return string.Join(", ", parts) + ".";
         }
 
+        private static readonly HashSet<string> _likelyTypes = new HashSet<string>(
+            new[] { "Folder", "Module", "Procedure", "Transaction", "WebPanel", "Attribute", "Table", "DataView", "Domain", "WorkPanel", "ExternalObject", "Menu", "SDPanel", "DataProvider", "SDT", "StructuredDataType", "Image" },
+            StringComparer.OrdinalIgnoreCase);
+
         private bool IsLikelyType(string s)
         {
-            var types = new[] { "Folder", "Module", "Procedure", "Transaction", "WebPanel", "Attribute", "Table", "DataView", "Domain", "WorkPanel", "ExternalObject", "Menu", "SDPanel", "DataProvider", "SDT", "StructuredDataType", "Image" };
-            return types.Any(t => string.Equals(t, s, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(s)) return false;
+            return _likelyTypes.Contains(s);
         }
 
         private int GetTypeSortBucket(string type)

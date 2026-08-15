@@ -19,6 +19,30 @@ namespace GxMcp.Gateway
                                       string.Equals(readPart, "PatternInstance", StringComparison.OrdinalIgnoreCase) ||
                                       string.Equals(readPart, "PatternVirtual", StringComparison.OrdinalIgnoreCase));
 
+            // PERFORMANCE (G-T1): fast structural pre-check to avoid full tree serialization
+            // on obviously small responses (whoami, status, inspect, short reads, mutations).
+            if (result is JObject quickObj)
+            {
+                bool mayExceedBudget = false;
+                foreach (var prop in quickObj.Properties())
+                {
+                    if (prop.Value is JValue jv && jv.Value is string s && s.Length > (isXmlMetadataRead ? 100000 : 15000))
+                    {
+                        mayExceedBudget = true;
+                        break;
+                    }
+                    if (prop.Value is JArray jarr && jarr.Count > 10)
+                    {
+                        mayExceedBudget = true;
+                        break;
+                    }
+                }
+                if (!mayExceedBudget)
+                {
+                    return result;
+                }
+            }
+
             string raw = result.ToString(Formatting.None);
             // issue #25 #6: the worker already paginates genexus_read to ~200 lines /
             // 16 KB and reports it via `isTruncatedByWorker` + offset/limit/
@@ -393,43 +417,19 @@ namespace GxMcp.Gateway
             // legacy clients and omit structuredContent on tool errors.
             if (!isError && (axiPayload.Type == JTokenType.Object || axiPayload.Type == JTokenType.Array))
             {
-                result["structuredContent"] = axiPayload.DeepClone();
+                result["structuredContent"] = axiPayload;
             }
             return result;
         }
 
         private static JToken NormalizeToolPayloadForAxi(JToken? payload, string toolName, JObject? toolArgs, bool isError)
         {
-            JObject sourceObj;
-            if (payload is JArray arrayPayload)
-            {
-                sourceObj = new JObject
-                {
-                    ["results"] = arrayPayload.DeepClone()
-                };
-            }
-            else if (payload is JObject objPayload)
-            {
-                sourceObj = objPayload;
-            }
-            else
-            {
-                return payload ?? JValue.CreateNull();
-            }
-
-            var obj = (JObject)sourceObj.DeepClone();
-            // Per-response meta is intentionally lean: `schemaVersion` is emitted
-            // once in the `initialize` handshake (`_meta.schemaVersion`) and the
-            // client already knows which tool it called, so neither field is
-            // repeated per response (~60B/response saved). Only emit `meta` when
-            // a real signal (truncated/fields/totalByType/…) gets attached below.
-            var meta = obj["meta"] as JObject ?? new JObject();
             HashSet<string>? requestedFields = ParseRequestedFields(toolArgs);
             // Friction 2026-05-22 #64: projection=minimal|standard|verbose lets the
             // agent opt into a smaller or larger field set without having to enumerate
             // fields[]. Resolves to a HashSet that overrides the axiCompact default —
             // explicit fields[] still wins (highest specificity).
-            string projection = toolArgs?["projection"]?.ToString();
+            string? projection = toolArgs?["projection"]?.ToString();
             bool verboseRequested = !string.IsNullOrWhiteSpace(projection)
                 && string.Equals(projection.Trim(), "verbose", StringComparison.OrdinalIgnoreCase);
             if (requestedFields == null && !string.IsNullOrWhiteSpace(projection))
@@ -443,6 +443,61 @@ namespace GxMcp.Gateway
             {
                 requestedFields = GetDefaultCompactFields(toolName);
             }
+
+            bool shouldProject = requestedFields != null && requestedFields.Count > 0 && ShouldProjectFieldsForTool(toolName);
+
+            string[] collectionKeys = {
+                "results", "objects", "items", "tools", "checks", "entries", "nodes", "controls",
+                // Additional primary-collection keys used by non-search tools:
+                "endpoints", "history", "snapshots", "versions", "modules",
+                "pending", "ignored", "conflicts", "targets", "pipelines"
+            };
+
+            JObject obj;
+            string? matchedKey = null;
+
+            if (payload is JArray arrayPayload)
+            {
+                matchedKey = "results";
+                obj = new JObject
+                {
+                    ["results"] = shouldProject ? ProjectArrayItems(arrayPayload, requestedFields!) : arrayPayload.DeepClone()
+                };
+            }
+            else if (payload is JObject objPayload)
+            {
+                matchedKey = collectionKeys.FirstOrDefault(k => objPayload[k] is JArray);
+                if (shouldProject && matchedKey != null)
+                {
+                    obj = new JObject();
+                    foreach (var prop in objPayload.Properties())
+                    {
+                        if (string.Equals(prop.Name, matchedKey, StringComparison.Ordinal))
+                        {
+                            obj[prop.Name] = ProjectArrayItems((JArray)prop.Value, requestedFields!);
+                        }
+                        else
+                        {
+                            obj[prop.Name] = prop.Value.DeepClone();
+                        }
+                    }
+                }
+                else
+                {
+                    obj = (JObject)objPayload.DeepClone();
+                }
+            }
+            else
+            {
+                return payload ?? JValue.CreateNull();
+            }
+
+            // Per-response meta is intentionally lean: `schemaVersion` is emitted
+            // once in the `initialize` handshake (`_meta.schemaVersion`) and the
+            // client already knows which tool it called, so neither field is
+            // repeated per response (~60B/response saved). Only emit `meta` when
+            // a real signal (truncated/fields/totalByType/…) gets attached below.
+            var meta = obj["meta"] as JObject ?? new JObject();
 
             if (obj["isTruncated"]?.Value<bool>() == true)
             {
@@ -470,19 +525,11 @@ namespace GxMcp.Gateway
                 obj["noChange"] = true;
             }
 
-            string[] collectionKeys = {
-                "results", "objects", "items", "tools", "checks", "entries", "nodes", "controls",
-                // Additional primary-collection keys used by non-search tools:
-                "endpoints", "history", "snapshots", "versions", "modules",
-                "pending", "ignored", "conflicts", "targets", "pipelines"
-            };
-
             // Where the collection lives: top-level first (search tools), then inside the
             // canonical `result` object (McpResponse.Ok producers). Deterministic lookup —
             // never auto-detect "the sole array property" (would wrongly pick up per-row
             // sub-arrays like `endpoints[i].parms`).
             JObject collectionHost = obj;
-            string? matchedKey = collectionKeys.FirstOrDefault(k => obj[k] is JArray);
             if (matchedKey == null && obj["result"] is JObject resultObj)
             {
                 matchedKey = collectionKeys.FirstOrDefault(k => resultObj[k] is JArray);
@@ -496,14 +543,9 @@ namespace GxMcp.Gateway
             {
                 var arr = (JArray)collectionHost[matchedKey]!;
 
-                if (collectionHost == obj &&
-                    requestedFields != null &&
-                    requestedFields.Count > 0 &&
-                    ShouldProjectFieldsForTool(toolName))
+                if (collectionHost == obj && shouldProject)
                 {
-                    obj[matchedKey] = ProjectArrayItems(arr, requestedFields);
-                    meta["fields"] = new JArray(requestedFields.OrderBy(field => field, StringComparer.OrdinalIgnoreCase));
-                    arr = (JArray)obj[matchedKey]!;
+                    meta["fields"] = new JArray(requestedFields!.OrderBy(field => field, StringComparer.OrdinalIgnoreCase));
                 }
 
                 if (meta["totalByType"] == null)
@@ -632,20 +674,16 @@ namespace GxMcp.Gateway
         private static JObject BuildTotalsByType(JArray arr)
         {
             var totals = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var row in arr.OfType<JObject>())
+            foreach (var row in arr)
             {
-                string type = row["type"]?.ToString() ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(type))
+                if (row is JObject rowObj)
                 {
-                    continue;
+                    if (rowObj.TryGetValue("type", StringComparison.OrdinalIgnoreCase, out var typeTok) &&
+                        typeTok is JValue jv && jv.Value is string s && !string.IsNullOrWhiteSpace(s))
+                    {
+                        totals[s] = totals.TryGetValue(s, out int count) ? count + 1 : 1;
+                    }
                 }
-
-                if (!totals.ContainsKey(type))
-                {
-                    totals[type] = 0;
-                }
-
-                totals[type] += 1;
             }
 
             var outObj = new JObject();
@@ -669,11 +707,11 @@ namespace GxMcp.Gateway
                 }
 
                 var outRow = new JObject();
-                foreach (var field in fields)
+                foreach (var prop in rowObj.Properties())
                 {
-                    if (rowObj.TryGetValue(field, StringComparison.OrdinalIgnoreCase, out var value))
+                    if (fields.Contains(prop.Name))
                     {
-                        outRow[field] = value.DeepClone();
+                        outRow[prop.Name] = prop.Value.DeepClone();
                     }
                 }
 

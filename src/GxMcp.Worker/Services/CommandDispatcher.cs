@@ -517,7 +517,7 @@ namespace GxMcp.Worker.Services
                     // args as before; a null result means "no matching action for this method"
                     // (equivalent to the old per-case `break;`) and falls through to the shared
                     // UnknownMethodOrAction response below.
-                    string methodKey = method?.ToLower() ?? string.Empty;
+                    string methodKey = method ?? string.Empty;
                     if (_commandTable.TryGetValue(methodKey, out var handler))
                     {
                         string handlerResult = handler(request, method, action, target, payload, args);

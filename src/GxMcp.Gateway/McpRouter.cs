@@ -1246,33 +1246,37 @@ namespace GxMcp.Gateway
             out string newToolName,
             out JObject newArgs)
         {
-            newArgs = args is null ? new JObject() : (JObject)args.DeepClone();
-
             switch (toolName)
             {
                 // Umbrella: genexus_browser (smoke|a11y|wcag|capture|cross|preview).
                 case "genexus_smoke_test":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "smoke";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_a11y_audit":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "a11y";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_wcag_check":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "wcag";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_browser_capture":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "capture";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_cross_browser":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "cross";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_preview":
                 {
+                    newArgs = CloneArgs(args);
                     // Preview's old sub-action (render|run) becomes the umbrella's `mode`.
                     var sub = newArgs["action"]?.ToString();
                     newArgs["mode"] = string.Equals(sub, "run", StringComparison.OrdinalIgnoreCase) ? "run" : "render";
@@ -1284,6 +1288,7 @@ namespace GxMcp.Gateway
                 // Umbrella: genexus_db (drift_*|optimize_*|sql_*|sample_data|types_*|translations_import).
                 case "genexus_db_drift":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString();
                     newArgs["action"] = string.Equals(sub, "report", StringComparison.OrdinalIgnoreCase) ? "drift_report" : "drift_check";
                     newToolName = "genexus_db";
@@ -1291,6 +1296,7 @@ namespace GxMcp.Gateway
                 }
                 case "genexus_db_optimize":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1303,6 +1309,7 @@ namespace GxMcp.Gateway
                 }
                 case "genexus_sql":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub == "navigation" ? "sql_navigation" : "sql_ddl";
                     newToolName = "genexus_db";
@@ -1310,6 +1317,7 @@ namespace GxMcp.Gateway
                 }
                 case "genexus_generate_sample_data":
                 {
+                    newArgs = CloneArgs(args);
                     if (newArgs["trn"] != null && newArgs["target"] == null)
                         newArgs["target"] = newArgs["trn"];
                     newArgs["action"] = "sample_data";
@@ -1318,6 +1326,7 @@ namespace GxMcp.Gateway
                 }
                 case "genexus_types":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1329,6 +1338,7 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_translations":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "translations_import";
                     newToolName = "genexus_db";
                     return true;
@@ -1336,6 +1346,7 @@ namespace GxMcp.Gateway
                 // Umbrella: genexus_versioning (history_*|undo|time_travel|blame|diff|diff_generated).
                 case "genexus_history":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1348,22 +1359,27 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_undo":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "undo";
                     newToolName = "genexus_versioning";
                     return true;
                 case "genexus_time_travel":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "time_travel";
                     newToolName = "genexus_versioning";
                     return true;
                 case "genexus_blame":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "blame";
                     newToolName = "genexus_versioning";
                     return true;
                 case "genexus_diff":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "diff";
                     newToolName = "genexus_versioning";
                     return true;
                 case "genexus_diff_generated":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "diff_generated";
                     newToolName = "genexus_versioning";
                     return true;
@@ -1371,6 +1387,7 @@ namespace GxMcp.Gateway
                 // Umbrella: genexus_io (asset_*|export_part|import_part|export_unified|screenshot_publish|ocr).
                 case "genexus_asset":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1382,66 +1399,80 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_export_object":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "export_part";
                     newToolName = "genexus_io";
                     return true;
                 case "genexus_import_object":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "import_part";
                     newToolName = "genexus_io";
                     return true;
                 case "genexus_export_unified":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "export_unified";
                     newToolName = "genexus_io";
                     return true;
                 case "genexus_screenshot_publish":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "screenshot_publish";
                     newToolName = "genexus_io";
                     return true;
                 case "genexus_ocr_screenshot":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "ocr";
                     newToolName = "genexus_io";
                     return true;
 
                 // Umbrella: genexus_variable (add|delete|modify).
                 case "genexus_add_variable":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "add";
                     newToolName = "genexus_variable";
                     return true;
                 case "genexus_delete_variable":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "delete";
                     newToolName = "genexus_variable";
                     return true;
                 case "genexus_modify_variable":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "modify";
                     newToolName = "genexus_variable";
                     return true;
 
                 // Umbrella: genexus_telemetry (executions|watch_event|friction_*|learning_report|logs|profile_*).
                 case "genexus_execution_history":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "executions";
                     newToolName = "genexus_telemetry";
                     return true;
                 case "genexus_watch_event":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "watch_event";
                     newToolName = "genexus_telemetry";
                     return true;
                 case "genexus_friction_log":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub == "tail" ? "friction_tail" : "friction_append";
                     newToolName = "genexus_telemetry";
                     return true;
                 }
                 case "genexus_learning":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "learning_report";
                     newToolName = "genexus_telemetry";
                     return true;
                 case "genexus_logs":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "logs";
                     newToolName = "genexus_telemetry";
                     return true;
                 case "genexus_profile":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1455,15 +1486,18 @@ namespace GxMcp.Gateway
 
                 // Umbrella: genexus_create (object|popup|sd_panel_*|save_as|scaffold|translate|sample|template).
                 case "genexus_create_object":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "object";
                     newToolName = "genexus_create";
                     return true;
                 case "genexus_create_popup":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "popup";
                     newToolName = "genexus_create";
                     return true;
                 case "genexus_sd_panel":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1475,11 +1509,13 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_save_as":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "save_as";
                     newToolName = "genexus_create";
                     return true;
                 case "genexus_forge":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1491,14 +1527,19 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_apply_template":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "template";
                     newToolName = "genexus_create";
                     return true;
             }
 
             newToolName = toolName;
+            newArgs = args!;
             return false;
         }
+
+        private static JObject CloneArgs(JObject? args) =>
+            args is null ? new JObject() : (JObject)args.DeepClone();
 
         internal static void StripNulls(JObject obj)
         {

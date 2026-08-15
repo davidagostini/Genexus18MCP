@@ -74,15 +74,12 @@ namespace GxMcp.Gateway
 
         private static string HashPayload(JObject args)
         {
-            var canonical = (JObject)args.DeepClone();
-            canonical.Remove("idempotencyKey");
-            canonical.Remove("dryRun");
-            var sorted = JsonCanonicalize(canonical);
+            var sorted = JsonCanonicalize(args, isRoot: true);
             using var sha = SHA256.Create();
             return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(sorted)));
         }
 
-        private static string JsonCanonicalize(JToken t)
+        private static string JsonCanonicalize(JToken t, bool isRoot = false)
         {
             if (t is JObject o)
             {
@@ -91,9 +88,12 @@ namespace GxMcp.Gateway
                 bool first = true;
                 foreach (var p in o.Properties().OrderBy(p => p.Name, StringComparer.Ordinal))
                 {
+                    if (isRoot && (p.Name == "idempotencyKey" || p.Name == "dryRun"))
+                        continue;
+
                     if (!first) sb.Append(',');
                     first = false;
-                    sb.Append(JsonCanonicalize(p.Name)).Append(':').Append(JsonCanonicalize(p.Value));
+                    sb.Append(JsonCanonicalize(p.Name)).Append(':').Append(JsonCanonicalize(p.Value, isRoot: false));
                 }
                 sb.Append('}');
                 return sb.ToString();
@@ -105,7 +105,7 @@ namespace GxMcp.Gateway
                 for (int i = 0; i < a.Count; i++)
                 {
                     if (i > 0) sb.Append(',');
-                    sb.Append(JsonCanonicalize(a[i]));
+                    sb.Append(JsonCanonicalize(a[i], isRoot: false));
                 }
                 sb.Append(']');
                 return sb.ToString();

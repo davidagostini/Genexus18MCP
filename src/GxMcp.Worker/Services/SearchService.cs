@@ -123,16 +123,30 @@ namespace GxMcp.Worker.Services
                             exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
                         exactList = exactCandidates.ToList();
                     }
-                    var exactObj = JObject.FromObject(new {
-                        count = exactList.Count,
-                        total = exactList.Count,
-                        hasMore = false,
-                        results = exactList.Select(e => new {
-                            guid = e.Guid, name = e.Name, type = e.Type, description = e.Description,
-                            parent = e.Parent, module = e.Module, path = e.Path, parentPath = e.ParentPath,
-                            dataType = e.DataType, table = e.RootTable
-                        })
-                    });
+                    var exactResultsArr = new JArray();
+                    foreach (var e in exactList)
+                    {
+                        exactResultsArr.Add(new JObject
+                        {
+                            ["guid"] = e.Guid,
+                            ["name"] = e.Name,
+                            ["type"] = e.Type,
+                            ["description"] = e.Description,
+                            ["parent"] = e.Parent,
+                            ["module"] = e.Module,
+                            ["path"] = e.Path,
+                            ["parentPath"] = e.ParentPath,
+                            ["dataType"] = e.DataType,
+                            ["table"] = e.RootTable
+                        });
+                    }
+                    var exactObj = new JObject
+                    {
+                        ["count"] = exactList.Count,
+                        ["total"] = exactList.Count,
+                        ["hasMore"] = false,
+                        ["results"] = exactResultsArr
+                    };
                     // v2.8.0: canonical pagination block
                     exactObj["pagination"] = new JObject
                     {
@@ -418,50 +432,59 @@ namespace GxMcp.Worker.Services
                 string FormatLu(SearchIndex.IndexEntry e) =>
                     e.LastUpdate > DateTime.MinValue ? e.LastUpdate.ToUniversalTime().ToString("o") : null;
 
+                var resultsArr = new JArray();
                 if (isQuick)
                 {
-                    responseObj = JObject.FromObject(new {
-                        count = scoredResults.Count,
-                        total,
-                        hasMore,
-                        results = scoredResults.Select(r => new {
-                            guid = r.Entry.Guid,
-                            name = r.Entry.Name,
-                            type = r.Entry.Type,
-                            parent = r.Entry.Parent,
-                            module = r.Entry.Module,
-                            path = r.Entry.Path,
-                            parentPath = r.Entry.ParentPath,
-                            lastUpdate = FormatLu(r.Entry)
-                        })
-                    });
+                    foreach (var r in scoredResults)
+                    {
+                        var e = r.Entry;
+                        resultsArr.Add(new JObject
+                        {
+                            ["guid"] = e.Guid,
+                            ["name"] = e.Name,
+                            ["type"] = e.Type,
+                            ["parent"] = e.Parent,
+                            ["module"] = e.Module,
+                            ["path"] = e.Path,
+                            ["parentPath"] = e.ParentPath,
+                            ["lastUpdate"] = FormatLu(e)
+                        });
+                    }
                 }
                 else
                 {
-                    responseObj = JObject.FromObject(new {
-                        count = scoredResults.Count,
-                        total,
-                        hasMore,
-                        results = scoredResults.Select(r => new {
-                            guid = r.Entry.Guid,
-                            name = r.Entry.Name,
-                            type = r.Entry.Type,
-                            description = r.Entry.Description,
-                            parm = r.Entry.ParmRule,
-                            snippet = r.Entry.SourceSnippet,
-                            parent = r.Entry.Parent,
-                            module = r.Entry.Module,
-                            path = r.Entry.Path,
-                            parentPath = r.Entry.ParentPath,
-                            dataType = r.Entry.DataType,
-                            length = r.Entry.Length,
-                            decimals = r.Entry.Decimals,
-                            table = r.Entry.RootTable,
-                            similarity = r.VectorSimilarity,
-                            lastUpdate = FormatLu(r.Entry)
-                        })
-                    });
+                    foreach (var r in scoredResults)
+                    {
+                        var e = r.Entry;
+                        resultsArr.Add(new JObject
+                        {
+                            ["guid"] = e.Guid,
+                            ["name"] = e.Name,
+                            ["type"] = e.Type,
+                            ["description"] = e.Description,
+                            ["parm"] = e.ParmRule,
+                            ["snippet"] = e.SourceSnippet,
+                            ["parent"] = e.Parent,
+                            ["module"] = e.Module,
+                            ["path"] = e.Path,
+                            ["parentPath"] = e.ParentPath,
+                            ["dataType"] = e.DataType,
+                            ["length"] = e.Length,
+                            ["decimals"] = e.Decimals,
+                            ["table"] = e.RootTable,
+                            ["similarity"] = r.VectorSimilarity,
+                            ["lastUpdate"] = FormatLu(e)
+                        });
+                    }
                 }
+
+                responseObj = new JObject
+                {
+                    ["count"] = scoredResults.Count,
+                    ["total"] = total,
+                    ["hasMore"] = hasMore,
+                    ["results"] = resultsArr
+                };
 
                 // v2.6.8: nextCursor for stable temporal paging. Mirrors list_objects.
                 if (sortByLastUpdate && hasMore && scoredResults.Count > 0)

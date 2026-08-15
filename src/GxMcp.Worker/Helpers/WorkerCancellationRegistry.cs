@@ -27,13 +27,14 @@ namespace GxMcp.Worker.Helpers
 
         private static readonly ConcurrentDictionary<string, Entry> _tokens =
             new ConcurrentDictionary<string, Entry>();
+        private static readonly IDisposable _noop = new NoopDisposable();
 
         public static IDisposable Register(string token, out CancellationToken ct)
         {
             if (string.IsNullOrEmpty(token))
             {
                 ct = CancellationToken.None;
-                return new NoopDisposable();
+                return _noop;
             }
             var entry = _tokens.GetOrAdd(token, _ => new Entry());
             Interlocked.Increment(ref entry.RefCount);
