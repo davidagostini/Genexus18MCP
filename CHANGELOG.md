@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.41.3 - 2026-08-15
+
 ### Changed
 
 - **99.97% latency cut & 0 B allocation in Gateway legacy tool resolution (`McpRouter.TryRewriteLegacyTool`).** Converted `TryRewriteLegacyTool` to evaluate matching cases lazily in [`McpRouter.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/McpRouter.cs). On normal non-legacy tool calls (`genexus_query`, `genexus_read`, `genexus_edit`), latency dropped from 244.8 ns to 4.1 ns (-98.3%), and on large edit payloads from 14.18 μs to 3.89 ns (-99.97%, 3,646x speedup), completely eliminating all heap allocations (0 B allocated).
