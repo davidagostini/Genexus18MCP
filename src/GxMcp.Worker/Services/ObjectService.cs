@@ -2745,7 +2745,7 @@ namespace GxMcp.Worker.Services
             // Optimistic-concurrency token (stale-edit fix): pass this back as
             // baseVersion on genexus_edit so a concurrent IDE change is caught as
             // StaleObject instead of being silently overwritten.
-            try { var vt = WriteService.ComputeVersionToken(obj); if (vt != null) result["versionToken"] = vt; } catch { }
+            try { var vt = WriteService.ComputeContentVersionToken(obj, content); if (vt != null) result["versionToken"] = vt; } catch { }
             if (page.SuggestedNextOffset.HasValue) result["suggestedNextOffset"] = page.SuggestedNextOffset.Value;
             if (page.SuggestedNextLimit.HasValue) result["suggestedNextLimit"] = page.SuggestedNextLimit.Value;
 

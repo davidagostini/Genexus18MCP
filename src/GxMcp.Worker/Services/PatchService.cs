@@ -170,28 +170,6 @@ namespace GxMcp.Worker.Services
                     return Models.McpResponse.Err(code: "InvalidVerifyMode", message: ex.Message, target: target);
                 }
 
-                if (!string.IsNullOrWhiteSpace(baseVersion))
-                {
-                    var versionedObject = _objectService.FindObjectFresh(target, typeFilter);
-                    if (versionedObject == null)
-                        return Models.McpResponse.Err(
-                            code: "ObjectNotFound",
-                            message: "The target object was not found.",
-                            hint: "Use genexus_list_objects to verify the exact object name, then retry the patch.",
-                            nextSteps: new JArray(Models.McpResponse.NextStep(
-                                tool: "genexus_list_objects",
-                                args: new JObject { ["name_contains"] = target ?? string.Empty },
-                                why: "Lists objects whose names contain the target so the patch can be retried with the exact name.")),
-                            target: target);
-                    string currentVersion = WriteService.ComputeVersionToken(versionedObject);
-                    if (!string.Equals(baseVersion, currentVersion, StringComparison.Ordinal))
-                        return Models.McpResponse.Err(
-                            code: "VersionConflict",
-                            message: "The object changed after the caller read it.",
-                            target: target,
-                            extra: new JObject { ["baseVersion"] = baseVersion, ["currentVersion"] = currentVersion });
-                }
-
                 // Probe pattern-shadow warning ONCE before doing any work. If the agent
                 // is patching a WebForm/Layout on an object whose WorkWithPlus host has
                 // a populated PatternInstance, attach a warning to the terminal response
@@ -203,6 +181,7 @@ namespace GxMcp.Worker.Services
                 bool sourceFromCache = false;
                 long readMs = 0;
                 string originalSource = null;
+                string snapshotVersion = null;
                 // v2.6.9 perf: reuse a fresh cache entry when no write has landed
                 // since we filled it. WriteService._lastWriteAtUtc tracks every
                 // write path; if WasTargetWrittenSince(target, entry.UpdatedUtc)
@@ -261,6 +240,7 @@ namespace GxMcp.Worker.Services
 
                     var json = JObject.Parse(currentResponse);
                     originalSource = json["source"]?.ToString();
+                    snapshotVersion = json["versionToken"]?.ToString();
                     if (originalSource == null)
                     {
                         return Models.McpResponse.Err(
@@ -274,6 +254,16 @@ namespace GxMcp.Worker.Services
                             target: target);
                     }
                     UpdateCachedSource(cacheKey, originalSource);
+                }
+
+                if (!string.IsNullOrWhiteSpace(baseVersion) &&
+                    !string.Equals(baseVersion, snapshotVersion, StringComparison.Ordinal))
+                {
+                    return Models.McpResponse.Err(
+                        code: "VersionConflict",
+                        message: "The object Source changed after the caller read it.",
+                        target: target,
+                        extra: new JObject { ["baseVersion"] = baseVersion, ["currentVersion"] = snapshotVersion });
                 }
 
                 // Normalize line endings for internal processing
@@ -617,13 +607,7 @@ namespace GxMcp.Worker.Services
                             dryRunBody["matchedCount"] = matchCount;
                         }
                         dryRunBody["implicitOperations"] = new JArray();
-                        try
-                        {
-                            var dryRunObject = _objectService.FindObjectFresh(target, typeFilter);
-                            string dryRunVersion = dryRunObject == null ? null : WriteService.ComputeVersionToken(dryRunObject);
-                            if (!string.IsNullOrWhiteSpace(dryRunVersion)) dryRunBody["versionToken"] = dryRunVersion;
-                        }
-                        catch { }
+                        if (!string.IsNullOrWhiteSpace(snapshotVersion)) dryRunBody["versionToken"] = snapshotVersion;
                         dryRunBody["verification"] = new JObject
                         {
                             ["mode"] = resolvedVerifyMode,
@@ -717,8 +701,7 @@ namespace GxMcp.Worker.Services
                 // read/patch/write race window for optimistic concurrency callers.
                 if (!string.IsNullOrWhiteSpace(baseVersion))
                 {
-                    var currentObject = _objectService.FindObjectFresh(target, typeFilter);
-                    string currentVersion = currentObject == null ? null : WriteService.ComputeVersionToken(currentObject);
+                    string currentVersion = ReadFreshVersionToken(target, partName, typeFilter);
                     if (!string.Equals(baseVersion, currentVersion, StringComparison.Ordinal))
                         return Models.McpResponse.Err(
                             code: "VersionConflict",
@@ -846,8 +829,7 @@ namespace GxMcp.Worker.Services
                 if (writePayload["verified"] == null) writePayload["verified"] = persistedMatches;
                 try
                 {
-                    var versionObject = _objectService.FindObjectFresh(target, typeFilter);
-                    string versionToken = versionObject == null ? null : WriteService.ComputeVersionToken(versionObject);
+                    string versionToken = ReadFreshVersionToken(target, partName, typeFilter);
                     if (!string.IsNullOrWhiteSpace(versionToken)) writePayload["versionToken"] = versionToken;
                 }
                 catch { }
@@ -1306,6 +1288,17 @@ namespace GxMcp.Worker.Services
                 if (key.IndexOf("|" + normalizedTarget + "|", StringComparison.OrdinalIgnoreCase) >= 0)
                     _sourceCache.TryRemove(key, out _);
             }
+        }
+
+        private string ReadFreshVersionToken(string target, string partName, string typeFilter)
+        {
+            try
+            {
+                string response = _objectService.ReadObjectSourceForVerification(target, partName, typeFilter);
+                if (!string.IsNullOrWhiteSpace(TryExtractError(response))) return null;
+                return JObject.Parse(response)["versionToken"]?.ToString();
+            }
+            catch { return null; }
         }
 
         private TextPersistenceVerifier.Result ReadAndVerifyPersistedSource(

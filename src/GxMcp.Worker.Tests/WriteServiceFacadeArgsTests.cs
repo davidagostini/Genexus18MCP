@@ -53,6 +53,17 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ContentFingerprint_ChangesForEverySourceState()
+        {
+            string first = WriteService.ComputeContentFingerprint("// state 1");
+            string second = WriteService.ComputeContentFingerprint("// state 2");
+
+            Assert.NotEqual(first, second);
+            Assert.Equal(first, WriteService.ComputeContentFingerprint("// state 1"));
+            Assert.Equal(64, first.Length);
+        }
+
+        [Fact]
         public void NormalizeFacadeArgs_PatchMode_UnwrapsFindReplaceShape()
         {
             var normalized = WriteService.NormalizeFacadeArgs(new JObject

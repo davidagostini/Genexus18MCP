@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- **`genexus_edit mode=patch` no longer reverts a successfully verified Source when `verifyRollback=true`.** Rollback is now restricted to post-save divergence with `rollbackOnFailure=true`; persistence verification performs a fresh, complete SDK read and reports requested, saved, and independently re-read content separately.
+- **`genexus_edit mode=patch` no longer reverts a successfully verified Source when `verifyRollback=true`.** Rollback is now restricted to post-save divergence with `rollbackOnFailure=true`; persistence verification performs a fresh, complete SDK read and reports requested, saved, and independently re-read content separately. Source version tokens include the persisted content fingerprint, so rapid sequential saves cannot reuse a stale timestamp token.
 
 ## v2.41.3 - 2026-08-15
 
