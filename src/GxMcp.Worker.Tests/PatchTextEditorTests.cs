@@ -117,6 +117,7 @@ namespace GxMcp.Worker.Tests
                 verification,
                 requestedReplacement: string.Empty,
                 originalContext: "old",
+                savedSource: string.Empty,
                 persistedSource: string.Empty,
                 verifyMode: "exact",
                 partName: "Source",
@@ -140,7 +141,7 @@ namespace GxMcp.Worker.Tests
                 partName: "Source");
 
             bool verified = Services.PatchPersistenceReceipt.AttachVerification(
-                payload, verification, "old", "old", "old", "exact", "Source", 1);
+                payload, verification, "old", "old", "old", "old", "exact", "Source", 1);
 
             Assert.True(verified);
             Assert.Equal(1, payload["persistedMatchCount"]?.Value<int>());
