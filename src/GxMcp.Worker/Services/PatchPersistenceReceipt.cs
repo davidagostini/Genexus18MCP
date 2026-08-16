@@ -43,7 +43,8 @@ namespace GxMcp.Worker.Services
             bool replacementPresent = canonicalReplacement.Length == 0 || replacementMatchCount > 0;
             bool verified = verification.Matches && replacementPresent;
 
-            JObject verificationJson = verification.ToJson(reReadConfirmed: true);
+            JObject verificationJson = verification.ToJson(reReadConfirmed: verified);
+            verificationJson["readCompleted"] = true;
             verificationJson["matchCount"] = matchCount;
             verificationJson["replacementMatchCount"] = replacementMatchCount;
             verificationJson["replacementPresent"] = replacementPresent;
@@ -52,7 +53,7 @@ namespace GxMcp.Worker.Services
             payload["persistedMatchCount"] = persistedMatchCount;
             payload["oldContentPresent"] = persistedMatchCount > 0;
             payload["replacementPresent"] = replacementPresent;
-            payload["reReadConfirmed"] = true;
+            payload["reReadConfirmed"] = verified;
             verificationJson["source"] = "fresh-sdk-read";
             payload["verification"] = verificationJson;
             AttachContentEvidence(payload, savedSource, savedSource, persistedSource);

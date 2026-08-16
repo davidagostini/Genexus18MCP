@@ -194,5 +194,21 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(rollback["requestedHash"]?.ToString(), rollback["persistedHash"]?.ToString());
             Assert.Equal(JTokenType.Null, rollback["error"]?.Type);
         }
+
+        [Fact]
+        public void Receipt_DivergentFreshRead_DoesNotClaimConfirmation()
+        {
+            var payload = new JObject();
+            var verification = Services.TextPersistenceVerifier.Evaluate("new", "old", "exact", "Source");
+
+            bool verified = Services.PatchPersistenceReceipt.AttachVerification(
+                payload, verification, "new", "old", "new", "old", "exact", "Source", 1);
+
+            Assert.False(verified);
+            Assert.False(payload["reReadConfirmed"]?.Value<bool>());
+            Assert.False(payload["verification"]?["reReadConfirmed"]?.Value<bool>());
+            Assert.True(payload["verification"]?["readCompleted"]?.Value<bool>());
+            Assert.Equal("fresh-sdk-read", payload["verification"]?["source"]?.ToString());
+        }
     }
 }
