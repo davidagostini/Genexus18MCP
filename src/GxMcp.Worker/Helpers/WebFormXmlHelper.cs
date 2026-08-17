@@ -99,18 +99,19 @@ namespace GxMcp.Worker.Helpers
             }
 
             string trimmed = xml.Trim();
-            if (trimmed.StartsWith("<!DOCTYPE html", StringComparison.OrdinalIgnoreCase) ||
-                trimmed.StartsWith("<html", StringComparison.OrdinalIgnoreCase))
+            if (trimmed.StartsWith("<!DOCTYPE html", StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException("Layout writes require raw GxMultiForm XML, not preview HTML. Read part='Layout' again and edit the returned XML.");
+                throw new InvalidOperationException("Layout writes require raw XML (GxMultiForm, BODY, or HTML), not preview HTML. Read part='WebForm' or part='Layout' again and edit the returned XML.");
             }
 
             var doc = XDocument.Parse(trimmed, LoadOptions.PreserveWhitespace);
             string rootName = doc.Root?.Name.LocalName ?? string.Empty;
-            if (!string.Equals(rootName, "GxMultiForm", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(rootName, "GxMultiForm", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "BODY", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "HTML", StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    string.Format("Visual writes currently require the full GxMultiForm XML document. Received root '{0}' for part '{1}'.", rootName, partName ?? "Layout"));
+                    string.Format("Visual writes currently require a valid GxMultiForm, BODY, or HTML XML document. Received root '{0}' for part '{1}'.", rootName, partName ?? "Layout"));
             }
 
             return doc.ToString();

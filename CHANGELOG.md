@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v2.41.7 - 2026-08-17
+
+### Fixed
+
+- **`genexus_edit` on `part=Events` and `part=Conditions` now defaults to normalized verification and tolerates harmless formatting/EOL differences.** `TextPersistenceVerifier` now classifies `Events` and `Conditions` alongside `Source` and `Rules` as code/text parts, canonicalizes line endings, and resolves default verification mode to `normalized`. `NormalizedCodeEquals` tolerates blank lines inserted or removed by GeneXus SDK rendering, eliminating false `WriteNotPersisted` errors on successful Event edits. Fixes [#100](https://github.com/lennix1337/Genexus18MCP/issues/100).
+- **`genexus_structure move_attribute` and `remove_attribute` preserve non-Structure authored parts and strictly verify snapshot integrity.** Reordering or removing attributes in a Transaction structure now preserves all non-Structure parts (`Rules`, `Events`, `WebForm`, `Variables`), restoring them if reset by SDK transaction saving. Post-save verification (`VerifyMove` / `VerifyRemoval`) now checks that every authored part in the pre-write snapshot remains intact, rather than skipping parts marked default by the SDK. Fixes [#99](https://github.com/lennix1337/Genexus18MCP/issues/99).
+- **`genexus_layout set_property` on `gxButton` retains `Caption` and rolls back on verification failure.** Setting `Caption` on visual controls no longer removes the underlying `Caption` attribute when synchronizing with `CaptionExpression`. If post-save readback verification fails, `SetProperty` automatically rolls back the visual XML to the pre-call baseline and returns `rolledBack: true` in the error envelope. Fixes [#101](https://github.com/lennix1337/Genexus18MCP/issues/101).
+- **Lossless XPZ import in `genexus_transfer action=import`.** `TransferService.Import` now defaults to `FullOverwrite` with `ClassConflicts=UseFromExport` and `ThemeOptions=Overwrite`, preventing WebForm dimensions (`GxWidth`, `GxHeight`) from being dropped and preserving theme class references when overwriting existing KB objects from an `.xpz`. Fixes [#102](https://github.com/lennix1337/Genexus18MCP/issues/102).
+- **WebForm XML root compatibility and build response telemetry.** `WebFormXmlHelper.NormalizeEditableXmlInput` now accepts `<BODY>` and `<HTML>` root elements so Transaction WebForms read by `genexus_read` can be written back without manual wrapping; `genexus_lifecycle action=build` echoes the resolved environment name and surfaces `upToDate: true` in `generateEvidence` when nothing needed to be rebuilt; and `dryRun: true` is respected before dispatching build and specification actions. Fixes [#103](https://github.com/lennix1337/Genexus18MCP/issues/103).
+
 ## v2.41.6 - 2026-08-17
 
 ### Added

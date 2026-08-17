@@ -288,6 +288,22 @@ namespace GxMcp.Worker.Services
                         {
                             foreach (var preserved in preservedDefaults) preserved.PreserveDefaultUnlock();
                         }
+
+                        // Ensure all authored non-Structure parts remain intact after SDK transaction save
+                        foreach (var kvp in snapshot.Parts)
+                        {
+                            var part = trn.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type.ToString("D") == kvp.Key);
+                            if (part != null && !(part is StructurePart) && kvp.Value.VerificationData != null && kvp.Value.VerificationData.Length > 0)
+                            {
+                                if (!EntityMatches(part, kvp.Value))
+                                {
+                                    RestoreEntity(part, kvp.Value);
+                                    part.Dirty = true;
+                                    part.Save();
+                                }
+                            }
+                        }
+
                         sdkTrans.Commit();
                     }
                     catch (Exception ex)
@@ -492,6 +508,22 @@ namespace GxMcp.Worker.Services
                         {
                             foreach (var preserved in preservedDefaults) preserved.PreserveDefaultUnlock();
                         }
+
+                        // Ensure all authored non-Structure parts remain intact after SDK transaction save
+                        foreach (var kvp in snapshot.Parts)
+                        {
+                            var part = trn.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type.ToString("D") == kvp.Key);
+                            if (part != null && !(part is StructurePart) && kvp.Value.VerificationData != null && kvp.Value.VerificationData.Length > 0)
+                            {
+                                if (!EntityMatches(part, kvp.Value))
+                                {
+                                    RestoreEntity(part, kvp.Value);
+                                    part.Dirty = true;
+                                    part.Save();
+                                }
+                            }
+                        }
+
                         sdkTrans.Commit();
                     }
                     catch (Exception ex)
@@ -1134,6 +1166,20 @@ namespace GxMcp.Worker.Services
                 return false;
             }
 
+            foreach (var kvp in before.Parts)
+            {
+                string key = kvp.Key;
+                EntitySnapshot expected = kvp.Value;
+                if (expected == null || expected.VerificationData == null || expected.VerificationData.Length == 0) continue;
+
+                var part = persisted.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type.ToString("D") == key);
+                if (part == null || !EntityMatches(part, expected))
+                {
+                    error = $"Authored part '{part?.TypeDescriptor?.Name ?? key}' changed or was wiped unexpectedly.";
+                    return false;
+                }
+            }
+
             foreach (KBObjectPart part in persisted.Parts)
             {
                 if (part is StructurePart) continue;
@@ -1210,6 +1256,20 @@ namespace GxMcp.Worker.Services
                 return false;
             }
             verification["subtypeGroupsPreserved"] = true;
+
+            foreach (var kvp in before.Parts)
+            {
+                string key = kvp.Key;
+                EntitySnapshot expected = kvp.Value;
+                if (expected == null || expected.VerificationData == null || expected.VerificationData.Length == 0) continue;
+
+                var part = persisted.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type.ToString("D") == key);
+                if (part == null || !EntityMatches(part, expected))
+                {
+                    error = $"Authored part '{part?.TypeDescriptor?.Name ?? key}' changed or was wiped unexpectedly.";
+                    return false;
+                }
+            }
 
             foreach (KBObjectPart part in persisted.Parts)
             {

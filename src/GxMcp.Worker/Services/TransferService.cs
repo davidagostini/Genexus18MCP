@@ -227,7 +227,7 @@ namespace GxMcp.Worker.Services
                     message: "action=import with dryRun=false requires confirm=true (it mutates the KB).",
                     hint: "Preview first with dryRun=true, then pass confirm=true to apply.");
 
-            var options = new ImportOptions();
+            var options = SilentImportOptions(args);
             bool ok = svc.ImportFile(file, model, options);
 
             return McpResponse.Ok(
@@ -238,6 +238,52 @@ namespace GxMcp.Worker.Services
                     ["file"] = file,
                     ["source"] = "sdk:IKnowledgeManagerService.ImportFile"
                 });
+        }
+
+        // A fresh ImportOptions with lossless defaults (FullOverwrite + UseFromExport);
+        // prevents dropping WebForm dimensions or remapping Theme classes (Issue #102).
+        private static ImportOptions SilentImportOptions(JObject args)
+        {
+            ImportOptions o = null;
+            try { o = ImportOptions.FullOverwrite; } catch { }
+            if (o == null)
+            {
+                try { o = ImportOptions.Default; } catch { }
+            }
+            if (o == null) o = new ImportOptions();
+
+            try { o.AutomaticBackup = false; } catch { }
+            try { o.RollBackOnError = true; } catch { }
+            try { o.AutomaticRollbackOnCancel = true; } catch { }
+
+            string classConflictArg = args?["classConflicts"]?.ToString();
+            string classConflictVal = string.Equals(classConflictArg, "UseExisting", StringComparison.OrdinalIgnoreCase)
+                ? "UseExisting"
+                : "UseFromExport";
+            SetEnumValue(o, "ClassConflicts", classConflictVal);
+
+            string themeBehaviorArg = args?["themeImportBehavior"]?.ToString();
+            string themeBehaviorVal = string.Equals(themeBehaviorArg, "IncrementalIntegration", StringComparison.OrdinalIgnoreCase)
+                ? "IncrementalIntegration"
+                : "Overwrite";
+            SetEnumValue(o, "ThemeImportBehavior", themeBehaviorVal);
+
+            return o;
+        }
+
+        private static void SetEnumValue(object target, string propertyName, string enumValueName)
+        {
+            try
+            {
+                if (target == null) return;
+                var prop = target.GetType().GetProperty(propertyName);
+                if (prop != null && prop.PropertyType.IsEnum)
+                {
+                    var val = Enum.Parse(prop.PropertyType, enumValueName, true);
+                    prop.SetValue(target, val, null);
+                }
+            }
+            catch { }
         }
 
         // A fresh ExportOptions with the dialog-free defaults the SDK uses for silent exports;

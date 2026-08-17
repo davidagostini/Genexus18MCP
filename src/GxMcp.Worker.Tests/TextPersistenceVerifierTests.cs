@@ -106,11 +106,32 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void SourceAndRules_DefaultToNormalized()
+        public void SourceRulesEventsConditions_DefaultToNormalized()
         {
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Source"));
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Rules"));
+            Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Events"));
+            Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Conditions"));
             Assert.Equal("exact", TextPersistenceVerifier.ResolveMode(null, "Structure"));
+        }
+
+        [Fact]
+        public void Exact_EventsAcceptsSdkEolRendering()
+        {
+            var result = TextPersistenceVerifier.Evaluate("Event Start\r\nEndEvent\r\n", "Event Start\nEndEvent\n", "exact", "Events");
+            Assert.True(result.Matches);
+            Assert.Contains("EOL", result.NormalizationApplied);
+        }
+
+        [Fact]
+        public void Normalized_EventsWithBlankLineDifferences_Matches()
+        {
+            var result = TextPersistenceVerifier.Evaluate(
+                "Event 'DoSomething'\r\n    msg('Hi')\r\nEndEvent",
+                "Event 'DoSomething'\n\n    msg('Hi')\nEndEvent",
+                null,
+                "Events");
+            Assert.True(result.Matches);
         }
     }
 }

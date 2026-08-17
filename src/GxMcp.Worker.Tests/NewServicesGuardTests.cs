@@ -1,3 +1,4 @@
+using System.Linq;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -116,6 +117,13 @@ namespace GxMcp.Worker.Tests
             var svc = new TransferService(null, null, null);
             var jo = Parse(svc.Run(JObject.Parse("{\"action\":\"export\",\"targets\":[\"Customer\"],\"includeDependencies\":true,\"outputFile\":\"C:\\\\tmp\\\\test.xpz\"}")));
             Assert.Equal("NoKbOpen", jo["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void ImportOptions_InspectProperties()
+        {
+            var fullOverwrite = typeof(Artech.Architecture.Common.Services.ImportOptions).GetProperty("FullOverwrite", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)?.GetValue(null);
+            Assert.NotNull(fullOverwrite);
         }
 
         [Fact]

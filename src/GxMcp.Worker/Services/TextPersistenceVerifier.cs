@@ -43,7 +43,7 @@ namespace GxMcp.Worker.Services
             string mode = (requestedMode ?? string.Empty).Trim().ToLowerInvariant();
             if (mode.Length == 0)
             {
-                return IsSourceOrRules(partName) ? "normalized" : "exact";
+                return IsCodeOrTextPart(partName) ? "normalized" : "exact";
             }
             if (mode != "exact" && mode != "normalized" && mode != "semantic")
                 throw new ArgumentException("verifyMode must be exact, normalized, or semantic.", nameof(requestedMode));
@@ -112,12 +112,10 @@ namespace GxMcp.Worker.Services
         private static string ExactCanonicalize(string text, string partName)
         {
             string value = text ?? string.Empty;
-            // ISource.Source is a logical text API. GX18 U16 can return LF from the
-            // forced post-save SDK read even when the pre-save read and requested
-            // payload used CRLF. Preserve every character relevant to Source identity
-            // (including comments, spaces, blank lines and terminal newline), while
-            // canonicalizing only the platform representation of line endings.
-            return IsSourceOrRules(partName)
+            // Logical code text parts (Source, Rules, Events, Conditions) can return LF
+            // from the forced post-save SDK read even when the requested payload used CRLF.
+            // Canonicalize line endings so carriage return differences don't cause false mismatches.
+            return IsCodeOrTextPart(partName)
                 ? value.Replace("\r\n", "\n").Replace("\r", "\n")
                 : value;
         }
@@ -225,8 +223,11 @@ namespace GxMcp.Worker.Services
         private static int Count(string value, string needle) => (value ?? string.Empty).Split(new[] { needle }, StringSplitOptions.None).Length - 1;
         private static int CountLoneLf(string value) => (value ?? string.Empty).Replace("\r\n", string.Empty).Count(c => c == '\n');
         private static int CountLoneCr(string value) => (value ?? string.Empty).Replace("\r\n", string.Empty).Count(c => c == '\r');
-        private static bool IsSourceOrRules(string partName) => string.IsNullOrWhiteSpace(partName)
+        private static bool IsSourceOrRules(string partName) => IsCodeOrTextPart(partName);
+        private static bool IsCodeOrTextPart(string partName) => string.IsNullOrWhiteSpace(partName)
             || string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(partName, "Rules", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(partName, "Rules", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(partName, "Events", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(partName, "Conditions", StringComparison.OrdinalIgnoreCase);
     }
 }

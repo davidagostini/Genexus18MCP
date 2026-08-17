@@ -1712,6 +1712,16 @@ namespace GxMcp.Worker.Services
                 args?["page"]?.ToObject<int?>() ?? 1,
                 args?["pageSize"]?.ToObject<int?>() ?? 50);
             if (action == "Cancel") return _buildService.Cancel(target);
+
+            bool buildDryRun = (request["dryRun"]?.ToObject<bool?>() ?? false) || (args?["dryRun"]?.ToObject<bool?>() ?? false);
+            if (buildDryRun)
+            {
+                var includeCallees = args?["includeCallees"]?.ToString();
+                if (string.IsNullOrWhiteSpace(includeCallees)) includeCallees = "transitive";
+                var cap = args?["buildPlanCap"]?.ToObject<int?>() ?? 200;
+                return _buildService.BuildDryRun(action, target, includeCallees, cap);
+            }
+
             // issue #28 item 12: spec-check only (Spec+Gen, no Compile/deploy).
             if (action == "Specify") return _buildService.Specify(target);
             // mode=compile_check: spec+gen+compile the target(s) + transitive callers,
@@ -1738,9 +1748,6 @@ namespace GxMcp.Worker.Services
                 // A2: deploy=true forces the full IdeWebBuildAndDeploy (copy to web/bin)
                 // so the built object is runnable, not just compiled.
                 bool fullDeploy = (args?["deploy"]?.ToObject<bool?>() ?? false) || (request["deploy"]?.ToObject<bool?>() ?? false);
-                bool buildDryRun = (request["dryRun"]?.ToObject<bool?>() ?? false) || (args?["dryRun"]?.ToObject<bool?>() ?? false);
-                if (buildDryRun)
-                    return _buildService.BuildDryRun(action, target, includeCallees, cap);
                 return _buildService.Build(action, target, includeCallees, cap, skipFullDeploy, notifyOnFailure, fastIncremental, fullDeploy);
             }
         }

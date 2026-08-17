@@ -428,8 +428,13 @@ namespace GxMcp.Worker.Services
 
         private static bool NormalizedCodeEquals(string a, string b)
         {
-            var linesA = a.Replace("\r\n", "\n").Split('\n');
-            var linesB = b.Replace("\r\n", "\n").Split('\n');
+            if (string.Equals(a, b, StringComparison.Ordinal)) return true;
+            string normA = TextPersistenceVerifier.Normalize(a);
+            string normB = TextPersistenceVerifier.Normalize(b);
+            if (string.Equals(normA, normB, StringComparison.OrdinalIgnoreCase)) return true;
+
+            var linesA = normA.Split('\n');
+            var linesB = normB.Split('\n');
 
             if (linesA.Length != linesB.Length) return false;
 

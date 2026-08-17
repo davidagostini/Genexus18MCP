@@ -220,18 +220,17 @@ namespace GxMcp.Worker.Services
                     attrName = ResolveCanonicalAttributeName(element, propertyName);
 
                     // gxTextBlock and other legacy controls authoritatively store the caption
-                    // as a CaptionExpression Tokens XML. Writing only a loose `Caption` attr
-                    // leaves the stale Tokens in place; on save the SDK re-emits from
-                    // CaptionExpression and the regenerated EntityVersion sibling wins
-                    // composition (root cause confirmed via SQL inspection of EntityVersion
-                    // rows on session 4's ListaAtiCPAlunoUniGra repro).
-                    if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase) &&
-                        element.Attribute("CaptionExpression") != null)
+                    // as a CaptionExpression Tokens XML, while WebForm controls (like gxButton)
+                    // use the Caption attribute directly.
+                    // Keep both in sync when CaptionExpression exists, but never delete Caption.
+                    if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase))
                     {
-                        attrName = "CaptionExpression";
-                        previous = element.Attribute(attrName)?.Value;
-                        element.SetAttributeValue(attrName, BuildConstantCaptionTokens(value ?? string.Empty));
-                        element.Attribute("Caption")?.Remove();
+                        previous = element.Attribute("Caption")?.Value ?? ExtractConstantCaptionFromTokens(element.Attribute("CaptionExpression")?.Value);
+                        element.SetAttributeValue("Caption", value ?? string.Empty);
+                        if (element.Attribute("CaptionExpression") != null)
+                        {
+                            element.SetAttributeValue("CaptionExpression", BuildConstantCaptionTokens(value ?? string.Empty));
+                        }
                     }
                     else
                     {
@@ -266,15 +265,19 @@ namespace GxMcp.Worker.Services
                         nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the persisted layout to confirm the current control names.")),
                         target: target);
 
-                string persistedValue = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
-                    ? persistedElement.Value
-                    : (persistedElement.Attribute(attrName) != null ? persistedElement.Attribute(attrName).Value : null);
-
-                // When we wrote a Tokens XML into CaptionExpression, compare against the
-                // CDATA payload, not the raw serialized XML.
-                if (string.Equals(attrName, "CaptionExpression", StringComparison.Ordinal))
+                string persistedValue;
+                if (string.Equals(attrName, "InnerText", StringComparison.Ordinal))
                 {
-                    persistedValue = ExtractConstantCaptionFromTokens(persistedValue);
+                    persistedValue = persistedElement.Value;
+                }
+                else if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase) || string.Equals(attrName, "CaptionExpression", StringComparison.OrdinalIgnoreCase))
+                {
+                    persistedValue = persistedElement.Attribute("Caption")?.Value
+                        ?? ExtractConstantCaptionFromTokens(persistedElement.Attribute("CaptionExpression")?.Value);
+                }
+                else
+                {
+                    persistedValue = persistedElement.Attribute(attrName)?.Value;
                 }
 
                 bool match = IsPersistedValueMatch(attrName, value, persistedValue);
@@ -297,22 +300,34 @@ namespace GxMcp.Worker.Services
 
                             persistedValue = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
                                 ? retryElement.Value
-                                : (retryElement.Attribute(attrName) != null ? retryElement.Attribute(attrName).Value : null);
-                            if (string.Equals(attrName, "CaptionExpression", StringComparison.Ordinal))
-                            {
-                                persistedValue = ExtractConstantCaptionFromTokens(persistedValue);
-                            }
+                                : ((string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase) || string.Equals(attrName, "CaptionExpression", StringComparison.OrdinalIgnoreCase))
+                                    ? (retryElement.Attribute("Caption")?.Value ?? ExtractConstantCaptionFromTokens(retryElement.Attribute("CaptionExpression")?.Value))
+                                    : (retryElement.Attribute(attrName)?.Value));
                             match = IsPersistedValueMatch(attrName, value, persistedValue);
                         }
                     }
                     if (!match)
                     {
+                        // Roll back to baseline XML on verification failure
+                        if (!string.IsNullOrEmpty(baselineXml))
+                        {
+                            try
+                            {
+                                PersistVisualXml(obj, contextResult, target, baselineXml, baselineXml: null);
+                            }
+                            catch (Exception rbEx)
+                            {
+                                Logger.Warn($"SetProperty: rollback to baseline failed: {rbEx.Message}");
+                            }
+                        }
+
                         return Models.McpResponse.Err(
                             code: "LayoutWriteVerificationFailed",
-                            message: "Layout write verification failed: persisted value does not match requested value after SDK save and read-back.",
+                            message: "Layout write verification failed: persisted value does not match requested value after SDK save and read-back. Original layout was rolled back.",
                             hint: "The SDK may have normalised the value on save; read back the property to check the canonical form.",
                             nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Reads the current persisted value of the control.")),
-                            target: target);
+                            target: target,
+                            extra: new JObject { ["rolledBack"] = true });
                     }
                 }
 

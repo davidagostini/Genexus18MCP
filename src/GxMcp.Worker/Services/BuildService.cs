@@ -498,6 +498,8 @@ namespace GxMcp.Worker.Services
             public string Status { get; set; }            // Accepted | Running | Succeeded | Failed | Error | Cancelled
             public string Phase { get; set; }             // Starting | OpeningKB | Specifying | Generating | Compiling | Finishing | Done
             public string Action { get; set; }
+            public string Environment { get; set; }
+            public bool? UpToDate { get; set; }
             // issue #42 hardening (D) — the KB this build belongs to. The concurrent-build
             // reject and activeBuilds surfacing filter on it so a build on KB-A never
             // rejects a build on KB-B under a future shared-worker / warm-spares mode.
@@ -1108,9 +1110,12 @@ namespace GxMcp.Worker.Services
             }
 
             string taskId = Guid.NewGuid().ToString().Substring(0, 8);
+            string envName = null;
+            try { envName = _kbService.GetKB()?.DesignModel?.Environment?.Name; } catch { }
             var status = new BuildTaskStatus {
                 TaskId = taskId,
                 Action = action,
+                Environment = envName,
                 Target = target,
                 // Always echo the parsed list so the agent can confirm what got dispatched,
                 // including the single-target case. Doc contract says "the parsed list".
@@ -1945,6 +1950,14 @@ namespace GxMcp.Worker.Services
                 ["filesWritten"] = filesWritten,
                 ["staleOrMissing"] = staleOrMissing
             };
+            if (emittedCount == 0 && staleOrMissing.Count == 0)
+            {
+                evidence["upToDate"] = true;
+                lock (status._lock)
+                {
+                    status.UpToDate = true;
+                }
+            }
             if (degradedUserControls.Count > 0)
             {
                 evidence["degradedUserControls"] = degradedUserControls;
