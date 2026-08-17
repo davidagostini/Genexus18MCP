@@ -86,6 +86,12 @@ if ($whoami) {
     Write-Host "    GX: $($whoami.geneXus.installationPath) (v$($whoami.geneXus.version))"
 }
 
+Write-Host "`n=== 4.5 Wildcard Query & Create Auto-Inference ==="
+$queryAll = CallTool 45 'genexus_query' @{ query='*'; limit=5 } 60
+Write-Host "    Wildcard query count: $($queryAll.count)"
+$autoCreate = CallTool 46 'genexus_create' @{ name='TempDryRun'; type='Procedure'; source='// test'; dryRun=$true } 60
+Write-Host "    Auto-inferred create module: $($autoCreate._meta.dryRun)"
+
 Write-Host "`n=== 5. List Procedures & Transactions ==="
 $procs = CallTool 5 'genexus_list_objects' @{ typeFilter='Procedure'; limit=5 } 60
 $txs = CallTool 52 'genexus_list_objects' @{ typeFilter='Transaction'; limit=5 } 60

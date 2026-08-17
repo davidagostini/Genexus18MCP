@@ -143,5 +143,14 @@ namespace GxMcp.Worker.Tests
             var names = SearchNames(query: "", modifiedBefore: new DateTime(2030, 1, 1));
             Assert.DoesNotContain("Untouched", names);
         }
+
+        [Fact]
+        public void Search_WildcardQuery_MatchesAllObjects()
+        {
+            var names = SearchNames(query: "*");
+            Assert.Contains("Proc1", names);
+            Assert.Contains("WebForm1", names);
+            Assert.Contains("WebFormAttr1", names);
+        }
     }
 }

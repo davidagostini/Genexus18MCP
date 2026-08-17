@@ -25,17 +25,42 @@ namespace GxMcp.Gateway.Tests
             {
                 ["action"] = "object_atomic", ["name"] = "P", ["type"] = "Procedure",
                 ["validate"] = true
-            }));
+            })!);
             Assert.Equal("AtomicCreate", (string)routed["module"]);
             Assert.Equal("P", (string)routed["params"]?["name"]);
             Assert.True((bool)routed["params"]?["validate"]);
         }
 
         [Fact]
+        public void Create_OmittedAction_WithSource_RoutesToAtomicCreate()
+        {
+            var routed = JObject.FromObject(new OperationsRouter().ConvertToolCall("genexus_create", new JObject
+            {
+                ["name"] = "P", ["type"] = "Procedure", ["source"] = "msg('hi');"
+            })!);
+            Assert.Equal("AtomicCreate", (string)routed["module"]);
+            Assert.Equal("P", (string)routed["params"]?["name"]);
+            Assert.Equal("msg('hi');", (string)routed["params"]?["source"]);
+        }
+
+        [Fact]
+        public void Create_OmittedAction_WithTypeAndName_RoutesToObjectCreate()
+        {
+            var routed = JObject.FromObject(new OperationsRouter().ConvertToolCall("genexus_create", new JObject
+            {
+                ["name"] = "Customer", ["type"] = "Transaction"
+            })!);
+            Assert.Equal("Object", (string)routed["module"]);
+            Assert.Equal("Create", (string)routed["action"]);
+            Assert.Equal("Customer", (string)routed["target"]);
+            Assert.Equal("Transaction", (string)routed["type"]);
+        }
+
+        [Fact]
         public void Db_ReorgPreviewRoutesToNonMutatingImpactService()
         {
             var routed = JObject.FromObject(new OperationsRouter().ConvertToolCall("genexus_db", new JObject
-            { ["action"] = "reorg_preview", ["deep"] = true }));
+            { ["action"] = "reorg_preview", ["deep"] = true })!);
             Assert.Equal("ReorgImpact", (string)routed["module"]);
             Assert.Equal("reorg_preview", (string)routed["params"]?["action"]);
         }

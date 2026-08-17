@@ -522,6 +522,18 @@ namespace GxMcp.Gateway.Routers
             string? name = args?["name"]?.ToString();
             string? type = args?["type"]?.ToString();
 
+            if (string.IsNullOrWhiteSpace(action))
+            {
+                if (args?["source"] != null || args?["variables"] != null || args?["rules"] != null || args?["parms"] != null)
+                {
+                    action = "object_atomic";
+                }
+                else if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(type))
+                {
+                    action = "object";
+                }
+            }
+
             switch (action)
             {
                 case "object":

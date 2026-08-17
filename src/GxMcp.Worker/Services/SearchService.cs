@@ -884,6 +884,7 @@ namespace GxMcp.Worker.Services
             }
 
             foreach (var part in query.Split(SpaceSeparator, StringSplitOptions.RemoveEmptyEntries)) {
+                if (part == "*") continue;
                 c.Terms.Add(part.ToLowerInvariant());
             }
             return c;

@@ -121,6 +121,35 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
+        [Fact]
+        public void ParseConfig_SingleDeclaredKb_WithoutDefault_AutoPromotesToDefaultKb()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                var json = @"{
+  ""Environment"": {
+    ""KBs"": {
+      ""mykb"": ""C:/KBs/MyKb""
+    }
+  }
+}";
+                File.WriteAllText(configPath, json);
+                var cfg = ParseConfig(configPath);
+
+                Assert.NotNull(cfg.Environment);
+                Assert.Equal("mykb", cfg.Environment!.DefaultKb);
+                var single = Assert.Single(cfg.Environment.KBs);
+                Assert.Equal("mykb", single.Alias);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
         private static Configuration ParseConfig(string path)
         {
             var method = typeof(Configuration).GetMethod("ParseConfig", BindingFlags.NonPublic | BindingFlags.Static);

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- **Wildcard search support in `genexus_query`.** `genexus_query` now treats `query="*"` as a global search matching all indexed objects, rather than searching for the literal asterisk character.
+- **Automatic single-KB default promotion in Gateway.** When `config.json` declares exactly one KB in `Environment.KBs` and `DefaultKb` is not explicitly configured, the Gateway automatically promotes it to `DefaultKb`, eliminating the need for an explicit `genexus_kb action=open` before calling tools.
+- **Tolerant action auto-inference in `genexus_create`.** `genexus_create` automatically infers `action="object_atomic"` when `source`, `variables`, `rules`, or `parms` are provided, and `action="object"` when `name` and `type` are supplied without an explicit `action` key.
+
 ## v2.41.5 - 2026-08-16
 
 ### Fixed

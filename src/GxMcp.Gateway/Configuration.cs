@@ -88,6 +88,13 @@ namespace GxMcp.Gateway
                     {
                         config.Environment.DefaultKb = config.Environment.ActiveKb;
                     }
+                    else if (config.Environment != null &&
+                        string.IsNullOrWhiteSpace(config.Environment.DefaultKb) &&
+                        config.Environment.KBs != null &&
+                        config.Environment.KBs.Count == 1)
+                    {
+                        config.Environment.DefaultKb = config.Environment.KBs[0].Alias;
+                    }
 
                     if (string.IsNullOrEmpty(config.Environment?.KBPath))
                         Program.Log("[Gateway] WARNING: Environment.KBPath is missing in config.json!");
