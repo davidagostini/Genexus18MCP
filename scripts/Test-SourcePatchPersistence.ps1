@@ -20,7 +20,6 @@ function Assert-DisposableKb([string] $Path) {
     if (-not $allowed) {
         throw "Refusing to modify a KB outside this workspace's .test-kbs directories."
     }
-    if ($resolved -match '(?i)Memphis') { throw "Refusing to modify a Memphis KB: $resolved" }
     if (-not (Test-Path -LiteralPath (Join-Path $resolved 'knowledgebase.connection'))) {
         throw "Not a GeneXus KB directory: $resolved"
     }
