@@ -75,3 +75,4 @@ docs/sdk-probe/raw.json
 # improve skill (shadcn) — local tooling, not part of the package
 .agents/
 skills-lock.json
+.freebuff/
