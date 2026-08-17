@@ -5,10 +5,10 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>2.41.3</Version>
-    <AssemblyVersion>2.41.3.0</AssemblyVersion>
-    <FileVersion>2.41.3.0</FileVersion>
-    <InformationalVersion>2.41.3</InformationalVersion>
+    <Version>2.41.4</Version>
+    <AssemblyVersion>2.41.4.0</AssemblyVersion>
+    <FileVersion>2.41.4.0</FileVersion>
+    <InformationalVersion>2.41.4</InformationalVersion>
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>

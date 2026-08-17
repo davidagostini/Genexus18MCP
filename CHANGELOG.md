@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.41.4 - 2026-08-16
+
 ### Fixed
 
 - **Subtype attributes added via MCP no longer silently misclassified (issue #97).** A subtype attribute (`IS_SUBTYPE=True`) added to a Transaction level programmatically could come out of the SDK classified as stored (`SECONDARY`) instead of derived (`INFERRED`), silently creating a physical column and breaking supertype propagation. New `genexus_structure action=check_subtypes` runs the guard-rail — it flags subtype attributes classified `SECONDARY` while their same-supertype siblings on the same level are `INFERRED` — and the post-write verification now appends a structured `subtypeClassification` warning to `genexus_edit part=Structure` ops and `genexus_structure update_visual` responses instead of reporting silent success. `genexus_structure action=remove_attribute` is now wired to the native `TransactionLevel.Items` removal (preserving the KB-global Attribute and every SubtypeGroup membership), so agents can drop + re-add a misclassified attribute to force re-derivation without the IDE. Fixes [#97](https://github.com/lennix1337/Genexus18MCP/issues/97).
