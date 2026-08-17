@@ -1215,6 +1215,11 @@ namespace GxMcp.Gateway.Routers
                 "get_logic" => "GetLogicStructure",
                 "update_group" => "UpdateGroupStructure",
                 "move_attribute" => "MoveAttribute",
+                // Issue #97: native TransactionLevel.Items attribute removal (lets agents
+                // drop + re-add a misclassified subtype attribute to force re-derivation)
+                // and the subtype-classification guard-rail.
+                "remove_attribute" => "RemoveAttribute",
+                "check_subtypes" => "CheckSubtypes",
                 _ => null
             };
 

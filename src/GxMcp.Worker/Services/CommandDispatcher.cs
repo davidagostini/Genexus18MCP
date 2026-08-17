@@ -1669,6 +1669,13 @@ namespace GxMcp.Worker.Services
             if (action == "GetLogicStructure") return _structureService.GetLogicStructure(target);
             if (action == "UpdateGroupStructure") return _structureService.UpdateGroupStructure(target, payload);
             if (action == "MoveAttribute") return _structureService.MoveAttribute(target, args);
+            // Issue #97: native TransactionLevel.Items removal (preserves the KB-global
+            // Attribute and every SubtypeGroup membership) — lets agents remove a
+            // misclassified subtype attribute and re-add it to force re-derivation.
+            if (action == "RemoveAttribute") return _structureService.RemoveAttribute(target, args);
+            // Issue #97 guard-rail: detect subtype attributes classified as stored
+            // (SECONDARY) while their same-supertype siblings are derived (INFERRED).
+            if (action == "CheckSubtypes") return _structureService.CheckSubtypeClassification(target, args);
             return null;
         }
 

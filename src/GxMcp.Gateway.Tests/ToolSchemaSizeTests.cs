@@ -123,7 +123,12 @@ namespace GxMcp.Gateway.Tests
             //   2026-08-13 (create_index dry-run safety): 19800 → 20000 for the
             //   get_indexes versionToken/baseVersion contract, projected diff,
             //   exact post-save verification and rollback semantics. Measured ~19875.
-            Assert.True(approxTokens < 20000, $"tool_definitions.json is ~{approxTokens} tokens; budget 20000.");
+            //   2026-08-16 (issue #97): 20000 → 20300 for genexus_structure
+            //   remove_attribute / check_subtypes actions — native TransactionLevel.Items
+            //   attribute removal (lets agents drop + re-add a misclassified subtype
+            //   attribute) and the subtype-classification guard-rail. Measured ~20158;
+            //   ~142 headroom.
+            Assert.True(approxTokens < 20300, $"tool_definitions.json is ~{approxTokens} tokens; budget 20300.");
         }
     }
 }

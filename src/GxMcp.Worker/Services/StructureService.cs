@@ -109,7 +109,7 @@ namespace GxMcp.Worker.Services
                         var verifyErr = VerifyStructurePersisted(targetName, requestedNames, beforeNames, trn);
                         if (verifyErr != null) return verifyErr;
 
-                        return Models.McpResponse.Ok(target: targetName, code: "StructureUpdated", result: new JObject
+                        var structureResult = new JObject
                         {
                             ["before"] = before,
                             ["requested"] = children.DeepClone(),
@@ -117,7 +117,22 @@ namespace GxMcp.Worker.Services
                             ["diff"] = diff,
                             ["saved"] = true,
                             ["persistedVerified"] = true
-                        });
+                        };
+                        // Issue #97 guard-rail: flag subtype attributes the SDK left
+                        // classified as stored (SECONDARY) while their same-supertype
+                        // siblings are derived (INFERRED) — a silent physical-column bug.
+                        var subtypeIssues = TryComputeSubtypeClassificationIssues(persistedTrn ?? trn);
+                        if (subtypeIssues.Count > 0)
+                        {
+                            structureResult["subtypeClassification"] = new JObject
+                            {
+                                ["check"] = "subtype_inferred_mismatch",
+                                ["status"] = "warning",
+                                ["issues"] = subtypeIssues,
+                                ["hint"] = "Subtype attribute(s) are classified as stored (SECONDARY) instead of derived (INFERRED) — this creates a physical column and breaks supertype propagation. The SDK only recomputes the class through the IDE's SubtypeGroup editor; via MCP, remove the attribute (genexus_structure action=remove_attribute) and re-add it, then re-run genexus_structure action=check_subtypes."
+                            };
+                        }
+                        return Models.McpResponse.Ok(target: targetName, code: "StructureUpdated", result: structureResult);
                     } catch (Exception ex) {
                         sdkTrans.Rollback();
                         return Models.McpResponse.Err(
@@ -369,6 +384,13 @@ namespace GxMcp.Worker.Services
             string baseVersion = args["baseVersion"]?.ToString()
                 ?? args["expectedVersion"]?.ToString()
                 ?? args["versionToken"]?.ToString();
+
+            if (string.IsNullOrWhiteSpace(attributeName))
+                return Models.McpResponse.Err(
+                    code: "AttributeNameRequired",
+                    message: "The attribute to remove was not provided.",
+                    hint: "Pass attribute=\"<name>\" (the Transaction member name).",
+                    target: targetName);
 
             try
             {
@@ -638,6 +660,182 @@ namespace GxMcp.Worker.Services
                 if (string.Equals(child.Name, wanted, StringComparison.OrdinalIgnoreCase))
                     matches.Add(new ResolvedLevel { Level = child, Path = childPath });
                 CollectLevels(child, childPath, wanted, matches);
+            }
+        }
+
+        // ── Issue #97: subtype-attribute classification guard-rail ────────────────────
+        //
+        // A subtype attribute (IS_SUBTYPE=True) added to a Transaction level
+        // programmatically can come out of the SDK classified as stored (SECONDARY)
+        // instead of derived (INFERRED) — the SDK only recomputes the class through
+        // the IDE's SubtypeGroup editor. The result is a silent data-integrity bug:
+        // a physical column is created and supertype propagation breaks. The MCP
+        // cannot force the recomputation through the SDK (IsInferred is read-only),
+        // but it CAN detect the mismatch — an attribute whose same-supertype siblings
+        // on the same level are INFERRED while it is not — and surface a structured
+        // warning instead of reporting silent success.
+
+        /// <summary>genexus_structure action=check_subtypes entry point.</summary>
+        public string CheckSubtypeClassification(string targetName, JObject args)
+        {
+            args = args ?? new JObject();
+            string moduleName = args["transactionModule"]?.ToString();
+            try
+            {
+                var trn = ResolveTransaction(targetName, moduleName);
+                if (trn == null)
+                    return Models.McpResponse.Err(
+                        code: "TransactionNotFound",
+                        message: string.IsNullOrWhiteSpace(moduleName)
+                            ? $"Transaction '{targetName}' was not found."
+                            : $"Transaction '{targetName}' was not found in module '{moduleName}'.",
+                        target: targetName);
+
+                var issues = ComputeSubtypeClassificationIssues(trn);
+                var result = new JObject
+                {
+                    ["check"] = "subtype_inferred_mismatch",
+                    ["status"] = issues.Count == 0 ? "ok" : "warning",
+                    ["transaction"] = targetName,
+                    ["issues"] = issues
+                };
+                if (issues.Count > 0)
+                {
+                    result["hint"] = "One or more subtype attributes on '" + targetName
+                        + "' are classified as stored (SECONDARY) while sibling subtypes of the same supertype on the same level are derived (INFERRED). This creates a physical column and breaks supertype propagation. The SDK only recomputes the class through the IDE's SubtypeGroup editor; via MCP, remove the attribute with genexus_structure action=remove_attribute (or genexus_edit part=Structure with a single remove_attribute op) and re-add it, then re-run this check. Confirm with genexus_properties action=get type=Attribute (Class).";
+                }
+                return Models.McpResponse.Ok(
+                    target: targetName,
+                    code: issues.Count == 0 ? "SubtypeClassificationOk" : "SubtypeClassificationWarning",
+                    result: result);
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "SubtypeClassificationFailed",
+                    message: ex.Message,
+                    target: targetName);
+            }
+        }
+
+        /// <summary>
+        /// Walks every level of the transaction and returns the subtype attributes whose
+        /// classification diverges from their same-supertype siblings on the same level
+        /// (sibling subtypes derived from the same supertype must share classification:
+        /// all INFERRED or all stored). Empty array = no mismatch. Callers pass the
+        /// post-save re-read so the classification reflects what the SDK persisted.
+        /// </summary>
+        public JArray ComputeSubtypeClassificationIssues(Transaction trn)
+        {
+            if (trn?.Structure?.Root == null) return new JArray();
+
+            var views = new List<SubtypeAttrView>();
+            var levels = new List<(TransactionLevel Level, string Path)>();
+            CollectAllLevels(trn.Structure.Root, "root", levels);
+            foreach (var (level, path) in levels)
+            {
+                // OfType (not Cast): a non-attribute item in the collection must be
+                // skipped, never throw — the guard-rail runs on the write success path.
+                foreach (TransactionAttribute ta in level.Attributes.OfType<TransactionAttribute>())
+                {
+                    var global = ta.Attribute;
+                    if (global?.SuperType == null) continue; // not a subtype attribute
+                    views.Add(new SubtypeAttrView
+                    {
+                        Level = path,
+                        Name = ta.Name,
+                        Supertype = global.SuperType.Name ?? "?",
+                        IsInferred = ta.IsInferred,
+                        Guid = ta.Guid.ToString("D")
+                    });
+                }
+            }
+
+            return FindMismatchedSubtypeClassifications(views);
+        }
+
+        /// <summary>
+        /// Guard-rail wrapper used by the post-write hooks (UpdateVisualStructure and the
+        /// genexus_edit Structure DSL path): the classification check is ADVISORY, so a
+        /// detection failure must never turn a successful write into an error — any
+        /// exception yields an empty issue list.
+        /// </summary>
+        internal JArray TryComputeSubtypeClassificationIssues(Transaction trn)
+        {
+            try { return ComputeSubtypeClassificationIssues(trn); }
+            catch { return new JArray(); }
+        }
+
+        /// <summary>
+        /// Pure detection kernel (unit-testable without the SDK). Given a level's subtype
+        /// attributes as lightweight views, returns the ones whose classification diverges
+        /// from their same-supertype siblings — sibling subtypes derived from the same
+        /// supertype on the same level must share classification (all INFERRED or all
+        /// stored), so a stored attribute among inferred siblings is the issue #97 bug.
+        /// </summary>
+        internal static JArray FindMismatchedSubtypeClassifications(IEnumerable<SubtypeAttrView> attrs)
+        {
+            var issues = new JArray();
+            if (attrs == null) return issues;
+
+            // Group by (level, supertype): the #97 rule is about same-supertype SIBLINGS
+            // ON THE SAME LEVEL. Two attributes sharing a supertype on DIFFERENT levels
+            // of the same transaction are independent memberships and must not flag each
+            // other (e.g. a stored subtype on a detail level next to an inferred one on
+            // the root level is legitimate).
+            var byLevelAndSupertype = new Dictionary<string, List<SubtypeAttrView>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var a in attrs)
+            {
+                if (a == null || string.IsNullOrEmpty(a.Supertype)) continue;
+                string key = (a.Level ?? string.Empty) + "\u0001" + a.Supertype;
+                if (!byLevelAndSupertype.TryGetValue(key, out var list))
+                {
+                    list = new List<SubtypeAttrView>();
+                    byLevelAndSupertype[key] = list;
+                }
+                list.Add(a);
+            }
+
+            foreach (var kv in byLevelAndSupertype)
+            {
+                bool anyInferred = kv.Value.Any(a => a.IsInferred);
+                bool anyStored = kv.Value.Any(a => !a.IsInferred);
+                if (!anyInferred || !anyStored) continue; // homogeneous — no mismatch
+                foreach (var a in kv.Value.Where(a => !a.IsInferred))
+                {
+                    issues.Add(new JObject
+                    {
+                        ["level"] = a.Level,
+                        ["attribute"] = a.Name,
+                        ["supertype"] = a.Supertype,
+                        ["expected"] = "INFERRED",
+                        ["actual"] = "SECONDARY",
+                        ["guid"] = a.Guid
+                    });
+                }
+            }
+
+            return issues;
+        }
+
+        // Lightweight, SDK-free projection of a level's subtype attribute — feeds the
+        // pure detection kernel above so the mismatch rule is unit-testable.
+        internal sealed class SubtypeAttrView
+        {
+            public string Level { get; set; }
+            public string Name { get; set; }
+            public string Supertype { get; set; }
+            public bool IsInferred { get; set; }
+            public string Guid { get; set; }
+        }
+
+        private static void CollectAllLevels(TransactionLevel parent, string path, List<(TransactionLevel Level, string Path)> all)
+        {
+            all.Add((parent, path));
+            foreach (TransactionLevel child in parent.Levels)
+            {
+                string childPath = string.Equals(path, "root", StringComparison.Ordinal) ? child.Name : path + "/" + child.Name;
+                CollectAllLevels(child, childPath, all);
             }
         }
 

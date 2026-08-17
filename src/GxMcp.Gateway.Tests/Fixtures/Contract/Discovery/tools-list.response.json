@@ -3074,7 +3074,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable; response includes versionToken). Write: move_attribute reorders the existing native TransactionAttribute; update_visual authors a Transaction/SDT structure; update_group edits SubType Group membership; create_index plans or creates an index with optimistic concurrency, exact post-save verification and rollback; drop_index removes an index; set_attribute, set_level, and set_domain edit SDK properties. move_attribute and create_index never run Specify, Generate, Build, Rebuild, compilation, reorganization, execution, tests, or Pattern application. Run genexus_lifecycle action=reorg separately after persisted index/type changes. For layout control trees use genexus_layout.",
+      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable; response includes versionToken). Write: move_attribute reorders the existing native TransactionAttribute; update_visual authors a Transaction/SDT structure; update_group edits SubType Group membership; create_index plans or creates an index with optimistic concurrency, exact post-save verification and rollback; drop_index removes an index; remove_attribute detaches a TransactionAttribute from a level via the native TransactionLevel.Items storage (preserving the KB-global Attribute and every SubtypeGroup membership) so agents can drop + re-add a misclassified subtype attribute to force re-derivation; check_subtypes runs the issue #97 guard-rail — flags subtype attributes (IS_SUBTYPE=True) classified as stored (SECONDARY) while their same-supertype siblings on the same level are derived (INFERRED), which silently creates a physical column and breaks supertype propagation; set_attribute, set_level, and set_domain edit SDK properties. move_attribute and create_index never run Specify, Generate, Build, Rebuild, compilation, reorganization, execution, tests, or Pattern application. Run genexus_lifecycle action=reorg separately after persisted index/type changes. For layout control trees use genexus_layout.",
       "inputSchema": {
         "examples": [
           {
@@ -3176,7 +3176,9 @@
               "set_domain",
               "get_logic",
               "update_group",
-              "move_attribute"
+              "move_attribute",
+              "remove_attribute",
+              "check_subtypes"
             ],
             "type": "string"
           },

@@ -338,6 +338,44 @@ namespace GxMcp.Worker.Services
                 ["opResults"] = opResultsJson,
                 ["write"] = writeJson
             };
+            // Issue #97 guard-rail: after a successful write that added or re-typed
+            // attributes, flag subtype attributes the SDK left classified as stored
+            // (SECONDARY) while their same-supertype siblings are derived (INFERRED) —
+            // a silent physical-column / supertype-propagation bug. Re-read the
+            // persisted Transaction so the check reflects what the SDK actually saved.
+            if (writeOk && ops.Any(o => string.Equals(o.Op, "add_attribute", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(o.Op, "set_attribute", StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    // Re-read with the resolved object's own type so a null request
+                    // typeFilter can't resolve to a homonym of another kind (an untyped
+                    // FindObject searches all types).
+                    string reReadType = typeFilter ?? obj.TypeDescriptor?.Name;
+                    var verifyObj = _objectService.FindObject(target, reReadType);
+                    if (verifyObj != null)
+                    {
+                        _objectService.MarkReadCacheDirty(verifyObj, "Structure");
+                        var fresh = _objectService.FindObject(target, reReadType) as global::Artech.Genexus.Common.Objects.Transaction;
+                        if (fresh != null)
+                        {
+                            var issues = _structureService?.TryComputeSubtypeClassificationIssues(fresh) ?? new JArray();
+                            if (issues.Count > 0)
+                            {
+                                resp["subtypeClassification"] = new JObject
+                                {
+                                    ["check"] = "subtype_inferred_mismatch",
+                                    ["status"] = "warning",
+                                    ["issues"] = issues,
+                                    ["hint"] = "Subtype attribute(s) are classified as stored (SECONDARY) instead of derived (INFERRED) — this creates a physical column and breaks supertype propagation. The SDK only recomputes the class through the IDE's SubtypeGroup editor; via MCP, remove the attribute (genexus_structure action=remove_attribute or a single remove_attribute op) and re-add it, then re-run genexus_structure action=check_subtypes."
+                                };
+                            }
+                        }
+                    }
+                }
+                catch { /* guard-rail must never break the write response */ }
+            }
+
             if (returnPostState)
                 resp["post_state"] = JsonPatchService.BuildPostState(currentDsl, newDsl, verbose, persistedAfter);
             return resp.ToString(Newtonsoft.Json.Formatting.None);
