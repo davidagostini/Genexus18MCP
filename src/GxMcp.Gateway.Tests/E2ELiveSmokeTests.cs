@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
@@ -260,6 +261,142 @@ namespace GxMcp.Gateway.Tests
             // (the bug found and fixed in v2.6.4 dev).
             Assert.True(validation["durationMs"]!.ToObject<long>() > 2000,
                 "validation must reflect a real build (>2s)");
+        }
+
+        [LiveKbFact]
+        public async Task Edit_AutoDeclareVariables_CreatesVariablesOnSourceWrite()
+        {
+            string stamp = DateTime.UtcNow.Ticks.ToString("X").Substring(DateTime.UtcNow.Ticks.ToString("X").Length - 6).ToLowerInvariant();
+            string proc = "TestAutoVar" + stamp;
+
+            try
+            {
+                var create = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = proc
+                });
+                Assert.True(!LiveGatewayHarness.IsToolError(create), "create failed: " + create?.ToString(Newtonsoft.Json.Formatting.None));
+
+                var edit = await _h.CallToolAsync("genexus_edit", new JObject
+                {
+                    ["name"] = proc,
+                    ["part"] = "Source",
+                    ["mode"] = "full",
+                    ["content"] = "&TotalCount = 100\r\n&DescriptionTag = 'LiveTest'",
+                    ["autoDeclareVariables"] = true
+                });
+                Assert.True(!LiveGatewayHarness.IsToolError(edit), "edit failed: " + edit?.ToString(Newtonsoft.Json.Formatting.None));
+
+                var readVars = await _h.CallToolAsync("genexus_read", new JObject
+                {
+                    ["name"] = proc,
+                    ["part"] = "Variables"
+                });
+                var payload = LiveGatewayHarness.ParseToolPayload(readVars);
+                string text = payload?.ToString(Newtonsoft.Json.Formatting.None) ?? "";
+                Assert.True(text.IndexOf("TotalCount", StringComparison.OrdinalIgnoreCase) >= 0,
+                    $"readVars text missing TotalCount. payload={text}, raw={readVars?.ToString(Newtonsoft.Json.Formatting.None)}");
+                Assert.True(text.IndexOf("DescriptionTag", StringComparison.OrdinalIgnoreCase) >= 0,
+                    $"readVars text missing DescriptionTag. payload={text}, raw={readVars?.ToString(Newtonsoft.Json.Formatting.None)}");
+            }
+            finally
+            {
+                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = proc, ["confirm"] = true });
+            }
+        }
+
+        [LiveKbFact]
+        public async Task Refactor_ExtractSubroutine_UpdatesSourceAndAddsSub()
+        {
+            string stamp = DateTime.UtcNow.Ticks.ToString("X").Substring(DateTime.UtcNow.Ticks.ToString("X").Length - 6).ToLowerInvariant();
+            string proc = "TestExtSub" + stamp;
+
+            try
+            {
+                var create = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = proc
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(create));
+
+                var edit = await _h.CallToolAsync("genexus_edit", new JObject
+                {
+                    ["name"] = proc,
+                    ["part"] = "Source",
+                    ["mode"] = "full",
+                    ["content"] = "&Counter = 1\r\n&Total = 50\r\n&Counter = &Counter + 1"
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(edit));
+
+                var extract = await _h.CallToolAsync("genexus_refactor", new JObject
+                {
+                    ["action"] = "ExtractSubroutine",
+                    ["target"] = proc,
+                    ["code"] = "&Total = 50",
+                    ["subroutineName"] = "InitTotal",
+                    ["dryRun"] = false
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(extract));
+
+                var readSource = await _h.CallToolAsync("genexus_read", new JObject
+                {
+                    ["name"] = proc,
+                    ["part"] = "Source"
+                });
+                var payload = LiveGatewayHarness.ParseToolPayload(readSource);
+                string source = payload?["content"]?.ToString() ?? payload?["source"]?.ToString() ?? payload?.ToString() ?? "";
+                Assert.Contains("Do 'InitTotal'", source);
+                Assert.Contains("Sub 'InitTotal'", source);
+                Assert.Contains("&Total = 50", source);
+                Assert.Contains("EndSub", source);
+            }
+            finally
+            {
+                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = proc, ["confirm"] = true });
+            }
+        }
+
+        [LiveKbFact]
+        public async Task Transfer_Export_WithDependencies_IncludesGraphClosure()
+        {
+            string stamp = DateTime.UtcNow.Ticks.ToString("X").Substring(DateTime.UtcNow.Ticks.ToString("X").Length - 6).ToLowerInvariant();
+            string proc = "TestExport" + stamp;
+            string tempXpz = Path.Combine(Path.GetTempPath(), proc + ".xpz");
+
+            try
+            {
+                var create = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = proc
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(create));
+
+                var export = await _h.CallToolAsync("genexus_transfer", new JObject
+                {
+                    ["action"] = "export",
+                    ["targets"] = new JArray { proc },
+                    ["includeDependencies"] = true,
+                    ["outputFile"] = tempXpz
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(export));
+
+                var payload = LiveGatewayHarness.ParseToolPayload(export);
+                var res = payload?["result"] as JObject ?? payload;
+                Assert.True(res?["includeDependencies"]?.ToObject<bool>() == true, "export payload=" + payload?.ToString(Newtonsoft.Json.Formatting.None));
+                Assert.NotNull(res?["dependenciesAdded"]);
+                Assert.True(File.Exists(tempXpz), "Exported .xpz file must exist");
+            }
+            finally
+            {
+                if (File.Exists(tempXpz)) File.Delete(tempXpz);
+                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = proc, ["confirm"] = true });
+            }
         }
     }
 }

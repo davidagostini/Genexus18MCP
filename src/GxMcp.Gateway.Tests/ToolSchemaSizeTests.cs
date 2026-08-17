@@ -128,7 +128,10 @@ namespace GxMcp.Gateway.Tests
             //   attribute removal (lets agents drop + re-add a misclassified subtype
             //   attribute) and the subtype-classification guard-rail. Measured ~20158;
             //   ~142 headroom.
-            Assert.True(approxTokens < 20300, $"tool_definitions.json is ~{approxTokens} tokens; budget 20300.");
+            //   2026-08-16 (Items A, B, D): 20300 → 20500 for genexus_edit autoDeclareVariables,
+            //   genexus_refactor ExtractSubroutine, and genexus_transfer includeDependencies.
+            //   Measured ~20313; ~187 headroom.
+            Assert.True(approxTokens < 20500, $"tool_definitions.json is ~{approxTokens} tokens; budget 20500.");
         }
     }
 }

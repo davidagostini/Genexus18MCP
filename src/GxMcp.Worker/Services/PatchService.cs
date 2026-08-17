@@ -149,7 +149,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false, string verifyMode = null, string baseVersion = null, bool rollbackOnFailure = false)
+        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false, string verifyMode = null, string baseVersion = null, bool rollbackOnFailure = false, bool autoInjectVariables = false)
         {
             // Friction 2026-05-22: capture entry timestamp so a NoMatch we see at
             // the end can be cross-checked against WriteService.WasTargetWrittenSince
@@ -721,7 +721,7 @@ namespace GxMcp.Worker.Services
                 // obj.Save() can advance the object's version and leave the changed ISource
                 // only in the live SDK instance. The full path saves the part explicitly and
                 // commits the object transaction, matching mode=full persistence semantics.
-                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
+                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: autoInjectVariables);
                 writeStopwatch.Stop();
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
                 JObject writePayload = ParseWriteResult(writeResult);

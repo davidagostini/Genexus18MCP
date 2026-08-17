@@ -28,5 +28,39 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("version-token", routed["baseVersion"]?.ToString());
             Assert.True(routed["rollbackOnFailure"]?.Value<bool>());
         }
+
+        [Fact]
+        public void Patch_ForwardsAutoDeclareVariables()
+        {
+            var args = new JObject
+            {
+                ["name"] = "SyntheticProcedure",
+                ["part"] = "Source",
+                ["mode"] = "patch",
+                ["operation"] = "Replace",
+                ["context"] = "old",
+                ["content"] = "new &MyVar",
+                ["autoDeclareVariables"] = true
+            };
+
+            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args));
+            Assert.True(routed["autoDeclareVariables"]?.Value<bool>());
+        }
+
+        [Fact]
+        public void FullWrite_ForwardsAutoDeclareVariables()
+        {
+            var args = new JObject
+            {
+                ["name"] = "SyntheticProcedure",
+                ["part"] = "Source",
+                ["mode"] = "full",
+                ["content"] = "new &MyVar = 1",
+                ["autoDeclareVariables"] = true
+            };
+
+            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args));
+            Assert.True(routed["autoDeclareVariables"]?.Value<bool>());
+        }
     }
 }

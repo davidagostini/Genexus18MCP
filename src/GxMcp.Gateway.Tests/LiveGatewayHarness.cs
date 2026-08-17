@@ -99,8 +99,18 @@ namespace GxMcp.Gateway.Tests
                 throw new InvalidOperationException("Gateway initialize did not return a result. stderr: " + _stderrBuf);
             // Send notifications/initialized (no response expected)
             SendNotification("notifications/initialized", new JObject());
+            // Open the test KB specified in GXMCP_TEST_KB
+            string? testKb = Environment.GetEnvironmentVariable("GXMCP_TEST_KB");
+            if (!string.IsNullOrEmpty(testKb))
+            {
+                await CallToolAsync("genexus_kb", new JObject
+                {
+                    ["action"] = "open",
+                    ["path"] = testKb
+                }, timeoutMs: 60_000);
+            }
             // Allow worker bootstrap to settle (BulkIndex etc.)
-            await Task.Delay(5000);
+            await Task.Delay(3000);
             _initialized = true;
         }
 

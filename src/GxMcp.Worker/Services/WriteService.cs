@@ -611,7 +611,8 @@ namespace GxMcp.Worker.Services
                     facadeArgs.ReplaceAll,
                     facadeArgs.VerifyMode,
                     facadeArgs.BaseVersion,
-                    facadeArgs.RollbackOnFailure);
+                    facadeArgs.RollbackOnFailure,
+                    facadeArgs.AutoInjectVariables);
             }
             else
             {
@@ -628,7 +629,7 @@ namespace GxMcp.Worker.Services
                     facadeArgs.TypeFilter,
                     true,
                     false,
-                    true,
+                    facadeArgs.AutoInjectVariables,
                     facadeArgs.DryRun,
                     facadeArgs.ExplicitBase64,
                     strictVerify);
@@ -802,7 +803,10 @@ namespace GxMcp.Worker.Services
                 // in the facade. Accept a couple of aliases for ergonomics.
                 BaseVersion = args["baseVersion"]?.ToString()
                     ?? args["expectedVersion"]?.ToString()
-                    ?? args["versionToken"]?.ToString()
+                    ?? args["versionToken"]?.ToString(),
+                AutoInjectVariables = args["autoDeclareVariables"]?.ToObject<bool?>()
+                    ?? args["autoInjectVariables"]?.ToObject<bool?>()
+                    ?? false
             };
         }
 
@@ -825,6 +829,7 @@ namespace GxMcp.Worker.Services
             public string VerifyMode { get; set; }
             public bool RollbackOnFailure { get; set; }
             public string BaseVersion { get; set; }
+            public bool AutoInjectVariables { get; set; }
         }
 
         // Returns a deduped list of glyphs in the args payload that cannot

@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Services;
 using GxMcp.Worker.Helpers;
@@ -28,11 +29,13 @@ namespace GxMcp.Worker.Services
     {
         private readonly KbService _kb;
         private readonly ObjectService _objects;
+        private readonly IndexCacheService _indexCache;
 
-        public TransferService(KbService kb, ObjectService objects)
+        public TransferService(KbService kb, ObjectService objects, IndexCacheService indexCache = null)
         {
             _kb = kb;
             _objects = objects;
+            _indexCache = indexCache;
         }
 
         public string Run(JObject args)
@@ -77,6 +80,10 @@ namespace GxMcp.Worker.Services
                 return McpResponse.Err(code: "BadArgs", message: "action=export requires targets[] (object names).", hint: "Pass targets=[\"ObjName1\",\"ObjName2\"].");
 
             string typeFilter = args?["type"]?.ToString();
+            bool includeDependencies = args?["includeDependencies"]?.ToObject<bool?>()
+                                    ?? args?["withDependencies"]?.ToObject<bool?>()
+                                    ?? false;
+
             var objs = new List<KBObject>();
             var missing = new JArray();
             var lookupErrors = new JArray();
@@ -98,6 +105,56 @@ namespace GxMcp.Worker.Services
                     target: string.Join(",", missing),
                     errorExtra: lookupErrors.Count > 0 ? new JObject { ["lookupErrors"] = lookupErrors } : null);
 
+            int seedCount = objs.Count;
+            var resolvedDependencies = new List<string>();
+
+            if (includeDependencies && _indexCache != null)
+            {
+                var index = _indexCache.GetIndex();
+                if (index != null && index.Objects != null)
+                {
+                    var visitedGuids = new HashSet<Guid>(objs.Select(o => o.Guid));
+                    var visitedNames = new HashSet<string>(objs.Select(o => o.Name), StringComparer.OrdinalIgnoreCase);
+                    var queue = new Queue<KBObject>(objs);
+
+                    while (queue.Count > 0)
+                    {
+                        var current = queue.Dequeue();
+                        string typeName = current.TypeDescriptor?.Name ?? "Object";
+                        string storageKey = typeName + ":" + current.Name;
+
+                        SearchIndex.IndexEntry entry = null;
+                        if (!index.Objects.TryGetValue(storageKey, out entry))
+                        {
+                            entry = index.Objects.Values.FirstOrDefault(e => string.Equals(e.Name, current.Name, StringComparison.OrdinalIgnoreCase));
+                        }
+
+                        if (entry != null)
+                        {
+                            var depNames = new List<string>();
+                            if (entry.Calls != null) depNames.AddRange(entry.Calls);
+                            if (entry.Tables != null) depNames.AddRange(entry.Tables);
+
+                            foreach (var depName in depNames)
+                            {
+                                if (string.IsNullOrWhiteSpace(depName) || visitedNames.Contains(depName)) continue;
+                                visitedNames.Add(depName);
+
+                                KBObject depObj = null;
+                                try { depObj = _objects?.FindObject(depName); } catch { }
+                                if (depObj != null && !visitedGuids.Contains(depObj.Guid))
+                                {
+                                    visitedGuids.Add(depObj.Guid);
+                                    objs.Add(depObj);
+                                    resolvedDependencies.Add(depObj.Name);
+                                    queue.Enqueue(depObj);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             var options = SilentExportOptions();
             bool ok = svc.Export(model, objs, outputFile, options);
 
@@ -108,6 +165,10 @@ namespace GxMcp.Worker.Services
                     ["success"] = ok,
                     ["outputFile"] = outputFile,
                     ["exportedCount"] = objs.Count,
+                    ["seedCount"] = seedCount,
+                    ["includeDependencies"] = includeDependencies,
+                    ["dependenciesAdded"] = resolvedDependencies.Count,
+                    ["resolvedDependencies"] = new JArray(resolvedDependencies),
                     ["notFound"] = missing,
                     ["lookupErrors"] = lookupErrors,
                     ["dependencyAware"] = true,

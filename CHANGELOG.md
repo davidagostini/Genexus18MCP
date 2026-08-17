@@ -2,11 +2,20 @@
 
 ## Unreleased
 
+## v2.41.6 - 2026-08-17
+
 ### Added
 
 - **Wildcard search support in `genexus_query`.** `genexus_query` now treats `query="*"` as a global search matching all indexed objects, rather than searching for the literal asterisk character.
 - **Automatic single-KB default promotion in Gateway.** When `config.json` declares exactly one KB in `Environment.KBs` and `DefaultKb` is not explicitly configured, the Gateway automatically promotes it to `DefaultKb`, eliminating the need for an explicit `genexus_kb action=open` before calling tools.
 - **Tolerant action auto-inference in `genexus_create`.** `genexus_create` automatically infers `action="object_atomic"` when `source`, `variables`, `rules`, or `parms` are provided, and `action="object"` when `name` and `type` are supplied without an explicit `action` key.
+- **Auto-variable declaration on `genexus_edit` (`autoDeclareVariables=true`).** When modifying `Source`, `Events`, `Rules`, or applying textual patches, setting `autoDeclareVariables=true` scans updated code for newly introduced `&Variable` references and automatically creates them in `VariablesPart`, inferring types from homonymous Attributes/Domains or default types.
+- **Local subroutine extraction in `genexus_refactor` (`action="ExtractSubroutine"`).** Extracts a designated code block into a local `Sub 'SubName' ... EndSub` within the object's source/events and replaces the callsite with `Do 'SubName'`, supporting `dryRun=true` preview.
+- **Transitive dependency closure export in `genexus_transfer` (`includeDependencies=true`).** When exporting an object to `.xpz`, setting `includeDependencies=true` navigates the `Calls` and `Tables` dependency graph in `SearchIndex` to gather and bundle all referenced objects and tables into a self-contained archive.
+
+### Internal
+
+- **Token budget bump in `ToolSchemaSizeTests`.** Bumped schema budget from 20,300 to 20,500 tokens to accommodate `autoDeclareVariables`, `ExtractSubroutine`, and `includeDependencies` schema additions.
 
 ## v2.41.5 - 2026-08-16
 

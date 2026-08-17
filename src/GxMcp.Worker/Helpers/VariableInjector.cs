@@ -21,7 +21,7 @@ namespace GxMcp.Worker.Helpers
 
         public static void InjectVariables(KBObject obj, string code, Models.SearchIndex index = null)
         {
-            var variablesPart = obj.Parts.Get<VariablesPart>();
+            var variablesPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj) ?? obj.Parts.Get<VariablesPart>();
             if (variablesPart == null) return;
 
             // Scan for &-tokens on source with string literals and comments blanked out, so an
@@ -44,6 +44,7 @@ namespace GxMcp.Worker.Helpers
                 sdtCandidates.Add(m.Groups[1].Value);
             }
 
+            bool injectedAny = false;
             foreach (var varName in varNames)
             {
                 if (!variablesPart.Variables.Any(v => v.Name.Equals(varName, StringComparison.OrdinalIgnoreCase)))
@@ -52,9 +53,25 @@ namespace GxMcp.Worker.Helpers
                     if (v != null)
                     {
                         variablesPart.Variables.Add(v);
+                        injectedAny = true;
                         Logger.Info($"Injected variable: {varName} into {obj.Name}");
                     }
                 }
+            }
+
+            if (injectedAny)
+            {
+                try
+                {
+                    var pType = variablesPart.GetType();
+                    var pDirtyProp = pType.GetProperty("Dirty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                                  ?? pType.GetProperty("IsDirty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (pDirtyProp != null && pDirtyProp.CanWrite)
+                    {
+                        pDirtyProp.SetValue(variablesPart, true);
+                    }
+                }
+                catch { /* best-effort */ }
             }
         }
 

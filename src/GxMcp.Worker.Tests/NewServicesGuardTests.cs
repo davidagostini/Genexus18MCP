@@ -111,6 +111,23 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void TransferService_Export_WithDependencies_ReturnsNoKbOpen()
+        {
+            var svc = new TransferService(null, null, null);
+            var jo = Parse(svc.Run(JObject.Parse("{\"action\":\"export\",\"targets\":[\"Customer\"],\"includeDependencies\":true,\"outputFile\":\"C:\\\\tmp\\\\test.xpz\"}")));
+            Assert.Equal("NoKbOpen", jo["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void RefactorService_ExtractSubroutine_MissingArgs_ReturnsError()
+        {
+            var svc = new RefactorService(null, null, null, null, null);
+            var result = svc.Refactor("Customer", "ExtractSubroutine", "{}");
+            var jo = Parse(result);
+            Assert.Equal("ExtractSubroutineArgsMissing", jo["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
         public void SecurityScanService_ReturnsNoKbOpen()
         {
             var svc = new SecurityScanService(null);

@@ -266,7 +266,8 @@ namespace GxMcp.Gateway.Routers
                             validationMode = args?["validationMode"]?.ToString(),
                             rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
                             verifyMode = args?["verifyMode"]?.ToString(),
-                            baseVersion = args?["baseVersion"]?.ToString()
+                            baseVersion = args?["baseVersion"]?.ToString(),
+                            autoDeclareVariables = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false
                         };
                     }
                     else
@@ -285,7 +286,8 @@ namespace GxMcp.Gateway.Routers
                             visualVerify = visualVerify,
                             validate = args?["validate"]?.ToString(),
                             validationMode = args?["validationMode"]?.ToString(),
-                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
+                            autoDeclareVariables = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false
                         };
                     }
                 }

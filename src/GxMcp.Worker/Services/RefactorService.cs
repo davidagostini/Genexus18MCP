@@ -36,6 +36,14 @@ namespace GxMcp.Worker.Services
                     return ExtractProcedure(target, data["code"]?.ToString(), data["procedureName"]?.ToString());
                 }
 
+                if (action == "ExtractSubroutine" || string.Equals(action, "extract_subroutine", StringComparison.OrdinalIgnoreCase)) {
+                    var data = JObject.Parse(payload);
+                    return ExtractSubroutine(target,
+                        data["code"]?.ToString() ?? data["codeToExtract"]?.ToString(),
+                        data["subroutineName"]?.ToString() ?? data["subroutine"]?.ToString() ?? data["name"]?.ToString(),
+                        dryRun);
+                }
+
                 if (action == "WWPSetCondition")
                 {
                     var data = JObject.Parse(payload);
@@ -377,6 +385,91 @@ namespace GxMcp.Worker.Services
                         why: "Confirm the source object is accessible and its parts are readable before retrying.")),
                     target: sourceObjectName);
             }
+        }
+
+        private string ExtractSubroutine(string sourceObjectName, string codeToExtract, string subroutineName, bool dryRun = false)
+        {
+            if (string.IsNullOrEmpty(codeToExtract) || string.IsNullOrEmpty(subroutineName))
+                return Models.McpResponse.Err(
+                    code: "ExtractSubroutineArgsMissing",
+                    message: "Code and subroutine name are required.",
+                    hint: "Provide both the extracted code block and the subroutine name.",
+                    target: sourceObjectName);
+
+            var sourceObj = _objectService.FindObject(sourceObjectName);
+            if (sourceObj == null) return Models.McpResponse.Err(
+                code: "ObjectNotFound",
+                message: "Source object not found.",
+                hint: "The source object for extraction is not available in the active Knowledge Base.",
+                nextSteps: new JArray(Models.McpResponse.NextStep(
+                    tool: "genexus_search",
+                    args: new JObject { ["query"] = sourceObjectName },
+                    why: "Search for the object to confirm it exists and find its exact name.")),
+                target: sourceObjectName);
+
+            string cleanSubName = subroutineName.Trim('\'', '\"', ' ');
+            string callCode = $"Do '{cleanSubName}'";
+
+            bool updated = false;
+            string matchedPartName = null;
+
+            foreach (var part in sourceObj.Parts.Cast<KBObjectPart>())
+            {
+                if (part is ISource sourcePart)
+                {
+                    string original = sourcePart.Source;
+                    if (string.IsNullOrEmpty(original)) continue;
+
+                    string normOriginal = original.Replace("\r\n", "\n");
+                    string normCode = codeToExtract.Replace("\r\n", "\n");
+
+                    if (normOriginal.Contains(normCode))
+                    {
+                        int idx = normOriginal.IndexOf(normCode, StringComparison.Ordinal);
+                        string replaced = normOriginal.Substring(0, idx) + callCode + normOriginal.Substring(idx + normCode.Length);
+                        string subDefinition = $"\n\nSub '{cleanSubName}'\n{normCode.Trim()}\nEndSub\n";
+                        string updatedSource = (replaced.TrimEnd() + subDefinition).Replace("\n", "\r\n");
+
+                        matchedPartName = part is ProcedurePart ? "Source" : (part is EventsPart ? "Events" : part.GetType().Name);
+                        if (!dryRun)
+                        {
+                            sourcePart.Source = updatedSource;
+                        }
+                        updated = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!updated)
+            {
+                return Models.McpResponse.Err(
+                    code: "CodeBlockNotFound",
+                    message: "Code block not found in source object.",
+                    hint: "The exact code block to extract was not found in any source part of the target object; ensure whitespace and formatting match verbatim.",
+                    nextSteps: new JArray(Models.McpResponse.NextStep(
+                        tool: "genexus_read",
+                        args: new JObject { ["name"] = sourceObjectName, ["part"] = "Source" },
+                        why: "Read the current source to locate the exact code block before retrying.")),
+                    target: sourceObjectName);
+            }
+
+            if (!dryRun)
+            {
+                sourceObj.EnsureSave();
+                _indexCacheService.UpdateEntry(sourceObj);
+            }
+
+            return Models.McpResponse.Ok(
+                target: sourceObjectName,
+                code: "SubroutineExtracted",
+                result: new JObject
+                {
+                    ["subroutine"] = cleanSubName,
+                    ["call"] = callCode,
+                    ["part"] = matchedPartName,
+                    ["dryRun"] = dryRun
+                });
         }
 
         private string RenameAttribute(string oldName, string newName)

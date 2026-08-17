@@ -1087,12 +1087,28 @@ namespace GxMcp.Gateway.Routers
                 {
                     module = "Refactor",
                     action,
-                    target = args?["objectName"]?.ToString(),
+                    target = args?["target"]?.ToString() ?? args?["objectName"]?.ToString(),
                     dryRun = refactorDryRun,
                     payload = new JObject
                     {
-                        ["code"] = args?["code"]?.ToString(),
+                        ["code"] = args?["code"]?.ToString() ?? args?["codeToExtract"]?.ToString(),
                         ["procedureName"] = args?["procedureName"]?.ToString()
+                    }.ToString()
+                };
+            }
+
+            if (action == "ExtractSubroutine" || string.Equals(action, "extract_subroutine", StringComparison.OrdinalIgnoreCase))
+            {
+                return new
+                {
+                    module = "Refactor",
+                    action = "ExtractSubroutine",
+                    target = args?["target"]?.ToString() ?? args?["objectName"]?.ToString(),
+                    dryRun = refactorDryRun,
+                    payload = new JObject
+                    {
+                        ["code"] = args?["code"]?.ToString() ?? args?["codeToExtract"]?.ToString(),
+                        ["subroutineName"] = args?["subroutineName"]?.ToString() ?? args?["subroutine"]?.ToString() ?? args?["name"]?.ToString()
                     }.ToString()
                 };
             }

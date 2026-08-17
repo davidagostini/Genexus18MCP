@@ -247,7 +247,7 @@ namespace GxMcp.Worker.Services
             _gamService = new GamService(_kbService);
             _mergeToolService = new MergeToolService(_kbService, _objectService);
             _kbVersionService = new KbVersionService(_kbService);
-            _transferService = new TransferService(_kbService, _objectService);
+            _transferService = new TransferService(_kbService, _objectService, _indexCacheService);
             _deployService = new DeployService(_kbService);
             _reorgImpactService = new ReorgImpactService(_kbService, _objectService);
             // B15: give drift_check the authoritative reorg-needed signal.
@@ -1284,6 +1284,7 @@ namespace GxMcp.Worker.Services
                 string writeValidate = args?["validate"]?.ToString();
                 bool writeDryRun = (args?["dryRun"]?.ToObject<bool?>() ?? false)
                     || string.Equals(writeValidate, "only", StringComparison.OrdinalIgnoreCase);
+                bool autoDeclareVars = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false;
                 var writeResp = _writeService.WriteObject(
                     target,
                     action,
@@ -1291,7 +1292,7 @@ namespace GxMcp.Worker.Services
                     args?["type"]?.ToString(),
                     true,
                     false,
-                    true,
+                    autoDeclareVars,
                     writeDryRun);
                 // issue #60 — validationMode="specify" runs the inline Specify pass against
                 // the written object and surfaces structured diagnostics (or rolls back).
@@ -1371,7 +1372,8 @@ namespace GxMcp.Worker.Services
                     args?["replaceAll"]?.ToObject<bool?>() ?? false,
                     args?["verifyMode"]?.ToString(),
                     args?["baseVersion"]?.ToString(),
-                    args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false);
+                    args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
+                    args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false);
                 // issue #60 — validationMode="specify" runs the inline Specify pass after the
                 // write and surfaces structured diagnostics (or rolls back).
                 patchResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(patchResp, target, args, args?["part"]?.ToString());

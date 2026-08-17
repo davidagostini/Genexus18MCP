@@ -2545,9 +2545,10 @@ namespace GxMcp.Worker.Services
                 }
 
                 // Handle Variables Part specially
-                if (part.GetType().Name.Equals("VariablesPart"))
+                var varPart = (part as global::Artech.Genexus.Common.Parts.VariablesPart) ?? GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj);
+                if (varPart != null && (part is global::Artech.Genexus.Common.Parts.VariablesPart || part.GetType().Name.IndexOf("Variables", StringComparison.OrdinalIgnoreCase) >= 0 || partName.Equals("Variables", StringComparison.OrdinalIgnoreCase)))
                 {
-                    string varText = VariableInjector.GetVariablesAsText((dynamic)part);
+                    string varText = VariableInjector.GetVariablesAsText(varPart);
                     ProcessTextResponse(varText, result, client);
                     Logger.Info("ReadSource (Variables) SUCCESS");
                 }
@@ -2821,7 +2822,8 @@ namespace GxMcp.Worker.Services
             try
             {
                 // Nirvana v19.4: Auto-Inject Full Context (Variables + Data Schema + Pattern)
-                var varPart = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.GetType().Name.Equals("VariablesPart"));
+                var varPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj)
+                    ?? obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.GetType().Name.IndexOf("Variables", StringComparison.OrdinalIgnoreCase) >= 0);
                 if (varPart != null)
                 {
                     var referencedVars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2945,9 +2947,8 @@ namespace GxMcp.Worker.Services
             if (parameters == null || parameters.Count == 0) return;
             try
             {
-                dynamic vPart = obj.Parts
-                    .Cast<KBObjectPart>()
-                    .FirstOrDefault(p => p.GetType().Name.Equals("VariablesPart", StringComparison.OrdinalIgnoreCase));
+                dynamic vPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj)
+                    ?? obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.GetType().Name.IndexOf("Variables", StringComparison.OrdinalIgnoreCase) >= 0);
                 if (vPart == null) return;
 
                 var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
