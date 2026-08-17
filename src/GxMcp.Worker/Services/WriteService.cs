@@ -589,7 +589,7 @@ namespace GxMcp.Worker.Services
             // clobbering the user's concurrent change. No token → no guard (back-compat).
             if (!string.IsNullOrEmpty(facadeArgs.BaseVersion) && !facadeArgs.DryRun)
             {
-                string staleErr = CheckStaleVersion(target, facadeArgs.TypeFilter, facadeArgs.BaseVersion);
+                string staleErr = CheckStaleVersion(target, facadeArgs.PartName, facadeArgs.TypeFilter, facadeArgs.BaseVersion);
                 if (staleErr != null) return staleErr;
             }
 
@@ -712,15 +712,35 @@ namespace GxMcp.Worker.Services
             catch { return null; }
         }
 
+        internal static string ComputeContentVersionToken(
+            global::Artech.Architecture.Common.Objects.KBObject obj,
+            string content)
+        {
+            string objectToken = ComputeVersionToken(obj);
+            if (objectToken == null) return null;
+            return objectToken + ":" + ComputeContentFingerprint(content);
+        }
+
+        internal static string ComputeContentFingerprint(string content)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                byte[] bytes = System.Text.Encoding.UTF8.GetBytes(content ?? string.Empty);
+                return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", string.Empty).ToLowerInvariant();
+            }
+        }
+
         // Returns a StaleObject error envelope when the object's current version token
         // no longer matches the caller-supplied baseVersion, else null (proceed).
-        private string CheckStaleVersion(string target, string typeFilter, string baseVersion)
+        private string CheckStaleVersion(string target, string partName, string typeFilter, string baseVersion)
         {
-            global::Artech.Architecture.Common.Objects.KBObject obj;
-            try { obj = _objectService.FindObject(target, typeFilter); }
+            string current;
+            try
+            {
+                string read = _objectService.ReadObjectSourceForVerification(target, partName, typeFilter);
+                current = JObject.Parse(read)["versionToken"]?.ToString();
+            }
             catch { return null; }
-            if (obj == null) return null; // not-found is handled by the normal write path
-            string current = ComputeVersionToken(obj);
             if (current == null) return null; // can't compute a token → don't block the write
             if (string.Equals(current, baseVersion, StringComparison.Ordinal)) return null; // unchanged — proceed
 

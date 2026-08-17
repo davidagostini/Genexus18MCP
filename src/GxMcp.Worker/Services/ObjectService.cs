@@ -1938,6 +1938,16 @@ namespace GxMcp.Worker.Services
             return result;
         }
 
+        internal KBObject FindObjectFresh(string target, string typeFilter = null)
+        {
+            var seed = FindObject(target, typeFilter);
+            if (seed == null) return null;
+
+            MarkReadCacheDirty(seed);
+            var kb = _kbService.GetKB();
+            return kb?.DesignModel.Objects.Get(seed.Guid);
+        }
+
         public string ExtractAllParts(string target, string client = "ide", string typeFilter = null)
         {
             var sw = Stopwatch.StartNew();
@@ -2046,17 +2056,24 @@ namespace GxMcp.Worker.Services
         /// </summary>
         internal string ReadObjectSourceForVerification(string target, string partName, string typeFilter = null)
         {
-            var obj = FindObject(target, typeFilter);
+            var obj = FindObjectFresh(target, typeFilter);
             if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
 
             string resolvedPart = ResolvePartName(obj, partName);
-            return ReadObjectSourceInternal(
+            string response = ReadObjectSourceInternal(
                 obj,
                 resolvedPart,
                 offset: 0,
                 limit: 0,
                 client: "mcp",
                 minimize: false);
+            try
+            {
+                var payload = JObject.Parse(response);
+                payload["verificationSource"] = "fresh-sdk-read";
+                return payload.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch { return response; }
         }
 
         /// <summary>
@@ -2728,7 +2745,7 @@ namespace GxMcp.Worker.Services
             // Optimistic-concurrency token (stale-edit fix): pass this back as
             // baseVersion on genexus_edit so a concurrent IDE change is caught as
             // StaleObject instead of being silently overwritten.
-            try { var vt = WriteService.ComputeVersionToken(obj); if (vt != null) result["versionToken"] = vt; } catch { }
+            try { var vt = WriteService.ComputeContentVersionToken(obj, content); if (vt != null) result["versionToken"] = vt; } catch { }
             if (page.SuggestedNextOffset.HasValue) result["suggestedNextOffset"] = page.SuggestedNextOffset.Value;
             if (page.SuggestedNextLimit.HasValue) result["suggestedNextLimit"] = page.SuggestedNextLimit.Value;
 

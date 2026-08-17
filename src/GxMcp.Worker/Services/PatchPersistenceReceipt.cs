@@ -14,6 +14,7 @@ namespace GxMcp.Worker.Services
             TextPersistenceVerifier.Result verification,
             string requestedReplacement,
             string originalContext,
+            string savedSource,
             string persistedSource,
             string verifyMode,
             string partName,
@@ -42,7 +43,8 @@ namespace GxMcp.Worker.Services
             bool replacementPresent = canonicalReplacement.Length == 0 || replacementMatchCount > 0;
             bool verified = verification.Matches && replacementPresent;
 
-            JObject verificationJson = verification.ToJson(reReadConfirmed: true);
+            JObject verificationJson = verification.ToJson(reReadConfirmed: verified);
+            verificationJson["readCompleted"] = true;
             verificationJson["matchCount"] = matchCount;
             verificationJson["replacementMatchCount"] = replacementMatchCount;
             verificationJson["replacementPresent"] = replacementPresent;
@@ -51,10 +53,29 @@ namespace GxMcp.Worker.Services
             payload["persistedMatchCount"] = persistedMatchCount;
             payload["oldContentPresent"] = persistedMatchCount > 0;
             payload["replacementPresent"] = replacementPresent;
-            payload["reReadConfirmed"] = true;
+            payload["reReadConfirmed"] = verified;
+            verificationJson["source"] = "fresh-sdk-read";
             payload["verification"] = verificationJson;
+            AttachContentEvidence(payload, savedSource, savedSource, persistedSource);
             return verified;
         }
+
+        internal static void AttachContentEvidence(
+            JObject payload,
+            string requestedSource,
+            string savedSource,
+            string reReadSource)
+        {
+            payload["content"] = new JObject
+            {
+                ["requested"] = Describe(requestedSource),
+                ["saved"] = Describe(savedSource),
+                ["reRead"] = Describe(reReadSource)
+            };
+        }
+
+        internal static bool ShouldRollback(bool persistedMatches, bool rollbackOnFailure)
+            => !persistedMatches && rollbackOnFailure;
 
         internal static void MarkVerified(JObject payload, bool saved)
         {
@@ -101,6 +122,18 @@ namespace GxMcp.Worker.Services
                 ["requestedHash"] = verification?.RequestedHash,
                 ["persistedHash"] = verification?.PersistedHash,
                 ["error"] = verified ? JValue.CreateNull() : (JToken)(error ?? "Rollback could not be verified.")
+            };
+        }
+
+        private static JToken Describe(string value)
+        {
+            if (value == null) return JValue.CreateNull();
+            const int cap = 240;
+            return new JObject
+            {
+                ["hash"] = TextPersistenceVerifier.Sha256(value),
+                ["length"] = value.Length,
+                ["snippet"] = value.Length <= cap ? value : value.Substring(0, cap) + "…[truncated]"
             };
         }
     }

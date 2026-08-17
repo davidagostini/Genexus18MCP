@@ -2,16 +2,11 @@
 
 ## Unreleased
 
-## v2.41.4 - 2026-08-16
-
 ### Fixed
 
-- **Subtype attributes added via MCP no longer silently misclassified (issue #97).** A subtype attribute (`IS_SUBTYPE=True`) added to a Transaction level programmatically could come out of the SDK classified as stored (`SECONDARY`) instead of derived (`INFERRED`), silently creating a physical column and breaking supertype propagation. New `genexus_structure action=check_subtypes` runs the guard-rail — it flags subtype attributes classified `SECONDARY` while their same-supertype siblings on the same level are `INFERRED` — and the post-write verification now appends a structured `subtypeClassification` warning to `genexus_edit part=Structure` ops and `genexus_structure update_visual` responses instead of reporting silent success. `genexus_structure action=remove_attribute` is now wired to the native `TransactionLevel.Items` removal (preserving the KB-global Attribute and every SubtypeGroup membership), so agents can drop + re-add a misclassified attribute to force re-derivation without the IDE. Fixes [#97](https://github.com/lennix1337/Genexus18MCP/issues/97).
+- **`genexus_edit mode=patch` no longer reverts a successfully verified Source when `verifyRollback=true`.** Rollback is now restricted to post-save divergence with `rollbackOnFailure=true`; persistence verification performs a fresh, complete SDK read and reports requested, saved, and independently re-read content separately. Source version tokens include the persisted content fingerprint, so rapid sequential saves cannot reuse a stale timestamp token. Thanks to [@davidagostini](https://github.com/davidagostini) — see PR [#98](https://github.com/lennix1337/Genexus18MCP/pull/98).
 
-### Changed
-
-- **Redundant JSON clones and parses removed across Gateway and Worker.** `BuildWorkerRpcRequest` is zero-copy (was 5 `DeepClone`s per request); worker responses are parsed once instead of three times (parsed `JObject` threaded through `OnRpcResponse` + `PendingWorkerRequest`); outgoing commands no longer re-parsed on the write path (`id`/`method` ride the channel item); response payloads are normalized in place instead of `DeepClone`d; the semantic-cache key is only built when a hit is possible (mutating tools skip the payload-serializing lookup); per-request instrumentation logs are gateable via `GXMCP_VERBOSE_LOGS=0`.
-- **Worker search hot path allocations and parallelism.** Precompiled query-filter regexes; `usedby:` filter resolves through a derived `ByNameIndex` multimap instead of a full-object scan; PLINQ only engages at ≥2048 candidates (calibrated by the new `SearchRankParallelismBenchmark` — PLINQ measured 1.17–1.46× slower below that and allocates up to 2.2× more).
+## v2.41.4 - 2026-08-16
 
 ## v2.41.3 - 2026-08-15
 

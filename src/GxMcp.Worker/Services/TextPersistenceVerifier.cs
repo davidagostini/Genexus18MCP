@@ -217,7 +217,7 @@ namespace GxMcp.Worker.Services
 
         private static string Clip(string value) => value.Length <= 160 ? value : value.Substring(0, 160) + "…";
         private static bool IsWordish(char value) => char.IsLetterOrDigit(value) || value == '_' || value == '&' || value == '#';
-        private static string Sha256(string value)
+        internal static string Sha256(string value)
         {
             using (var sha = SHA256.Create())
                 return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value ?? string.Empty))).Replace("-", string.Empty).ToLowerInvariant();

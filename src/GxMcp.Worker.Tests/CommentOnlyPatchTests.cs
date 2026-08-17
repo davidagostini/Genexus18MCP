@@ -82,13 +82,25 @@ namespace GxMcp.Worker.Tests
             var verification = TextPersistenceVerifier.Evaluate(after, after, "exact", "Source");
 
             bool verified = PatchPersistenceReceipt.AttachVerification(
-                payload, verification, after, before, after, "exact", "Source", 1, commentOnly: true);
+                payload, verification, after, before, after, after, "exact", "Source", 1, commentOnly: true);
 
             Assert.True(verified);
             Assert.Equal(0, payload["persistedMatchCount"]?.Value<int>());
             Assert.False(payload["oldContentPresent"]?.Value<bool>());
             Assert.True(payload["replacementPresent"]?.Value<bool>());
             Assert.True(payload["reReadConfirmed"]?.Value<bool>());
+            Assert.Equal("fresh-sdk-read", payload["verification"]?["source"]?.ToString());
+            Assert.NotNull(payload["content"]?["requested"]?["hash"]);
+            Assert.NotNull(payload["content"]?["saved"]?["hash"]);
+            Assert.NotNull(payload["content"]?["reRead"]?["hash"]);
+        }
+
+        [Fact]
+        public void RollbackPolicy_NeverRevertsAConfirmedWrite()
+        {
+            Assert.False(PatchPersistenceReceipt.ShouldRollback(persistedMatches: true, rollbackOnFailure: true));
+            Assert.True(PatchPersistenceReceipt.ShouldRollback(persistedMatches: false, rollbackOnFailure: true));
+            Assert.False(PatchPersistenceReceipt.ShouldRollback(persistedMatches: false, rollbackOnFailure: false));
         }
 
         [Fact]
