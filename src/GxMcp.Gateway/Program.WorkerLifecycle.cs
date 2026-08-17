@@ -186,10 +186,18 @@ namespace GxMcp.Gateway
             BroadcastResourcesListChanged("worker_restarted");
         }
 
-        private static void HandleWorkerResponse(string json)
+        private static void HandleWorkerResponse(string json, JObject? val)
         {
             try {
-                var val = JObject.Parse(json);
+                // PERFORMANCE (perf-review): `val` is the parsed envelope WorkerProcess
+                // already produced to route the line — no re-parse here (this was a full
+                // JObject.Parse of every response, often a large search/read payload).
+                // Defensive fallback only if the upstream parse failed.
+                if (val == null)
+                {
+                    try { val = JObject.Parse(json); }
+                    catch { Log("HandleWorkerResponse Error: could not parse worker response."); return; }
+                }
                 string? id = val["id"]?.ToString();
 
                 if (string.IsNullOrEmpty(id))
@@ -246,6 +254,9 @@ namespace GxMcp.Gateway
                 _operationTracker.CompleteFromWorker(id, val);
                 if (_pendingRequests.TryRemove(id, out var pending))
                 {
+                    // PERF: hand the parsed envelope to the caller so SendWorkerCommandAsync
+                    // doesn't JObject.Parse the raw json a third time.
+                    pending.ParsedResponse = val;
                     pending.CompletionSource.TrySetResult(json);
                     if (!string.IsNullOrWhiteSpace(pending.OperationId))
                     {
@@ -273,27 +284,38 @@ namespace GxMcp.Gateway
             {
                 double ms = (DateTime.UtcNow - createdAtUtc).TotalMilliseconds;
                 ToolLatencyStats.Record(toolName, ms);
-                Log($"[TOOL-LATENCY] tool={toolName} ms={(long)ms}");
+                // PERF: per-request instrumentation line — gated so high-throughput
+                // pipelines can drop the DateTime formatting + lock + disk write per call.
+                if (_verboseRequestLogs) Log($"[TOOL-LATENCY] tool={toolName} ms={(long)ms}");
             }
             catch { /* instrumentation must never break the call */ }
         }
 
         private static JObject BuildWorkerRpcRequest(JObject workerCommand, string requestId, string? operationId = null)
         {
+            // PERFORMANCE (perf-review): zero-copy RPC envelope. The previous version
+            // DeepCloned every hoisted field AND the whole command under `params` — 5
+            // full-tree copies per request, then a single serialization. For
+            // payload-heavy tools (genexus_edit with 50 targets) that was the largest
+            // per-call allocation on the send path. workerCommand is never mutated
+            // after `correlationId` is stamped (SendWorkerCommandAsync only reads it,
+            // including on a worker-crash retry), so sharing the same JToken instances
+            // is safe: the worker reads these fields and never mutates the request
+            // before it is serialized.
             var rpc = new JObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = requestId,
                 ["method"] = workerCommand["module"]?.ToString() ?? string.Empty,
-                ["action"] = workerCommand["action"]?.DeepClone(),
-                ["target"] = workerCommand["target"]?.DeepClone(),
-                ["payload"] = workerCommand["payload"]?.DeepClone(),
+                ["action"] = workerCommand["action"],
+                ["target"] = workerCommand["target"],
+                ["payload"] = workerCommand["payload"],
                 // Hoist dryRun alongside action/target/payload: several worker handlers
                 // (Refactor, index, build, run, github) read it from the top level of the
                 // request, but it only ever arrived nested under params — so dryRun was
                 // silently dropped and those previews executed for real. Carry it up too.
-                ["dryRun"] = workerCommand["dryRun"]?.DeepClone(),
-                ["params"] = workerCommand.DeepClone()
+                ["dryRun"] = workerCommand["dryRun"],
+                ["params"] = workerCommand
             };
 
             if (!string.IsNullOrWhiteSpace(operationId))
@@ -416,11 +438,14 @@ namespace GxMcp.Gateway
                     _operationTracker.LinkRequest(attemptRequestId, operationId);
                 }
 
-                await worker.SendCommandAsync(workerRequest.ToString(Formatting.None));
+                // PERF: pass the JObject so WorkerProcess doesn't re-parse the
+                // serialized command on the write path (it serializes exactly once).
+                await worker.SendCommandAsync(workerRequest);
 
                 if (timeoutMs <= 0)
                 {
-                    var workerResponse = JObject.Parse(await pending.CompletionSource.Task.ConfigureAwait(false));
+                    var workerResponse = pending.ParsedResponse
+                        ?? JObject.Parse(await pending.CompletionSource.Task.ConfigureAwait(false));
                     if (ShouldRetryWorkerCrash(workerResponse, toolName, workerAttempt))
                     {
                         Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");
@@ -462,7 +487,8 @@ namespace GxMcp.Gateway
                     pending.CompletionSource.Task, effectiveTimeoutMs, progressToken, heartbeat, toolName);
                 if (workerCompleted)
                 {
-                    var workerResponse = JObject.Parse(await pending.CompletionSource.Task);
+                    var workerResponse = pending.ParsedResponse
+                        ?? JObject.Parse(await pending.CompletionSource.Task);
                     if (ShouldRetryWorkerCrash(workerResponse, toolName, workerAttempt))
                     {
                         Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");

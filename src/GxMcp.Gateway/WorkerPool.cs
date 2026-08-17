@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
 {
@@ -47,7 +48,8 @@ namespace GxMcp.Gateway
         // protects the capacity/eviction window, which is cheap and infrequent.
         private readonly object _capacityLock = new object();
 
-        public event Action<string>? OnRpcResponse;
+        // (raw string + already-parsed JObject) — see WorkerProcess.OnRpcResponse.
+        public event Action<string, JObject>? OnRpcResponse;
         public event Action<KbHandle, WorkerStopReason>? OnWorkerExited;
 
         // Plan 031: test-only seam. When set, SpawnWorkerAsync uses this instead of
@@ -199,7 +201,7 @@ namespace GxMcp.Gateway
                 WorkerProcess worker = SpawnFactoryForTest != null
                     ? SpawnFactoryForTest(handle)
                     : new WorkerProcess(_config, handle);
-                worker.OnRpcResponse += json => OnRpcResponse?.Invoke(json);
+                worker.OnRpcResponse += (json, parsed) => OnRpcResponse?.Invoke(json, parsed);
                 var capturedHandle = handle;
                 worker.OnWorkerExited += (reason) =>
                 {

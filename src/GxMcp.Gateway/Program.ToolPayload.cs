@@ -389,6 +389,25 @@ namespace GxMcp.Gateway
             }
         }
 
+        // PERF: primary-collection keys probed by NormalizeToolPayloadForAxi on every
+        // response. Was a per-call allocated string[] before the perf-review pass.
+        private static readonly string[] CollectionKeys =
+        {
+            "results", "objects", "items", "tools", "checks", "entries", "nodes", "controls",
+            // Additional primary-collection keys used by non-search tools:
+            "endpoints", "history", "snapshots", "versions", "modules",
+            "pending", "ignored", "conflicts", "targets", "pipelines"
+        };
+
+        // PERF: compact-projection field sets are immutable and reused across every
+        // query/list response — no per-call HashSet allocation.
+        private static readonly HashSet<string> CompactFieldsQuery =
+            new HashSet<string>(new[] { "name", "type", "path", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> CompactFieldsListObjects =
+            new HashSet<string>(new[] { "name", "type", "path", "parentPath", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> MinimalProjectionFields =
+            new HashSet<string>(new[] { "name", "type", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+
         internal static JObject BuildToolTextResponse(JToken? idToken, JToken payload, bool isError, string? toolName = null, JObject? toolArgs = null)
         {
             return new JObject
@@ -446,13 +465,6 @@ namespace GxMcp.Gateway
 
             bool shouldProject = requestedFields != null && requestedFields.Count > 0 && ShouldProjectFieldsForTool(toolName);
 
-            string[] collectionKeys = {
-                "results", "objects", "items", "tools", "checks", "entries", "nodes", "controls",
-                // Additional primary-collection keys used by non-search tools:
-                "endpoints", "history", "snapshots", "versions", "modules",
-                "pending", "ignored", "conflicts", "targets", "pipelines"
-            };
-
             JObject obj;
             string? matchedKey = null;
 
@@ -466,7 +478,7 @@ namespace GxMcp.Gateway
             }
             else if (payload is JObject objPayload)
             {
-                matchedKey = collectionKeys.FirstOrDefault(k => objPayload[k] is JArray);
+                matchedKey = CollectionKeys.FirstOrDefault(k => objPayload[k] is JArray);
                 if (shouldProject && matchedKey != null)
                 {
                     obj = new JObject();
@@ -484,7 +496,15 @@ namespace GxMcp.Gateway
                 }
                 else
                 {
-                    obj = (JObject)objPayload.DeepClone();
+                    // PERFORMANCE (perf-review): mutate the payload in place instead of
+                    // DeepCloning it. The tree is exclusively owned by this response path
+                    // at this point: TruncateResponseIfNeeded already mutates it upstream,
+                    // OperationTracker.DeepClone()s its telemetry snapshot, the semantic
+                    // cache hands out clones on hit, and IdempotencyMiddleware clones
+                    // before storing. The old DeepClone copied the full tree of EVERY
+                    // response — the single largest per-response allocation for
+                    // genexus_read / genexus_whoami / edit results.
+                    obj = objPayload;
                 }
             }
             else
@@ -532,7 +552,7 @@ namespace GxMcp.Gateway
             JObject collectionHost = obj;
             if (matchedKey == null && obj["result"] is JObject resultObj)
             {
-                matchedKey = collectionKeys.FirstOrDefault(k => resultObj[k] is JArray);
+                matchedKey = CollectionKeys.FirstOrDefault(k => resultObj[k] is JArray);
                 if (matchedKey != null)
                 {
                     collectionHost = resultObj;
@@ -760,9 +780,8 @@ namespace GxMcp.Gateway
                 // exactly: {name, type, lastUpdate}. (Prior versions also whitelisted
                 // 'kind' defensively but no worker emits it today — keeping the
                 // field-set tight so 'minimal' is honest about its contract.)
-                return new HashSet<string>(
-                    new[] { "name", "type", "lastUpdate" },
-                    StringComparer.OrdinalIgnoreCase);
+                // PERF: cached static set — immutable, reused across responses.
+                return MinimalProjectionFields;
             }
             if (p == "standard")
             {
@@ -815,11 +834,13 @@ namespace GxMcp.Gateway
 
         private static HashSet<string>? GetDefaultCompactFields(string toolName)
         {
+            // PERF: cached statics (see CompactFields* fields above) — the caller
+            // only reads them (Contains/Count/OrderBy), never mutates.
             if (string.Equals(toolName, "genexus_query", StringComparison.OrdinalIgnoreCase))
             {
                 // v2.6.8: lastUpdate is part of the compact projection — same
                 // rationale as list_objects (small, answers "what changed").
-                return new HashSet<string>(new[] { "name", "type", "path", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+                return CompactFieldsQuery;
             }
 
             if (string.Equals(toolName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase))
@@ -827,7 +848,7 @@ namespace GxMcp.Gateway
                 // v2.6.8: keep lastUpdate in the compact projection — it's the
                 // signal that powers "what changed?" workflows and is cheap (~30b).
                 // createdAt/lastModifiedBy stay verbose-only at the worker.
-                return new HashSet<string>(new[] { "name", "type", "path", "parentPath", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+                return CompactFieldsListObjects;
             }
 
             return null;

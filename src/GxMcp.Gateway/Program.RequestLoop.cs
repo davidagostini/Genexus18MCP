@@ -1247,10 +1247,16 @@ namespace GxMcp.Gateway
                     string tName = tcParams["name"]?.ToString() ?? "";
                     var tArgs = tcParams["arguments"] as JObject;
 
-                    // 1. CACHE INVALIDATION: If it's a write operation or a re-index, clear the cache
-                    if (IsMutatingTool(tName, tArgs))
+                    // 1. CACHE INVALIDATION: If it's a write operation or a re-index, clear the cache.
+                    // PERF: compute once so the semantic-cache read below can skip the
+                    // (payload-serializing) key construction for mutating tools — the cache
+                    // was just cleared, so a lookup would be a guaranteed miss anyway.
+                    // genexus_edit used to serialize its full source payload into a key
+                    // for that doomed lookup on every call.
+                    bool isMutating = IsMutatingTool(tName, tArgs);
+                    if (isMutating)
                     {
-                        Log($"[Cache] Invalidation triggered by {tName}");
+                        if (_verboseRequestLogs) Log($"[Cache] Invalidation triggered by {tName}");
                         _semanticCache.Clear();
                         BroadcastResourcesListChanged($"cache_invalidated:{tName}");
                         BroadcastResourceUpdated("genexus://objects", $"tool:{tName}");
@@ -1275,10 +1281,17 @@ namespace GxMcp.Gateway
                     // worker is single-KB, so an identical read against KB-B could
                     // otherwise replay KB-A's cached result).
                     string kbScope = _currentKb.Value?.NormalizedAlias ?? "";
-                    string cKey = $"{kbScope}|{tName}:{tArgs?.ToString(Formatting.None)}";
-                    if (!isLiveTool && _semanticCache.TryGetValue(cKey, out var cachedResponse))
+                    // PERF: only build the key (which serializes the whole args tree) when
+                    // a lookup can possibly hit. Mutating tools just cleared the cache
+                    // (guaranteed miss) and live tools never read from it, so for those
+                    // the key — and the expensive payload ToString for genexus_edit/write
+                    // — is pure waste.
+                    string? cKey = !isMutating && !isLiveTool
+                        ? $"{kbScope}|{tName}:{tArgs?.ToString(Formatting.None)}"
+                        : null;
+                    if (cKey != null && _semanticCache.TryGetValue(cKey, out var cachedResponse))
                     {
-                        Log($"[Cache] HIT for {tName}");
+                        if (_verboseRequestLogs) Log($"[Cache] HIT for {tName}");
                         var cached = cachedResponse["result"] as JObject;
                         if (cached != null) return (JObject)cached.DeepClone();
                     }
@@ -1976,7 +1989,11 @@ namespace GxMcp.Gateway
                                               || string.Equals(s, "Running", StringComparison.OrdinalIgnoreCase);
                             }
 
-                            if (!isErr && !isTransient && !tName.Contains("write") && !tName.Contains("patch") && !isLiveTool)
+                            // PERF: `cKey != null` also excludes mutating tools (which
+                            // cleared the cache and must not pollute it with a write
+                            // result). The old `Contains("write")/Contains("patch")` check
+                            // missed tools like genexus_edit.
+                            if (!isErr && !isTransient && !tName.Contains("write") && !tName.Contains("patch") && !isLiveTool && cKey != null)
                             {
                                 // Store full envelope in semantic cache (rebuilt on hit above)
                                 _semanticCache[cKey] = new JObject

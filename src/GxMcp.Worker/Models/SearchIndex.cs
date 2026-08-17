@@ -39,6 +39,16 @@ namespace GxMcp.Worker.Models
         [JsonIgnore]
         public ConcurrentDictionary<string, HashSet<string>> DomainIndex { get; set; }
 
+        // PERF (perf-review): Name → storage keys multimap so SearchService's
+        // `usedby:` filter doesn't scan every object to find entries by name. Unlike
+        // IndexCacheService's last-write-wins _byNameIndex (single entry per name),
+        // this keeps ALL entries sharing a bare Name across types (Attribute:X and
+        // Domain:X both exist), preserving the semantics of the old full scan. Built
+        // alongside TypeIndex/DomainIndex in BuildParentIndex and maintained by the
+        // same incremental hooks; not serialized (derivable, cheap to rebuild).
+        [JsonIgnore]
+        public ConcurrentDictionary<string, HashSet<string>> ByNameIndex { get; set; }
+
         public class IndexEntry
         {
             public string Guid { get; set; }

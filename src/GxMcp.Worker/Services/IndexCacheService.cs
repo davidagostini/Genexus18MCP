@@ -558,6 +558,9 @@ namespace GxMcp.Worker.Services
             // Plan 002: Type/BusinessDomain derived indexes, built in the same pass.
             var typeIndex = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var domainIndex = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            // PERF (perf-review): Name → storage keys multimap (all entries sharing a
+            // bare Name across types), so usedby:/name lookups skip the O(n) scan.
+            var nameIndex = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var kv in index.Objects)
             {
@@ -586,12 +589,17 @@ namespace GxMcp.Worker.Services
                 {
                     domainIndex.GetOrAdd(entry.BusinessDomain, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(storageKey);
                 }
+                if (!string.IsNullOrWhiteSpace(entry.Name))
+                {
+                    nameIndex.GetOrAdd(entry.Name, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(storageKey);
+                }
             }
             index.ChildrenByParent = byParent;
             index.ChildKeysByParent = keysByParent;
             index.GuidToKey = guidToKey;
             index.TypeIndex = typeIndex;
             index.DomainIndex = domainIndex;
+            index.ByNameIndex = nameIndex;
         }
 
         // Plan 002: maintain TypeIndex/DomainIndex in the same incremental hooks that
@@ -614,6 +622,11 @@ namespace GxMcp.Worker.Services
                 var set = index.DomainIndex.GetOrAdd(entry.BusinessDomain, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase));
                 lock (set) { set.Add(entryKey); }
             }
+            if (index?.ByNameIndex != null && !string.IsNullOrWhiteSpace(entry.Name))
+            {
+                var set = index.ByNameIndex.GetOrAdd(entry.Name, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                lock (set) { set.Add(entryKey); }
+            }
         }
 
         private void RemoveEntryFromSecondaryIndexes(SearchIndex index, SearchIndex.IndexEntry entry)
@@ -630,6 +643,11 @@ namespace GxMcp.Worker.Services
                 && index.DomainIndex.TryGetValue(entry.BusinessDomain, out var domainSet))
             {
                 lock (domainSet) { domainSet.Remove(entryKey); }
+            }
+            if (index?.ByNameIndex != null && !string.IsNullOrWhiteSpace(entry.Name)
+                && index.ByNameIndex.TryGetValue(entry.Name, out var nameSet))
+            {
+                lock (nameSet) { nameSet.Remove(entryKey); }
             }
         }
 
@@ -1956,7 +1974,7 @@ namespace GxMcp.Worker.Services
             {
                 if (_index == null) _index = new SearchIndex();
                 idx = _index;
-                if (idx.ChildrenByParent == null || idx.GuidToKey == null) BuildParentIndex(idx);
+                if (idx.ChildrenByParent == null || idx.GuidToKey == null || idx.ByNameIndex == null) BuildParentIndex(idx);
                 _initialized = true;
             }
 

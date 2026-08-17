@@ -33,7 +33,7 @@ namespace GxMcp.Gateway.Routers
                         case "impact":
                             // v2.3.8 (Task 1.4 + post-self-review): delegate to ImpactAnalysis
                             // with index-readiness envelope. Flags must be flattened at the top
-                            // level — BuildWorkerRpcRequest clones the entire workerCommand into
+                            // level — BuildWorkerRpcRequest carries the entire workerCommand in
                             // request.params, so a nested @params would land at
                             // request.params.params.waitForIndex (two levels deep) and the
                             // worker's `args["waitForIndex"]` lookup would miss it. That's

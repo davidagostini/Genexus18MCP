@@ -34,7 +34,13 @@ namespace GxMcp.Gateway
         public KbHandle Kb { get; }
         private Process? _process;
         private readonly Configuration _config;
-        private readonly Channel<string> _commandChannel = Channel.CreateUnbounded<string>();
+        // PERFORMANCE (perf-review): queue item carries the id/method the consumer
+        // needs, so it doesn't re-parse the command we just serialized (every large
+        // genexus_edit / import command used to be JObject.Parse'd a second time on
+        // the write path just to read two top-level fields).
+        private readonly Channel<QueuedCommand> _commandChannel = Channel.CreateUnbounded<QueuedCommand>();
+
+        private sealed record QueuedCommand(string Json, string? Id, string? Method);
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly object _processLock = new object();
         private readonly TimeSpan _workerIdleTimeout;
@@ -94,7 +100,10 @@ namespace GxMcp.Gateway
         public long? SpawnMs { get { var v = System.Threading.Interlocked.Read(ref _spawnMs); return v < 0 ? (long?)null : v; } }
         public long? SdkInitMs { get { var v = System.Threading.Interlocked.Read(ref _sdkInitMs); return v < 0 ? (long?)null : v; } }
 
-        public event Action<string>? OnRpcResponse;
+        // PERFORMANCE (perf-review): carries the raw string (needed for stdio/http
+        // forwarding) together with the already-parsed JObject (WorkerProcess parses
+        // every line to route it), so downstream handlers don't re-parse the response.
+        public event Action<string, JObject>? OnRpcResponse;
         public event Action<WorkerStopReason>? OnWorkerExited;
 
         public int? Pid
@@ -207,8 +216,13 @@ namespace GxMcp.Gateway
                             Program.Log("[Health] Sending Ping to Worker...");
                             try
                             {
-                                var ping = new { jsonrpc = "2.0", id = "heartbeat", method = "ping" };
-                                await SendCommandAsync(JsonConvert.SerializeObject(ping));
+                                var ping = new JObject
+                                {
+                                    ["jsonrpc"] = "2.0",
+                                    ["id"] = "heartbeat",
+                                    ["method"] = "ping"
+                                };
+                                await SendCommandAsync(ping);
                             }
                             catch (Exception exPing)
                             {
@@ -234,9 +248,10 @@ namespace GxMcp.Gateway
                 {
                     if (await _commandChannel.Reader.WaitToReadAsync(_cts.Token))
                     {
-                        while (_commandChannel.Reader.TryRead(out var jsonRpc))
+                        while (_commandChannel.Reader.TryRead(out var cmd))
                         {
                             Interlocked.Decrement(ref _queuedCommands);
+                            string jsonRpc = cmd.Json;
                             if (string.IsNullOrEmpty(jsonRpc))
                             {
                                 continue;
@@ -250,13 +265,18 @@ namespace GxMcp.Gateway
                             // so the gateway returns a clean JSON-RPC error instead of silently dropping it.
                             if (!IsProcessRunning(_process))
                             {
-                                string failId = "unknown";
-                                try
+                                string failId = cmd.Id ?? "unknown";
+                                // PERF: id rides on the queue item (JObject overload); fall
+                                // back to parsing only for the legacy string shim.
+                                if (cmd.Id == null)
                                 {
-                                    var failJson = JObject.Parse(jsonRpc);
-                                    failId = failJson["id"]?.ToString() ?? "unknown";
+                                    try
+                                    {
+                                        var failJson = JObject.Parse(jsonRpc);
+                                        failId = failJson["id"]?.ToString() ?? "unknown";
+                                    }
+                                    catch { }
                                 }
-                                catch { }
                                 Program.Log($"[Gateway] Worker not running; failing command {failId} with WorkerCrashed error.");
                                 var errResponse = new JObject
                                 {
@@ -264,31 +284,28 @@ namespace GxMcp.Gateway
                                     ["id"] = failId == "unknown" ? (JToken)JValue.CreateNull() : new JValue(failId),
                                     ["error"] = new JObject { ["code"] = -32000, ["message"] = $"Worker for KB '{Kb.Alias}' crashed/exited. Reconnect or try again." }
                                 };
-                                OnRpcResponse?.Invoke(errResponse.ToString(Formatting.None));
+                                OnRpcResponse?.Invoke(errResponse.ToString(Formatting.None), errResponse);
                                 continue;
                             }
 
-                            string id = "unknown";
-                            var countsAsActivity = false;
-                            try
+                            // PERFORMANCE: id/method ride on the queue item (JObject
+                            // overload) — no re-parse of the serialized command. The
+                            // legacy string shim (Id/Method null) lazily parses once.
+                            string id = cmd.Id ?? "unknown";
+                            string method = cmd.Method ?? "unknown";
+                            if (cmd.Id == null || cmd.Method == null)
                             {
-                                // PERFORMANCE (G-M1): JObject.Parse is the direct constructor — avoids
-                                // the JsonConvert.DeserializeObject<T> reflection-style dispatch on every
-                                // command. Semantically identical for our case.
-                                var json = JObject.Parse(jsonRpc);
-                                if (json["id"] != null)
+                                try
                                 {
-                                    id = json["id"]?.ToString() ?? "unknown";
+                                    var json = JObject.Parse(jsonRpc);
+                                    if (cmd.Id == null && json["id"] != null) id = json["id"]?.ToString() ?? "unknown";
+                                    if (cmd.Method == null) method = json["method"]?.ToString() ?? "unknown";
                                 }
-
-                                var method = json["method"]?.ToString() ?? "unknown";
-                                _lastOperationInfo = $"{method} (ID: {id})";
-                                countsAsActivity = !string.Equals(id, "heartbeat", StringComparison.OrdinalIgnoreCase) &&
-                                                   !string.Equals(method, "ping", StringComparison.OrdinalIgnoreCase);
+                                catch { }
                             }
-                            catch
-                            {
-                            }
+                            _lastOperationInfo = $"{method} (ID: {id})";
+                            var countsAsActivity = !string.Equals(id, "heartbeat", StringComparison.OrdinalIgnoreCase) &&
+                                                  !string.Equals(method, "ping", StringComparison.OrdinalIgnoreCase);
 
                             try
                             {
@@ -818,8 +835,14 @@ namespace GxMcp.Gateway
                         }
                         if (e.Data.TrimStart().StartsWith("{") && e.Data.Contains("\"jsonrpc\""))
                         {
-                            HandleWorkerRpcResponse(e.Data);
-                            OnRpcResponse?.Invoke(e.Data);
+                            // PERF (perf-review): HandleWorkerRpcResponse already parsed the
+                            // line to route it — pass the parsed JObject down with the raw
+                            // string instead of making the gateway handlers parse it again
+                            // (was 3 full JObject.Parse per response, now 1).
+                            HandleWorkerRpcResponse(e.Data, out var parsed);
+                            // parsed is null only when the line failed to parse; the
+                            // handler is null-tolerant (falls back to its own parse).
+                            OnRpcResponse?.Invoke(e.Data, parsed!);
                         }
                         else
                         {
@@ -861,10 +884,25 @@ namespace GxMcp.Gateway
             }
         }
 
+        // PERFORMANCE (perf-review): JObject overload reads id/method off the tree we
+        // already have and enqueues the serialized payload once — the old path
+        // serialized then JObject.Parse'd the string back on the write side just to
+        // recover those two fields. Large payloads (genexus_edit with many targets)
+        // paid that second full-tree parse on every call.
+        public async Task SendCommandAsync(JObject rpc)
+        {
+            string? id = rpc["id"]?.ToString();
+            string? method = rpc["method"]?.ToString();
+            Interlocked.Increment(ref _queuedCommands);
+            await _commandChannel.Writer.WriteAsync(new QueuedCommand(rpc.ToString(Formatting.None), id, method));
+        }
+
+        // Compatibility shim (no production caller after the JObject overload was
+        // introduced). The consumer lazily parses only when Id/Method are null.
         public async Task SendCommandAsync(string jsonRpc)
         {
             Interlocked.Increment(ref _queuedCommands);
-            await _commandChannel.Writer.WriteAsync(jsonRpc);
+            await _commandChannel.Writer.WriteAsync(new QueuedCommand(jsonRpc, null, null));
         }
 
         public void Stop() => StopWithReason(WorkerStopReason.GatewayShutdown);
@@ -1038,11 +1076,12 @@ namespace GxMcp.Gateway
             return DateTime.UtcNow - _lastActivityUtc >= _workerIdleTimeout;
         }
 
-        private void HandleWorkerRpcResponse(string json)
+        private void HandleWorkerRpcResponse(string json, out JObject? payload)
         {
+            payload = null;
             try
             {
-                var payload = JObject.Parse(json);
+                payload = JObject.Parse(json);
                 var id = payload["id"]?.ToString();
                 if (string.IsNullOrWhiteSpace(id))
                 {
@@ -1085,6 +1124,7 @@ namespace GxMcp.Gateway
             }
             catch (Exception ex)
             {
+                payload = null;
                 // Never swallow silently — a parse failure here always meant a bug upstream
                 // (worker emitted malformed JSON-RPC) but historically nobody saw it.
                 Program.Log($"[Gateway] HandleWorkerRpcResponse error: {ex.Message}");

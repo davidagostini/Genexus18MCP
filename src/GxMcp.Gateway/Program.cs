@@ -67,6 +67,13 @@ namespace GxMcp.Gateway
             public DateTime CreatedAtUtc { get; init; } = DateTime.UtcNow;
             /// <summary>Worker (KB) the command was routed to; used to abort pending on per-worker crash.</summary>
             public string? WorkerAlias { get; init; }
+            // PERFORMANCE (perf-review): parsed response envelope. WorkerProcess already
+            // parses every line to route it (notifications vs responses + in-flight
+            // bookkeeping); HandleWorkerResponse stashes the JObject here so the await
+            // sites in SendWorkerCommandAsync don't re-parse the raw json — this was
+            // 3 full JObject.Parse per response, now 1. Large search/read responses are
+            // exactly the ones that make the extra parses expensive.
+            public JObject? ParsedResponse { get; set; }
         }
 
         private static ConcurrentDictionary<string, PendingWorkerRequest> _pendingRequests = new ConcurrentDictionary<string, PendingWorkerRequest>();
@@ -193,6 +200,15 @@ namespace GxMcp.Gateway
             catch { /* fall back to no-op if the file is unavailable */ }
             Log("=== Gateway starting (Stdio Mode) ===");
         }
+
+        // PERFORMANCE (perf-review): per-request instrumentation logs ([Cache] HIT,
+        // [Cache] Invalidation, [TOOL-LATENCY]) each pay DateTime.Now formatting + a
+        // lock + an AutoFlush disk write — measurable contention on high-throughput
+        // pipelines. Default ON (preserves existing behavior and the diagnostics
+        // scripts that grep [TOOL-LATENCY]); set GXMCP_VERBOSE_LOGS=0 to drop the
+        // per-request noise. Cold-start / lifecycle / error logs are unaffected.
+        internal static readonly bool _verboseRequestLogs =
+            !string.Equals(Environment.GetEnvironmentVariable("GXMCP_VERBOSE_LOGS"), "0", StringComparison.OrdinalIgnoreCase);
 
         public static void Log(string msg)
         {

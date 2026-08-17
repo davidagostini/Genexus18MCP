@@ -18,6 +18,34 @@ namespace GxMcp.Worker.Services
         private static readonly BoundedStringCache _queryCache = new BoundedStringCache(512);
         private static DateTime _lastIndexTime = DateTime.MinValue;
 
+        // PERFORMANCE (perf-review): these hot-path patterns only vary by a fixed
+        // filter name, so precompile once instead of compiling a fresh Regex per
+        // query — ParseQuery runs 7 ExtractFilter calls per search and each used
+        // to build a new Regex (plus the @quick strip and the bare-quoted name
+        // match). RegexOptions.Compiled pays a one-time JIT and then runs native.
+        private static readonly Regex QuickSuffixRegex = new Regex(@"\s*@quick\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex BareQuotedNameRegex = new Regex("^\"(?<v>[^\"]+)\"$", RegexOptions.Compiled);
+        private static readonly Dictionary<string, Regex> FilterRegexes = BuildFilterRegexes();
+
+        // PERFORMANCE (perf-review): hoisted separator arrays. TryDirectLookup's
+        // IndexOfAny and ParseQuery's Split used to allocate a fresh char[] on every
+        // search query (these run before the query-cache lookup, so even cached
+        // queries paid them).
+        private static readonly char[] DirectLookupStopChars = { ' ', ':', '*', '@', '"', '?', '/' };
+        private static readonly char[] SpaceSeparator = { ' ' };
+
+        private static Dictionary<string, Regex> BuildFilterRegexes()
+        {
+            var map = new Dictionary<string, Regex>(StringComparer.OrdinalIgnoreCase);
+            foreach (var name in new[] { "description", "metadata", "usedby", "parentPath", "parent", "type", "name" })
+            {
+                map[name] = new Regex(
+                    string.Format(@"(?:^|\s){0}:(?:\""(?<quoted>[^\""]+)\""|(?<plain>\S+))", Regex.Escape(name)),
+                    RegexOptions.IgnoreCase | RegexOptions.Compiled);
+            }
+            return map;
+        }
+
         public SearchService(IndexCacheService indexCacheService, ObjectService objectService = null)
         {
             _indexCacheService = indexCacheService;
@@ -83,7 +111,7 @@ namespace GxMcp.Worker.Services
                 bool isQuick = !string.IsNullOrEmpty(query) && query.IndexOf("@quick", StringComparison.OrdinalIgnoreCase) >= 0;
                 if (isQuick)
                 {
-                    query = Regex.Replace(query, @"\s*@quick\b", "", RegexOptions.IgnoreCase).Trim();
+                    query = QuickSuffixRegex.Replace(query, "").Trim();
                 }
 
                 // v2.6.8: temporal/sort/cursor controls participate in the cache key
@@ -263,7 +291,22 @@ namespace GxMcp.Worker.Services
                 // PERFORMANCE (W-M4): cap PLINQ parallelism so large KBs (50k+ objects) on
                 // 16+ core machines don't spawn one task per core and pressure the GC.
                 int dop = Math.Min(4, Math.Max(1, Environment.ProcessorCount));
-                var queryResults = sourceSet.AsParallel().WithDegreeOfParallelism(dop);
+                // PERFORMANCE (perf-review): PLINQ's partition/merge overhead dominates for
+                // small candidate sets — a TypeIndex/DomainIndex-filtered query often lands
+                // well under a few thousand candidates. Stay on sequential LINQ below the
+                // threshold and only parallelize genuinely large scans.
+                //
+                // Calibrated by SearchRankParallelismBenchmark (DOP=4, faithful ranker work
+                // incl. 128-dim cosine, dev hardware): PLINQ is 1.17-1.46x SLOWER for
+                // 64..2048 candidates (allocating up to 2.2x more), breaking even only
+                // around 4096. Threshold 2048 keeps the common filtered range sequential
+                // and only engages PLINQ where it is at worst neutral.
+                const int ParallelScanThreshold = 2048;
+                bool parallelize = sourceSet is not ICollection<SearchIndex.IndexEntry> sourceCol
+                                   || sourceCol.Count >= ParallelScanThreshold;
+                IEnumerable<SearchIndex.IndexEntry> queryResults = parallelize
+                    ? sourceSet.AsParallel().WithDegreeOfParallelism(dop)
+                    : sourceSet;
 
                 // name:"X" demands exact-name match. Hard filter so the ranker never
                 // sees substring / vector candidates — those were poisoning results
@@ -306,15 +349,39 @@ namespace GxMcp.Worker.Services
                     // Build the set of objects that reference the target via the inverted CalledBy index.
                     // Multiple entries can share a name across types (e.g. Attribute:X and Domain:X), so collect all.
                     var consumerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var t in index.Objects.Values)
+                    // PERFORMANCE (perf-review): resolve the candidate entries through the
+                    // derived ByNameIndex multimap (name → storage keys) instead of
+                    // scanning all ~38k objects. Falls back to the full scan when the
+                    // index hasn't built ByNameIndex (LoadFromEntries test seam / older
+                    // in-memory indexes).
+                    if (index.ByNameIndex != null
+                        && index.ByNameIndex.TryGetValue(criteria.UsedByFilter, out var nameKeys))
                     {
-                        if (!string.Equals(t.Name, criteria.UsedByFilter, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (t.CalledBy == null) continue;
-                        lock (t.CalledBy)
+                        foreach (var key in nameKeys)
                         {
-                            foreach (var c in t.CalledBy)
+                            if (!index.Objects.TryGetValue(key, out var t) || t == null) continue;
+                            if (t.CalledBy == null) continue;
+                            lock (t.CalledBy)
                             {
-                                if (!string.IsNullOrEmpty(c)) consumerNames.Add(c);
+                                foreach (var c in t.CalledBy)
+                                {
+                                    if (!string.IsNullOrEmpty(c)) consumerNames.Add(c);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        foreach (var t in index.Objects.Values)
+                        {
+                            if (!string.Equals(t.Name, criteria.UsedByFilter, StringComparison.OrdinalIgnoreCase)) continue;
+                            if (t.CalledBy == null) continue;
+                            lock (t.CalledBy)
+                            {
+                                foreach (var c in t.CalledBy)
+                                {
+                                    if (!string.IsNullOrEmpty(c)) consumerNames.Add(c);
+                                }
                             }
                         }
                     }
@@ -595,7 +662,7 @@ namespace GxMcp.Worker.Services
 
             string trimmed = query.Trim();
             // Skip if the query carries filter syntax, wildcards, or multi-term semantics.
-            if (trimmed.IndexOfAny(new[] { ' ', ':', '*', '@', '"', '?', '/' }) >= 0) return null;
+            if (trimmed.IndexOfAny(DirectLookupStopChars) >= 0) return null;
             // Object names are typically reasonable identifiers.
             if (trimmed.Length > 80) return null;
 
@@ -808,7 +875,7 @@ namespace GxMcp.Worker.Services
             // single quoted token, so multi-word semantic queries still vector-rank.
             if (string.IsNullOrEmpty(c.NameFilter))
             {
-                var bareQuoted = Regex.Match(query.Trim(), "^\"(?<v>[^\"]+)\"$");
+                var bareQuoted = BareQuotedNameRegex.Match(query.Trim());
                 if (bareQuoted.Success)
                 {
                     c.NameFilter = bareQuoted.Groups["v"].Value;
@@ -816,7 +883,7 @@ namespace GxMcp.Worker.Services
                 }
             }
 
-            foreach (var part in query.Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries)) {
+            foreach (var part in query.Split(SpaceSeparator, StringSplitOptions.RemoveEmptyEntries)) {
                 c.Terms.Add(part.ToLowerInvariant());
             }
             return c;
@@ -824,8 +891,17 @@ namespace GxMcp.Worker.Services
 
         private string ExtractFilter(string query, string filterName, Action<string> assign)
         {
-            var pattern = string.Format(@"(?:^|\s){0}:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", Regex.Escape(filterName));
-            var match = Regex.Match(query, pattern, RegexOptions.IgnoreCase);
+            // PERFORMANCE (perf-review): reuse the precompiled per-filter regex; fall
+            // back to an uncached compile only for a filter name outside the fixed
+            // startup set (shouldn't happen — ParseQuery uses the same names).
+            Regex pattern;
+            if (!FilterRegexes.TryGetValue(filterName, out pattern))
+            {
+                pattern = new Regex(
+                    string.Format(@"(?:^|\s){0}:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", Regex.Escape(filterName)),
+                    RegexOptions.IgnoreCase);
+            }
+            var match = pattern.Match(query);
             if (!match.Success) return query;
 
             var value = match.Groups["quoted"].Success

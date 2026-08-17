@@ -4,6 +4,9 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!-- SearchRankParallelismBenchmark ports VectorService.CosineSimilarity (unsafe,
+         unrolled dot product) verbatim so the measured per-item cost matches the worker. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>GxMcp.Benchmarks</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
