@@ -174,6 +174,7 @@ Once installed, here's what unlocks. Try these as your first prompts:
 - *"Add a menu option 'Customers' to MainMenu that opens CustomerWW."*
 
 **WorkWithPlus pattern editing** (full structural + theming control)
+- *"Add a typed tab with variables, an action, and nested responsive tables to a WorkWithPlus WebPanel."*
 - *"In WorkWithPlusOrder, add a 'Duplicate' button to the transaction view alongside Save/Cancel/Delete."*
 - *"Group the Customer transaction attributes into a 'Contact Info' section with theme class GroupTelaResp."*
 - *"On the WorkWithPlusInvoice list, add a new ordering by InvoiceDate descending."*
@@ -279,7 +280,7 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 **Refactor, patterns & compare**
 - `genexus_refactor` — rename, extract procedure, WWP condition set
 - `genexus_apply_pattern` — apply a GeneXus pattern (WorkWith, WorkWithPlus, …); `mode=actions` manages typed WorkWithPlus grid actions and Action Groups
-- `genexus_wwp` — WorkWithPlus Action Group / grid-action editing: `list`, `add_action`, `update_action`, `move_action`, `remove_action`
+- `genexus_wwp` — typed WorkWithPlus editing: Action Groups plus native `add_tab`, `move_tab`, and `remove_tab` for WebPanel tabs and `variable` / `userAction` / recursive `table` children
 - `genexus_compare` — IDE "Compare Objects" parity (`IComparerService`)
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
 
@@ -344,6 +345,7 @@ WorkWithPlus patterns are XML documents that drive Transaction-and-Selection scr
 | Reorganize Transaction view (form layout, action row) | edit under `/instance/transaction/...` | ✅ verified live |
 | Reorganize Selection view (list/grid, filters, orders) | edit under `/instance/level/selection/...` | ✅ verified live |
 | Auto-rebuild `childrenOrderedList` from XML order | done implicitly on every write; report under `childrenOrderedListReconciliation` | ✅ verified live |
+| Add / move / remove WebPanel tabs and typed controls | `genexus_wwp` `add_tab` / `move_tab` / `remove_tab` | ✅ native Pattern SDK commands; snapshot + re-read + WebForm projection verification |
 
 **Recommended workflow for a screen redesign:**
 
@@ -354,6 +356,25 @@ WorkWithPlus patterns are XML documents that drive Transaction-and-Selection scr
 5. Read back to confirm; refresh the GeneXus IDE to see the result.
 
 **Custom buttons use `<userAction>`, not `<standardAction>`.** `Trn_Enter` / `Trn_Cancel` / `Trn_Delete` are the only registered standard actions on a WorkWithPlus transaction; any custom button (Duplicate, Audit, Export, etc.) must be a `<userAction caption="…" name="…" buttonClass="btn ButtonGreen" confirm="False" />`. The MCP's reconciler treats `<userAction>` as a peer of `<standardAction>` (same typeCode 17/18 by context), so they coexist in the same `TableActions` row and the IDE renders them side-by-side.
+
+For WebPanel tabs, prefer the native typed operation instead of whole-XML replacement:
+
+```json
+{
+  "action": "add_tab",
+  "name": "SamplePanel",
+  "controlName": "IntegrationV3",
+  "title": "Integration API V3",
+  "position": 5,
+  "children": [
+    { "type": "variable", "name": "Operation", "basicType": "VarChar", "length": 40 },
+    { "type": "userAction", "name": "SendIntegration", "caption": "Send" }
+  ],
+  "dryRun": true
+}
+```
+
+The dry-run returns a typed diff and `versionToken`. Pass it as `baseVersion` on the persisted call. The write uses Pattern SDK element commands, requires exact PatternInstance/WebForm snapshots, preserves Apply-on-save, re-reads the PatternInstance, projects and re-reads the parent WebForm, and rolls both parts back on any failed confirmation. It never invokes lifecycle operations.
 
 **Things to know (orientation, not gotchas):**
 

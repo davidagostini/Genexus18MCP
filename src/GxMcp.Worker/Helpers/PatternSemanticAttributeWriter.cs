@@ -215,7 +215,7 @@ namespace GxMcp.Worker.Helpers
                 : action.Identity.Substring(1);
         }
 
-        private static bool ApplySemanticAttribute(object element, string attributeName, string value)
+        internal static bool ApplySemanticAttribute(object element, string attributeName, string value)
         {
             if (element == null || string.IsNullOrWhiteSpace(attributeName) || value == null) return false;
             object attributes = ReadProperty(element, "Attributes");

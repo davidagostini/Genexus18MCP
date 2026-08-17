@@ -39,5 +39,54 @@ namespace GxMcp.Worker.Tests
             { ["group"] = "A", ["actionName"] = "One" }, null);
             Assert.Empty(doc.Descendants("actionGroup").First().Elements("userAction"));
         }
+
+        [Fact]
+        public void AddTab_BuildsCanonicalResponsiveTableAndTypedChildren()
+        {
+            var doc = XDocument.Parse("<instance><WPRoot><tabs><tab ControlName='One' title='One'/><tab ControlName='Three' title='Three'/></tabs></WPRoot></instance>");
+            JObject result = WwpActionService.ApplyTabXml(doc, "add_tab", new JObject
+            {
+                ["controlName"] = "Two",
+                ["title"] = "Second",
+                ["position"] = 1,
+                ["children"] = new JArray
+                {
+                    new JObject { ["type"] = "variable", ["name"] = "Choice", ["basicType"] = "VarChar", ["length"] = 40, ["description"] = "Choice" },
+                    new JObject { ["type"] = "userAction", ["name"] = "Send", ["caption"] = "Send now" }
+                }
+            });
+
+            Assert.Null(result["error"]);
+            XElement[] tabs = doc.Descendants("tab").ToArray();
+            Assert.Equal(new[] { "One", "Two", "Three" }, tabs.Select(t => (string)t.Attribute("ControlName")));
+            XElement table = tabs[1].Element("table");
+            Assert.Equal("Responsive", (string)table.Attribute("type"));
+            Assert.Equal("Choice", (string)table.Element("variable").Attribute("name"));
+            Assert.Equal("40", (string)table.Element("variable").Attribute("basicCLength"));
+            Assert.Equal("Send", (string)table.Element("userAction").Attribute("name"));
+            Assert.Null(table.Attribute("childrenOrderedList"));
+        }
+
+        [Fact]
+        public void MoveAndRemoveTab_PreserveOrderAndReportMissingSeparately()
+        {
+            var doc = XDocument.Parse("<instance><tabs><tab ControlName='One'/><tab ControlName='Two'/><tab ControlName='Three'/></tabs></instance>");
+            JObject moved = WwpActionService.ApplyTabXml(doc, "move_tab",
+                new JObject { ["controlName"] = "Three", ["position"] = 0 });
+            Assert.Null(moved["error"]);
+            Assert.Equal(new[] { "Three", "One", "Two" }, doc.Descendants("tab").Select(t => (string)t.Attribute("ControlName")));
+
+            JObject removed = WwpActionService.ApplyTabXml(doc, "remove_tab",
+                new JObject { ["controlName"] = "One" });
+            Assert.Null(removed["error"]);
+            Assert.Equal(new[] { "Three", "Two" }, doc.Descendants("tab").Select(t => (string)t.Attribute("ControlName")));
+
+            JObject missing = WwpActionService.ApplyTabXml(doc, "remove_tab",
+                new JObject { ["controlName"] = "Missing" });
+            Assert.Equal("TabNotFound", (string)missing["code"]);
+            JObject invalid = WwpActionService.ApplyTabXml(doc, "rename_tab",
+                new JObject { ["controlName"] = "Two" });
+            Assert.Equal("UnknownWwpActionOperation", (string)invalid["code"]);
+        }
     }
 }

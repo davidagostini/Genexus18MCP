@@ -13,7 +13,7 @@ namespace GxMcp.Worker.Services
     /// element classes, so this adapter deliberately edits its public PatternInstance
     /// XML contract and delegates persistence/projection to WriteService.
     /// </summary>
-    public sealed class WwpActionService
+    public sealed partial class WwpActionService
     {
         private readonly ObjectService _objects;
         private readonly PatternAnalysisService _patterns;
@@ -41,8 +41,13 @@ namespace GxMcp.Worker.Services
                 if (instance == null || string.IsNullOrWhiteSpace(xml))
                     return McpResponse.Err(code: "WWPInstanceNotFound",
                         message: "No editable WorkWithPlus PatternInstance was resolved for this object.", target: target);
+                _patterns.BuildPatternPartEnvelope(requestedObject, "PatternInstance", xml,
+                    out _, out KBObjectPart instancePart);
 
                 string operation = (args?["action"]?.ToString() ?? "list_actions").Trim().ToLowerInvariant();
+                if (IsTabOperation(operation))
+                    return RunTabOperation(target, requestedObject, instance, instancePart, xml, operation, args);
+
                 XDocument beforeDocument = XDocument.Parse(xml, LoadOptions.PreserveWhitespace);
                 JObject before = Project(beforeDocument);
                 if (operation == "list_actions")
