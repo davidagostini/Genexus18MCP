@@ -608,7 +608,10 @@ namespace GxMcp.Worker.Services
                     facadeArgs.VerifyRollback,
                     facadeArgs.ReturnPostState,
                     facadeArgs.Verbose,
-                    facadeArgs.ReplaceAll);
+                    facadeArgs.ReplaceAll,
+                    facadeArgs.VerifyMode,
+                    facadeArgs.BaseVersion,
+                    facadeArgs.RollbackOnFailure);
             }
             else
             {
@@ -791,6 +794,8 @@ namespace GxMcp.Worker.Services
                 Verbose = args["verbose"]?.ToObject<bool?>() ?? false,
                 ReplaceAll = args["replaceAll"]?.ToObject<bool?>() ?? false,
                 ExplicitBase64 = string.Equals(encoding, "base64", StringComparison.OrdinalIgnoreCase),
+                VerifyMode = args["verifyMode"]?.ToString(),
+                RollbackOnFailure = args["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
                 // Optimistic concurrency: the versionToken the caller got from the
                 // genexus_read this edit is based on. When present, the write is
                 // refused if the object changed since (StaleObject) — see the guard
@@ -817,6 +822,8 @@ namespace GxMcp.Worker.Services
             public bool Verbose { get; set; }
             public bool ReplaceAll { get; set; }
             public bool ExplicitBase64 { get; set; }
+            public string VerifyMode { get; set; }
+            public bool RollbackOnFailure { get; set; }
             public string BaseVersion { get; set; }
         }
 

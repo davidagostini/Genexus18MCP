@@ -15,6 +15,7 @@ namespace GxMcp.Worker.Services
         private sealed class SourceCacheEntry
         {
             public string Source { get; set; }
+            public string VersionToken { get; set; }
             public DateTime UpdatedUtc { get; set; }
         }
 
@@ -204,6 +205,7 @@ namespace GxMcp.Worker.Services
                     if (ttlOk && noConcurrentWrite)
                     {
                         originalSource = cacheEntry.Source;
+                        snapshotVersion = cacheEntry.VersionToken;
                         sourceFromCache = true;
                     }
                     else
@@ -253,7 +255,7 @@ namespace GxMcp.Worker.Services
                                 why: "Lists available parts for this object.")),
                             target: target);
                     }
-                    UpdateCachedSource(cacheKey, originalSource);
+                    UpdateCachedSource(cacheKey, originalSource, snapshotVersion);
                 }
 
                 if (!string.IsNullOrWhiteSpace(baseVersion) &&
@@ -347,9 +349,11 @@ namespace GxMcp.Worker.Services
                     {
                         var refreshedJson = JObject.Parse(refreshedResponse);
                         string refreshedSource = refreshedJson["source"]?.ToString();
+                        string refreshedVersion = refreshedJson["versionToken"]?.ToString();
                         if (refreshedSource != null)
                         {
-                            UpdateCachedSource(cacheKey, refreshedSource);
+                            UpdateCachedSource(cacheKey, refreshedSource, refreshedVersion);
+                            if (!string.IsNullOrWhiteSpace(refreshedVersion)) snapshotVersion = refreshedVersion;
                             originalSource = refreshedSource;
                             workSource = originalSource.Replace("\r\n", "\n").Replace("\r", "\n");
                             sourceLines = workSource.Split('\n');
@@ -813,26 +817,27 @@ namespace GxMcp.Worker.Services
                                 rollbackVerification,
                                 rollbackError ?? rollbackPayload["message"]?.ToString());
                             writePayload["rolledBack"] = rollbackVerified;
-                            if (rollbackVerified) UpdateCachedSource(cacheKey, originalSource);
+                            if (rollbackVerified) UpdateCachedSource(cacheKey, originalSource, snapshotVersion);
                         }
                     }
-                }
-
-                if (string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase) && persistedMatches)
-                {
-                    UpdateCachedSource(cacheKey, finalCode);
                 }
 
                 // Always expose the save/verification distinction, including SDK-save
                 // failures where no post-save comparison could run.
                 if (writePayload["saved"] == null) writePayload["saved"] = saveReported;
                 if (writePayload["verified"] == null) writePayload["verified"] = persistedMatches;
+                string versionToken = null;
                 try
                 {
-                    string versionToken = ReadFreshVersionToken(target, partName, typeFilter);
+                    versionToken = ReadFreshVersionToken(target, partName, typeFilter);
                     if (!string.IsNullOrWhiteSpace(versionToken)) writePayload["versionToken"] = versionToken;
                 }
                 catch { }
+
+                if (string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase) && persistedMatches)
+                {
+                    UpdateCachedSource(cacheKey, finalCode, versionToken);
+                }
 
                 // v2.8.0: convert the WriteService legacy envelope (status=Success/Error) to canonical shape.
                 // WriteService is out-of-scope for this migration; we lift its fields into result/error here.
@@ -1197,12 +1202,13 @@ namespace GxMcp.Worker.Services
             return entry.Source;
         }
 
-        private static void UpdateCachedSource(string cacheKey, string source)
+        private static void UpdateCachedSource(string cacheKey, string source, string versionToken = null)
         {
             if (string.IsNullOrWhiteSpace(cacheKey) || source == null) return;
             _sourceCache[cacheKey] = new SourceCacheEntry
             {
                 Source = source,
+                VersionToken = versionToken,
                 UpdatedUtc = DateTime.UtcNow
             };
         }

@@ -120,5 +120,22 @@ namespace GxMcp.Worker.Tests
             Assert.True(normalized.DryRun);
             Assert.Equal("only", normalized.Validate);
         }
+
+        [Fact]
+        public void NormalizeFacadeArgs_ParsesVerifyModeAndRollbackOnFailure()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["mode"] = "patch",
+                ["part"] = "Source",
+                ["context"] = "old",
+                ["content"] = "new",
+                ["verifyMode"] = "exact",
+                ["rollbackOnFailure"] = true
+            });
+
+            Assert.Equal("exact", normalized.VerifyMode);
+            Assert.True(normalized.RollbackOnFailure);
+        }
     }
 }
