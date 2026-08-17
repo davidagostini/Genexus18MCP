@@ -463,8 +463,20 @@ namespace GxMcp.Worker.Services
                     else
                     {
                         attrName = ResolveCanonicalAttributeName(element, propertyName);
-                        previous = element.Attribute(attrName) != null ? element.Attribute(attrName).Value : null;
-                        element.SetAttributeValue(attrName, value ?? string.Empty);
+                        if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase))
+                        {
+                            previous = element.Attribute("Caption")?.Value ?? ExtractConstantCaptionFromTokens(element.Attribute("CaptionExpression")?.Value);
+                            element.SetAttributeValue("Caption", value ?? string.Empty);
+                            if (element.Attribute("CaptionExpression") != null)
+                            {
+                                element.SetAttributeValue("CaptionExpression", BuildConstantCaptionTokens(value ?? string.Empty));
+                            }
+                        }
+                        else
+                        {
+                            previous = element.Attribute(attrName) != null ? element.Attribute(attrName).Value : null;
+                            element.SetAttributeValue(attrName, value ?? string.Empty);
+                        }
                     }
 
                     applied.Add(new JObject
@@ -500,24 +512,52 @@ namespace GxMcp.Worker.Services
 
                     var persistedEl = FindControlElement(persistedContext.Document, controlName);
                     if (persistedEl == null)
+                    {
+                        bool rolledBack = false;
+                        if (!string.IsNullOrEmpty(baselineXml))
+                        {
+                            try
+                            {
+                                var rbErr = PersistVisualXml(obj, contextResult, target, baselineXml);
+                                rolledBack = rbErr == null;
+                            }
+                            catch { }
+                        }
                         return Models.McpResponse.Err(
                             code: "LayoutReadBackFailed",
-                            message: "Layout read-back failed: control '" + controlName + "' was not found after save.",
+                            message: "Layout read-back failed: control '" + controlName + "' was not found after save." + (rolledBack ? " Changes were rolled back." : ""),
                             hint: "The SDK may have renamed or dropped the control on save; use get_tree to verify.",
                             nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the persisted layout to confirm current control names.")),
-                            target: target);
+                            target: target,
+                            extra: new JObject { ["rolledBack"] = rolledBack, ["control"] = controlName, ["property"] = attrName });
+                    }
 
                     string actual = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
                         ? (persistedEl.Value ?? string.Empty)
-                        : (persistedEl.Attribute(attrName) != null ? persistedEl.Attribute(attrName).Value : string.Empty);
+                        : (persistedEl.Attribute(attrName) != null
+                            ? persistedEl.Attribute(attrName).Value
+                            : (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase)
+                                ? ExtractConstantCaptionFromTokens(persistedEl.Attribute("CaptionExpression")?.Value)
+                                : string.Empty));
                     if (!IsPersistedValueMatch(attrName, expected, actual))
                     {
+                        bool rolledBack = false;
+                        if (!string.IsNullOrEmpty(baselineXml))
+                        {
+                            try
+                            {
+                                var rbErr = PersistVisualXml(obj, contextResult, target, baselineXml);
+                                rolledBack = rbErr == null;
+                            }
+                            catch { }
+                        }
                         return Models.McpResponse.Err(
                             code: "LayoutWriteVerificationFailed",
-                            message: "Layout write verification failed: persisted value for control '" + controlName + "' property '" + attrName + "' does not match requested value.",
+                            message: "Layout write verification failed: persisted value for control '" + controlName + "' property '" + attrName + "' does not match requested value." + (rolledBack ? " Changes were rolled back." : ""),
                             hint: "The SDK may have normalised the value on save; read back the property to check the canonical form.",
                             nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Reads the current persisted value of the control.")),
-                            target: target);
+                            target: target,
+                            extra: new JObject { ["rolledBack"] = rolledBack, ["control"] = controlName, ["property"] = attrName, ["expected"] = expected, ["actual"] = actual });
                     }
                 }
 

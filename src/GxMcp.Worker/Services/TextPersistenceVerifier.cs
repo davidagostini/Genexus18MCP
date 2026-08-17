@@ -228,6 +228,10 @@ namespace GxMcp.Worker.Services
             || string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase)
             || string.Equals(partName, "Rules", StringComparison.OrdinalIgnoreCase)
             || string.Equals(partName, "Events", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(partName, "Conditions", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(partName, "Conditions", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(partName, "Help", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(partName, "Documentation", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(partName, "DataSelector", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(partName, "WSDL", StringComparison.OrdinalIgnoreCase);
     }
 }

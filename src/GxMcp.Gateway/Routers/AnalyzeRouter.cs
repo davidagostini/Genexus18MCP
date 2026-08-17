@@ -7,7 +7,7 @@ namespace GxMcp.Gateway.Routers
 
         public object? ConvertToolCall(string toolName, JObject? args)
         {
-            string? target = args?["name"]?.ToString();
+            string? target = args?["name"]?.ToString() ?? args?["target"]?.ToString();
             string? type = args?["type"]?.ToString();
 
             switch (toolName)

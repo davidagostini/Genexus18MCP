@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v2.41.8 - 2026-08-17
+
+### Fixed
+
+- **Visual layout batch parity and rollback in `genexus_layout action=set_properties`.** Batch layout property writes now synchronize `Caption` and `CaptionExpression` consistently across controls and automatically roll back the layout to the pre-call baseline if readback or post-save verification fails.
+- **Snapshot and part preservation in `genexus_structure action=update`.** Updating Transaction visual structures via `SyncVisualStructure` now captures a complete snapshot of non-Structure parts (`Rules`, `Events`, `WebForm`, `Variables`) and restores them if reset during SDK Transaction saving, verifying authored parts preservation before committing.
+- **Expanded visual root element support in `NormalizeEditableXmlInput`.** Supported `<Layout>` and `<ReportPart>` roots in addition to `<GxMultiForm>`, `<BODY>`, and `<HTML>` to ensure SDPanels and Procedure/Report layouts read via `genexus_read` can be modified and written back directly.
+- **Text persistence verification for Documentation, Help, DataSelector, and WSDL.** `TextPersistenceVerifier` now classifies `Documentation`, `Help`, `DataSelector`, and `WSDL` as code/text parts, preventing false `WriteNotPersisted` errors due to SDK whitespace or line-ending formatting differences.
+- **`ExtractProcedure` dry-run preview and line-ending normalization in `genexus_refactor`.** `ExtractProcedure` now normalizes CRLF/LF line endings before matching the code block in the source object, pre-verifies existence before attempting object creation to avoid orphaned procedures, and respects `dryRun=true` by returning planned extraction details without mutating the KB.
+- **Standardized error responses in `genexus_analyze mode=linter`.** Replaced unformatted JSON error strings in `LinterService` with canonical `McpResponse.Err` envelopes.
+
 ## v2.41.7 - 2026-08-17
 
 ### Fixed

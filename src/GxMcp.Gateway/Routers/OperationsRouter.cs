@@ -1083,32 +1083,46 @@ namespace GxMcp.Gateway.Routers
 
             if (action == "ExtractProcedure")
             {
+                JObject? payloadObj = null;
+                if (args?["payload"] is JObject pObj) payloadObj = pObj;
+                else if (args?["payload"] is JValue pVal && pVal.Value is string pStr && pStr.TrimStart().StartsWith("{"))
+                {
+                    try { payloadObj = JObject.Parse(pStr); } catch { }
+                }
+
                 return new
                 {
                     module = "Refactor",
                     action,
-                    target = args?["target"]?.ToString() ?? args?["objectName"]?.ToString(),
+                    target = args?["target"]?.ToString() ?? args?["objectName"]?.ToString() ?? payloadObj?["target"]?.ToString(),
                     dryRun = refactorDryRun,
                     payload = new JObject
                     {
-                        ["code"] = args?["code"]?.ToString() ?? args?["codeToExtract"]?.ToString(),
-                        ["procedureName"] = args?["procedureName"]?.ToString()
+                        ["code"] = args?["code"]?.ToString() ?? args?["codeToExtract"]?.ToString() ?? payloadObj?["code"]?.ToString() ?? payloadObj?["codeToExtract"]?.ToString(),
+                        ["procedureName"] = args?["procedureName"]?.ToString() ?? payloadObj?["procedureName"]?.ToString() ?? payloadObj?["name"]?.ToString()
                     }.ToString()
                 };
             }
 
             if (action == "ExtractSubroutine" || string.Equals(action, "extract_subroutine", StringComparison.OrdinalIgnoreCase))
             {
+                JObject? payloadObj = null;
+                if (args?["payload"] is JObject pObj) payloadObj = pObj;
+                else if (args?["payload"] is JValue pVal && pVal.Value is string pStr && pStr.TrimStart().StartsWith("{"))
+                {
+                    try { payloadObj = JObject.Parse(pStr); } catch { }
+                }
+
                 return new
                 {
                     module = "Refactor",
                     action = "ExtractSubroutine",
-                    target = args?["target"]?.ToString() ?? args?["objectName"]?.ToString(),
+                    target = args?["target"]?.ToString() ?? args?["objectName"]?.ToString() ?? payloadObj?["target"]?.ToString(),
                     dryRun = refactorDryRun,
                     payload = new JObject
                     {
-                        ["code"] = args?["code"]?.ToString() ?? args?["codeToExtract"]?.ToString(),
-                        ["subroutineName"] = args?["subroutineName"]?.ToString() ?? args?["subroutine"]?.ToString() ?? args?["name"]?.ToString()
+                        ["code"] = args?["code"]?.ToString() ?? args?["codeToExtract"]?.ToString() ?? payloadObj?["code"]?.ToString() ?? payloadObj?["codeToExtract"]?.ToString(),
+                        ["subroutineName"] = args?["subroutineName"]?.ToString() ?? args?["subroutine"]?.ToString() ?? args?["name"]?.ToString() ?? payloadObj?["subroutineName"]?.ToString() ?? payloadObj?["subroutine"]?.ToString() ?? payloadObj?["name"]?.ToString()
                     }.ToString()
                 };
             }

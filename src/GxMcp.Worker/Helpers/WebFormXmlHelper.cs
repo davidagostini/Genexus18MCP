@@ -108,10 +108,12 @@ namespace GxMcp.Worker.Helpers
             string rootName = doc.Root?.Name.LocalName ?? string.Empty;
             if (!string.Equals(rootName, "GxMultiForm", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(rootName, "BODY", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(rootName, "HTML", StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(rootName, "HTML", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "Layout", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "ReportPart", StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    string.Format("Visual writes currently require a valid GxMultiForm, BODY, or HTML XML document. Received root '{0}' for part '{1}'.", rootName, partName ?? "Layout"));
+                    string.Format("Visual writes currently require a valid GxMultiForm, BODY, HTML, Layout, or ReportPart XML document. Received root '{0}' for part '{1}'.", rootName, partName ?? "Layout"));
             }
 
             return doc.ToString();

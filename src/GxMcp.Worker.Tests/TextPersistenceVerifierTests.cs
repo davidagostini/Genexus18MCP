@@ -112,6 +112,10 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Rules"));
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Events"));
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Conditions"));
+            Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Documentation"));
+            Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Help"));
+            Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "DataSelector"));
+            Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "WSDL"));
             Assert.Equal("exact", TextPersistenceVerifier.ResolveMode(null, "Structure"));
         }
 
@@ -132,6 +136,22 @@ namespace GxMcp.Worker.Tests
                 null,
                 "Events");
             Assert.True(result.Matches);
+        }
+
+        [Fact]
+        public void WebFormXmlHelper_NormalizeEditableXmlInput_AcceptsSupportedRoots()
+        {
+            var gxm = GxMcp.Worker.Helpers.WebFormXmlHelper.NormalizeEditableXmlInput("<GxMultiForm><Form/></GxMultiForm>", "WebForm");
+            var body = GxMcp.Worker.Helpers.WebFormXmlHelper.NormalizeEditableXmlInput("<BODY><TABLE/></BODY>", "WebForm");
+            var html = GxMcp.Worker.Helpers.WebFormXmlHelper.NormalizeEditableXmlInput("<HTML><BODY/></HTML>", "WebForm");
+            var layout = GxMcp.Worker.Helpers.WebFormXmlHelper.NormalizeEditableXmlInput("<Layout><Control/></Layout>", "Layout");
+            var report = GxMcp.Worker.Helpers.WebFormXmlHelper.NormalizeEditableXmlInput("<ReportPart><PrintBlock/></ReportPart>", "ReportPart");
+
+            Assert.Contains("GxMultiForm", gxm);
+            Assert.Contains("BODY", body);
+            Assert.Contains("HTML", html);
+            Assert.Contains("Layout", layout);
+            Assert.Contains("ReportPart", report);
         }
     }
 }

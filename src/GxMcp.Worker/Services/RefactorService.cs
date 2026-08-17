@@ -33,7 +33,10 @@ namespace GxMcp.Worker.Services
             try {
                 if (action == "ExtractProcedure") {
                     var data = JObject.Parse(payload);
-                    return ExtractProcedure(target, data["code"]?.ToString(), data["procedureName"]?.ToString());
+                    return ExtractProcedure(target,
+                        data["code"]?.ToString() ?? data["codeToExtract"]?.ToString(),
+                        data["procedureName"]?.ToString() ?? data["name"]?.ToString(),
+                        dryRun);
                 }
 
                 if (action == "ExtractSubroutine" || string.Equals(action, "extract_subroutine", StringComparison.OrdinalIgnoreCase)) {
@@ -259,7 +262,7 @@ namespace GxMcp.Worker.Services
             return _writeService.WriteObject(target, "PatternInstance", newXml, typeFilter);
         }
 
-        private string ExtractProcedure(string sourceObjectName, string codeToExtract, string newProcName)
+        private string ExtractProcedure(string sourceObjectName, string codeToExtract, string newProcName, bool dryRun = false)
         {
             if (string.IsNullOrEmpty(codeToExtract) || string.IsNullOrEmpty(newProcName))
                 return Models.McpResponse.Err(
@@ -279,6 +282,59 @@ namespace GxMcp.Worker.Services
                     args: new JObject { ["query"] = sourceObjectName },
                     why: "Search for the object to confirm it exists and find its exact name.")),
                 target: sourceObjectName);
+
+            var variablesFound = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var matches = System.Text.RegularExpressions.Regex.Matches(codeToExtract, @"&(\w+)");
+            foreach (System.Text.RegularExpressions.Match match in matches) variablesFound.Add(match.Groups[1].Value);
+
+            string callCode = newProcName + ".call(" + string.Join(", ", variablesFound.Select(v => "&" + v)) + ")";
+            string normCode = codeToExtract.Replace("\r\n", "\n");
+            bool codeFound = false;
+
+            foreach (var part in sourceObj.Parts.Cast<KBObjectPart>())
+            {
+                if (part is ISource sourcePart)
+                {
+                    string original = sourcePart.Source;
+                    if (!string.IsNullOrEmpty(original))
+                    {
+                        string normOriginal = original.Replace("\r\n", "\n");
+                        if (normOriginal.Contains(normCode))
+                        {
+                            codeFound = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!codeFound)
+            {
+                return Models.McpResponse.Err(
+                    code: "CodeBlockNotFound",
+                    message: "Code block not found in source object.",
+                    hint: "The exact code block to extract was not found in the source object; ensure the code matches the source verbatim.",
+                    nextSteps: new JArray(Models.McpResponse.NextStep(
+                        tool: "genexus_read",
+                        args: new JObject { ["name"] = sourceObjectName, ["part"] = "Source" },
+                        why: "Read the current source to locate the exact code block before retrying.")),
+                    target: sourceObjectName);
+            }
+
+            if (dryRun)
+            {
+                return Models.McpResponse.Ok(
+                    target: sourceObjectName,
+                    code: "DryRun",
+                    result: new JObject
+                    {
+                        ["action"] = "ExtractProcedure",
+                        ["procedure"] = newProcName,
+                        ["call"] = callCode,
+                        ["variables"] = new JArray(variablesFound.Select(v => (JToken)v).ToArray()),
+                        ["dryRun"] = true
+                    });
+            }
 
             try {
                 Logger.Info($"Extracting code to new procedure: {newProcName} from {sourceObjectName}");
@@ -312,10 +368,6 @@ namespace GxMcp.Worker.Services
 
                 newProc.ProcedurePart.Source = codeToExtract;
 
-                var variablesFound = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                var matches = System.Text.RegularExpressions.Regex.Matches(codeToExtract, @"&(\w+)");
-                foreach (System.Text.RegularExpressions.Match match in matches) variablesFound.Add(match.Groups[1].Value);
-
                 string parmRule = "parm(" + string.Join(", ", variablesFound.Select(v => "inout:&" + v)) + ");";
                 newProc.Rules.Source = parmRule + "\r\n" + newProc.Rules.Source;
                 
@@ -343,14 +395,18 @@ namespace GxMcp.Worker.Services
                 }
                 newProc.EnsureSave();
 
-                string callCode = newProcName + ".call(" + string.Join(", ", variablesFound.Select(v => "&" + v)) + ")";
                 bool updated = false;
                 foreach (var part in sourceObj.Parts.Cast<KBObjectPart>()) {
                     if (part is ISource sourcePart) {
                         string original = sourcePart.Source;
-                        if (!string.IsNullOrEmpty(original) && original.Contains(codeToExtract)) {
-                            sourcePart.Source = original.Replace(codeToExtract, callCode);
-                            updated = true;
+                        if (!string.IsNullOrEmpty(original)) {
+                            string normOriginal = original.Replace("\r\n", "\n");
+                            if (normOriginal.Contains(normCode)) {
+                                int idx = normOriginal.IndexOf(normCode, StringComparison.Ordinal);
+                                string replaced = normOriginal.Substring(0, idx) + callCode + normOriginal.Substring(idx + normCode.Length);
+                                sourcePart.Source = replaced.Replace("\n", "\r\n");
+                                updated = true;
+                            }
                         }
                     }
                 }

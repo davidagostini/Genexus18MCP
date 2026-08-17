@@ -123,7 +123,10 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return Models.McpResponse.Err(
+                    code: "LintFailed",
+                    message: ex.Message,
+                    target: target);
             }
         }
 

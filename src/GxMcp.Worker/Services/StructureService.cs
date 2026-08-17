@@ -69,6 +69,7 @@ namespace GxMcp.Worker.Services
                             hint: "Pass a JSON object with a 'children' array describing the Transaction structure.",
                             target: targetName);
                         JArray before = _visualStructureService.SerializeVisualLevel(trn.Structure.Root);
+                        TransactionSnapshot snapshot = CaptureTransactionSnapshot(trn);
                         // issue #59 — capture the pre-write top-level structure names so the
                         // success envelope can surface a before/requested/persisted diff.
                         var beforeNames = before
@@ -85,6 +86,20 @@ namespace GxMcp.Worker.Services
                             ForceSaveDefaultParts = true,
                             SkipValidation = false
                         });
+
+                        // Restore user-authored non-Structure parts if SDK save reset them
+                        foreach (KBObjectPart part in trn.Parts)
+                        {
+                            if (part is StructurePart) continue;
+                            EntitySnapshot data;
+                            if (snapshot.Parts.TryGetValue(part.Type.ToString("D"), out data))
+                            {
+                                RestoreEntity(part, data);
+                                part.Dirty = true;
+                                try { part.Save(); } catch { }
+                            }
+                        }
+
                         sdkTrans.Commit();
                         var persistedTrn = _objectService.FindObject(targetName, "Transaction") as Transaction;
                         JArray persisted = persistedTrn == null ? new JArray() : _visualStructureService.SerializeVisualLevel(persistedTrn.Structure.Root);
@@ -109,6 +124,13 @@ namespace GxMcp.Worker.Services
                         var verifyErr = VerifyStructurePersisted(targetName, requestedNames, beforeNames, trn);
                         if (verifyErr != null) return verifyErr;
 
+                        if (!VerifyAuthoredPartsPreserved(persistedTrn ?? trn, snapshot.Parts, out string authoredErr))
+                        {
+                            return Models.McpResponse.Err(code: "AuthoredPartsCorrupted",
+                                message: "Structure update corrupted non-structure parts: " + authoredErr,
+                                target: targetName);
+                        }
+
                         var structureResult = new JObject
                         {
                             ["before"] = before,
@@ -116,7 +138,8 @@ namespace GxMcp.Worker.Services
                             ["persisted"] = persisted,
                             ["diff"] = diff,
                             ["saved"] = true,
-                            ["persistedVerified"] = true
+                            ["persistedVerified"] = true,
+                            ["authoredPartsPreserved"] = true
                         };
                         // Issue #97 guard-rail: flag subtype attributes the SDK left
                         // classified as stored (SECONDARY) while their same-supertype
@@ -1050,7 +1073,7 @@ namespace GxMcp.Worker.Services
             public string Error { get; set; }
         }
 
-        private static TransactionSnapshot CaptureTransactionSnapshot(Transaction trn, string movedIdentity,
+        private static TransactionSnapshot CaptureTransactionSnapshot(Transaction trn, string movedIdentity = null,
             bool excludeIdentityDetails = false)
         {
             var snapshot = new TransactionSnapshot();
@@ -1166,35 +1189,10 @@ namespace GxMcp.Worker.Services
                 return false;
             }
 
-            foreach (var kvp in before.Parts)
+            if (!VerifyAuthoredPartsPreserved(persisted, before.Parts, out string authoredErr))
             {
-                string key = kvp.Key;
-                EntitySnapshot expected = kvp.Value;
-                if (expected == null || expected.VerificationData == null || expected.VerificationData.Length == 0) continue;
-
-                var part = persisted.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type.ToString("D") == key);
-                if (part == null || !EntityMatches(part, expected))
-                {
-                    error = $"Authored part '{part?.TypeDescriptor?.Name ?? key}' changed or was wiped unexpectedly.";
-                    return false;
-                }
-            }
-
-            foreach (KBObjectPart part in persisted.Parts)
-            {
-                if (part is StructurePart) continue;
-                // Default forms are SDK projections of the Structure. Reordering a
-                // member legitimately changes that projection without changing a
-                // user-authored WebForm/WinForm. Custom (IsDefault=false) forms and
-                // every other authored part remain byte-verified below.
-                if (part.IsDefault) continue;
-                string key = part.Type.ToString("D");
-                EntitySnapshot expected;
-                if (!before.Parts.TryGetValue(key, out expected) || !EntityMatches(part, expected))
-                {
-                    error = $"Part '{part.TypeDescriptor?.Name ?? key}' changed unexpectedly.";
-                    return false;
-                }
+                error = authoredErr;
+                return false;
             }
             return true;
         }
@@ -1257,7 +1255,21 @@ namespace GxMcp.Worker.Services
             }
             verification["subtypeGroupsPreserved"] = true;
 
-            foreach (var kvp in before.Parts)
+            if (!VerifyAuthoredPartsPreserved(persisted, before.Parts, out string removeAuthoredErr))
+            {
+                error = removeAuthoredErr;
+                return false;
+            }
+            verification["authoredPartsPreserved"] = true;
+            return true;
+        }
+
+        private static bool VerifyAuthoredPartsPreserved(Transaction persisted, Dictionary<string, EntitySnapshot> beforeParts, out string error)
+        {
+            error = null;
+            if (persisted == null || beforeParts == null) return true;
+
+            foreach (var kvp in beforeParts)
             {
                 string key = kvp.Key;
                 EntitySnapshot expected = kvp.Value;
@@ -1275,13 +1287,12 @@ namespace GxMcp.Worker.Services
             {
                 if (part is StructurePart || part.IsDefault) continue;
                 EntitySnapshot expected;
-                if (!before.Parts.TryGetValue(part.Type.ToString("D"), out expected) || !EntityMatches(part, expected))
+                if (!beforeParts.TryGetValue(part.Type.ToString("D"), out expected) || !EntityMatches(part, expected))
                 {
                     error = $"Part '{part.TypeDescriptor?.Name ?? part.Type.ToString("D")}' changed unexpectedly.";
                     return false;
                 }
             }
-            verification["authoredPartsPreserved"] = true;
             return true;
         }
 

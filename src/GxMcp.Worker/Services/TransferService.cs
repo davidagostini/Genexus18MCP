@@ -294,6 +294,12 @@ namespace GxMcp.Worker.Services
             var o = new ExportOptions();
             try { o.IncludeReferencesDependencies = true; } catch { }
             try { o.ExportCurrentVersion = true; } catch { }
+            try
+            {
+                var ucProp = typeof(ExportOptions).GetProperty("IncludeCustomUserControls");
+                if (ucProp != null) ucProp.SetValue(o, true, null);
+            }
+            catch { }
             return o;
         }
 

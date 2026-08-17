@@ -136,6 +136,15 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void RefactorService_ExtractProcedure_MissingArgs_ReturnsError()
+        {
+            var svc = new RefactorService(null, null, null, null, null);
+            var result = svc.Refactor("Customer", "ExtractProcedure", "{}", dryRun: true);
+            var jo = Parse(result);
+            Assert.Equal("ExtractProcedureArgsMissing", jo["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
         public void SecurityScanService_ReturnsNoKbOpen()
         {
             var svc = new SecurityScanService(null);
