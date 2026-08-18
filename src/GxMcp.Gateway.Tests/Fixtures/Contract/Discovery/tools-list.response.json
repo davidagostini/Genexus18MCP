@@ -835,11 +835,11 @@
           },
           "dryRun": {
             "default": false,
-            "description": "Read-only alias for action=dry_run on create/update definitions.",
+            "description": "Forces every action to remain read-only; create/update validate their complete definition and delete returns a deletion preview.",
             "type": "boolean"
           },
           "expectedVersion": {
-            "description": "Optimistic concurrency token returned by inspect/dry_run/create/update.",
+            "description": "Optimistic concurrency token returned by inspect/dry_run/create/update/delete preview.",
             "type": "string"
           },
           "kb": {
