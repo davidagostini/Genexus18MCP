@@ -95,5 +95,31 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("CompileCheck", jobj["action"]?.ToString());
             Assert.True(jobj["dryRun"]?.Value<bool>());
         }
+
+        [Fact]
+        public void AsyncLifecycleBuild_DryRunIsNotEligibleForWorkerDispatch()
+        {
+            Assert.True(Program.IsLifecycleBuildDryRun(new JObject { ["dryRun"] = true }));
+            Assert.False(Program.IsLifecycleBuildDryRun(new JObject { ["dryRun"] = false }));
+            Assert.False(Program.IsLifecycleBuildDryRun(new JObject()));
+        }
+
+        [Fact]
+        public void AsyncLifecycleBuildCommand_ForwardsDryRun()
+        {
+            var command = Program.BuildAsyncLifecycleCommand(
+                "build",
+                new JObject
+                {
+                    ["target"] = "Customer",
+                    ["dryRun"] = true,
+                    ["includeCallees"] = "none"
+                },
+                "job-1");
+
+            Assert.Equal("Build", command["action"]!.ToString());
+            Assert.True(command["dryRun"]!.Value<bool>());
+            Assert.Equal("none", command["includeCallees"]!.ToString());
+        }
     }
 }

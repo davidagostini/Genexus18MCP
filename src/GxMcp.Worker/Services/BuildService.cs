@@ -24,6 +24,10 @@ namespace GxMcp.Worker.Services
         private IndexCacheService _indexCacheService;
         private CallerGraphService _callerGraphService;
         private static readonly ConcurrentDictionary<string, BuildTaskStatus> _tasks = new ConcurrentDictionary<string, BuildTaskStatus>();
+        private static readonly Regex _userControlFactoryRegex = new Regex(
+            @"\bgx\.uc\.getNew\s*\(", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex _userControlTypeBindingRegex = new Regex(
+            @"\bsetProp\s*\(\s*['""]Gx Control Type['""]\s*,", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // issue #42 — builds whose RunBuild is genuinely executing right now, keyed by
         // taskId. Add on entry, remove in finally. This is the source of truth for
@@ -1689,6 +1693,26 @@ namespace GxMcp.Worker.Services
             return t.Contains(":") ? t.Substring(t.LastIndexOf(':') + 1).Trim() : t;
         }
 
+        internal static JObject DetectUserControlBindingDegradation(string objectName, string jsPath, string jsText)
+        {
+            if (string.IsNullOrEmpty(jsText)) return null;
+
+            int expectedBindings = _userControlFactoryRegex.Matches(jsText).Count;
+            if (expectedBindings == 0) return null;
+
+            int actualBindings = _userControlTypeBindingRegex.Matches(jsText).Count;
+            if (actualBindings >= expectedBindings) return null;
+
+            return new JObject
+            {
+                ["object"] = objectName,
+                ["jsPath"] = jsPath,
+                ["expectedBindings"] = expectedBindings,
+                ["actualBindings"] = actualBindings,
+                ["reason"] = "User Control JS contains fewer Gx Control Type bindings than gx.uc.getNew instances."
+            };
+        }
+
         /// <summary>
         /// issue #42 build-evidence gate. After a terminal success for a code-emitting
         /// action, verify the targets that were expected to (re)generate actually have a
@@ -1921,21 +1945,24 @@ namespace GxMcp.Worker.Services
                 {
                     string csPath = item["path"]?.ToString();
                     if (string.IsNullOrEmpty(csPath)) continue;
-                    string dir = Path.GetDirectoryName(csPath);
+                    string resolvedGeneratedPath = Path.IsPathRooted(csPath)
+                        ? csPath
+                        : Path.Combine(kbPath, csPath);
+                    string dir = Path.GetDirectoryName(resolvedGeneratedPath);
                     string objName = item["object"]?.ToString();
                     if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(objName)) continue;
                     string jsPath = Path.Combine(dir, objName.ToLowerInvariant() + ".js");
-                    if (File.Exists(jsPath) && File.GetLastWriteTimeUtc(jsPath) >= status.StartedAt)
+                    // The .cs freshness gate above identifies the generated object. The
+                    // companion JS can retain an older timestamp when GeneXus rewrites
+                    // files through its generator cache, so do not discard a real partial
+                    // binding signal solely because the JS mtime is not newer.
+                    if (File.Exists(jsPath))
                     {
                         string jsText = File.ReadAllText(jsPath);
-                        if (jsText.Contains("gx.uc.getNew") && !jsText.Contains("setProp("))
+                        var degradation = DetectUserControlBindingDegradation(objName, jsPath, jsText);
+                        if (degradation != null)
                         {
-                            degradedUserControls.Add(new JObject
-                            {
-                                ["object"] = objName,
-                                ["jsPath"] = jsPath,
-                                ["reason"] = "User Control instantiated via gx.uc.getNew but missing setProp property bindings."
-                            });
+                            degradedUserControls.Add(degradation);
                         }
                     }
                 }
