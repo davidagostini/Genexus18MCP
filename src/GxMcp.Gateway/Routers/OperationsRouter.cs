@@ -16,6 +16,15 @@ namespace GxMcp.Gateway.Routers
                 case "genexus_create":
                     return ConvertCreateUmbrella(args);
 
+                case "genexus_data_view":
+                    return new
+                    {
+                        module = "DataView",
+                        action = "Run",
+                        target = args?["transaction"]?.ToString(),
+                        @params = args
+                    };
+
                 case "genexus_delete_object":
                     return new
                     {

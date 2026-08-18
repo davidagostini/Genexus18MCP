@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **Native atomic Data View authoring with `genexus_data_view`.** The new `inspect`, `dry_run`, `create`, `update`, and `delete` actions validate existing table metadata, global attributes, types and complete primary keys before saving a root-only Business Component Transaction and its Data View mapping inside one GeneXus SDK transaction. Responses include optimistic version tokens, persisted reread evidence, physical schema/table mapping, and a no-DDL reorganization preview. The tool never invokes Specify, Generate, Build, Rebuild, Reorg, compilation, publishing, execution, or tests implicitly.
+
+### Fixed
+
+- **Transaction object dry-runs no longer create the global seed Attribute.** `genexus_create action=object type=Transaction dryRun=true` now returns before constructing the SDK Transaction, reporting `persisted=false` and `mutationDetected=false` without creating the `<Transaction>Id` Attribute or any table/index metadata.
+
+### Internal
+
+- **Disposable U16 Data View persistence harness and schema budget.** Added `scripts/Test-DataViewAtomic.ps1` to verify dry-run immutability, atomic create/reread/delete, root-only BC shape, physical mapping, stale-version rejection, and absence of implicit lifecycle actions; raised the intentional combined tool-schema budget from 20,500 to 21,100 tokens (measured ~20,932).
+
 ## v2.41.8 - 2026-08-17
 
 ### Fixed

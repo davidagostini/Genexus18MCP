@@ -47,6 +47,7 @@ namespace GxMcp.Worker.Services
         private readonly PropertyService _propertyService;
         // Issue #62 — atomic create/update (variables + rules + parms + properties + source in one validated op).
         private readonly AtomicCreateService _atomicCreateService;
+        private readonly DataViewService _dataViewService;
         private readonly AssetService _assetService;
         private readonly VersionControlService _versionControlService;
         private readonly ConversionService _conversionService;
@@ -213,6 +214,7 @@ namespace GxMcp.Worker.Services
             _propertyService = new PropertyService(_objectService);
             _atomicAuthoringService = new AtomicAuthoringService(_objectService, _writeService, _propertyService, _buildService);
             _atomicCreateService = new AtomicCreateService(_objectService, _writeService, _propertyService, _saveSpecifyOrchestrator, _historyService);
+            _dataViewService = new DataViewService(_kbService, _objectService);
             _conversionService = new ConversionService(_objectService);
             _selfTestService = new SelfTestService(_kbService, _searchService, _linterService);
             _kbValidationService = new KbValidationService(_indexCacheService, _objectService, _patternAnalysisService);
@@ -560,6 +562,7 @@ namespace GxMcp.Worker.Services
                 ["read"] = Handle_Read,
                 ["object"] = Handle_Object,
                 ["atomiccreate"] = Handle_AtomicCreate,
+                ["dataview"] = Handle_DataView,
                 ["write"] = Handle_Write,
                 ["editandbuild"] = Handle_EditAndBuild,
                 ["semanticops"] = Handle_SemanticOps,
@@ -1124,6 +1127,11 @@ namespace GxMcp.Worker.Services
             // The service validates the whole definition (variables/rules/parms/properties/source)
             // before the first save, composes the SDK write primitives, and compensates on failure.
             return _atomicCreateService.Run(args ?? new JObject());
+        }
+
+        private string Handle_DataView(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            return _dataViewService.Run(args ?? new JObject());
         }
 
         private string Handle_Object(JObject request, string method, string action, string target, string payload, JObject args)

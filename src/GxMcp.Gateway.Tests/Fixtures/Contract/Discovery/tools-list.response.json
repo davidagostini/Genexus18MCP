@@ -765,6 +765,125 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
+      "description": "Native, typed, atomic Transaction + Data View authoring over an existing physical table. action=inspect|dry_run|create|update|delete. dry_run performs validation without constructing or saving SDK objects. create persists the root-only Transaction, Business Component property, Data View association, physical schema/table and attribute mappings inside one SDK transaction, then rereads and verifies them. No action implicitly runs Specify, Generate, Build, Rebuild, Reorg, compilation, publish, execution, or tests; the response includes a no-DDL reorg preview.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "action": "dry_run",
+            "attributeMappings": [
+              {
+                "attribute": "LedgerEntryId",
+                "column": "LedgerEntryId",
+                "key": true
+              },
+              {
+                "attribute": "LedgerEntryAmount",
+                "column": "LedgerEntryAmount"
+              }
+            ],
+            "dataStore": "Default",
+            "dataViewName": "LedgerEntryDV",
+            "rollbackOnFailure": true,
+            "schema": "APP",
+            "table": "LEDGERENTRY",
+            "transaction": "LedgerEntryView",
+            "updatable": true
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "inspect",
+              "dry_run",
+              "create",
+              "update",
+              "delete"
+            ],
+            "type": "string"
+          },
+          "attributeMappings": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "attribute": {
+                  "type": "string"
+                },
+                "column": {
+                  "type": "string"
+                },
+                "key": {
+                  "default": false,
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "attribute",
+                "column"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "dataStore": {
+            "description": "Existing GeneXus data store category (default Default).",
+            "type": "string"
+          },
+          "dataViewName": {
+            "description": "Data View name associated with the Transaction logical table.",
+            "type": "string"
+          },
+          "dryRun": {
+            "default": false,
+            "description": "Read-only alias for action=dry_run on create/update definitions.",
+            "type": "boolean"
+          },
+          "expectedVersion": {
+            "description": "Optimistic concurrency token returned by inspect/dry_run/create/update.",
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "rollbackOnFailure": {
+            "default": true,
+            "description": "Atomic SDK rollback is always enforced; this flag records the caller's rollback intent.",
+            "type": "boolean"
+          },
+          "schema": {
+            "description": "Existing physical schema.",
+            "type": "string"
+          },
+          "table": {
+            "description": "Existing physical table and GeneXus table-metadata name.",
+            "type": "string"
+          },
+          "transaction": {
+            "description": "Root-only Transaction name.",
+            "type": "string"
+          },
+          "updatable": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "transaction",
+          "dataViewName"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_data_view"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
       "description": "Database umbrella. action: drift_check|drift_report (Transaction↔DB schema drift) | optimize_analyze|optimize_suggest|optimize_report (static index advisor) | sql_ddl|sql_navigation (SQL for Transaction/Procedure) | sample_data (fake INSERTs) | types_list|types_describe|types_validate (Domains/SDT constraints) | reorg_impact (timestamp/deep ImpactDatabase) | reorg_preview (non-mutating logical↔physical impact diff plus exact SQL only when a current artifact is available) | translations_import.",
       "inputSchema": {
         "examples": [

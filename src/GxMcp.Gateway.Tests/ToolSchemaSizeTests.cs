@@ -131,7 +131,11 @@ namespace GxMcp.Gateway.Tests
             //   2026-08-16 (Items A, B, D): 20300 → 20500 for genexus_edit autoDeclareVariables,
             //   genexus_refactor ExtractSubroutine, and genexus_transfer includeDependencies.
             //   Measured ~20313; ~187 headroom.
-            Assert.True(approxTokens < 20500, $"tool_definitions.json is ~{approxTokens} tokens; budget 20500.");
+            //   2026-08-18 (native Data View authoring): 20500 → 21100 for
+            //   genexus_data_view inspect/dry_run/create/update/delete, typed
+            //   mappings, optimistic concurrency and atomic rollback. Measured
+            //   ~20932; ~168 headroom.
+            Assert.True(approxTokens < 21100, $"tool_definitions.json is ~{approxTokens} tokens; budget 21100.");
         }
     }
 }
