@@ -1089,6 +1089,10 @@
           "expectedCount": {
             "type": "integer"
           },
+          "expectedVersion": {
+            "description": "Alias of baseVersion. The write is refused when the current version no longer matches.",
+            "type": "string"
+          },
           "kb": {
             "description": "KB alias.",
             "type": "string"

@@ -1069,6 +1069,7 @@ namespace GxMcp.Gateway
                         string? cancelJobId = McpRouter.ResolveJobId(args);
                         if (!string.IsNullOrWhiteSpace(cancelJobId) && JobRegistry.Get(cancelJobId!) != null)
                         {
+                            var cancellingJob = JobRegistry.Get(cancelJobId!);
                             bool ok = JobRegistry.Cancel(cancelJobId!, "Cancelled by client via lifecycle action=cancel.");
                             // Fire-and-forget worker signal. Thread-safe Control:Cancel runs
                             // on the parallel dispatch path so it interleaves with in-flight calls.
@@ -1084,6 +1085,23 @@ namespace GxMcp.Gateway
                                 env => env,
                                 (_, __) => new JObject(),
                                 toolName: "genexus_lifecycle", toolArgs: args, trackOperation: false);
+                            bool workerRecycled = false;
+                            if (ok
+                                && cancellingJob?.Kind?.StartsWith("edit/", StringComparison.OrdinalIgnoreCase) == true
+                                && !string.IsNullOrWhiteSpace(cancellingJob.WorkerAlias)
+                                && _workerPool != null)
+                            {
+                                try { workerRecycled = _workerPool.RecycleStalledWorker(cancellingJob.WorkerAlias); }
+                                catch (Exception recycleEx) { Log($"[AsyncEdit] Cancel recycle failed for job={cancelJobId}: {recycleEx.Message}"); }
+                            }
+                            if (ok && cancellingJob?.Kind?.StartsWith("edit/", StringComparison.OrdinalIgnoreCase) == true)
+                            {
+                                _mutationRecovery.RequireRead(
+                                    cancellingJob.WorkerAlias,
+                                    cancellingJob.Target,
+                                    cancellingJob.Part,
+                                    cancelJobId);
+                            }
                             // Issue #79: Cancel only acts on running jobs now, so a
                             // terminal job surfaces a truthful message instead of the
                             // misleading "not found in registry".
@@ -1097,6 +1115,9 @@ namespace GxMcp.Gateway
                             {
                                 ["status"] = ok ? "Cancelled" : "NotFound",
                                 ["jobId"] = cancelJobId,
+                                ["operationId"] = cancelJobId,
+                                ["recycledWorker"] = workerRecycled,
+                                ["reReadRequired"] = ok && cancellingJob?.Kind?.StartsWith("edit/", StringComparison.OrdinalIgnoreCase) == true,
                                 ["message"] = cancelMsg
                             };
                             return BuildToolTextResponse(idToken, jp, isError: !ok, toolName: "genexus_lifecycle", toolArgs: args);
@@ -1108,8 +1129,8 @@ namespace GxMcp.Gateway
                         lifecycleTarget.StartsWith("op:", StringComparison.OrdinalIgnoreCase))
                     {
                         string operationId = lifecycleTarget.Substring(3);
-                        bool existed = _operationTracker.MarkCancellationRequested(operationId,
-                            "Cancellation requested by client; the current GeneXus SDK call is non-preemptible and may still complete.");
+                        _operationTracker.TryGetContext(operationId, out var cancelledToolName, out var cancelledToolArgs);
+                        bool existed = false;
                         // A5: fan a Control:Cancel out to the worker (mirroring the job_id
                         // path above) so cooperative handlers trip their CTS and free the
                         // single STA queue, instead of leaving the worker running the
@@ -1128,6 +1149,7 @@ namespace GxMcp.Gateway
                             toolName: "genexus_lifecycle", toolArgs: args, trackOperation: false);
                         // Try to find and abandon the pending request bound to this op.
                         string? abandonedRequestId = null;
+                        string? workerAlias = null;
                         foreach (var kvp in _pendingRequests.ToArray())
                         {
                             if (string.Equals(kvp.Value.OperationId, operationId, StringComparison.OrdinalIgnoreCase))
@@ -1135,6 +1157,7 @@ namespace GxMcp.Gateway
                                 if (_pendingRequests.TryRemove(kvp.Key, out var pending))
                                 {
                                     abandonedRequestId = kvp.Key;
+                                    workerAlias = pending.WorkerAlias;
                                     pending.CompletionSource.TrySetResult(JsonConvert.SerializeObject(new
                                     {
                                         jsonrpc = "2.0",
@@ -1146,13 +1169,36 @@ namespace GxMcp.Gateway
                             }
                         }
 
+                        bool workerRecycled = false;
+                        if (!string.IsNullOrWhiteSpace(workerAlias) && _workerPool != null)
+                        {
+                            try { workerRecycled = _workerPool.RecycleStalledWorker(workerAlias); }
+                            catch (Exception recycleEx) { Log($"[Operation] Cancel recycle failed for op={operationId}: {recycleEx.Message}"); }
+                        }
+                        existed = _operationTracker.MarkCancelled(operationId,
+                            workerRecycled
+                                ? "Cancelled by client; the non-preemptible worker was recycled. Re-read the object before another write."
+                                : "Cancelled by client; no live worker remained to recycle. Re-read the object before another write.");
+                        if (existed
+                            && IsAsyncMutationTool(cancelledToolName)
+                            && !string.IsNullOrWhiteSpace(workerAlias))
+                        {
+                            _mutationRecovery.RequireRead(
+                                workerAlias,
+                                cancelledToolArgs?["name"]?.ToString(),
+                                cancelledToolArgs?["part"]?.ToString() ?? "Source",
+                                operationId);
+                        }
+
                         var cancelPayload = new JObject
                         {
-                            ["status"] = existed ? "CancellationRequested" : "NotFound",
+                            ["status"] = existed ? "Cancelled" : "NotFound",
                             ["operationId"] = operationId,
                             ["abandonedRequestId"] = abandonedRequestId,
+                            ["recycledWorker"] = workerRecycled,
+                            ["reReadRequired"] = existed,
                             ["message"] = existed
-                                ? "Cancellation was requested and the client response was abandoned. The non-preemptible SDK call may still finish; poll this operation for its final state."
+                                ? "Operation reached terminal Cancelled state. The worker was recycled when it was still executing the non-preemptible SDK call; re-read the target before another write."
                                 : "Operation not found in tracker (may have completed and been pruned, or never existed)."
                         };
                         return BuildToolTextResponse(idToken, cancelPayload, isError: !existed, toolName: "genexus_lifecycle", toolArgs: args);
@@ -1269,6 +1315,7 @@ namespace GxMcp.Gateway
                 {
                     string tName = tcParams["name"]?.ToString() ?? "";
                     var tArgs = tcParams["arguments"] as JObject;
+                    string kbScope = _currentKb.Value?.NormalizedAlias ?? "";
 
                     // 1. CACHE INVALIDATION: If it's a write operation or a re-index, clear the cache.
                     // PERF: compute once so the semantic-cache read below can skip the
@@ -1277,6 +1324,16 @@ namespace GxMcp.Gateway
                     // genexus_edit used to serialize its full source payload into a key
                     // for that doomed lookup on every call.
                     bool isMutating = IsMutatingTool(tName, tArgs);
+                    if (isMutating
+                        && !IsMutationPreview(tArgs)
+                        && _mutationRecovery.TryGet(kbScope, tArgs?["name"]?.ToString(), out var recoveryRequirement))
+                    {
+                        return BuildToolResultContent(
+                            MutationRecoveryRegistry.BuildBlockedEnvelope(recoveryRequirement),
+                            isError: true,
+                            toolName: tName,
+                            toolArgs: tArgs);
+                    }
                     if (isMutating)
                     {
                         if (_verboseRequestLogs) Log($"[Cache] Invalidation triggered by {tName}");
@@ -1303,7 +1360,6 @@ namespace GxMcp.Gateway
                     // against two different open KBs must not share envelopes (the
                     // worker is single-KB, so an identical read against KB-B could
                     // otherwise replay KB-A's cached result).
-                    string kbScope = _currentKb.Value?.NormalizedAlias ?? "";
                     // PERF: only build the key (which serializes the whole args tree) when
                     // a lookup can possibly hit. Mutating tools just cleared the cache
                     // (guaranteed miss) and live tools never read from it, so for those
@@ -1766,8 +1822,10 @@ namespace GxMcp.Gateway
                     // async=true on edit/variable tools → fire-and-forget; result piggybacks via _meta.background_jobs.
                     bool isAsyncGxServer = (tArgs?["async"]?.ToObject<bool?>() ?? false)
                                            && IsAsyncGxServerAction(tName, tArgs);
-                    bool editAsync = ((tArgs?["async"]?.ToObject<bool?>() ?? false)
-                                     && IsAsyncMutationTool(tName)) || isAsyncGxServer;
+                    // A preview is deliberately synchronous: it must never be represented as
+                    // a background mutation job, acquire a second operation identity, or outlive
+                    // the caller. The worker's dry-run branch performs no Save.
+                    bool editAsync = ShouldRunMutationAsync(tName, tArgs) || isAsyncGxServer;
                     if (editAsync)
                     {
                         // gxserver update on a stale KB runs many minutes; give it a longer
@@ -1775,6 +1833,10 @@ namespace GxMcp.Gateway
                         int estEdit = tArgs?["estimated_seconds"]?.ToObject<int?>() ?? (isAsyncGxServer ? 120 : 30);
                         string jobLabel = isAsyncGxServer ? $"gxserver/{tArgs?["action"]?.ToString()}" : $"edit/{tName}";
                         var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit);
+                        editJob.WorkerAlias = _currentKb.Value?.NormalizedAlias;
+                        editJob.Target = tArgs?["name"]?.ToString();
+                        editJob.Part = tArgs?["part"]?.ToString() ?? "Source";
+                        editJob.ObjectType = tArgs?["type"]?.ToString();
                         Log($"[AsyncEdit] Dispatching job={editJob.Id} tool={tName} estimated={estEdit}s");
                         // v2.6.2 (Item B): inject cancelToken=jobId so the worker's
                         // blanket-register at dispatch entry makes lifecycle cancel resolvable.
@@ -1803,7 +1865,8 @@ namespace GxMcp.Gateway
                                 var workerTask = SendWorkerCommandAsync(
                                     capturedCmd, 0,
                                     $"Timeout waiting for async edit: {capturedName}",
-                                    r => r, (_, __) => new JObject { ["status"] = "Running" });
+                                    r => r, (_, __) => new JObject { ["status"] = "Running" },
+                                    operationIdentity: editJob.Id);
                                 var completed = await Task.WhenAny(workerTask, watchdogDelay).ConfigureAwait(false);
                                 if (completed != workerTask)
                                 {
@@ -1855,6 +1918,11 @@ namespace GxMcp.Gateway
                                             capturedName + " did not return within the " + boundText
                                                 + " time bound; SDK call likely blocked (IDE modal dialog or retrying validation) — see result for recovery steps.",
                                             BuildStalledAsyncMutationEnvelope(editJob.Id, capturedName, estEdit, boundSeconds, workerRecycled));
+                                        _mutationRecovery.RequireRead(
+                                            editJob.WorkerAlias,
+                                            editJob.Target,
+                                            editJob.Part,
+                                            editJob.Id);
                                         Log($"[AsyncEdit] Watchdog fired for job={editJob.Id} tool={capturedName} after {watchdogMs}ms — marked stalled (workerRecycled={workerRecycled}).");
                                     }
                                     return;
@@ -1927,6 +1995,14 @@ namespace GxMcp.Gateway
                                     || string.Equals(innerErrObj["status"]?.ToString(), "NotFound", StringComparison.OrdinalIgnoreCase)
                                     || string.Equals(innerErrObj["status"]?.ToString(), "NotImplemented", StringComparison.OrdinalIgnoreCase);
                                 if (innerHasError) isErr = true;
+                            }
+
+                            if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _mutationRecovery.ConfirmRead(
+                                    kbScope,
+                                    tArgs?["name"]?.ToString(),
+                                    tArgs?["part"]?.ToString() ?? "Source");
                             }
 
                             // Friction 2026-05-22 #63: attach suggested_next_step on every error
@@ -2038,6 +2114,12 @@ namespace GxMcp.Gateway
                                 {
                                     // Writes have usually persisted by the time the gateway times out; poll result, then read — don't retry the edit.
                                     help.Add("For long writes the change is usually already persisted; check action='result' once, then read back instead of retrying.");
+                                    _mutationRecovery.RequireRead(
+                                        kbScope,
+                                        tArgs?["name"]?.ToString(),
+                                        tArgs?["part"]?.ToString() ?? "Source",
+                                        operationId);
+                                    timeoutPayload["reReadRequired"] = true;
                                 }
                             }
                             else

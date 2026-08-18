@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`genexus_edit mode=full` now keeps dry-runs non-persistent and recovers deterministically from blocked SDK calls.** Preview requests never enter the asynchronous mutation path or call `Save`; background edits use one operation ID across accepted/status/result/cancel and Worker busy telemetry; cancellation terminalizes the operation and recycles only its blocked Worker. Timed-out or cancelled writes require a successful read-back before another write to the same object. Full writes preserve `baseVersion`/`expectedVersion`, honor `rollbackOnFailure`, and return the independently re-read Source, version token, persistence state, and empty implicit lifecycle list.
+
 ## v2.41.9 - 2026-08-18
 
 ### Fixed

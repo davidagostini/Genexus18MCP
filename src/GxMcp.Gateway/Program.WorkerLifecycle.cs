@@ -291,7 +291,7 @@ namespace GxMcp.Gateway
             catch { /* instrumentation must never break the call */ }
         }
 
-        private static JObject BuildWorkerRpcRequest(JObject workerCommand, string requestId, string? operationId = null)
+        internal static JObject BuildWorkerRpcRequest(JObject workerCommand, string requestId, string? operationId = null)
         {
             // PERFORMANCE (perf-review): zero-copy RPC envelope. The previous version
             // DeepCloned every hoisted field AND the whole command under `params` — 5
@@ -371,14 +371,17 @@ namespace GxMcp.Gateway
             JObject? toolArgs = null,
             bool trackOperation = false,
             JToken? progressToken = null,
-            Func<JObject, Task>? heartbeat = null)
+            Func<JObject, Task>? heartbeat = null,
+            string? operationIdentity = null)
         {
             string requestId = Guid.NewGuid().ToString();
             string correlationId = Guid.NewGuid().ToString("N");
-            string? operationId = null;
+            string? operationId = operationIdentity;
 
             if (trackOperation)
             {
+                if (!string.IsNullOrWhiteSpace(operationIdentity))
+                    throw new ArgumentException("A tracked operation cannot also supply an external operation identity.", nameof(operationIdentity));
                 operationId = _operationTracker.StartOperation(requestId, toolName, toolArgs, correlationId);
                 BroadcastNotification("notifications/message", new
                 {
@@ -433,7 +436,7 @@ namespace GxMcp.Gateway
                 // A worker-crash retry mints a fresh attemptRequestId; the worker's completion
                 // comes back keyed by it, so link it to the operation or CompleteFromWorker misses
                 // and the op record stays "Running" forever. Idempotent on the first attempt.
-                if (operationId != null)
+                if (trackOperation && operationId != null)
                 {
                     _operationTracker.LinkRequest(attemptRequestId, operationId);
                 }
@@ -682,6 +685,21 @@ namespace GxMcp.Gateway
                    || string.Equals(toolName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(toolName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(toolName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool IsMutationPreview(JObject? args)
+        {
+            if (args == null) return false;
+            return args["dryRun"]?.ToObject<bool?>() == true
+                   || string.Equals(args["validate"]?.ToString(), "only", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(args["validate"]?.ToString(), "validate-only", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool ShouldRunMutationAsync(string? toolName, JObject? args)
+        {
+            return IsAsyncMutationTool(toolName)
+                   && args?["async"]?.ToObject<bool?>() == true
+                   && !IsMutationPreview(args);
         }
 
         private static JObject BuildAsyncAcceptedPayload(JobEntry job, string acceptedSummary)

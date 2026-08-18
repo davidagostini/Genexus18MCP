@@ -1285,15 +1285,16 @@ namespace GxMcp.Worker.Services
                 bool writeDryRun = (args?["dryRun"]?.ToObject<bool?>() ?? false)
                     || string.Equals(writeValidate, "only", StringComparison.OrdinalIgnoreCase);
                 bool autoDeclareVars = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false;
-                var writeResp = _writeService.WriteObject(
-                    target,
-                    action,
-                    payload,
-                    args?["type"]?.ToString(),
-                    true,
-                    false,
-                    autoDeclareVars,
-                    writeDryRun);
+                // Keep the full-write facade intact. Besides dryRun, it owns optimistic
+                // concurrency aliases and rollback intent. The former positional call dropped
+                // baseVersion/expectedVersion and made full Source writes weaker than patches.
+                var fullWriteArgs = args != null ? (JObject)args.DeepClone() : new JObject();
+                fullWriteArgs["part"] = action;
+                fullWriteArgs["mode"] = "full";
+                fullWriteArgs["content"] = payload ?? fullWriteArgs["content"]?.ToString() ?? string.Empty;
+                fullWriteArgs["dryRun"] = writeDryRun;
+                fullWriteArgs["autoDeclareVariables"] = autoDeclareVars;
+                var writeResp = _writeService.WriteObject(target, fullWriteArgs);
                 // issue #60 — validationMode="specify" runs the inline Specify pass against
                 // the written object and surfaces structured diagnostics (or rolls back).
                 writeResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(writeResp, target, args, args?["part"]?.ToString());

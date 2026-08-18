@@ -55,6 +55,51 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ShouldRunMutationAsync_DryRunNeverBecomesBackgroundWrite()
+        {
+            var args = new JObject
+            {
+                ["async"] = true,
+                ["dryRun"] = true
+            };
+
+            Assert.False(Program.ShouldRunMutationAsync("genexus_edit", args));
+            Assert.False(Program.ShouldRunMutationAsync("genexus_variable", args));
+        }
+
+        [Fact]
+        public void ShouldRunMutationAsync_ValidateOnlyNeverBecomesBackgroundWrite()
+        {
+            Assert.False(Program.ShouldRunMutationAsync("genexus_edit", new JObject
+            {
+                ["async"] = true,
+                ["validate"] = "only"
+            }));
+        }
+
+        [Fact]
+        public void ShouldRunMutationAsync_RealEditRemainsAsyncWhenRequested()
+        {
+            Assert.True(Program.ShouldRunMutationAsync("genexus_edit", new JObject
+            {
+                ["async"] = true,
+                ["dryRun"] = false
+            }));
+        }
+
+        [Fact]
+        public void BuildWorkerRpcRequest_UsesTheLifecycleOperationIdentity()
+        {
+            JObject rpc = Program.BuildWorkerRpcRequest(
+                new JObject { ["module"] = "Write", ["action"] = "Source", ["target"] = "SyntheticProcedure" },
+                requestId: "transport-request",
+                operationId: "one-operation-id");
+
+            Assert.Equal("transport-request", rpc["id"]?.ToString());
+            Assert.Equal("one-operation-id", rpc["_meta"]?["progressToken"]?.ToString());
+        }
+
+        [Fact]
         public void BuildAsyncMutationCompletionSummary_UsesVariableSpecificLabel()
         {
             Assert.Equal("Variable update succeeded", Program.BuildAsyncMutationCompletionSummary("genexus_variable", success: true));

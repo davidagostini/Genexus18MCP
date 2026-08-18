@@ -147,6 +147,49 @@ try {
     $token = Get-VersionToken $read
     [void] $tokens.Add($token)
 
+    # Full Source preview: this is the regression gate for a dry-run that used to
+    # enter Write/Source asynchronously and could call Save or wedge the STA worker.
+    $fullPreview = $initial + "`r`n// MCP_FULL_PREVIEW_MUST_NOT_PERSIST"
+    $staleFullDry = Invoke-Worker $worker 'full-dry-stale' 'Write' 'Source' $procedure @{
+        type = 'Procedure'; part = 'Source'; mode = 'full'; dryRun = $true
+        expectedVersion = 'stale-version'; rollbackOnFailure = $true
+    } $fullPreview -AllowServiceError
+    if ([string] $staleFullDry.error.code -ne 'StaleObject') {
+        throw "Full dry-run did not enforce expectedVersion: $($staleFullDry | ConvertTo-Json -Compress -Depth 20)"
+    }
+    $fullDry = Invoke-Worker $worker 'full-dry' 'Write' 'Source' $procedure @{
+        type = 'Procedure'; part = 'Source'; mode = 'full'; dryRun = $true
+        expectedVersion = $token; rollbackOnFailure = $true
+    } $fullPreview
+    if ([string] $fullDry.code -ne 'WriteDryRun' -or [bool] $fullDry.persisted) {
+        throw "Full dry-run did not return WriteDryRun with persisted=false: $($fullDry | ConvertTo-Json -Compress -Depth 20)"
+    }
+    if ([bool] $fullDry.mutationDetected -or @($fullDry.implicitLifecycleActions).Count -ne 0) {
+        throw 'Full dry-run reported a mutation or an implicit lifecycle action.'
+    }
+    $afterFullDry = Invoke-Worker $worker 'after-full-dry' 'Read' 'ExtractSource' $procedure @{ type = 'Procedure'; part = 'Source' }
+    if ((Get-Source $afterFullDry) -ne $initial -or (Get-VersionToken $afterFullDry) -ne $token) {
+        throw 'Full dry-run changed Source or its version token.'
+    }
+
+    # A real full write must return the independently re-read Source and version,
+    # without running Specify/Generate/Build/Compile or any other lifecycle action.
+    $fullPersisted = $initial + "`r`n// MCP_FULL_REAL"
+    $fullWrite = Invoke-Worker $worker 'full-real' 'Write' 'Source' $procedure @{
+        type = 'Procedure'; part = 'Source'; mode = 'full'; dryRun = $false
+        expectedVersion = $token; rollbackOnFailure = $true
+    } $fullPersisted
+    if (-not [bool] $fullWrite.persisted -or -not [bool] $fullWrite.postSaveVerification.reReadConfirmed) {
+        throw "Full write did not confirm persistence and read-back: $($fullWrite | ConvertTo-Json -Compress -Depth 20)"
+    }
+    if ([string] $fullWrite.source -ne $fullPersisted -or @($fullWrite.implicitLifecycleActions).Count -ne 0) {
+        throw 'Full write did not return the exact persisted Source or reported an implicit lifecycle action.'
+    }
+    $afterFullWrite = Invoke-Worker $worker 'after-full-real' 'Read' 'ExtractSource' $procedure @{ type = 'Procedure'; part = 'Source' }
+    if ((Get-Source $afterFullWrite) -ne $fullPersisted) { throw 'Independent read differs from the full-write Source.' }
+    $token = Get-VersionToken $afterFullWrite
+    [void] $tokens.Add($token)
+
     $dry = Invoke-Worker $worker '4' 'Patch' 'Apply' $procedure @{
         type = 'Procedure'; part = 'Source'; operation = 'Replace'; context = '// MCP_SLOT_1'
         expectedCount = 1; dryRun = $true; baseVersion = $token; rollbackOnFailure = $true
@@ -198,6 +241,8 @@ try {
         Passed = $true
         PatchesApplied = 3
         FreshReadsConfirmed = 3
+        FullDryRunConfirmed = $true
+        FullWriteReadBackConfirmed = $true
         StaleTokenRejected = $true
         LifecycleOperations = 0
         Procedure = $procedure
