@@ -99,6 +99,10 @@ namespace GxMcp.Gateway.Routers
                         varName = args?["varName"]?.ToString(),
                         typeName = args?["typeName"]?.ToString(),
                         basedOn = args?["basedOn"]?.ToString(),
+                        objectType = args?["objectType"]?.ToString(),
+                        objectName = args?["objectName"]?.ToString(),
+                        objectModule = args?["module"]?.ToString(),
+                        expectedVersion = args?["expectedVersion"]?.ToString() ?? args?["baseVersion"]?.ToString(),
                         // issue #28 items 8/9: explicit length/decimals + collection flag.
                         length = args?["length"]?.ToObject<int?>(),
                         decimals = args?["decimals"]?.ToObject<int?>(),
@@ -109,7 +113,8 @@ namespace GxMcp.Gateway.Routers
                         // issue #60 — validationMode="specify" runs the inline Specify pass after
                         // the write; rollbackOnFailure restores the pre-write state on spec errors.
                         validationMode = args?["validationMode"]?.ToString(),
-                        rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
+                        rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>()
+                            ?? !string.IsNullOrWhiteSpace(args?["objectType"]?.ToString())
                     };
                 }
 
@@ -1282,11 +1287,14 @@ namespace GxMcp.Gateway.Routers
                 levelPath = args?["levelPath"],
                 dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
                 baseVersion = args?["baseVersion"]?.ToString(),
+                expectedVersion = args?["expectedVersion"]?.ToString(),
                 // issue #60 — validationMode="specify" runs the inline Specify pass after a
                 // structure write; rollbackOnFailure restores the pre-write state on spec errors.
                 validationMode = args?["validationMode"]?.ToString(),
                 rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>()
-                    ?? string.Equals(action, "create_index", StringComparison.OrdinalIgnoreCase)
+                    ?? (string.Equals(action, "create_index", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(action, "update_visual", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(action, "move_attribute", StringComparison.OrdinalIgnoreCase))
             };
         }
 

@@ -56,7 +56,7 @@ namespace GxMcp.Worker.Helpers
                 objectRestoreData);
         }
 
-        public Comparison Compare(KBObject obj)
+        public Comparison Compare(KBObject obj, params string[] ignoredPartNames)
         {
             if (obj == null)
                 return Comparison.Failed(new[] { "ObjectMissing" }, null);
@@ -74,8 +74,12 @@ namespace GxMcp.Worker.Helpers
                 changed.Add(propertyPaths.Length == 0 ? "Properties" : "Properties: " + string.Join(", ", propertyPaths));
             }
 
-            var expectedFingerprints = _parts.ToDictionary(p => p.Key, p => p.Value.VerificationData, StringComparer.OrdinalIgnoreCase);
-            var currentFingerprints = current._parts.ToDictionary(p => p.Key, p => p.Value.VerificationData, StringComparer.OrdinalIgnoreCase);
+            var ignored = new HashSet<string>(ignoredPartNames ?? new string[0], StringComparer.OrdinalIgnoreCase);
+            Func<KeyValuePair<string, PartSnapshot>, bool> include = p => !ignored.Contains(p.Value.Name);
+            var expectedFingerprints = _parts.Where(include)
+                .ToDictionary(p => p.Key, p => p.Value.VerificationData, StringComparer.OrdinalIgnoreCase);
+            var currentFingerprints = current._parts.Where(include)
+                .ToDictionary(p => p.Key, p => p.Value.VerificationData, StringComparer.OrdinalIgnoreCase);
             foreach (string key in FindChangedPartKeys(expectedFingerprints, currentFingerprints))
             {
                 changedKeys.Add(key);
@@ -98,14 +102,16 @@ namespace GxMcp.Worker.Helpers
         /// Compensating restoration used only when the enclosing SDK transaction did not
         /// fully undo a failed move. The normal rollback path is the transaction rollback.
         /// </summary>
-        public void RestoreParts(KBObject obj)
+        public void RestoreParts(KBObject obj, params string[] ignoredPartNames)
         {
             if (obj == null) throw new ArgumentNullException(nameof(obj));
 
+            var ignored = new HashSet<string>(ignoredPartNames ?? new string[0], StringComparer.OrdinalIgnoreCase);
             var current = obj.Parts.Cast<KBObjectPart>()
                 .ToDictionary(PartSnapshot.GetKey, StringComparer.OrdinalIgnoreCase);
             foreach (var expected in _parts.Values)
             {
+                if (ignored.Contains(expected.Name)) continue;
                 KBObjectPart part;
                 if (!current.TryGetValue(expected.Key, out part))
                     throw new InvalidOperationException("Cannot restore missing part '" + expected.Name + "'.");
@@ -120,6 +126,10 @@ namespace GxMcp.Worker.Helpers
             if (obj == null) throw new ArgumentNullException(nameof(obj));
             DeserializeEntityData(obj, _objectRestoreData);
         }
+
+        internal static byte[] CaptureEntity(object entity) => SerializeEntityData(entity);
+
+        internal static void RestoreEntity(object entity, byte[] data) => DeserializeEntityData(entity, data);
 
         internal static string ComputeAggregateHash(byte[] objectXml, IDictionary<string, PartSnapshot> parts)
         {

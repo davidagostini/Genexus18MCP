@@ -1210,6 +1210,17 @@ namespace GxMcp.Worker.Services
             if (action == "AddVariable")
             {
                 bool varDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
+                if (!string.IsNullOrWhiteSpace(args?["objectType"]?.ToString()))
+                {
+                    if (!string.Equals(args?["objectType"]?.ToString(), "BusinessComponent", StringComparison.OrdinalIgnoreCase))
+                        return Models.McpResponse.Err(code: "UnsupportedObjectVariableType",
+                            message: "objectType currently supports BusinessComponent.", target: target);
+                    return _writeService.ChangeBusinessComponentVariable("add", target,
+                        args?["varName"]?.ToString(), args?["objectName"]?.ToString(),
+                        args?["objectModule"]?.ToString(), varDryRun,
+                        args?["expectedVersion"]?.ToString(),
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true);
+                }
                 // issue #32 item 1: batch form — a `variables` array adds many in one call
                 // (one save/flush), avoiding N sequential round-trips + concurrent-write risk.
                 var varBatch = (args?["variables"] ?? request["variables"]) as JArray;
@@ -1241,6 +1252,17 @@ namespace GxMcp.Worker.Services
             if (action == "ModifyVariable")
             {
                 bool varDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
+                if (!string.IsNullOrWhiteSpace(args?["objectType"]?.ToString()))
+                {
+                    if (!string.Equals(args?["objectType"]?.ToString(), "BusinessComponent", StringComparison.OrdinalIgnoreCase))
+                        return Models.McpResponse.Err(code: "UnsupportedObjectVariableType",
+                            message: "objectType currently supports BusinessComponent.", target: target);
+                    return _writeService.ChangeBusinessComponentVariable("modify", target,
+                        args?["varName"]?.ToString(), args?["objectName"]?.ToString(),
+                        args?["objectModule"]?.ToString(), varDryRun,
+                        args?["expectedVersion"]?.ToString(),
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true);
+                }
                 var modResp = _writeService.ModifyVariable(
                     target,
                     args?["varName"]?.ToString(),
@@ -1657,7 +1679,11 @@ namespace GxMcp.Worker.Services
             if (action == "GetVisualStructure") return _structureService.GetVisualStructure(target);
             if (action == "UpdateVisualStructure")
             {
-                var structResp = _structureService.UpdateVisualStructure(target, payload);
+                var structResp = _structureService.UpdateVisualStructure(target, payload,
+                    args?["dryRun"]?.ToObject<bool?>() ?? false,
+                    args?["expectedVersion"]?.ToString() ?? args?["baseVersion"]?.ToString(),
+                    args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                    args?["transactionModule"]?.ToString());
                 // issue #60 — validationMode="specify" runs the inline Specify pass against
                 // the edited object and surfaces structured diagnostics (or rolls back).
                 return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(structResp, target, args, "Structure");

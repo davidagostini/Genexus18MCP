@@ -36,17 +36,40 @@ namespace GxMcp.Worker.Services
             _groupStructureService = new GroupStructureService(objectService);
         }
 
-        public string UpdateVisualStructure(string targetName, string payload)
+        public string UpdateVisualStructure(string targetName, string payload, bool dryRun = false,
+            string expectedVersion = null, bool rollbackOnFailure = true, string moduleName = null)
         {
             try {
-                var obj = _objectService.FindObject(targetName);
+                var obj = string.IsNullOrWhiteSpace(moduleName)
+                    ? _objectService.FindObject(targetName)
+                    : ResolveTransaction(targetName, moduleName);
                 if (obj == null) return HealingService.FormatNotFoundError(targetName, _objectService.GetKbService().GetIndexCache().GetIndex());
 
                 // issue #52: SDT structure updates (root Collection flag + item name, Domain-based
                 // and SDT-reference members, nested levels) go through the SDT-specific writer —
                 // the Transaction path below can't express any of that.
                 if (obj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+                {
+                    string sdtVersion = WriteService.ComputeVersionToken(obj);
+                    if (!string.IsNullOrWhiteSpace(expectedVersion)
+                        && !string.Equals(expectedVersion, sdtVersion, StringComparison.Ordinal))
+                        return Models.McpResponse.Err(code: "VersionConflict",
+                            message: "The SDT changed after expectedVersion was captured.", target: targetName,
+                            extra: new JObject { ["expectedVersion"] = expectedVersion,
+                                ["currentVersion"] = sdtVersion, ["persisted"] = false });
+                    if (dryRun)
+                        return Models.McpResponse.Ok(target: targetName, code: "DryRun", result: new JObject
+                        {
+                            ["persisted"] = false,
+                            ["mutationDetected"] = false,
+                            ["beforeVersion"] = sdtVersion,
+                            ["afterVersion"] = sdtVersion,
+                            ["versionToken"] = sdtVersion,
+                            ["requested"] = string.IsNullOrWhiteSpace(payload) ? null : JToken.Parse(payload),
+                            ["implicitLifecycleActions"] = new JArray()
+                        });
                     return _sdtService.UpdateSDTStructure(targetName, payload);
+                }
 
                 var trn = obj as Transaction;
                 if (trn == null) return Models.McpResponse.Err(
@@ -59,87 +82,119 @@ namespace GxMcp.Worker.Services
                         args: new Newtonsoft.Json.Linq.JObject { ["name"] = targetName },
                         why: "Confirms the object type before attempting a structure update.")));
 
-                using (var sdkTrans = trn.Model.KB.BeginTransaction()) {
-                    try {
-                        var json = JObject.Parse(payload);
-                        var children = json["children"] as JArray;
-                        if (children == null) return Models.McpResponse.Err(
-                            code: "InvalidStructurePayload",
-                            message: "The payload must contain a 'children' array for visual structure updates.",
-                            hint: "Pass a JSON object with a 'children' array describing the Transaction structure.",
-                            target: targetName);
-                        JArray before = _visualStructureService.SerializeVisualLevel(trn.Structure.Root);
-                        TransactionSnapshot snapshot = CaptureTransactionSnapshot(trn);
-                        // issue #59 — capture the pre-write top-level structure names so the
-                        // success envelope can surface a before/requested/persisted diff.
-                        var beforeNames = before
-                            .OfType<JObject>()
-                            .Select(c => c["name"]?.ToString() ?? string.Empty)
-                            .Where(n => n.Length > 0)
-                            .ToList();
-                        // Chamada otimizada com Batch Save interno
-                        _visualStructureService.SyncVisualStructure(trn, children);
-                        
-                        trn.Save(new Artech.Architecture.Common.Objects.KBObjectSavePreferences
+                var json = JObject.Parse(payload);
+                var children = json["children"] as JArray;
+                if (children == null) return Models.McpResponse.Err(
+                    code: "InvalidStructurePayload",
+                    message: "The payload must contain a 'children' array for visual structure updates.",
+                    hint: "Pass a JSON object with a 'children' array describing the Transaction structure.",
+                    target: targetName);
+
+                JArray before = _visualStructureService.SerializeVisualLevel(trn.Structure.Root);
+                TransactionSnapshot snapshot;
+                try { snapshot = CaptureTransactionSnapshot(trn); }
+                catch (Exception ex)
+                {
+                    return Models.McpResponse.Err(code: "SnapshotFailed", message: ex.Message,
+                        hint: "No structure write was attempted because a lossless snapshot could not be captured.",
+                        target: targetName, extra: new JObject { ["persisted"] = false });
+                }
+                string versionBefore = WriteService.ComputeVersionToken(trn);
+                if (!string.IsNullOrWhiteSpace(expectedVersion)
+                    && !string.Equals(expectedVersion, versionBefore, StringComparison.Ordinal))
+                    return Models.McpResponse.Err(code: "VersionConflict",
+                        message: "The Transaction changed after expectedVersion was captured.",
+                        hint: "Re-read the structure and retry with its current versionToken.",
+                        target: targetName, extra: new JObject
                         {
-                            ForceSave = true,
-                            ForceSaveDefaultParts = true,
-                            SkipValidation = false
+                            ["expectedVersion"] = expectedVersion,
+                            ["currentVersion"] = versionBefore,
+                            ["persisted"] = false
                         });
 
-                        // Restore user-authored non-Structure parts if SDK save reset them
-                        foreach (KBObjectPart part in trn.Parts)
+                JArray previewDiff = CompareRequestedStructure(children, before, "children");
+                if (dryRun)
+                    return Models.McpResponse.Ok(target: targetName, code: "DryRun", result: new JObject
+                    {
+                        ["persisted"] = false,
+                        ["mutationDetected"] = false,
+                        ["beforeVersion"] = versionBefore,
+                        ["afterVersion"] = versionBefore,
+                        ["versionToken"] = versionBefore,
+                        ["before"] = before,
+                        ["requested"] = children.DeepClone(),
+                        ["diff"] = previewDiff,
+                        ["implicitLifecycleActions"] = new JArray()
+                    });
+
+                bool committed = false;
+                try
+                {
+                    using (var sdkTrans = trn.Model.KB.BeginTransaction())
+                    {
+                        try
                         {
-                            if (part is StructurePart) continue;
-                            EntitySnapshot data;
-                            if (snapshot.Parts.TryGetValue(part.Type.ToString("D"), out data))
+                            var locked = trn.Model.Objects.Get(trn.Guid) as Transaction ?? trn;
+                            string lockedVersion = WriteService.ComputeVersionToken(locked);
+                            if (!string.Equals(lockedVersion, versionBefore, StringComparison.Ordinal))
+                                throw new InvalidOperationException("VersionConflict: the Transaction changed before the atomic save.");
+
+                            _visualStructureService.SyncVisualStructure(locked, children);
+                            locked.Save(new Artech.Architecture.Common.Objects.KBObjectSavePreferences
                             {
+                                ForceSave = true,
+                                ForceSaveDefaultParts = true,
+                                SkipValidation = false
+                            });
+
+                            // Only authored non-default parts are invariants. Default WinForm/WebForm
+                            // projections legitimately follow Structure and must not create a false
+                            // AuthoredPartsCorrupted result.
+                            foreach (KBObjectPart part in locked.Parts)
+                            {
+                                if (part is StructurePart || part.IsDefault) continue;
+                                if (!snapshot.Parts.TryGetValue(part.Type.ToString("D"), out EntitySnapshot data)) continue;
                                 RestoreEntity(part, data);
                                 part.Dirty = true;
-                                try { part.Save(); } catch { }
+                                part.Save();
                             }
+
+                            sdkTrans.Commit();
+                            committed = true;
                         }
+                        finally { if (!committed) try { sdkTrans.Rollback(); } catch { } }
+                    }
 
-                        sdkTrans.Commit();
-                        var persistedTrn = _objectService.FindObject(targetName, "Transaction") as Transaction;
-                        JArray persisted = persistedTrn == null ? new JArray() : _visualStructureService.SerializeVisualLevel(persistedTrn.Structure.Root);
-                        JArray diff = CompareRequestedStructure(children, persisted, "children");
-                        _objectService.GetKbService().GetIndexCache().UpdateEntry(persistedTrn ?? trn);
-                        if (diff.Count > 0)
-                            return Models.McpResponse.Err(code: "StructureUpdateNotPersisted",
-                                message: "The structure save completed, but the persisted Transaction does not match the requested fields.",
-                                target: targetName, extra: new JObject
-                                {
-                                    ["before"] = before, ["requested"] = children.DeepClone(),
-                                    ["persisted"] = persisted, ["diff"] = diff, ["saved"] = false
-                                });
-                        // issue #59 — post-save persistence verification. Re-find the
-                        // Transaction (fresh instance, not the mutated one) and confirm every
-                        // requested top-level name is present in the persisted structure. A
-                        // missing name returns StructureUpdateNotPersisted instead of a false
-                        // StructureUpdated success.
-                        var requestedNames = children.Select(c => c["name"]?.ToString() ?? string.Empty)
-                            .Where(n => n.Length > 0)
-                            .ToList();
-                        var verifyErr = VerifyStructurePersisted(targetName, requestedNames, beforeNames, trn);
-                        if (verifyErr != null) return verifyErr;
+                    var persistedTrn = trn.Model.Objects.Get(trn.Guid) as Transaction ?? trn;
+                    JArray persisted = _visualStructureService.SerializeVisualLevel(persistedTrn.Structure.Root);
+                    JArray diff = CompareRequestedStructure(children, persisted, "children");
+                    _objectService.GetKbService().GetIndexCache().UpdateEntry(persistedTrn);
+                    if (diff.Count > 0)
+                        return RollbackStructureFailure(targetName, "StructureUpdateNotPersisted",
+                            "The persisted Transaction does not match the requested structure.",
+                            trn, snapshot, before, children, persisted, diff, versionBefore, rollbackOnFailure);
 
-                        if (!VerifyAuthoredPartsPreserved(persistedTrn ?? trn, snapshot.Parts, out string authoredErr))
+                    if (!VerifyAuthoredPartsPreserved(persistedTrn, snapshot.Parts, out string authoredErr))
+                        return RollbackStructureFailure(targetName, "AuthoredPartsCorrupted",
+                            "Structure update changed a user-authored non-Structure part: " + authoredErr,
+                            trn, snapshot, before, children, persisted, diff, versionBefore, rollbackOnFailure);
+
+                    string versionAfter = WriteService.ComputeVersionToken(persistedTrn);
+                    var structureResult = new JObject
                         {
-                            return Models.McpResponse.Err(code: "AuthoredPartsCorrupted",
-                                message: "Structure update corrupted non-structure parts: " + authoredErr,
-                                target: targetName);
-                        }
-
-                        var structureResult = new JObject
-                        {
+                            ["persisted"] = true,
+                            ["mutationDetected"] = true,
+                            ["beforeVersion"] = versionBefore,
+                            ["afterVersion"] = versionAfter,
+                            ["versionToken"] = versionAfter,
                             ["before"] = before,
                             ["requested"] = children.DeepClone(),
-                            ["persisted"] = persisted,
+                            ["persistedStructure"] = persisted,
                             ["diff"] = diff,
                             ["saved"] = true,
                             ["persistedVerified"] = true,
-                            ["authoredPartsPreserved"] = true
+                            ["authoredPartsPreserved"] = true,
+                            ["implicitLifecycleActions"] = new JArray()
                         };
                         // Issue #97 guard-rail: flag subtype attributes the SDK left
                         // classified as stored (SECONDARY) while their same-supertype
@@ -155,15 +210,27 @@ namespace GxMcp.Worker.Services
                                 ["hint"] = "Subtype attribute(s) are classified as stored (SECONDARY) instead of derived (INFERRED) — this creates a physical column and breaks supertype propagation. The SDK only recomputes the class through the IDE's SubtypeGroup editor; via MCP, remove the attribute (genexus_structure action=remove_attribute) and re-add it, then re-run genexus_structure action=check_subtypes."
                             };
                         }
-                        return Models.McpResponse.Ok(target: targetName, code: "StructureUpdated", result: structureResult);
-                    } catch (Exception ex) {
-                        sdkTrans.Rollback();
-                        return Models.McpResponse.Err(
-                            code: "StructureUpdateFailed",
+                    return Models.McpResponse.Ok(target: targetName, code: "StructureUpdated", result: structureResult);
+                }
+                catch (Exception ex)
+                {
+                    var current = trn.Model.Objects.Get(trn.Guid) as Transaction ?? trn;
+                    bool unchanged = !committed && TransactionMatchesSnapshot(current, snapshot);
+                    if (unchanged)
+                        return Models.McpResponse.Err(code: ex.Message.StartsWith("VersionConflict:", StringComparison.Ordinal)
+                                ? "VersionConflict" : "StructureUpdateFailed",
                             message: ex.Message,
-                            hint: "Check the payload children array for malformed items, then retry.",
-                            target: targetName);
-                    }
+                            hint: "The SDK transaction was rolled back and the original snapshot was verified.",
+                            target: targetName, extra: new JObject
+                            {
+                                ["persisted"] = false,
+                                ["mutationDetected"] = false,
+                                ["beforeVersion"] = versionBefore,
+                                ["rollback"] = new JObject { ["attempted"] = false, ["verified"] = true },
+                                ["implicitLifecycleActions"] = new JArray()
+                            });
+                    return RollbackStructureFailure(targetName, "StructureUpdateFailed", ex.Message,
+                        current, snapshot, before, children, null, null, versionBefore, rollbackOnFailure);
                 }
             } catch (Exception ex) {
                 return Models.McpResponse.Err(
@@ -172,6 +239,67 @@ namespace GxMcp.Worker.Services
                     hint: "Ensure the target Transaction exists and the payload is valid JSON.",
                     target: targetName);
             }
+        }
+
+        private string RollbackStructureFailure(string targetName, string code, string message,
+            Transaction trn, TransactionSnapshot snapshot, JArray before, JArray requested,
+            JArray persisted, JArray diff, string versionBefore, bool rollbackOnFailure)
+        {
+            var current = trn?.Model?.Objects.Get(trn.Guid) as Transaction ?? trn;
+            RestoreResult restored = RestoreTransactionSnapshot(current, snapshot);
+            bool rollbackVerified = restored.Success && restored.Verified;
+            string versionAfter = null;
+            try
+            {
+                var afterRollback = current?.Model?.Objects.Get(current.Guid) as Transaction ?? current;
+                versionAfter = afterRollback == null ? null : WriteService.ComputeVersionToken(afterRollback);
+            }
+            catch { }
+
+            return Models.McpResponse.Err(code: code,
+                message: rollbackVerified
+                    ? message + " The complete Transaction snapshot was restored."
+                    : message + " The complete Transaction snapshot could not be verified after rollback.",
+                hint: rollbackVerified
+                    ? "Re-read the Transaction before retrying."
+                    : "Stop writing this Transaction and inspect the rollback details.",
+                target: targetName,
+                extra: new JObject
+                {
+                    ["persisted"] = !rollbackVerified,
+                    ["mutationDetected"] = !rollbackVerified,
+                    ["beforeVersion"] = versionBefore,
+                    ["afterVersion"] = versionAfter,
+                    ["before"] = before,
+                    ["requested"] = requested?.DeepClone(),
+                    ["persistedStructure"] = persisted,
+                    ["diff"] = diff ?? new JArray(),
+                    ["rollback"] = new JObject
+                    {
+                        ["requested"] = rollbackOnFailure,
+                        ["enforcedByAtomicContract"] = true,
+                        ["attempted"] = true,
+                        ["saved"] = restored.Success,
+                        ["verified"] = restored.Verified,
+                        ["error"] = restored.Error
+                    },
+                    ["implicitLifecycleActions"] = new JArray()
+                });
+        }
+
+        private static bool TransactionMatchesSnapshot(Transaction trn, TransactionSnapshot snapshot)
+        {
+            if (trn == null || snapshot == null) return false;
+            try
+            {
+                var structure = trn.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is StructurePart);
+                if (structure == null
+                    || !snapshot.Parts.TryGetValue(structure.Type.ToString("D"), out EntitySnapshot expectedStructure)
+                    || !EntityMatches(structure, expectedStructure)) return false;
+                if (!JToken.DeepEquals(snapshot.Integrity, CaptureStructureIntegrity(trn, null))) return false;
+                return VerifyAuthoredPartsPreserved(trn, snapshot.Parts, out _);
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -1054,6 +1182,7 @@ namespace GxMcp.Worker.Services
         private sealed class TransactionSnapshot
         {
             public Dictionary<string, EntitySnapshot> Parts { get; } = new Dictionary<string, EntitySnapshot>(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<Guid, EntitySnapshot> GlobalAttributes { get; } = new Dictionary<Guid, EntitySnapshot>();
             public JObject Integrity { get; set; }
             public string StructurePartKey { get; set; }
         }
@@ -1085,8 +1214,22 @@ namespace GxMcp.Worker.Services
             }
             if (string.IsNullOrWhiteSpace(snapshot.StructurePartKey))
                 throw new InvalidOperationException("The Transaction Structure part was not found.");
+            CaptureGlobalAttributeSnapshots(trn.Structure.Root, snapshot.GlobalAttributes);
             snapshot.Integrity = CaptureStructureIntegrity(trn, movedIdentity, excludeIdentityDetails);
             return snapshot;
+        }
+
+        private static void CaptureGlobalAttributeSnapshots(TransactionLevel level,
+            Dictionary<Guid, EntitySnapshot> snapshots)
+        {
+            foreach (TransactionAttribute occurrence in level.Attributes)
+            {
+                var attribute = occurrence.Attribute;
+                if (attribute != null && !snapshots.ContainsKey(attribute.Guid))
+                    snapshots[attribute.Guid] = CaptureEntity(attribute);
+            }
+            foreach (TransactionLevel child in level.Levels)
+                CaptureGlobalAttributeSnapshots(child, snapshots);
         }
 
         private static JObject CaptureStructureIntegrity(Transaction trn, string movedIdentity,
@@ -1276,6 +1419,7 @@ namespace GxMcp.Worker.Services
                 if (expected == null || expected.VerificationData == null || expected.VerificationData.Length == 0) continue;
 
                 var part = persisted.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type.ToString("D") == key);
+                if (part is StructurePart || part?.IsDefault == true) continue;
                 if (part == null || !EntityMatches(part, expected))
                 {
                     error = $"Authored part '{part?.TypeDescriptor?.Name ?? key}' changed or was wiped unexpectedly.";
@@ -1336,6 +1480,15 @@ namespace GxMcp.Worker.Services
                             part.Dirty = true;
                             part.Save();
                         }
+
+                        foreach (var pair in snapshot.GlobalAttributes)
+                        {
+                            var attribute = trn.Model.Objects.Get(pair.Key) as Artech.Genexus.Common.Objects.Attribute
+                                ?? throw new InvalidOperationException("Global Attribute missing during rollback: " + pair.Key);
+                            RestoreEntity(attribute, pair.Value);
+                            attribute.Dirty = true;
+                            attribute.Save();
+                        }
                         tx.Commit();
                         result.Success = true;
                     }
@@ -1353,6 +1506,10 @@ namespace GxMcp.Worker.Services
                     EntitySnapshot expected;
                     return snapshot.Parts.TryGetValue(part.Type.ToString("D"), out expected)
                         && EntityMatches(part, expected);
+                }) && snapshot.GlobalAttributes.All(pair =>
+                {
+                    var attribute = trn.Model.Objects.Get(pair.Key) as Artech.Genexus.Common.Objects.Attribute;
+                    return attribute != null && EntityMatches(attribute, pair.Value);
                 });
                 if (!result.Verified) result.Error = "Rollback saved, but byte-for-byte verification did not match every part.";
             }

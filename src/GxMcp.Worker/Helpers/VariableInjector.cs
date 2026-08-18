@@ -902,9 +902,167 @@ namespace GxMcp.Worker.Helpers
 
         public static void BindVariableToBC(global::Artech.Genexus.Common.Variable v, KBObject bcObj)
         {
+            string module = null;
+            try { module = bcObj.Module?.Name; } catch { }
+            bool root = string.IsNullOrWhiteSpace(module)
+                || string.Equals(module, "Root Module", StringComparison.OrdinalIgnoreCase);
+            string displayName = root ? bcObj.Name : bcObj.Name + ", " + module;
+            string qualifiedName = root ? bcObj.Name : module + "." + bcObj.Name;
+
+            var provider = Artech.Genexus.Common.Types.DataTypeProvider.GetProvider(v.Model)
+                ?? throw new InvalidOperationException("The GeneXus data type provider is unavailable.");
+            global::Artech.Genexus.Common.CustomTypes.AttCustomType nativeType = null;
+            foreach (string candidate in new[] { displayName, qualifiedName, bcObj.Name }.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var resolved = provider.GetTypeByName(candidate, v.Model);
+                    if (resolved != null
+                        && resolved.DataType == (int)global::Artech.Genexus.Common.eDBType.GX_BUSCOMP)
+                    {
+                        nativeType = resolved;
+                        displayName = candidate;
+                        break;
+                    }
+                }
+                catch { }
+            }
+            if (nativeType == null)
+                throw new InvalidOperationException("The GeneXus type provider did not expose the requested Business Component.");
+
             v.Type = global::Artech.Genexus.Common.eDBType.GX_BUSCOMP;
             v.SetPropertyValue("DataType", bcObj.Key);
-            try { v.SetPropertyValue("DataTypeString", bcObj.Name); } catch { }
+            v.SetPropertyValue("ATTCUSTOMTYPE", nativeType);
+            try { v.SetPropertyValue("DataTypeString", displayName); } catch { }
+        }
+
+        /// <summary>
+        /// Resolves a Business Component by native Transaction identity.  The module is
+        /// matched separately instead of being folded into a display type string, because
+        /// <c>GetByName</c> does not resolve <c>Module.Object</c> as an object name.
+        /// </summary>
+        public static Transaction ResolveBusinessComponent(KBModel model, string objectName,
+            string moduleName, out string error)
+        {
+            error = null;
+            if (model == null || string.IsNullOrWhiteSpace(objectName))
+            {
+                error = "objectName is required.";
+                return null;
+            }
+
+            if (!TryNormalizeBusinessComponentReference(objectName, moduleName,
+                out string simpleName, out string requestedModule, out error)) return null;
+
+            var matches = new List<Transaction>();
+            try
+            {
+                foreach (var candidate in model.Objects.GetByName(null, null, simpleName))
+                {
+                    var trn = candidate as Transaction;
+                    if (trn == null || !trn.IsBusinessComponent) continue;
+                    string actualModule = null;
+                    try { actualModule = trn.Module?.Name; } catch { }
+                    if (requestedModule == null
+                        || string.Equals(actualModule, requestedModule, StringComparison.OrdinalIgnoreCase))
+                        matches.Add(trn);
+                }
+            }
+            catch (Exception ex)
+            {
+                error = "Business Component lookup failed: " + ex.Message;
+                return null;
+            }
+
+            if (matches.Count == 1) return matches[0];
+            if (matches.Count == 0)
+            {
+                error = requestedModule == null
+                    ? "Business Component '" + simpleName + "' was not found."
+                    : "Business Component '" + requestedModule + "." + simpleName + "' was not found.";
+                return null;
+            }
+
+            error = "Business Component name is ambiguous; pass module explicitly.";
+            return null;
+        }
+
+        internal static bool TryNormalizeBusinessComponentReference(string objectName, string moduleName,
+            out string simpleName, out string requestedModule, out string error)
+        {
+            simpleName = objectName?.Trim();
+            requestedModule = string.IsNullOrWhiteSpace(moduleName) ? null : moduleName.Trim();
+            error = null;
+            if (string.IsNullOrWhiteSpace(simpleName))
+            {
+                error = "objectName is required.";
+                return false;
+            }
+            int separator = simpleName.LastIndexOf('.');
+            if (separator <= 0) return true;
+
+            string qualifiedModule = simpleName.Substring(0, separator);
+            string qualifiedName = simpleName.Substring(separator + 1);
+            if (requestedModule != null
+                && !string.Equals(requestedModule, qualifiedModule, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "module conflicts with the module-qualified objectName.";
+                return false;
+            }
+            requestedModule = qualifiedModule;
+            simpleName = qualifiedName;
+            return true;
+        }
+
+        /// <summary>Returns the KB object referenced by a persisted structural variable.</summary>
+        public static KBObject ResolveBoundTypeObject(global::Artech.Genexus.Common.Variable variable, KBModel model)
+        {
+            if (variable == null || model == null) return null;
+            string[] keyProperties = { "DataType", "DataTypeKey", "BasedOnKey", "TypeKey", "ObjectKey" };
+            foreach (string property in keyProperties)
+            {
+                try
+                {
+                    var resolved = TryGetObjectFromKey(model, variable.GetPropertyValue(property));
+                    if (resolved != null) return resolved;
+                }
+                catch { }
+            }
+            try
+            {
+                object custom = variable.GetPropertyValue("ATTCUSTOMTYPE");
+                if (custom != null)
+                {
+                    string token = custom.GetType().GetProperty("Guid")?.GetValue(custom) as string
+                        ?? custom.GetType().GetField("m_guid", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(custom) as string;
+                    var resolved = TryGetObjectFromKey(model, token);
+                    if (resolved != null) return resolved;
+                }
+            }
+            catch { }
+
+            // GX18 U16 persists modular BC variables as GX_BUSCOMP plus DataTypeString;
+            // ATTCUSTOMTYPE intentionally has no object key. Resolve the name in the
+            // variable owner's module, which is the same native scope used by GeneXus.
+            try
+            {
+                string typeName = variable.GetPropertyValue("DataTypeString") as string;
+                string ownerModule = variable.KBObject?.Module?.Name;
+                int comma = typeName?.LastIndexOf(',') ?? -1;
+                if (comma > 0)
+                {
+                    ownerModule = typeName.Substring(comma + 1).Trim();
+                    typeName = typeName.Substring(0, comma).Trim();
+                }
+                else if (typeName?.IndexOf('.') >= 0) ownerModule = null;
+                if (!string.IsNullOrWhiteSpace(typeName))
+                {
+                    var resolved = ResolveBusinessComponent(model, typeName, ownerModule, out _);
+                    if (resolved != null) return resolved;
+                }
+            }
+            catch { }
+            return null;
         }
 
         public static bool TryParseDbType(string typeStr, out global::Artech.Genexus.Common.eDBType type)

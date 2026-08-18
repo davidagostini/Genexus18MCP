@@ -1510,6 +1510,368 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// Adds or retypes a variable using a native Business Component object reference.
+        /// This path deliberately does not pass a module-qualified display string through the
+        /// Domain resolver: it resolves the Transaction first, binds its EntityKey, and verifies
+        /// the same GUID from a fresh VariablesPart read after commit.
+        /// </summary>
+        public string ChangeBusinessComponentVariable(string action, string target, string varName,
+            string objectName, string moduleName, bool dryRun, string expectedVersion,
+            bool rollbackOnFailure = true)
+        {
+            action = (action ?? "add").Trim().ToLowerInvariant();
+            if (action != "add" && action != "modify")
+                return McpResponse.Err(code: "InvalidAction",
+                    message: "Business Component typing supports action=add or action=modify.", target: target);
+
+            string normalizedName = varName;
+            var targetError = ResolveVariableTarget(target, ref normalizedName,
+                out var owner, out var variables, out var existing);
+            if (targetError != null) return targetError;
+
+            var bc = VariableInjector.ResolveBusinessComponent(variables.Model, objectName, moduleName,
+                out string resolutionError);
+            if (bc == null)
+                return McpResponse.Err(code: "UnknownBusinessComponent",
+                    message: resolutionError ?? "The Business Component could not be resolved.",
+                    hint: "Pass objectName and module separately; the Transaction must have Business Component=True.",
+                    target: target,
+                    extra: new JObject
+                    {
+                        ["objectType"] = "BusinessComponent",
+                        ["objectName"] = objectName,
+                        ["module"] = moduleName,
+                        ["persisted"] = false
+                    });
+
+            string versionBefore = ComputeVersionToken(owner);
+            if (!string.IsNullOrWhiteSpace(expectedVersion)
+                && !string.Equals(expectedVersion, versionBefore, StringComparison.Ordinal))
+                return McpResponse.Err(code: "VersionConflict",
+                    message: "The variable owner changed after expectedVersion was captured.",
+                    hint: "Re-read the object and retry with its current versionToken.",
+                    target: target,
+                    extra: new JObject
+                    {
+                        ["expectedVersion"] = expectedVersion,
+                        ["currentVersion"] = versionBefore,
+                        ["persisted"] = false
+                    });
+
+            JObject requestedIdentity = DescribeBusinessComponent(bc);
+            JObject beforeIdentity = DescribeVariableBinding(existing, variables.Model);
+            bool alreadyBound = VariableReferencesBusinessComponent(existing, variables.Model, bc, out _);
+            if (action == "add" && existing != null)
+            {
+                if (!alreadyBound)
+                    return McpResponse.Err(code: "VariableAlreadyExists",
+                        message: "The variable already exists with a different type.",
+                        hint: "Use action=modify to retype it atomically.", target: target,
+                        extra: new JObject { ["beforeVersion"] = versionBefore, ["persisted"] = false,
+                            ["typedIdentity"] = beforeIdentity });
+                if (dryRun)
+                    return McpResponse.Ok(target: target, code: "DryRun", result: new JObject
+                    {
+                        ["persisted"] = false,
+                        ["mutationDetected"] = false,
+                        ["beforeVersion"] = versionBefore,
+                        ["afterVersion"] = versionBefore,
+                        ["versionToken"] = versionBefore,
+                        ["diff"] = new JObject { ["action"] = "none", ["variable"] = normalizedName },
+                        ["typedIdentity"] = beforeIdentity,
+                        ["reReadConfirmed"] = true,
+                        ["implicitLifecycleActions"] = new JArray()
+                    });
+                return McpResponse.Ok(target: target, code: "WriteNoChange", result: new JObject
+                {
+                    ["persisted"] = true,
+                    ["mutationDetected"] = false,
+                    ["beforeVersion"] = versionBefore,
+                    ["afterVersion"] = versionBefore,
+                    ["versionToken"] = versionBefore,
+                    ["typedIdentity"] = beforeIdentity,
+                    ["reReadConfirmed"] = true,
+                    ["implicitLifecycleActions"] = new JArray()
+                });
+            }
+            if (action == "modify" && existing == null)
+                return McpResponse.Err(code: "VariableNotFound",
+                    message: "Variable '&" + normalizedName + "' was not found.",
+                    hint: "Use action=add to create it.", target: target,
+                    extra: new JObject { ["persisted"] = false, ["beforeVersion"] = versionBefore });
+            if (action == "modify" && alreadyBound && !dryRun)
+                return McpResponse.Ok(target: target, code: "WriteNoChange", result: new JObject
+                {
+                    ["persisted"] = true,
+                    ["mutationDetected"] = false,
+                    ["beforeVersion"] = versionBefore,
+                    ["afterVersion"] = versionBefore,
+                    ["versionToken"] = versionBefore,
+                    ["typedIdentity"] = beforeIdentity,
+                    ["reReadConfirmed"] = true,
+                    ["implicitLifecycleActions"] = new JArray()
+                });
+
+            var diff = new JObject
+            {
+                ["action"] = action,
+                ["variable"] = normalizedName,
+                ["before"] = beforeIdentity,
+                ["requested"] = requestedIdentity.DeepClone()
+            };
+            if (dryRun)
+                return McpResponse.Ok(target: target, code: "DryRun", result: new JObject
+                {
+                    ["persisted"] = false,
+                    ["mutationDetected"] = false,
+                    ["beforeVersion"] = versionBefore,
+                    ["afterVersion"] = versionBefore,
+                    ["versionToken"] = versionBefore,
+                    ["diff"] = diff,
+                    ["typedIdentity"] = requestedIdentity,
+                    ["implicitLifecycleActions"] = new JArray()
+                });
+
+            ObjectMoveSnapshot snapshot;
+            byte[] originalVariableData;
+            try
+            {
+                snapshot = ObjectMoveSnapshot.Capture(owner);
+                originalVariableData = existing == null ? null : ObjectMoveSnapshot.CaptureEntity(existing);
+                if (existing != null && originalVariableData == null)
+                    throw new InvalidOperationException("The original variable could not be serialized losslessly.");
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(code: "SnapshotFailed", message: ex.Message,
+                    hint: "No write was attempted because a lossless object snapshot could not be captured.",
+                    target: target, extra: new JObject { ["persisted"] = false, ["beforeVersion"] = versionBefore });
+            }
+
+            global::Artech.Architecture.Common.Objects.KnowledgeBase kb =
+                _objectService.GetKbService().GetKB();
+            bool committed = false;
+            try
+            {
+                using (var tx = kb.BeginTransaction())
+                {
+                    try
+                    {
+                        var currentOwner = kb.DesignModel.Objects.Get(owner.Guid) ?? owner;
+                        string lockedVersion = ComputeVersionToken(currentOwner);
+                        if (!string.Equals(lockedVersion, versionBefore, StringComparison.Ordinal))
+                            throw new InvalidOperationException("VersionConflict: the object changed before the atomic save.");
+
+                        var currentPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(currentOwner)
+                            ?? throw new InvalidOperationException("Variables part not found during the atomic save.");
+                        var currentVariable = currentPart.Variables.FirstOrDefault(v =>
+                            string.Equals(v.Name, normalizedName, StringComparison.OrdinalIgnoreCase));
+                        string description = null;
+                        bool isCollection = false;
+                        if (currentVariable != null)
+                        {
+                            try { description = currentVariable.Description; } catch { }
+                            try { isCollection = currentVariable.IsCollection; } catch { }
+                            currentPart.Variables.Remove(currentVariable);
+                        }
+
+                        var replacement = new global::Artech.Genexus.Common.Variable(currentPart)
+                        {
+                            Name = normalizedName
+                        };
+                        try { replacement.Description = description; } catch { }
+                        VariableInjector.BindVariableToBC(replacement, bc);
+                        try { replacement.IsCollection = isCollection; } catch { }
+                        currentPart.Variables.Add(replacement);
+                        ForceSaveVariableOwner(currentOwner);
+                        tx.Commit();
+                        committed = true;
+                    }
+                    finally
+                    {
+                        if (!committed) try { tx.Rollback(); } catch { }
+                    }
+                }
+
+                ScheduleFlush(force: true);
+                var persistedOwner = kb.DesignModel.Objects.Get(owner.Guid) ?? owner;
+                var persistedPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(persistedOwner);
+                var persistedVariable = persistedPart?.Variables.FirstOrDefault(v =>
+                    string.Equals(v.Name, normalizedName, StringComparison.OrdinalIgnoreCase));
+                bool bindingValid = VariableReferencesBusinessComponent(persistedVariable,
+                    persistedPart?.Model, bc, out string bindingError);
+                var authoredComparison = snapshot.Compare(persistedOwner, "Variables", "ProcedureVariables",
+                    "Documentation", "Layout", "WinForm", "WebForm");
+                if (!bindingValid || !authoredComparison.Equal)
+                    throw new InvalidOperationException(!bindingValid
+                        ? bindingError
+                        : "A non-Variables authored part changed unexpectedly: " + authoredComparison.ChangedParts);
+
+                string versionAfter = ComputeVersionToken(persistedOwner);
+                JObject persistedIdentity = DescribeVariableBinding(persistedVariable, persistedPart.Model);
+                diff["persisted"] = persistedIdentity.DeepClone();
+                MarkDirtyIfSuccess("{\"status\":\"ok\"}", target);
+                return McpResponse.Ok(target: target, code: action == "add" ? "VariableAdded" : "VariableRetyped",
+                    result: new JObject
+                    {
+                        ["persisted"] = true,
+                        ["mutationDetected"] = true,
+                        ["beforeVersion"] = versionBefore,
+                        ["afterVersion"] = versionAfter,
+                        ["versionToken"] = versionAfter,
+                        ["diff"] = diff,
+                        ["typedIdentity"] = persistedIdentity,
+                        ["reReadConfirmed"] = true,
+                        ["rollbackOnFailure"] = rollbackOnFailure,
+                        ["implicitLifecycleActions"] = new JArray()
+                    });
+            }
+            catch (Exception ex)
+            {
+                JObject rollback = RestoreObjectSnapshot(kb, owner.Guid, snapshot,
+                    normalizedName, originalVariableData);
+                bool restored = rollback["verified"]?.ToObject<bool?>() == true;
+                string code = ex.Message.StartsWith("VersionConflict:", StringComparison.Ordinal)
+                    ? "VersionConflict" : "VariableTypeNotPersisted";
+                return McpResponse.Err(code: code,
+                    message: restored
+                        ? "The Business Component variable change failed and the complete object snapshot was restored. " + ex.Message
+                        : "The Business Component variable change failed and rollback could not be verified. " + ex.Message,
+                    hint: restored
+                        ? "Re-read the object before retrying."
+                        : "Stop writing this object and inspect the rollback details.",
+                    target: target,
+                    extra: new JObject
+                    {
+                        ["persisted"] = !restored && committed,
+                        ["mutationDetected"] = !restored && committed,
+                        ["beforeVersion"] = versionBefore,
+                        ["rollback"] = rollback,
+                        ["diff"] = diff,
+                        ["implicitLifecycleActions"] = new JArray()
+                    });
+            }
+        }
+
+        private static JObject DescribeBusinessComponent(global::Artech.Genexus.Common.Objects.Transaction bc)
+        {
+            string module = null;
+            try { module = bc.Module?.Name; } catch { }
+            return new JObject
+            {
+                ["objectType"] = "BusinessComponent",
+                ["objectName"] = bc.Name,
+                ["module"] = module,
+                ["guid"] = bc.Guid.ToString("D"),
+                ["entityKey"] = bc.Key?.ToString(),
+                ["isBusinessComponent"] = bc.IsBusinessComponent,
+                ["methods"] = new JArray("Load", "Save", "Success", "GetMessages")
+            };
+        }
+
+        private static JObject DescribeVariableBinding(global::Artech.Genexus.Common.Variable variable,
+            global::Artech.Architecture.Common.Objects.KBModel model)
+        {
+            if (variable == null) return null;
+            var bound = VariableInjector.ResolveBoundTypeObject(variable, model);
+            var bc = bound as global::Artech.Genexus.Common.Objects.Transaction;
+            if (bc != null && bc.IsBusinessComponent)
+            {
+                var identity = DescribeBusinessComponent(bc);
+                identity["variableType"] = variable.Type.ToString();
+                return identity;
+            }
+            return new JObject
+            {
+                ["variableType"] = variable.Type.ToString(),
+                ["objectType"] = null,
+                ["objectName"] = null,
+                ["module"] = null,
+                ["guid"] = null
+            };
+        }
+
+        private static bool VariableReferencesBusinessComponent(global::Artech.Genexus.Common.Variable variable,
+            global::Artech.Architecture.Common.Objects.KBModel model,
+            global::Artech.Genexus.Common.Objects.Transaction expected, out string error)
+        {
+            error = null;
+            if (variable == null) { error = "The variable is missing after save."; return false; }
+            if (variable.Type != global::Artech.Genexus.Common.eDBType.GX_BUSCOMP)
+            {
+                error = "The persisted variable is not GX_BUSCOMP.";
+                return false;
+            }
+            var bound = VariableInjector.ResolveBoundTypeObject(variable, model);
+            if (bound == null) { error = "The persisted variable has no resolvable native object reference."; return false; }
+            if (bound.Guid != expected.Guid)
+            {
+                error = "The persisted variable references GUID '" + bound.Guid.ToString("D")
+                    + "', not the requested Business Component GUID '" + expected.Guid.ToString("D") + "'.";
+                return false;
+            }
+            var trn = bound as global::Artech.Genexus.Common.Objects.Transaction;
+            if (trn == null || !trn.IsBusinessComponent)
+            {
+                error = "The referenced Transaction is not a Business Component.";
+                return false;
+            }
+            return true;
+        }
+
+        private static JObject RestoreObjectSnapshot(global::Artech.Architecture.Common.Objects.KnowledgeBase kb,
+            Guid objectGuid, ObjectMoveSnapshot snapshot, string variableName, byte[] originalVariableData)
+        {
+            var result = new JObject { ["attempted"] = true, ["verified"] = false };
+            try
+            {
+                using (var tx = kb.BeginTransaction())
+                {
+                    bool rollbackCommitted = false;
+                    try
+                    {
+                        var current = kb.DesignModel.Objects.Get(objectGuid)
+                            ?? throw new InvalidOperationException("The object no longer exists.");
+                        snapshot.RestoreObject(current);
+                        snapshot.RestoreParts(current, "Variables", "ProcedureVariables");
+                        var variables = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(current)
+                            ?? throw new InvalidOperationException("Variables part is missing during rollback.");
+                        var currentVariable = variables.Variables.FirstOrDefault(v =>
+                            string.Equals(v.Name, variableName, StringComparison.OrdinalIgnoreCase));
+                        if (currentVariable != null) variables.Variables.Remove(currentVariable);
+                        if (originalVariableData != null)
+                        {
+                            var recreatedVariable = new global::Artech.Genexus.Common.Variable(variables);
+                            ObjectMoveSnapshot.RestoreEntity(recreatedVariable, originalVariableData);
+                            variables.Variables.Add(recreatedVariable);
+                        }
+                        ForceSaveVariableOwner(current);
+                        tx.Commit();
+                        rollbackCommitted = true;
+                    }
+                    finally { if (!rollbackCommitted) try { tx.Rollback(); } catch { } }
+                }
+                var restored = kb.DesignModel.Objects.Get(objectGuid);
+                var comparison = snapshot.Compare(restored,
+                    "Variables", "ProcedureVariables", "Documentation", "Layout", "WinForm", "WebForm");
+                var restoredPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(restored);
+                var restoredVariable = restoredPart?.Variables.FirstOrDefault(v =>
+                    string.Equals(v.Name, variableName, StringComparison.OrdinalIgnoreCase));
+                bool variableVerified = originalVariableData == null
+                    ? restoredVariable == null
+                    : restoredVariable != null
+                        && (ObjectMoveSnapshot.CaptureEntity(restoredVariable) ?? new byte[0])
+                            .SequenceEqual(originalVariableData);
+                result["verified"] = comparison.Equal && variableVerified;
+                result["variableVerified"] = variableVerified;
+                result["changedParts"] = comparison.ChangedParts;
+                result["persistedHash"] = comparison.PersistedHash;
+            }
+            catch (Exception ex) { result["error"] = ex.Message; }
+            return result;
+        }
+
         private static void ForceSaveVariableOwner(global::Artech.Architecture.Common.Objects.KBObject obj)
         {
             obj.Save(new global::Artech.Architecture.Common.Objects.KBObjectSavePreferences

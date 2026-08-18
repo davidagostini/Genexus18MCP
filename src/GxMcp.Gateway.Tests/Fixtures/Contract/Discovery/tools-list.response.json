@@ -3089,25 +3089,32 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or write the structure/data-model of GeneXus objects. Read: get_visual, get_logic, get_indexes (source=User indexes are droppable; response includes versionToken). Write: move_attribute reorders the existing native TransactionAttribute; update_visual authors a Transaction/SDT structure; update_group edits SubType Group membership; create_index plans or creates an index with optimistic concurrency, exact post-save verification and rollback; drop_index removes an index; remove_attribute detaches a TransactionAttribute from a level via the native TransactionLevel.Items storage (preserving the KB-global Attribute and every SubtypeGroup membership) so agents can drop + re-add a misclassified subtype attribute to force re-derivation; check_subtypes runs the issue #97 guard-rail — flags subtype attributes (IS_SUBTYPE=True) classified as stored (SECONDARY) while their same-supertype siblings on the same level are derived (INFERRED), which silently creates a physical column and breaks supertype propagation; set_attribute, set_level, and set_domain edit SDK properties. move_attribute and create_index never run Specify, Generate, Build, Rebuild, compilation, reorganization, execution, tests, or Pattern application. Run genexus_lifecycle action=reorg separately after persisted index/type changes. For layout control trees use genexus_layout.",
+      "description": "Read or write the structure/data-model of GeneXus objects. update_visual now snapshots every part, checks optimistic concurrency, saves and re-reads the Transaction, and restores the complete snapshot when persistence or authored-part verification fails. Default form projections are allowed to follow Structure; user-authored forms are invariant. No structure action implicitly runs Specify, Generate, Build, Rebuild, compilation, reorganization, execution, or tests. Other actions cover indexes, attributes, levels, Domains, SubType Groups and subtype consistency. For layout control trees use genexus_layout.",
       "inputSchema": {
         "examples": [
+          {
+            "action": "update_visual",
+            "dryRun": true,
+            "expectedVersion": "<versionToken>",
+            "module": "Operations",
+            "name": "OrderRecord",
+            "payload": {
+              "children": [
+                {
+                  "name": "OrderId"
+                },
+                {
+                  "name": "OrderAverageTime"
+                }
+              ]
+            }
+          },
           {
             "action": "move_attribute",
             "after": "SampleReferenceId",
             "attribute": "SampleSubtypeId",
             "dryRun": true,
             "level": "root",
-            "name": "SampleTransaction"
-          },
-          {
-            "action": "move_attribute",
-            "after": "NestedId",
-            "attribute": "NestedDescription",
-            "levelPath": [
-              "Item",
-              "Operation"
-            ],
             "name": "SampleTransaction"
           },
           {
@@ -3143,36 +3150,13 @@
             }
           },
           {
-            "action": "update_visual",
-            "name": "MySdt",
-            "payload": {
-              "children": [
-                {
-                  "length": 100,
-                  "name": "Title",
-                  "type": "VarChar"
-                },
-                {
-                  "basedOnDomain": "MyDomain",
-                  "name": "Kind"
-                }
-              ],
-              "collectionItemName": "MySdtItem",
-              "isCollection": true
-            }
-          },
-          {
             "action": "update_group",
-            "name": "gst_orgao_exercicio",
+            "name": "SampleSubtypeGroup",
             "payload": {
               "members": [
                 {
-                  "name": "orgao_exercicio_id",
-                  "subtypeOf": "exercicio_id"
-                },
-                {
-                  "name": "orgao_exercicio",
-                  "subtypeOf": "exercicio"
+                  "name": "SampleId",
+                  "subtypeOf": "BaseId"
                 }
               ]
             }
@@ -3206,7 +3190,7 @@
             "type": "string"
           },
           "baseVersion": {
-            "description": "move_attribute/create_index optimistic-concurrency token. For create_index, use versionToken returned by get_indexes; stale state returns VersionConflict before mutation.",
+            "description": "Optimistic-concurrency token for update_visual/move_attribute/create_index. Stale state returns VersionConflict before mutation.",
             "type": "string"
           },
           "before": {
@@ -3215,8 +3199,12 @@
           },
           "dryRun": {
             "default": false,
-            "description": "move_attribute/create_index: validate and return the projected diff without saving. create_index re-reads the SDK state and reports DryRunMutationDetected if persistence changed.",
+            "description": "update_visual/move_attribute/create_index: validate and return the projected diff without changing any object, Attribute, hash, or version.",
             "type": "boolean"
+          },
+          "expectedVersion": {
+            "description": "Alias of baseVersion for update_visual.",
+            "type": "string"
           },
           "kb": {
             "description": "KB alias.",
@@ -3234,15 +3222,15 @@
             "type": "array"
           },
           "module": {
-            "description": "move_attribute optional: Transaction module.",
+            "description": "update_visual/move_attribute optional: Transaction module.",
             "type": "string"
           },
           "name": {
-            "description": "Object name. move_attribute: Transaction name; create_index/get_indexes: Transaction or Table name; set_attribute: attribute name; set_domain: domain name.",
+            "description": "Object name. update_visual/move_attribute: Transaction name; create_index/get_indexes: Transaction or Table name.",
             "type": "string"
           },
           "payload": {
-            "description": "update_visual (Transaction):{children:[...]}; update_visual (SDT):{isCollection?,collectionItemName?,children:[{name,type?,length?,decimals?,basedOnDomain?,isCollection?,isLevel?,children?}]}. update_group:{members:[{name,subtypeOf}],remove?:[name]}. create_index:{attributes:[\"Attr\"],unique?:true,name?,order?:\"Ascending\"|\"Descending\"}; requested attribute order is preserved. drop_index:{indexName}. set_attribute:{formula?,subtypeOf?,title?,columnTitle?,contextualTitle?,isCollection?,basedOnDomain?}. set_level:{level?,descriptionAttribute?,imageAttribute?}. set_domain:{enumValues:[{name,value,description?}],dataType?,length?,decimals?,signed?}.",
+            "description": "update_visual (Transaction):{children:[...]}; update_visual (SDT):{isCollection?,collectionItemName?,children:[{name,type?,length?,decimals?,basedOnDomain?,isCollection?,isLevel?,children?}]}. update_group:{members:[{name,subtypeOf}],remove?:[name]}. create_index:{attributes:[\"Attr\"],unique?:true,name?,order?:\"Ascending\"|\"Descending\"}. Other actions keep their existing typed payloads.",
             "type": "object"
           },
           "position": {
@@ -3252,11 +3240,11 @@
           },
           "rollbackOnFailure": {
             "default": true,
-            "description": "create_index: restore the captured index snapshot if save or exact post-save verification fails. move_attribute always snapshots and rolls back automatically on failed integrity checks.",
+            "description": "update_visual, move_attribute and create_index capture snapshots and verify rollback after any save or re-read divergence.",
             "type": "boolean"
           },
           "validationMode": {
-            "description": "Issue #60: run the inline Specify pass (Spec+Gen, no Compile) after update_visual/set_domain/set_attribute/set_level/update_group. Not accepted by move_attribute/create_index.",
+            "description": "Explicitly run the inline Specify pass after selected writes. Never runs unless requested.",
             "enum": [
               "specify"
             ],
@@ -3498,7 +3486,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Variables CRUD. add accepts varName or variables[] batch; modify changes type atomically. basedOn binds a Domain by native SDK identity. length/decimals override size; collection=true declares a collection; untyped add inherits a same-named attribute. VarChar stays VARCHAR. dryRun previews; validationMode=specify can run inline validation; async returns an operationId.",
+      "description": "Variables CRUD. add accepts varName or variables[] batch; modify changes type atomically. basedOn binds a Domain by native SDK identity. objectType=BusinessComponent with objectName+module binds a modular BC by EntityKey/GUID and verifies it after save. length/decimals override size; collection=true declares a collection; untyped add inherits a same-named attribute. dryRun validates and previews without mutation; async returns an operationId.",
       "inputSchema": {
         "examples": [
           {
@@ -3506,6 +3494,15 @@
             "name": "MyPanel",
             "typeName": "Numeric",
             "varName": "&Choice"
+          },
+          {
+            "action": "add",
+            "dryRun": true,
+            "module": "Operations",
+            "name": "MyProc",
+            "objectName": "OrderRecord",
+            "objectType": "BusinessComponent",
+            "varName": "&OrderRecord"
           },
           {
             "action": "add",
@@ -3556,26 +3553,46 @@
           },
           "dryRun": {
             "default": false,
-            "description": "When true, returns what would change without persisting.",
+            "description": "Validate and return the typed diff without changing any object, Attribute, hash, or version.",
             "type": "boolean"
           },
           "estimated_seconds": {
             "description": "When async=true, expected runtime used for progress/job metadata (default 30).",
             "type": "integer"
           },
+          "expectedVersion": {
+            "description": "Optimistic-concurrency token for an object-backed add/modify. Stale state returns VersionConflict before mutation.",
+            "type": "string"
+          },
           "kb": {
             "description": "KB alias.",
             "type": "string"
           },
           "length": {
-            "description": "add/modify optional: overrides the length parsed from typeName (fixes the Character(20) default).",
+            "description": "add/modify optional: overrides the length parsed from typeName.",
             "type": "integer"
+          },
+          "module": {
+            "description": "Module owning objectName. Required to disambiguate modular Business Components.",
+            "type": "string"
           },
           "name": {
             "type": "string"
           },
+          "objectName": {
+            "description": "Business Component Transaction name, without module when module is passed separately.",
+            "type": "string"
+          },
+          "objectType": {
+            "description": "add/modify: resolve an object-backed variable natively instead of interpreting typeName as a Domain.",
+            "enum": [
+              "BusinessComponent"
+            ],
+            "type": "string"
+          },
           "rollbackOnFailure": {
-            "description": "Issue #60: with validationMode=specify, restore the pre-write state when the specify pass reports errors. Variable writes have no pre-write snapshot, so rollback reports rolledBack=false (the variables stay) when spec fails.",
+            "default": true,
+            "description": "Object-backed variables always snapshot the complete owner and restore it on save/re-read divergence.",
             "type": "boolean"
           },
           "typeName": {
@@ -3583,7 +3600,7 @@
             "type": "string"
           },
           "validationMode": {
-            "description": "Issue #60: run the inline Specify pass (Spec+Gen, no Compile) against the edited object right after the write, returning structured spc*/gen* diagnostics in the same call. Combines with rollbackOnFailure.",
+            "description": "Explicitly run the inline Specify pass after a legacy variable write. Never runs unless requested.",
             "enum": [
               "specify"
             ],
