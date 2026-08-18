@@ -2,9 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using GxMcp.Worker.Helpers;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Services;
-using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
 
@@ -30,12 +30,15 @@ namespace GxMcp.Worker.Services
         private readonly KbService _kb;
         private readonly ObjectService _objects;
         private readonly IndexCacheService _indexCache;
+        private readonly WriteService _writeService;
 
-        public TransferService(KbService kb, ObjectService objects, IndexCacheService indexCache = null)
+        public TransferService(KbService kb, ObjectService objects, IndexCacheService indexCache = null,
+            WriteService writeService = null)
         {
             _kb = kb;
             _objects = objects;
             _indexCache = indexCache;
+            _writeService = writeService;
         }
 
         public string Run(JObject args)
@@ -228,27 +231,249 @@ namespace GxMcp.Worker.Services
                     hint: "Preview first with dryRun=true, then pass confirm=true to apply.");
 
             var options = SilentImportOptions(args);
+            ImportFidelityPlan fidelityPlan;
+            try
+            {
+                fidelityPlan = CaptureImportFidelity(svc, model, file, options);
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "TransferImportVerificationUnavailable",
+                    message: "The XPZ could not be inspected for WebForm preservation; no import was attempted. " + ex.Message,
+                    hint: "Retry after the XPZ is readable by the GeneXus SDK.");
+            }
+
             bool ok = svc.ImportFile(file, model, options);
 
+            if (!ok)
+            {
+                return McpResponse.Ok(
+                    code: "TransferImportDeclined",
+                    result: new JObject
+                    {
+                        ["success"] = false,
+                        ["file"] = file,
+                        ["source"] = "sdk:IKnowledgeManagerService.ImportFile",
+                        ["fidelityVerified"] = false,
+                        ["fidelity"] = new JObject { ["objectsChecked"] = 0 }
+                    });
+            }
+
+            var fidelity = VerifyImportedWebForms(fidelityPlan);
+            if (!fidelity.Verified)
+            {
+                return McpResponse.Err(
+                    code: "TransferImportFidelityFailed",
+                    message: "The XPZ import completed, but one or more WebForm parts did not survive the SDK import unchanged.",
+                    hint: "The affected existing objects were restored when possible; inspect the fidelity block before retrying.",
+                    extra: new JObject
+                    {
+                        ["imported"] = true,
+                        ["file"] = file,
+                        ["fidelityVerified"] = false,
+                        ["fidelity"] = fidelity.Result
+                    });
+            }
+
             return McpResponse.Ok(
-                code: ok ? "TransferImported" : "TransferImportDeclined",
+                code: "TransferImported",
                 result: new JObject
                 {
-                    ["success"] = ok,
+                    ["success"] = true,
                     ["file"] = file,
-                    ["source"] = "sdk:IKnowledgeManagerService.ImportFile"
+                    ["source"] = "sdk:IKnowledgeManagerService.ImportFile",
+                    ["fidelityVerified"] = true,
+                    ["fidelity"] = fidelity.Result
                 });
         }
 
-        // A fresh ImportOptions with lossless defaults (FullOverwrite + UseFromExport);
-        // prevents dropping WebForm dimensions or remapping Theme classes (Issue #102).
+        private ImportFidelityPlan CaptureImportFidelity(IKnowledgeManagerService svc, KBModel model,
+            string file, ImportOptions options)
+        {
+            var plan = new ImportFidelityPlan();
+            var prepared = svc.PrepareImport(file, model, options);
+            var exploreOptions = new ExploreExportOptions();
+            svc.ExploreExport(file, model, exploreOptions, out var exportedObjects, out _, out _);
+            var candidates = AsEnumerable(exportedObjects).ToList();
+            if (candidates.Count == 0)
+                candidates = AsEnumerable(prepared?.Items).ToList();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var raw in candidates)
+            {
+                var item = raw as IExportItem;
+                if (item == null) continue;
+                item.PrepareImport(item.BaseModel ?? model, model, prepared);
+                var source = item.Object;
+                if (source == null) continue;
+                var sourcePart = WebFormXmlHelper.GetWebFormPart(source);
+                if (sourcePart == null) continue;
+
+                string expectedXml = WebFormXmlHelper.ReadEditableXml(source);
+                if (string.IsNullOrWhiteSpace(expectedXml)) continue;
+
+                string typeFilter = source.TypeDescriptor?.Name;
+                string partName = sourcePart.TypeDescriptor?.Name ?? "WebForm";
+                string key = (typeFilter ?? string.Empty) + "|" + source.Name + "|" + partName;
+                if (!seen.Add(key)) continue;
+
+                var existing = _objects?.FindObjectFresh(source.Name, typeFilter);
+                plan.Items.Add(new ImportWebFormSnapshot
+                {
+                    Name = source.Name,
+                    TypeFilter = typeFilter,
+                    PartName = partName,
+                    ExpectedXml = expectedXml,
+                    ExistingBefore = existing != null,
+                    BeforeXml = existing == null ? null : WebFormXmlHelper.ReadEditableXml(existing)
+                });
+            }
+
+            return plan;
+        }
+
+        private ImportFidelityResult VerifyImportedWebForms(ImportFidelityPlan plan)
+        {
+            var mismatches = new JArray();
+            int repaired = 0;
+            bool rollbackAttempted = false;
+            bool rollbackSucceeded = true;
+
+            foreach (var expected in plan.Items)
+            {
+                var current = _objects?.FindObjectFresh(expected.Name, expected.TypeFilter);
+                string actualXml = current == null ? string.Empty : WebFormXmlHelper.ReadEditableXml(current);
+                string diff;
+                if (XmlEquivalence.AreEquivalent(expected.ExpectedXml, actualXml, out diff)) continue;
+
+                var mismatch = new JObject
+                {
+                    ["name"] = expected.Name,
+                    ["part"] = expected.PartName,
+                    ["initialDiff"] = diff ?? "n/a"
+                };
+
+                bool repairedHere = false;
+                if (_writeService != null)
+                {
+                    string writeRaw = _writeService.WriteObject(
+                        expected.Name,
+                        expected.PartName,
+                        expected.ExpectedXml,
+                        expected.TypeFilter,
+                        autoValidate: true,
+                        preferFastSourceSave: false,
+                        autoInjectVariables: true,
+                        dryRun: false,
+                        explicitBase64: false,
+                        strictVerify: true);
+                    JObject write = ParseObject(writeRaw);
+                    repairedHere = IsSuccessfulWrite(write);
+                    mismatch["repairResponse"] = write;
+
+                    if (repairedHere)
+                    {
+                        var repairedObject = _objects?.FindObjectFresh(expected.Name, expected.TypeFilter);
+                        string repairedXml = repairedObject == null ? string.Empty : WebFormXmlHelper.ReadEditableXml(repairedObject);
+                        string repairedDiff;
+                        repairedHere = XmlEquivalence.AreEquivalent(expected.ExpectedXml, repairedXml, out repairedDiff);
+                        if (!repairedHere) mismatch["repairDiff"] = repairedDiff ?? "n/a";
+                    }
+                }
+
+                if (repairedHere)
+                {
+                    repaired++;
+                    mismatch["repaired"] = true;
+                    continue;
+                }
+
+                mismatch["repaired"] = false;
+                mismatches.Add(mismatch);
+                rollbackAttempted = true;
+                if (!TryRestoreImportedObject(expected)) rollbackSucceeded = false;
+            }
+
+            var result = new JObject
+            {
+                ["objectsChecked"] = plan.Items.Count,
+                ["repaired"] = repaired,
+                ["mismatches"] = mismatches,
+                ["rollbackAttempted"] = rollbackAttempted,
+                ["rollbackSucceeded"] = rollbackSucceeded
+            };
+            return new ImportFidelityResult
+            {
+                Verified = mismatches.Count == 0,
+                Result = result
+            };
+        }
+
+        private bool TryRestoreImportedObject(ImportWebFormSnapshot expected)
+        {
+            if (!expected.ExistingBefore || string.IsNullOrWhiteSpace(expected.BeforeXml) || _writeService == null)
+                return false;
+
+            string raw = _writeService.WriteObject(
+                expected.Name,
+                expected.PartName,
+                expected.BeforeXml,
+                expected.TypeFilter,
+                autoValidate: true,
+                preferFastSourceSave: false,
+                autoInjectVariables: true,
+                dryRun: false,
+                explicitBase64: false,
+                strictVerify: true);
+            return IsSuccessfulWrite(ParseObject(raw));
+        }
+
+        private static JObject ParseObject(string raw)
+        {
+            try { return string.IsNullOrWhiteSpace(raw) ? new JObject() : JObject.Parse(raw); }
+            catch { return new JObject { ["raw"] = raw }; }
+        }
+
+        private static bool IsSuccessfulWrite(JObject response)
+        {
+            string status = response?["status"]?.ToString();
+            return string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "success", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "partial", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private sealed class ImportFidelityPlan
+        {
+            public List<ImportWebFormSnapshot> Items { get; } = new List<ImportWebFormSnapshot>();
+        }
+
+        private sealed class ImportWebFormSnapshot
+        {
+            public string Name { get; set; }
+            public string TypeFilter { get; set; }
+            public string PartName { get; set; }
+            public string ExpectedXml { get; set; }
+            public bool ExistingBefore { get; set; }
+            public string BeforeXml { get; set; }
+        }
+
+        private sealed class ImportFidelityResult
+        {
+            public bool Verified { get; set; }
+            public JObject Result { get; set; }
+        }
+
+        // The SDK's Default options preserve existing Theme classes through incremental
+        // integration. FullOverwrite re-symbolizes theme/class references and was the
+        // source of the import drift reported in issue #102.
         private static ImportOptions SilentImportOptions(JObject args)
         {
             ImportOptions o = null;
-            try { o = ImportOptions.FullOverwrite; } catch { }
+            try { o = ImportOptions.Default; } catch { }
             if (o == null)
             {
-                try { o = ImportOptions.Default; } catch { }
+                try { o = ImportOptions.NoBackup; } catch { }
             }
             if (o == null) o = new ImportOptions();
 
@@ -256,19 +481,24 @@ namespace GxMcp.Worker.Services
             try { o.RollBackOnError = true; } catch { }
             try { o.AutomaticRollbackOnCancel = true; } catch { }
 
-            string classConflictArg = args?["classConflicts"]?.ToString();
-            string classConflictVal = string.Equals(classConflictArg, "UseExisting", StringComparison.OrdinalIgnoreCase)
-                ? "UseExisting"
-                : "UseFromExport";
-            SetEnumValue(o, "ClassConflicts", classConflictVal);
-
-            string themeBehaviorArg = args?["themeImportBehavior"]?.ToString();
-            string themeBehaviorVal = string.Equals(themeBehaviorArg, "IncrementalIntegration", StringComparison.OrdinalIgnoreCase)
-                ? "IncrementalIntegration"
-                : "Overwrite";
-            SetEnumValue(o, "ThemeImportBehavior", themeBehaviorVal);
+            SetEnumValue(o, "ClassConflicts", ResolveImportClassConflicts(args));
+            SetEnumValue(o, "ThemeImportBehavior", ResolveImportThemeBehavior(args));
 
             return o;
+        }
+
+        internal static string ResolveImportClassConflicts(JObject args)
+        {
+            return string.Equals(args?["classConflicts"]?.ToString(), "UseExisting", StringComparison.OrdinalIgnoreCase)
+                ? "UseExisting"
+                : "UseFromExport";
+        }
+
+        internal static string ResolveImportThemeBehavior(JObject args)
+        {
+            return string.Equals(args?["themeImportBehavior"]?.ToString(), "Overwrite", StringComparison.OrdinalIgnoreCase)
+                ? "Overwrite"
+                : "IncrementalIntegration";
         }
 
         private static void SetEnumValue(object target, string propertyName, string enumValueName)
