@@ -23,6 +23,29 @@ namespace GxMcp.Gateway
 {
     partial class Program
     {
+        internal static bool IsLifecycleBuildDryRun(JObject args)
+        {
+            return args?["dryRun"]?.ToObject<bool?>() == true;
+        }
+
+        internal static JObject BuildAsyncLifecycleCommand(string lifecycleAction, JObject args, string cancelToken)
+        {
+            bool rebuild = string.Equals(lifecycleAction, "rebuild", StringComparison.OrdinalIgnoreCase);
+            return new JObject
+            {
+                ["module"] = "Build",
+                ["action"] = rebuild ? "RebuildAll" : "Build",
+                ["target"] = args?["target"]?.ToString(),
+                ["client"] = "mcp",
+                ["includeCallees"] = args?["includeCallees"]?.ToString(),
+                ["buildPlanCap"] = args?["buildPlanCap"]?.ToObject<int?>(),
+                ["skipFullDeploy"] = args?["skipFullDeploy"]?.ToObject<bool?>(),
+                ["dryRun"] = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                ["deploy"] = args?["deploy"]?.ToObject<bool?>() ?? false,
+                ["cancelToken"] = cancelToken
+            };
+        }
+
         internal static async Task<JObject?> ProcessMcpRequest(JObject request, string sessionId = "stdio")
         {
             string? method = request["method"]?.ToString();
@@ -1477,7 +1500,8 @@ namespace GxMcp.Gateway
                     //   - estimated_seconds >= BuildSyncThresholdSeconds  → async Task.Run, return job_id immediately
                     if (string.Equals(tName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
                         && (string.Equals(lcAction, "build", StringComparison.OrdinalIgnoreCase)
-                            || string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase)))
+                            || string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase))
+                        && !IsLifecycleBuildDryRun(tArgs))
                     {
                         // Issue #27 item 2: prefer a data-driven estimate (median of recent
                         // build wall-clocks for this action) over the flat 60/120 the reporter
@@ -1507,24 +1531,10 @@ namespace GxMcp.Gateway
                                 try
                                 {
                                     // Step 1: Kick off the build on the worker — returns {status:"Accepted", taskId:...}
-                                    var buildCmd = new JObject
-                                    {
-                                        ["module"] = "Build",
-                                        ["action"] = string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase)
-                                            ? "RebuildAll"
-                                            : "Build",
-                                        ["target"] = tArgs?["target"]?.ToString(),
-                                        ["client"] = "mcp",
-                                        // v2.3.8 (Task 5.2) — forward callee-expansion knobs through the async path.
-                                        ["includeCallees"] = tArgs?["includeCallees"]?.ToString(),
-                                        ["buildPlanCap"] = tArgs?["buildPlanCap"]?.ToObject<int?>(),
-                                        // Friction 2026-05-22 (experimental): single-target shortcut.
-                                        ["skipFullDeploy"] = tArgs?["skipFullDeploy"]?.ToObject<bool?>(),
-                                        // v2.6.2 (Item B): forward job_id as cancelToken so
-                                        // the worker registers it. A sibling lifecycle action=cancel
-                                        // target=op:<id> then resolves to a real Cancel() call.
-                                        ["cancelToken"] = job.Id
-                                    };
+                                    // v2.3.8 (Task 5.2) — forward callee-expansion knobs through the async path.
+                                    // Keep dryRun out of this branch entirely; the condition above routes
+                                    // previews through the normal worker command, where BuildDryRun runs.
+                                    var buildCmd = BuildAsyncLifecycleCommand(lcAction, tArgs, job.Id);
 
                                     JObject? ackEnvelope = await SendWorkerCommandAsync(
                                         buildCmd,

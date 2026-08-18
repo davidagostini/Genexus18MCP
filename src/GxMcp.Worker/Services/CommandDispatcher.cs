@@ -249,7 +249,7 @@ namespace GxMcp.Worker.Services
             _gamService = new GamService(_kbService);
             _mergeToolService = new MergeToolService(_kbService, _objectService);
             _kbVersionService = new KbVersionService(_kbService);
-            _transferService = new TransferService(_kbService, _objectService, _indexCacheService);
+            _transferService = new TransferService(_kbService, _objectService, _indexCacheService, _writeService);
             _deployService = new DeployService(_kbService);
             _reorgImpactService = new ReorgImpactService(_kbService, _objectService);
             // B15: give drift_check the authoritative reorg-needed signal.

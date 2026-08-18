@@ -320,6 +320,18 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("T-1", obj["_meta"]!["taskId"]!.ToString());
         }
 
+        [Fact]
+        public void Compact_PropagatesResolvedEnvironment()
+        {
+            var rawObj = JObject.Parse(MakeBuildStatus(0, 0));
+            rawObj["Status"] = "Succeeded";
+            rawObj["Environment"] = "NETCoreMySQL";
+
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+
+            Assert.Equal("NETCoreMySQL", obj["Environment"]!.ToString());
+        }
+
         // Production bug this catches: with very many duplicate warnings, the
         // sampleLocations array was unbounded and the "compact" envelope was
         // anything but. Cap at WarningSampleCap (3).
