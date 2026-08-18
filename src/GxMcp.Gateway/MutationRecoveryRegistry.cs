@@ -8,7 +8,7 @@ namespace GxMcp.Gateway
     {
         private readonly ConcurrentDictionary<string, RecoveryRequirement> _pending = new();
 
-        public void RequireRead(string kbAlias, string target, string part, string operationId)
+        public void RequireRead(string? kbAlias, string? target, string? part, string? operationId)
         {
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return;
             _pending[Key(kbAlias, target)] = new RecoveryRequirement
@@ -16,25 +16,27 @@ namespace GxMcp.Gateway
                 KbAlias = kbAlias,
                 Target = target,
                 Part = string.IsNullOrWhiteSpace(part) ? "Source" : part,
-                OperationId = operationId,
+                OperationId = operationId ?? string.Empty,
                 RequiredAtUtc = DateTime.UtcNow
             };
         }
 
-        public bool TryGet(string kbAlias, string target, out RecoveryRequirement requirement)
+        public bool TryGet(string? kbAlias, string? target, out RecoveryRequirement requirement)
         {
-            requirement = null;
+            requirement = null!;
             if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return false;
-            return _pending.TryGetValue(Key(kbAlias, target), out requirement);
+            if (!_pending.TryGetValue(Key(kbAlias, target), out var found)) return false;
+            requirement = found;
+            return true;
         }
 
-        public bool ConfirmRead(string kbAlias, string target, string part)
+        public bool ConfirmRead(string? kbAlias, string? target, string? part)
         {
             if (!TryGet(kbAlias, target, out var requirement)) return false;
             if (!string.IsNullOrWhiteSpace(part)
                 && !string.Equals(requirement.Part, part, StringComparison.OrdinalIgnoreCase))
                 return false;
-            return _pending.TryRemove(Key(kbAlias, target), out _);
+            return _pending.TryRemove(Key(requirement.KbAlias, requirement.Target), out _);
         }
 
         public static JObject BuildBlockedEnvelope(RecoveryRequirement requirement)
@@ -58,10 +60,10 @@ namespace GxMcp.Gateway
 
     internal sealed class RecoveryRequirement
     {
-        public string KbAlias { get; set; }
-        public string Target { get; set; }
-        public string Part { get; set; }
-        public string OperationId { get; set; }
+        public string KbAlias { get; set; } = string.Empty;
+        public string Target { get; set; } = string.Empty;
+        public string Part { get; set; } = string.Empty;
+        public string OperationId { get; set; } = string.Empty;
         public DateTime RequiredAtUtc { get; set; }
     }
 }

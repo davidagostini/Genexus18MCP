@@ -191,7 +191,7 @@ namespace GxMcp.Gateway
             return true;
         }
 
-        internal bool TryGetContext(string operationId, out string toolName, out JObject toolArguments)
+        internal bool TryGetContext(string operationId, out string? toolName, out JObject? toolArguments)
         {
             toolName = null;
             toolArguments = null;
