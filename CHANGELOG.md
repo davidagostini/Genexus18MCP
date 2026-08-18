@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Native typed Domain resolution and atomic verification in `genexus_delete_object`.** Domain deletion now resolves through the GeneXus SDK identity API, reports native incoming references in dry-run, supports optimistic concurrency with `expectedVersion`, requires confirmation only for persistence, and performs transactional deletion plus post-save reread without invoking lifecycle actions.
+
 ## v2.41.8 - 2026-08-17
 
 ### Fixed

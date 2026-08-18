@@ -881,7 +881,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Delete an object from the KB. Irreversible — confirm=true required. dryRun=true returns what would be deleted without persisting.",
+      "description": "Delete an object from the KB through its native SDK identity. Irreversible — confirm=true required. Inspects native incoming references first; dryRun=true previews without persisting.",
       "inputSchema": {
         "examples": [
           {
@@ -892,8 +892,8 @@
           {
             "confirm": true,
             "dryRun": true,
-            "name": "ObsoletePanel",
-            "type": "WebPanel"
+            "name": "TemporaryDomain",
+            "type": "Domain"
           }
         ],
         "properties": {
@@ -902,8 +902,12 @@
           },
           "dryRun": {
             "default": false,
-            "description": "When true, returns the object that would be deleted without deleting it.",
+            "description": "When true, returns the resolved object and native references without deleting it.",
             "type": "boolean"
+          },
+          "expectedVersion": {
+            "description": "Optional optimistic-concurrency token returned by a prior dry run.",
+            "type": "string"
           },
           "kb": {
             "description": "KB alias.",

@@ -24,7 +24,8 @@ namespace GxMcp.Gateway.Routers
                         target = args?["name"]?.ToString(),
                         type = args?["type"]?.ToString(),
                         confirm = args?["confirm"]?.ToObject<bool?>() ?? false,
-                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        expectedVersion = args?["expectedVersion"]?.ToString()
                     };
 
                 case "genexus_worker_reload":
