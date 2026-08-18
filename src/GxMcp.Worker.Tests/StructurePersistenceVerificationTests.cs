@@ -37,5 +37,25 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("CustomerName", ((Newtonsoft.Json.Linq.JArray)diff["missing"])[0].ToString());
             Assert.Empty((Newtonsoft.Json.Linq.JArray)diff["unexpected"]);
         }
+
+        [Fact]
+        public void AuthoredPartVerification_DoesNotSkipEmptyNonDefaultSource()
+        {
+            Assert.True(StructureService.ShouldVerifyAuthoredPart(
+                isStructure: false,
+                isDefault: false,
+                verificationFormat: "source",
+                verificationLength: 0));
+        }
+
+        [Fact]
+        public void AuthoredPartVerification_SkipsNonEmptyDefaultProjection()
+        {
+            Assert.False(StructureService.ShouldVerifyAuthoredPart(
+                isStructure: false,
+                isDefault: true,
+                verificationFormat: "source",
+                verificationLength: 12));
+        }
     }
 }

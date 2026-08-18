@@ -322,7 +322,11 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                var trn = ResolveTransaction(targetName, moduleName);
+                // The cached KBObject can lag behind a previous source write. Re-read the
+                // transaction before taking the rollback snapshot; otherwise a subsequent
+                // SDK Save can persist the stale empty Rules/Events parts as if they were
+                // the current authored content.
+                var trn = ResolveTransactionFresh(targetName, moduleName);
                 if (trn == null)
                     return Models.McpResponse.Err(
                         code: "TransactionNotFound",
@@ -416,7 +420,7 @@ namespace GxMcp.Worker.Services
                         // Save the Transaction while refusing forced default-part saves;
                         // post-save verification below rejects changes to every authored
                         // (IsDefault=false) non-Structure part.
-                        var preservedDefaults = trn.Parts.Cast<KBObjectPart>()
+                        var preservedDefaults = EnumerateTransactionParts(trn)
                             .Where(p => !(p is StructurePart))
                             .OfType<Artech.Architecture.Common.Defaults.IApplyDefaultTarget>()
                             .ToList();
@@ -440,26 +444,37 @@ namespace GxMcp.Worker.Services
                             foreach (var preserved in preservedDefaults) preserved.PreserveDefaultUnlock();
                         }
 
-                        // Ensure all authored non-Structure parts remain intact after SDK transaction save
-                        foreach (var kvp in snapshot.Parts)
-                        {
-                            var part = trn.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type.ToString("D") == kvp.Key);
-                            if (part != null && !(part is StructurePart) && kvp.Value.VerificationData != null && kvp.Value.VerificationData.Length > 0)
-                            {
-                                if (!EntityMatches(part, kvp.Value))
-                                {
-                                    RestoreEntity(part, kvp.Value);
-                                    part.Dirty = true;
-                                    part.Save();
-                                }
-                            }
-                        }
+                        // A parent Transaction.Save can wipe a direct Rules/Events property
+                        // on disk while leaving the in-memory part unchanged. Always write
+                        // the authored snapshot back through the native part after the
+                        // parent save; comparing the same in-memory instance is insufficient.
+                        RestoreAuthoredTransactionParts(trn, snapshot);
 
                         sdkTrans.Commit();
                     }
                     catch (Exception ex)
                     {
                         try { sdkTrans.Rollback(); } catch { }
+                        writeFailure = ex.Message;
+                    }
+                }
+
+                if (writeFailure == null)
+                {
+                    try
+                    {
+                        // GX18 may apply a default projection again when the parent
+                        // transaction commits. Re-save the authored parts in a separate
+                        // transaction so that finalization cannot erase Rules/Events.
+                        using (var authoredTx = trn.Model.KB.BeginTransaction())
+                        {
+                            var authoredTarget = RefreshTransaction(trn) ?? trn;
+                            RestoreAuthoredTransactionParts(authoredTarget, snapshot);
+                            authoredTx.Commit();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
                         writeFailure = ex.Message;
                     }
                 }
@@ -481,10 +496,10 @@ namespace GxMcp.Worker.Services
                         });
                 }
 
-                var persisted = ResolveTransaction(targetName, moduleName);
-                if (persisted != null)
-                    foreach (KBObjectPart part in persisted.Parts)
-                        try { ReloadEntity(part); } catch { }
+                // Resolve through the SDK object collection after invalidating the read cache.
+                // The mutated Transaction instance can still expose pre-save part state, and
+                // swallowing Reload() failures made a wiped Rules/Events part look preserved.
+                var persisted = ResolveTransactionFresh(targetName, moduleName);
                 string verificationError;
                 int persistedPosition;
                 bool verified = VerifyMove(persisted, resolved.Path, identity, plan.NewPosition,
@@ -561,7 +576,9 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                var trn = ResolveTransaction(targetName, moduleName);
+                // Snapshot the persisted SDK instance, not the potentially stale read-cache
+                // instance, for the same authored-part preservation guarantee as moves.
+                var trn = ResolveTransactionFresh(targetName, moduleName);
                 if (trn == null)
                     return Models.McpResponse.Err(
                         code: "TransactionNotFound",
@@ -641,7 +658,7 @@ namespace GxMcp.Worker.Services
                     {
                         RemoveExistingAttribute(resolved.Level, targetAttribute);
                         trn.Structure.Dirty = true;
-                        var preservedDefaults = trn.Parts.Cast<KBObjectPart>()
+                        var preservedDefaults = EnumerateTransactionParts(trn)
                             .Where(p => !(p is StructurePart))
                             .OfType<Artech.Architecture.Common.Defaults.IApplyDefaultTarget>()
                             .ToList();
@@ -660,26 +677,30 @@ namespace GxMcp.Worker.Services
                             foreach (var preserved in preservedDefaults) preserved.PreserveDefaultUnlock();
                         }
 
-                        // Ensure all authored non-Structure parts remain intact after SDK transaction save
-                        foreach (var kvp in snapshot.Parts)
-                        {
-                            var part = trn.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type.ToString("D") == kvp.Key);
-                            if (part != null && !(part is StructurePart) && kvp.Value.VerificationData != null && kvp.Value.VerificationData.Length > 0)
-                            {
-                                if (!EntityMatches(part, kvp.Value))
-                                {
-                                    RestoreEntity(part, kvp.Value);
-                                    part.Dirty = true;
-                                    part.Save();
-                                }
-                            }
-                        }
+                        RestoreAuthoredTransactionParts(trn, snapshot);
 
                         sdkTrans.Commit();
                     }
                     catch (Exception ex)
                     {
                         try { sdkTrans.Rollback(); } catch { }
+                        writeFailure = ex.Message;
+                    }
+                }
+
+                if (writeFailure == null)
+                {
+                    try
+                    {
+                        using (var authoredTx = trn.Model.KB.BeginTransaction())
+                        {
+                            var authoredTarget = RefreshTransaction(trn) ?? trn;
+                            RestoreAuthoredTransactionParts(authoredTarget, snapshot);
+                            authoredTx.Commit();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
                         writeFailure = ex.Message;
                     }
                 }
@@ -706,10 +727,7 @@ namespace GxMcp.Worker.Services
                         });
                 }
 
-                var persisted = ResolveTransaction(targetName, moduleName);
-                if (persisted != null)
-                    foreach (KBObjectPart part in persisted.Parts)
-                        try { ReloadEntity(part); } catch { }
+                var persisted = ResolveTransactionFresh(targetName, moduleName);
 
                 string verificationError;
                 JObject verification;
@@ -774,6 +792,24 @@ namespace GxMcp.Worker.Services
                     return candidate;
             }
             return null;
+        }
+
+        private Transaction ResolveTransactionFresh(string name, string moduleName)
+        {
+            return RefreshTransaction(ResolveTransaction(name, moduleName));
+        }
+
+        private Transaction RefreshTransaction(Transaction transaction)
+        {
+            if (transaction == null) return null;
+            _objectService.MarkReadCacheDirty(transaction);
+            var kb = _objectService.GetKbService().GetKB();
+            // Reload() is not a read-only operation for GX18's lazy PatternVirtual
+            // projections: on a Transaction it can detach the direct Rules/Events
+            // source from the loaded object and expose an empty projection. Re-resolve
+            // through the model after invalidating the MCP read cache, but never call
+            // the destructive part-level Reload hook here.
+            return kb?.DesignModel.Objects.Get(transaction.Guid) as Transaction ?? transaction;
         }
 
         private sealed class ResolvedLevel
@@ -1193,6 +1229,7 @@ namespace GxMcp.Worker.Services
             public byte[] Data { get; set; }
             public string VerificationFormat { get; set; }
             public byte[] VerificationData { get; set; }
+            public bool VerifyAuthored { get; set; }
         }
 
         private sealed class RestoreResult
@@ -1202,11 +1239,62 @@ namespace GxMcp.Worker.Services
             public string Error { get; set; }
         }
 
+        // Transaction.Rules and Transaction.Events can be exposed twice by GX18: once
+        // through the typed property and once through Parts. One duplicate can be an empty
+        // placeholder, so coalesce each type and retain the source-bearing native part.
+        private static IEnumerable<KBObjectPart> EnumerateTransactionParts(Transaction trn)
+        {
+            if (trn == null) yield break;
+
+            var candidates = new List<KBObjectPart>();
+            if (trn.Rules != null) candidates.Add(trn.Rules);
+            if (trn.Events != null) candidates.Add(trn.Events);
+            candidates.AddRange(trn.Parts.Cast<KBObjectPart>().Where(p => p != null));
+
+            foreach (var group in candidates.GroupBy(p => p.Type.ToString("D"), StringComparer.OrdinalIgnoreCase))
+            {
+                var part = group.FirstOrDefault(p => p is Artech.Architecture.Common.Objects.ISource
+                    && !string.IsNullOrEmpty(((Artech.Architecture.Common.Objects.ISource)p).Source))
+                    ?? group.FirstOrDefault(p => p is Artech.Architecture.Common.Objects.ISource)
+                    ?? group.First();
+                yield return part;
+            }
+        }
+
+        private static KBObjectPart FindTransactionPart(Transaction trn, string typeKey)
+        {
+            return EnumerateTransactionParts(trn)
+                .FirstOrDefault(p => string.Equals(p.Type.ToString("D"), typeKey, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static void RestoreAuthoredTransactionParts(Transaction trn, TransactionSnapshot snapshot)
+        {
+            foreach (var kvp in snapshot.Parts)
+            {
+                var expected = kvp.Value;
+                if (expected == null || !expected.VerifyAuthored) continue;
+
+                var part = FindTransactionPart(trn, kvp.Key);
+                if (part == null)
+                    throw new InvalidOperationException("Authored Transaction part '" + kvp.Key + "' disappeared during the structure save.");
+
+                RestoreEntity(part, expected);
+                part.Dirty = true;
+                part.Save();
+            }
+
+            // KBObjectPart.Save() updates the part entity but does not reliably flush a
+            // direct Transaction part after the parent Save. Mirror the normal source
+            // writer's persistence sequence so Rules/Events reach the KB store.
+            if (snapshot.Parts.Values.Any(p => p != null && p.VerifyAuthored))
+                trn.EnsureSave(false);
+        }
+
         private static TransactionSnapshot CaptureTransactionSnapshot(Transaction trn, string movedIdentity = null,
             bool excludeIdentityDetails = false)
         {
             var snapshot = new TransactionSnapshot();
-            foreach (KBObjectPart part in trn.Parts)
+            foreach (KBObjectPart part in EnumerateTransactionParts(trn))
             {
                 string key = part.Type.ToString("D");
                 snapshot.Parts[key] = CaptureEntity(part);
@@ -1407,6 +1495,16 @@ namespace GxMcp.Worker.Services
             return true;
         }
 
+        internal static bool ShouldVerifyAuthoredPart(bool isStructure, bool isDefault,
+            string verificationFormat, int verificationLength)
+        {
+            // A non-default part is authored even when its source/XML is empty. Default
+            // projections (WebForm/WinForm/Variables and similar parts) are regenerated
+            // from the changed Structure by GeneXus and must not be compared as if their
+            // generated bytes were user-authored content.
+            return !isStructure && !isDefault;
+        }
+
         private static bool VerifyAuthoredPartsPreserved(Transaction persisted, Dictionary<string, EntitySnapshot> beforeParts, out string error)
         {
             error = null;
@@ -1416,10 +1514,9 @@ namespace GxMcp.Worker.Services
             {
                 string key = kvp.Key;
                 EntitySnapshot expected = kvp.Value;
-                if (expected == null || expected.VerificationData == null || expected.VerificationData.Length == 0) continue;
+                if (expected == null || !expected.VerifyAuthored) continue;
 
-                var part = persisted.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p.Type.ToString("D") == key);
-                if (part is StructurePart || part?.IsDefault == true) continue;
+                var part = FindTransactionPart(persisted, key);
                 if (part == null || !EntityMatches(part, expected))
                 {
                     error = $"Authored part '{part?.TypeDescriptor?.Name ?? key}' changed or was wiped unexpectedly.";
@@ -1427,11 +1524,18 @@ namespace GxMcp.Worker.Services
                 }
             }
 
-            foreach (KBObjectPart part in persisted.Parts)
+            foreach (KBObjectPart part in EnumerateTransactionParts(persisted))
             {
-                if (part is StructurePart || part.IsDefault) continue;
+                if (part is StructurePart) continue;
                 EntitySnapshot expected;
-                if (!beforeParts.TryGetValue(part.Type.ToString("D"), out expected) || !EntityMatches(part, expected))
+                if (!beforeParts.TryGetValue(part.Type.ToString("D"), out expected))
+                {
+                    if (part.IsDefault) continue;
+                    error = $"Part '{part.TypeDescriptor?.Name ?? part.Type.ToString("D")}' changed unexpectedly.";
+                    return false;
+                }
+                if (expected == null || !expected.VerifyAuthored) continue;
+                if (!EntityMatches(part, expected))
                 {
                     error = $"Part '{part.TypeDescriptor?.Name ?? part.Type.ToString("D")}' changed unexpectedly.";
                     return false;
@@ -1440,7 +1544,7 @@ namespace GxMcp.Worker.Services
             return true;
         }
 
-        private static RestoreResult RestoreTransactionSnapshot(Transaction trn, TransactionSnapshot snapshot)
+        private RestoreResult RestoreTransactionSnapshot(Transaction trn, TransactionSnapshot snapshot)
         {
             var result = new RestoreResult();
             if (trn == null || snapshot == null) { result.Error = "Snapshot or Transaction unavailable."; return result; }
@@ -1453,7 +1557,7 @@ namespace GxMcp.Worker.Services
                         // Restore the Structure first and save the Transaction so GX18
                         // persists the original order. Default form projections follow
                         // that restored Structure automatically.
-                        foreach (KBObjectPart part in trn.Parts)
+                        foreach (KBObjectPart part in EnumerateTransactionParts(trn))
                         {
                             if (!(part is StructurePart)) continue;
                             EntitySnapshot data;
@@ -1471,11 +1575,12 @@ namespace GxMcp.Worker.Services
 
                         // Restore user-authored non-default parts after the Transaction
                         // save, compensating any unexpected SDK side effect.
-                        foreach (KBObjectPart part in trn.Parts)
+                        foreach (KBObjectPart part in EnumerateTransactionParts(trn))
                         {
-                            if (part is StructurePart || part.IsDefault) continue;
+                            if (part is StructurePart) continue;
                             EntitySnapshot data;
-                            if (!snapshot.Parts.TryGetValue(part.Type.ToString("D"), out data)) continue;
+                            if (!snapshot.Parts.TryGetValue(part.Type.ToString("D"), out data)
+                                || data == null || !data.VerifyAuthored) continue;
                             RestoreEntity(part, data);
                             part.Dirty = true;
                             part.Save();
@@ -1499,12 +1604,30 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                foreach (KBObjectPart part in trn.Parts) try { ReloadEntity(part); } catch { }
-                result.Verified = trn.Parts.Cast<KBObjectPart>().All(part =>
+                // A parent rollback/save can reapply a default projection after its
+                // transaction closes. Persist the authored snapshot once more in an
+                // independent transaction before declaring rollback successful.
+                using (var authoredTx = trn.Model.KB.BeginTransaction())
                 {
-                    if (!(part is StructurePart) && part.IsDefault) return true;
+                    var authoredTarget = RefreshTransaction(trn) ?? trn;
+                    RestoreAuthoredTransactionParts(authoredTarget, snapshot);
+                    authoredTx.Commit();
+                }
+
+                var verifiedTransaction = RefreshTransaction(trn) ?? trn;
+                result.Verified = EnumerateTransactionParts(verifiedTransaction).All(part =>
+                {
+                    if (!(part is StructurePart) && part.IsDefault)
+                    {
+                        EntitySnapshot authoredDefault;
+                        return !snapshot.Parts.TryGetValue(part.Type.ToString("D"), out authoredDefault)
+                            || authoredDefault == null || !authoredDefault.VerifyAuthored
+                            || EntityMatches(part, authoredDefault);
+                    }
                     EntitySnapshot expected;
                     return snapshot.Parts.TryGetValue(part.Type.ToString("D"), out expected)
+                        && expected != null
+                        && (part is StructurePart || expected.VerifyAuthored)
                         && EntityMatches(part, expected);
                 }) && snapshot.GlobalAttributes.All(pair =>
                 {
@@ -1565,12 +1688,19 @@ namespace GxMcp.Worker.Services
                 verificationData = Encoding.UTF8.GetBytes(kbObject.SerializeToXml() ?? string.Empty);
             }
 
+            bool verifyAuthored = ShouldVerifyAuthoredPart(
+                isStructure: part is StructurePart,
+                isDefault: part?.IsDefault ?? false,
+                verificationFormat: verificationFormat,
+                verificationLength: verificationData?.Length ?? 0);
+
             return new EntitySnapshot
             {
                 Format = format,
                 Data = data,
                 VerificationFormat = verificationFormat,
-                VerificationData = verificationData
+                VerificationData = verificationData,
+                VerifyAuthored = verifyAuthored
             };
         }
 
@@ -1585,6 +1715,16 @@ namespace GxMcp.Worker.Services
         private static void RestoreEntity(object entity, EntitySnapshot snapshot)
         {
             if (snapshot == null) throw new ArgumentNullException(nameof(snapshot));
+            if (snapshot.VerificationFormat == "source"
+                && entity is Artech.Architecture.Common.Objects.ISource sourcePart)
+            {
+                // SerializeData is a native binary envelope, but restoring that envelope
+                // directly on a duplicated lazy source part can leave a KB that only reads
+                // correctly in the current worker. Use the SDK's normal source setter so
+                // the persisted representation is rebuilt through the same path as edits.
+                sourcePart.Source = Encoding.UTF8.GetString(snapshot.VerificationData ?? new byte[0]);
+                return;
+            }
             if (snapshot.Format == "binary")
             {
                 DeserializeEntityData(entity, snapshot.Data);
@@ -1613,15 +1753,6 @@ namespace GxMcp.Worker.Services
             var method = FindEntityMethod(entity.GetType(), "DeserializeData", new[] { typeof(byte[]) });
             if (method == null) throw new MissingMethodException(entity.GetType().FullName, "DeserializeData(byte[])");
             try { method.Invoke(entity, new object[] { data }); }
-            catch (TargetInvocationException ex) { throw ex.InnerException ?? ex; }
-        }
-
-        private static void ReloadEntity(object entity)
-        {
-            if (entity == null) return;
-            var method = FindEntityMethod(entity.GetType(), "Reload", Type.EmptyTypes);
-            if (method == null) return;
-            try { method.Invoke(entity, null); }
             catch (TargetInvocationException ex) { throw ex.InnerException ?? ex; }
         }
 

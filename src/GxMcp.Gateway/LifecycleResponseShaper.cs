@@ -65,6 +65,9 @@ namespace GxMcp.Gateway
                 ["compact"] = true
             };
 
+            if (obj["Environment"] != null)
+                compactObj["Environment"] = obj["Environment"];
+
             // FR (2026-05-21): when CS0246/CS2001 fired, BuildService already extracted
             // the missing object names into SuggestedRebuildTargets. Surface them as a
             // ready-to-fire retry hint so the agent doesn't have to scrape the paths

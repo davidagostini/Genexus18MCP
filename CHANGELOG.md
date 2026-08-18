@@ -7,6 +7,14 @@
 - **Native modular Business Component variables in `genexus_variable`.** `add` and `modify` now accept `objectType=BusinessComponent`, `objectName`, and `module`, resolve the Transaction through the GeneXus type provider, persist its native custom type, and verify the same BC GUID/module after reread. The atomic path supports `expectedVersion`, mutation-free `dryRun`, typed diffs, and complete rollback without running lifecycle actions.
 - **Atomic Transaction visual-structure updates.** `genexus_structure action=update_visual` now snapshots the Structure, authored parts, and referenced global Attributes; checks `expectedVersion`; performs a pure `dryRun`; and restores and verifies the complete snapshot on save or reread failure. Default WinForm/WebForm projections may follow a valid Structure change without producing a false `AuthoredPartsCorrupted` failure.
 
+## v2.41.9 - 2026-08-18
+
+### Fixed
+
+- **`genexus_structure action=move_attribute` now preserves authored Transaction logic across SDK saves and worker restarts.** Rules and Events snapshots select the source-bearing native part when GeneXus exposes duplicate lazy entries, restore through the normal Source writer, and verify the persisted result after commit. Fixes [#99](https://github.com/lennix1337/Genexus18MCP/issues/99).
+- **`genexus_transfer action=import` now verifies WebForm fidelity after XPZ import.** The import preserves dimensions, bindings, and theme references through lossless SDK options, repairs a detected mismatch when possible, and reports the verification result instead of claiming success from `ImportFile` alone. Fixes [#102](https://github.com/lennix1337/Genexus18MCP/issues/102).
+- **Lifecycle build previews, environment telemetry, and User Control generation evidence are now reliable.** `dryRun=true` stays on the synchronous preview path, compact responses retain the resolved Environment, and generated JavaScript reports incomplete `Gx Control Type` bindings by count. Fixes [#103](https://github.com/lennix1337/Genexus18MCP/issues/103).
+
 ## v2.41.8 - 2026-08-17
 
 ### Fixed
