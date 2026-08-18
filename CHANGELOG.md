@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **Native typed WorkWithPlus tab editing for WebPanels.** `genexus_wwp` now adds, moves, and removes tabs through the Pattern SDK, with typed `variable`, `userAction`, and nested `table` controls. Dry runs return a typed diff and concurrency token; persisted calls snapshot and re-read the PatternInstance and projected WebForm, preserve Apply-on-save, and restore the exact snapshots when verification fails. These actions never invoke Specify, Generate, Build, Rebuild, compilation, reorganization, execution, or tests.
+
+### Internal
+
+- **Tool schema budget.** Increased the discovery-schema budget from 20,500 to 20,700 tokens for the typed recursive WorkWithPlus tab-control contract; measured size is approximately 20,531 tokens.
+
 ## v2.41.8 - 2026-08-17
 
 ### Fixed

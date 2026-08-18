@@ -182,7 +182,7 @@ namespace GxMcp.Worker.Services
                 {
                     WwpTabException typed = ex as WwpTabException;
                     JObject rollback = RestoreSnapshots(currentInstance, currentPart, nativeBytes,
-                        currentXml, parent, parentWebFormBefore);
+                        currentXml, parent, parentWebFormBefore, applyOnSaveBefore);
                     return McpResponse.Err(code: typed?.Code ?? "WwpTabFailed", message: ex.Message,
                         target: target, extra: new JObject
                         {
@@ -534,10 +534,11 @@ namespace GxMcp.Worker.Services
         }
 
         private JObject RestoreSnapshots(KBObject instance, KBObjectPart part, byte[] nativeBytes,
-            string patternXml, KBObject parent, string webForm)
+            string patternXml, KBObject parent, string webForm, string applyOnSaveBefore)
         {
             bool patternRestored = false;
             bool webFormRestored = parent == null || webForm == null;
+            bool applyOnSaveRestored = false;
             string patternError = null;
             string webFormError = null;
             try
@@ -547,9 +548,11 @@ namespace GxMcp.Worker.Services
                 if (setBytes == null || nativeBytes == null) throw new InvalidOperationException("Native PatternInstance byte snapshot is unavailable.");
                 setBytes.Invoke(part, new object[] { nativeBytes });
                 SaveNativePattern(instance, part);
-                WwpApplyOnSaveHelper.TryEnable(instance);
+                if (!IsFalse(applyOnSaveBefore)) WwpApplyOnSaveHelper.TryEnable(instance);
                 string restored = _patterns.ReadPatternPartXml(instance, "PatternInstance", out _, out _);
                 patternRestored = string.Equals(Sha256(restored), Sha256(patternXml), StringComparison.OrdinalIgnoreCase);
+                applyOnSaveRestored = string.Equals(ReadObjectProperty(instance,
+                    "SDPlus_Editor_Apply_On_Save"), applyOnSaveBefore, StringComparison.OrdinalIgnoreCase);
             }
             catch (Exception ex) { patternError = (ex.InnerException ?? ex).Message; }
 
@@ -573,7 +576,8 @@ namespace GxMcp.Worker.Services
                 ["performed"] = true,
                 ["patternRestoredExactly"] = patternRestored,
                 ["webFormRestoredExactly"] = webFormRestored,
-                ["exact"] = patternRestored && webFormRestored,
+                ["applyOnSaveRestoredExactly"] = applyOnSaveRestored,
+                ["exact"] = patternRestored && webFormRestored && applyOnSaveRestored,
                 ["patternError"] = patternError,
                 ["webFormError"] = webFormError
             };

@@ -131,7 +131,10 @@ namespace GxMcp.Gateway.Tests
             //   2026-08-16 (Items A, B, D): 20300 → 20500 for genexus_edit autoDeclareVariables,
             //   genexus_refactor ExtractSubroutine, and genexus_transfer includeDependencies.
             //   Measured ~20313; ~187 headroom.
-            Assert.True(approxTokens < 20500, $"tool_definitions.json is ~{approxTokens} tokens; budget 20500.");
+            //   2026-08-18 (typed WWP tabs): 20500 → 20700 for add_tab/move_tab/
+            //   remove_tab and recursive variable/userAction/table children.
+            //   Measured ~20531; ~169 headroom.
+            Assert.True(approxTokens < 20700, $"tool_definitions.json is ~{approxTokens} tokens; budget 20700.");
         }
     }
 }

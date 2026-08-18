@@ -3818,8 +3818,72 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "WorkWithPlus Action Group / grid-action editing (issue #58). action=list (read-only) lists the PatternInstance's action containers and their <userAction>/<standardAction> children; add_action adds a custom userAction to an existing or new group (procedure existence verified, selection single|multiple, enabledWhen condition, icon, description, confirm, position); update_action changes those attributes; move_action relocates an action between groups or reorders it; remove_action deletes an action (confirm=true). dryRun=true returns the XML diff without persisting. Edits target the WorkWithPlus host's PatternInstance XML (survives pattern reapply). NEVER creates Security/GAM permissions. Attributes are passed verbatim to the WWP XML; the SDK's own save normalization is reported honestly via the pattern write verification.",
+      "description": "Typed WorkWithPlus PatternInstance editing. add_tab/move_tab/remove_tab use native Pattern SDK commands, preserve Apply-on-save, snapshot and re-read PatternInstance/WebForm, and restore exact snapshots on verification failure. Tab children are variable, userAction, or nested table controls. dryRun returns typed diff plus versionToken. No lifecycle action runs implicitly.",
       "inputSchema": {
+        "$defs": {
+          "wwpControl": {
+            "additionalProperties": false,
+            "properties": {
+              "basicType": {
+                "type": "string"
+              },
+              "caption": {
+                "type": "string"
+              },
+              "children": {
+                "items": {
+                  "$ref": "#/$defs/wwpControl"
+                },
+                "type": "array"
+              },
+              "columns": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "controlEmptyItem": {
+                "type": "boolean"
+              },
+              "controlEmptyItemText": {
+                "type": "string"
+              },
+              "controlType": {
+                "type": "string"
+              },
+              "controlValues": {
+                "type": "string"
+              },
+              "decimals": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "description": {
+                "type": "string"
+              },
+              "length": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "themeClass": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "variable",
+                  "userAction",
+                  "table"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
         "examples": [
           {
             "action": "list",
@@ -3840,6 +3904,27 @@
             "actionName": "Reativar",
             "confirm": true,
             "name": "MonitorIntegracaoWW"
+          },
+          {
+            "action": "add_tab",
+            "children": [
+              {
+                "basicType": "VarChar",
+                "length": 40,
+                "name": "Operation",
+                "type": "variable"
+              },
+              {
+                "caption": "Send",
+                "name": "SendIntegration",
+                "type": "userAction"
+              }
+            ],
+            "controlName": "IntegrationV3",
+            "dryRun": true,
+            "name": "SamplePanel",
+            "position": 5,
+            "title": "Integration API V3"
           }
         ],
         "properties": {
@@ -3849,12 +3934,19 @@
               "add_action",
               "update_action",
               "move_action",
-              "remove_action"
+              "remove_action",
+              "add_tab",
+              "move_tab",
+              "remove_tab"
             ],
             "type": "string"
           },
           "actionName": {
             "description": "Action name (e.g. 'Reativar').",
+            "type": "string"
+          },
+          "baseVersion": {
+            "description": "Concurrency token returned by dryRun/read.",
             "type": "string"
           },
           "buttonClass": {
@@ -3865,16 +3957,27 @@
             "description": "add/update: button caption (defaults to actionName).",
             "type": "string"
           },
+          "children": {
+            "description": "add_tab controls; flat variable/actions are wrapped in a responsive table.",
+            "items": {
+              "$ref": "#/$defs/wwpControl"
+            },
+            "type": "array"
+          },
           "confirm": {
-            "description": "add/update: confirmation prompt; remove_action: required to delete (unless dryRun).",
+            "description": "add/update: confirmation prompt; remove_action/remove_tab: required to delete unless dryRun.",
             "type": "boolean"
+          },
+          "controlName": {
+            "description": "Tab ControlName.",
+            "type": "string"
           },
           "description": {
             "description": "add/update: tooltip/description.",
             "type": "string"
           },
           "dryRun": {
-            "description": "Return the XML diff without persisting (default false).",
+            "description": "Return typed diff and versionToken without SDK mutation.",
             "type": "boolean"
           },
           "enabledWhen": {
@@ -3902,7 +4005,8 @@
             "type": "string"
           },
           "position": {
-            "description": "add/move/update: zero-based index among the group's actions.",
+            "description": "Zero-based action or tab index.",
+            "minimum": 0,
             "type": "integer"
           },
           "procedure": {
@@ -3915,6 +4019,10 @@
               "single",
               "multiple"
             ],
+            "type": "string"
+          },
+          "title": {
+            "description": "add_tab: tab title.",
             "type": "string"
           },
           "toGroup": {
