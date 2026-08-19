@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.41.10 - 2026-08-19
+
 ### Added
 
 - **Native atomic Data View authoring with `genexus_data_view`.** The new `inspect`, `dry_run`, `create`, `update`, and `delete` actions validate existing table metadata, global attributes, types and complete primary keys before saving a root-only Business Component Transaction and its Data View mapping inside one GeneXus SDK transaction. Responses include optimistic version tokens, persisted reread evidence, physical schema/table mapping, and a no-DDL reorganization preview. The tool never invokes Specify, Generate, Build, Rebuild, Reorg, compilation, publishing, execution, or tests implicitly.
