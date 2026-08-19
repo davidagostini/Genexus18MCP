@@ -2071,7 +2071,11 @@ namespace GxMcp.Gateway
                                 catch { /* shaper passed through non-JSON; keep original */ }
                             }
 
-                            var toolResult = BuildToolResultContent(finalResult, isErr, tName, tArgs);
+                            // The worker envelope has no further consumers after this callback.
+                            // Transfer the selected payload out of it so KB metadata can be
+                            // attached without cloning the entire response tree.
+                            DetachResponsePayload(resultObj, finalResult);
+                            var toolResult = BuildToolResultContent(finalResult, isErr, tName, tArgs, payloadOwned: true);
 
                             // v2.3.8 (post-self-review) — don't cache transient envelopes.
                             // A "Reindexing"/"IndexCold"/"Timeout"/"Cancelled"/"BuildPlanTooLarge"

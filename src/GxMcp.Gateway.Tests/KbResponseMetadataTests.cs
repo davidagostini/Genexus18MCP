@@ -22,6 +22,36 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void Adds_alias_in_place_when_payload_is_owned()
+        {
+            var original = new JObject
+            {
+                ["status"] = "ok",
+                ["results"] = new JArray(new JObject { ["name"] = "Customer" })
+            };
+
+            var tagged = (JObject)Program.AttachKbContextMetadataToOwnedPayload(original, " customer ");
+
+            Assert.Same(original, tagged);
+            Assert.Equal("customer", tagged["kbAlias"]?.ToString());
+            Assert.Equal("Customer", tagged["results"]?[0]?["name"]?.ToString());
+        }
+
+        [Fact]
+        public void Owned_attachment_keeps_defensive_clone_for_parented_payload()
+        {
+            var original = new JObject { ["status"] = "ok" };
+            var envelope = new JObject { ["result"] = original };
+
+            var tagged = (JObject)Program.AttachKbContextMetadataToOwnedPayload(original, "customer");
+
+            Assert.NotSame(original, tagged);
+            Assert.Null(original["kbAlias"]);
+            Assert.Same(original, envelope["result"]);
+            Assert.Equal("customer", tagged["kbAlias"]?.ToString());
+        }
+
+        [Fact]
         public void Wraps_array_as_results_with_alias()
         {
             var original = new JArray("one", "two");

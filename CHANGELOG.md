@@ -7,6 +7,10 @@
 - **Multi-KB target selection is now predictable.** `genexus_kb action=set_default` controls the implicit target for calls that omit `kb`, while explicit aliases remain available for parallel work. Gateway and OpenCode KB catalogs now preserve all registered entries across array/map config formats, and `whoami`/`genexus_kb list` expose the active, open, known, and declared aliases.
 - **OpenCode now works across both MCP configuration layouts.** The installer automatically configures detected OpenCode installations while preserving OpenCode 1.x's direct `mcp.genexus` entry and the current nested `mcp.servers.genexus` form; KB-bound responses identify their source with `kbAlias` for text-only clients.
 
+### Changed
+
+- **KB-bound responses now avoid redundant payload cloning and serialization.** The Gateway transfers ownership of completed Worker payloads before attaching `kbAlias`, reducing allocation and response-finalization cost for large search, read, and edit results while retaining defensive cloning for shared payloads.
+
 ## v2.41.9 - 2026-08-18
 
 ### Fixed

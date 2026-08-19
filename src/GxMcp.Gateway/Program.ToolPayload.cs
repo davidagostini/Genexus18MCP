@@ -418,9 +418,25 @@ namespace GxMcp.Gateway
             };
         }
 
-        internal static JObject BuildToolResultContent(JToken payload, bool isError, string? toolName = null, JObject? toolArgs = null)
+        internal static JObject BuildToolResultContent(
+            JToken payload,
+            bool isError,
+            string? toolName = null,
+            JObject? toolArgs = null,
+            bool payloadOwned = false)
         {
             JToken axiPayload = NormalizeToolPayloadForAxi(payload, toolName ?? "unknown", toolArgs, isError);
+            string? kbAlias = _currentKb.Value?.Alias;
+            if (!string.IsNullOrWhiteSpace(kbAlias))
+            {
+                // Worker responses are detached immediately before this method is called,
+                // so the gateway can add the correlation metadata in place. Gateway-created
+                // or shared payloads keep the defensive clone contract of the public helper.
+                axiPayload = payloadOwned
+                    ? AttachKbContextMetadataToOwnedPayload(axiPayload, kbAlias!)
+                    : AddKbContextMetadata(axiPayload, kbAlias!);
+            }
+
             var result = new JObject
             {
                 ["resultType"] = "complete",
@@ -434,11 +450,8 @@ namespace GxMcp.Gateway
             // Legacy stdio clients (including OpenCode's text-oriented MCP path)
             // need the resolved KB in-band to correlate a response. Modern clients
             // can use the protocol metadata without reparsing the text.
-            string? kbAlias = _currentKb.Value?.Alias;
             if (!string.IsNullOrWhiteSpace(kbAlias))
             {
-                axiPayload = AddKbContextMetadata(axiPayload, kbAlias!);
-                ((JObject)((JArray)result["content"]!)[0]!) ["text"] = axiPayload.ToString(Formatting.None);
                 result["_meta"] = new JObject { ["kbAlias"] = kbAlias };
             }
             // MCP's structuredContent lets modern clients consume the JSON result
@@ -449,6 +462,50 @@ namespace GxMcp.Gateway
                 result["structuredContent"] = axiPayload;
             }
             return result;
+        }
+
+        internal static JToken AttachKbContextMetadataToOwnedPayload(JToken payload, string kbAlias)
+        {
+            if (payload == null) throw new ArgumentNullException(nameof(payload));
+            if (string.IsNullOrWhiteSpace(kbAlias)) throw new ArgumentException("KB alias is required.", nameof(kbAlias));
+
+            string alias = kbAlias.Trim();
+            if (payload is JObject obj)
+            {
+                // A parent means another response tree still owns this token. Keep the
+                // defensive behavior instead of mutating that tree unexpectedly.
+                if (obj.Parent != null) return AddKbContextMetadata(obj, alias);
+                obj["kbAlias"] = alias;
+                return obj;
+            }
+
+            if (payload is JArray array)
+            {
+                return new JObject
+                {
+                    ["results"] = array.Parent == null ? array : array.DeepClone(),
+                    ["kbAlias"] = alias
+                };
+            }
+
+            return new JObject
+            {
+                ["value"] = payload.Parent == null ? payload : payload.DeepClone(),
+                ["kbAlias"] = alias
+            };
+        }
+
+        private static void DetachResponsePayload(JObject response, JToken? payload)
+        {
+            if (payload == null) return;
+            if (ReferenceEquals(response["result"], payload))
+            {
+                response.Remove("result");
+            }
+            else if (ReferenceEquals(response["error"], payload))
+            {
+                response.Remove("error");
+            }
         }
 
         internal static JToken AddKbContextMetadata(JToken payload, string kbAlias)
