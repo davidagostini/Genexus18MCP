@@ -1148,7 +1148,7 @@ namespace GxMcp.Worker.Services
                 // rolledBack=false with a note (delete the object via genexus_delete_object).
                 return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(createResp, target, args, "Source");
             }
-            if (action == "Delete") return _objectService.DeleteObject(target, args?["type"]?.ToString(), args?["confirm"]?.ToObject<bool?>() ?? false, args?["dryRun"]?.ToObject<bool?>() ?? false);
+            if (action == "Delete") return _objectService.DeleteObject(target, args?["type"]?.ToString(), args?["confirm"]?.ToObject<bool?>() ?? false, args?["dryRun"]?.ToObject<bool?>() ?? false, args?["expectedVersion"]?.ToString());
             if (action == "SaveAs") return _saveAsService.SaveAs(args ?? new JObject());
             if (action == "WorkerReload")
             {

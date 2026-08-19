@@ -691,8 +691,13 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string DeleteObject(string target, string typeFilter, bool confirm, bool dryRun = false)
+        public string DeleteObject(string target, string typeFilter, bool confirm, bool dryRun = false, string expectedVersion = null)
         {
+            Guid objGuid = Guid.Empty;
+            string objName = target;
+            string objType = typeFilter;
+            bool deleteStarted = false;
+            bool transactionCommitted = false;
             try
             {
                 var kb = _kbService.GetKB();
@@ -701,12 +706,12 @@ namespace GxMcp.Worker.Services
                         hint: "Open a KB first with genexus_kb action=open.",
                         nextSteps: new JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Open the target KB before deleting.")));
 
-                if (!confirm)
+                if (!dryRun && !confirm)
                 {
                     return Models.McpResponse.Err(code: "ConfirmRequired",
                         message: "Delete requires explicit confirm=true (irreversible operation).",
                         hint: "Re-issue genexus_delete_object with confirm=true. Consider dryRun=true first to preview the impact.",
-                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_delete_object", new JObject { ["target"] = target, ["confirm"] = true }, "Re-issue with confirm=true to perform the irreversible delete.")),
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_delete_object", new JObject { ["name"] = target, ["confirm"] = true }, "Re-issue with confirm=true to perform the irreversible delete.")),
                         target: target);
                 }
 
@@ -750,21 +755,56 @@ namespace GxMcp.Worker.Services
                     return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
                 }
 
-                string objName = obj.Name;
-                string objType = obj.TypeDescriptor?.Name ?? "Unknown";
-                Guid objGuid = obj.Guid;
+                objName = obj.Name;
+                objType = obj.TypeDescriptor?.Name ?? "Unknown";
+                objGuid = obj.Guid;
+                string qualifiedName = GetQualifiedObjectName(obj);
+                string versionBefore = WriteService.ComputeVersionToken(obj);
+                if (!string.IsNullOrWhiteSpace(expectedVersion)
+                    && !string.Equals(expectedVersion, versionBefore, StringComparison.Ordinal))
+                {
+                    return McpResponse.Err(
+                        code: "VersionConflict",
+                        message: "The object changed after the supplied expectedVersion was read.",
+                        hint: "Run genexus_delete_object with dryRun=true again and retry with its versionBefore token.",
+                        target: objName,
+                        extra: new JObject
+                        {
+                            ["expectedVersion"] = expectedVersion,
+                            ["currentVersion"] = versionBefore,
+                            ["persisted"] = false
+                        });
+                }
+
+                JArray references = CollectIncomingReferences(obj, kb);
 
                 // dryRun: return what would be deleted without mutating the KB.
                 if (dryRun)
                 {
+                    var reread = ResolveByNativeIdentity(kb, objGuid, objType);
+                    string versionAfter = WriteService.ComputeVersionToken(reread);
+                    bool unchanged = reread != null
+                        && string.Equals(versionBefore, versionAfter, StringComparison.Ordinal);
                     return McpResponse.Ok(
                         target: objName,
                         code: "DryRun",
-                        result: new Newtonsoft.Json.Linq.JObject
+                        result: new JObject
                         {
-                            ["preview"] = new Newtonsoft.Json.Linq.JObject
+                            ["resolvedType"] = objType,
+                            ["resolvedGuid"] = objGuid.ToString(),
+                            ["qualifiedName"] = qualifiedName,
+                            ["references"] = references,
+                            ["dependents"] = references.DeepClone(),
+                            ["wouldDelete"] = true,
+                            ["persisted"] = false,
+                            ["mutationDetected"] = !unchanged,
+                            ["versionBefore"] = versionBefore,
+                            ["versionAfter"] = versionAfter,
+                            ["rereadConfirmed"] = unchanged,
+                            ["implicitLifecycleActions"] = new JArray(),
+                            ["preview"] = new JObject
                             {
-                                ["wouldDelete"] = new Newtonsoft.Json.Linq.JObject
+                                ["wouldDelete"] = new JObject
                                 {
                                     ["name"] = objName,
                                     ["type"] = objType,
@@ -776,7 +816,85 @@ namespace GxMcp.Worker.Services
 
                 Logger.Info(string.Format("Deleting Object: {0} ({1}, guid={2})", objName, objType, objGuid));
 
-                obj.Delete();
+                using (var tx = kb.BeginTransaction())
+                {
+                    bool committed = false;
+                    try
+                    {
+                        var current = ResolveByNativeIdentity(kb, objGuid, objType);
+                        if (current == null)
+                        {
+                            tx.Rollback();
+                            return McpResponse.Err(
+                                code: "VersionConflict",
+                                message: "The object no longer exists at deletion time.",
+                                hint: "Re-read the Knowledge Base before retrying.",
+                                target: objName,
+                                extra: new JObject { ["persisted"] = false });
+                        }
+
+                        string transactionVersion = WriteService.ComputeVersionToken(current);
+                        if (!string.IsNullOrWhiteSpace(expectedVersion)
+                            && !string.Equals(expectedVersion, transactionVersion, StringComparison.Ordinal))
+                        {
+                            tx.Rollback();
+                            return McpResponse.Err(
+                                code: "VersionConflict",
+                                message: "The object changed before the deletion transaction started.",
+                                hint: "Run genexus_delete_object with dryRun=true again and retry with its versionBefore token.",
+                                target: objName,
+                                extra: new JObject
+                                {
+                                    ["expectedVersion"] = expectedVersion,
+                                    ["currentVersion"] = transactionVersion,
+                                    ["persisted"] = false
+                                });
+                        }
+
+                        references = CollectIncomingReferences(current, kb);
+                        deleteStarted = true;
+                        current.Delete();
+
+                        if (ResolveByNativeIdentity(kb, objGuid, objType) != null)
+                        {
+                            tx.Rollback();
+                            return McpResponse.Err(
+                                code: "DeleteNotPersisted",
+                                message: "The SDK still resolves the object after Delete().",
+                                hint: "The transaction was rolled back; inspect SDK locks or concurrent edits before retrying.",
+                                target: objName,
+                                extra: new JObject
+                                {
+                                    ["persisted"] = false,
+                                    ["rollback"] = new JObject { ["attempted"] = true, ["verified"] = true }
+                                });
+                        }
+
+                        tx.Commit();
+                        committed = true;
+                        transactionCommitted = true;
+                    }
+                    finally
+                    {
+                        if (!committed) try { tx.Rollback(); } catch { }
+                    }
+                }
+
+                bool absentAfterCommit = ResolveByNativeIdentity(kb, objGuid, objType) == null
+                    && FindObject(objName, objType) == null;
+                if (!absentAfterCommit)
+                {
+                    return McpResponse.Err(
+                        code: "DeleteNotPersisted",
+                        message: "The object was still resolvable after the deletion transaction committed.",
+                        hint: "The SDK did not persist the deletion; inspect concurrent edits or repository locks before retrying.",
+                        target: objName,
+                        extra: new JObject
+                        {
+                            ["persisted"] = false,
+                            ["rereadConfirmed"] = true
+                        });
+                }
 
                 Logger.Info(string.Format("Object deleted: {0} ({1})", objName, objType));
 
@@ -798,14 +916,102 @@ namespace GxMcp.Worker.Services
                 return McpResponse.Ok(target: objName, code: "ObjectDeleted", result: new JObject
                 {
                     ["deleted"] = objName,
-                    ["type"] = objType
+                    ["type"] = objType,
+                    ["resolvedType"] = objType,
+                    ["resolvedGuid"] = objGuid.ToString(),
+                    ["qualifiedName"] = qualifiedName,
+                    ["references"] = references,
+                    ["dependents"] = references.DeepClone(),
+                    ["wouldDelete"] = true,
+                    ["persisted"] = true,
+                    ["rereadConfirmed"] = true,
+                    ["versionBefore"] = versionBefore,
+                    ["versionAfter"] = JValue.CreateNull(),
+                    ["implicitLifecycleActions"] = new JArray()
                 });
             }
             catch (Exception ex)
             {
                 Logger.Error("DeleteObject failed: " + ex.Message);
-                return "{\"status\":\"Error\", \"error\":\"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                bool stillExists = true;
+                try
+                {
+                    var kb = _kbService.GetKB();
+                    stillExists = objGuid == Guid.Empty || ResolveByNativeIdentity(kb, objGuid, objType) != null;
+                }
+                catch { }
+                return McpResponse.Err(
+                    code: "DeleteFailed",
+                    message: ex.InnerException?.Message ?? ex.Message,
+                    hint: stillExists
+                        ? "The object remains in the Knowledge Base; resolve the reported SDK error before retrying."
+                        : "The object is absent despite the error; re-read the Knowledge Base before taking further action.",
+                    target: objName,
+                    extra: new JObject
+                    {
+                        ["persisted"] = !stillExists,
+                        ["rollback"] = new JObject
+                        {
+                            ["attempted"] = deleteStarted && !transactionCommitted,
+                            ["verified"] = stillExists
+                        },
+                        ["implicitLifecycleActions"] = new JArray()
+                    });
             }
+        }
+
+        private static string GetQualifiedObjectName(KBObject obj)
+        {
+            if (obj == null) return null;
+            try
+            {
+                dynamic value = obj;
+                string qualified = value.QualifiedName?.ToString();
+                if (!string.IsNullOrWhiteSpace(qualified)) return qualified;
+            }
+            catch { }
+            return obj.Name;
+        }
+
+        private static KBObject ResolveByNativeIdentity(KnowledgeBase kb, Guid guid, string typeName)
+        {
+            if (kb == null || guid == Guid.Empty) return null;
+            if (string.Equals(typeName, "Domain", StringComparison.OrdinalIgnoreCase))
+            {
+                try { return Artech.Genexus.Common.Objects.Domain.Get(kb.DesignModel, guid); }
+                catch { return null; }
+            }
+            try { return kb.DesignModel.Objects.Get(guid); }
+            catch { return null; }
+        }
+
+        private static JArray CollectIncomingReferences(KBObject obj, KnowledgeBase kb)
+        {
+            var result = new JArray();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var reference in obj.GetReferencesTo())
+            {
+                string key = null;
+                try { key = reference.From?.ToString(); } catch { }
+                if (string.IsNullOrWhiteSpace(key) || !seen.Add(key)) continue;
+
+                KBObject source = null;
+                try { source = kb.DesignModel.Objects.Get(reference.From); } catch { }
+                var item = new JObject { ["nativeKey"] = key };
+                if (source != null)
+                {
+                    item["name"] = source.Name;
+                    item["type"] = source.TypeDescriptor?.Name ?? "Unknown";
+                    item["guid"] = source.Guid.ToString();
+                    item["qualifiedName"] = GetQualifiedObjectName(source);
+                }
+                else
+                {
+                    item["resolved"] = false;
+                }
+                result.Add(item);
+            }
+            return result;
         }
 
         // Mirrors the SDT init: a freshly created Transaction with zero attributes fails the
@@ -1867,6 +2073,20 @@ namespace GxMcp.Worker.Services
                 namePart = parts[1].Trim();
             }
 
+            // Domains are native typed entities but are not reliably returned by the
+            // generic DesignModel.Objects name index. Resolve them through the SDK's
+            // own Domain identity API before consulting the generic index/fallback.
+            if (string.Equals(typePart, "Domain", StringComparison.OrdinalIgnoreCase))
+            {
+                string domainName = NormalizeDomainLookupName(namePart);
+                var domain = VariableInjector.ResolveDomain(kb.DesignModel, domainName);
+                if (domain != null)
+                {
+                    Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Native-Domain) in {1}ms", target, sw.ElapsedMilliseconds));
+                    return domain;
+                }
+            }
+
             // 1. FAST PATH: Use Search Index — non-blocking. If the index hasn't been
             // loaded yet we DON'T cold-load it here (that blocks the shared STA thread
             // 30-60s and stalls every queued tool call); we fall through to the SDK's
@@ -1928,6 +2148,9 @@ namespace GxMcp.Worker.Services
                         return obj;
                     }
                 }
+                // A typed lookup must never silently fall through to an object of a
+                // different type that happens to share the same name.
+                return null;
             }
 
             // Global search, prioritizing non-container objects and avoiding Files if others exist.
@@ -1956,6 +2179,15 @@ namespace GxMcp.Worker.Services
                 Logger.Debug(string.Format("FindObject '{0}' SUCCESS (SDK-Fallback) in {1}ms", target, sw.ElapsedMilliseconds));
             }
             return result;
+        }
+
+        internal static string NormalizeDomainLookupName(string name)
+        {
+            string value = (name ?? string.Empty).Trim().Replace('\\', '/');
+            const string rootPrefix = "Root Module/";
+            if (value.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+                return value.Substring(rootPrefix.Length);
+            return value.IndexOf('/') >= 0 ? value.Replace('/', '.') : value;
         }
 
         internal KBObject FindObjectFresh(string target, string typeFilter = null)

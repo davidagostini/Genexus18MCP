@@ -46,6 +46,27 @@ namespace GxMcp.Gateway.Tests
             AssertRoute(new OperationsRouter().ConvertToolCall(tool, JObject.Parse(json)), module, action);
         }
 
+        [Fact]
+        public void Delete_object_forwards_typed_atomic_safety_contract()
+        {
+            var converted = new OperationsRouter().ConvertToolCall("genexus_delete_object", JObject.Parse(@"{
+                name: 'TemporaryDomain',
+                type: 'Domain',
+                confirm: true,
+                dryRun: true,
+                expectedVersion: 'version-token'
+            }"));
+
+            var routed = JObject.FromObject(converted!);
+            Assert.Equal("Object", (string?)routed["module"]);
+            Assert.Equal("Delete", (string?)routed["action"]);
+            Assert.Equal("TemporaryDomain", (string?)routed["target"]);
+            Assert.Equal("Domain", (string?)routed["type"]);
+            Assert.True((bool?)routed["confirm"]);
+            Assert.True((bool?)routed["dryRun"]);
+            Assert.Equal("version-token", (string?)routed["expectedVersion"]);
+        }
+
         [Theory]
         [InlineData("genexus_create", "object", "Object", "Create")]
         [InlineData("genexus_create", "object_atomic", "AtomicCreate", "Run")]

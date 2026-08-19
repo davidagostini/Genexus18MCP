@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+<<<<<<< HEAD
 ### Added
 
 - **Native atomic Data View authoring with `genexus_data_view`.** The new `inspect`, `dry_run`, `create`, `update`, and `delete` actions validate existing table metadata, global attributes, types and complete primary keys before saving a root-only Business Component Transaction and its Data View mapping inside one GeneXus SDK transaction. Responses include optimistic version tokens, persisted reread evidence, physical schema/table mapping, and a no-DDL reorganization preview. The tool never invokes Specify, Generate, Build, Rebuild, Reorg, compilation, publishing, execution, or tests implicitly.
@@ -13,6 +14,8 @@
 - **Native modular Business Component variables in `genexus_variable`.** `add` and `modify` now accept `objectType=BusinessComponent`, `objectName`, and `module`, resolve the Transaction through the GeneXus type provider, persist its native custom type, and verify the same BC GUID/module after reread. The atomic path supports `expectedVersion`, mutation-free `dryRun`, typed diffs, and complete rollback without running lifecycle actions.
 - **Atomic Transaction visual-structure updates.** `genexus_structure action=update_visual` now snapshots the Structure, authored parts, and referenced global Attributes; checks `expectedVersion`; performs a pure `dryRun`; and restores and verifies the complete snapshot on save or reread failure. Default WinForm/WebForm projections may follow a valid Structure change without producing a false `AuthoredPartsCorrupted` failure.
 - Thanks to [@davidagostini](https://github.com/davidagostini) for the modular Business Component and atomic Structure support — see [PR #105](https://github.com/lennix1337/Genexus18MCP/pull/105).
+- **Native typed Domain resolution and atomic verification in `genexus_delete_object`.** Domain deletion now resolves through the GeneXus SDK identity API, reports native incoming references in dry-run, supports optimistic concurrency with `expectedVersion`, requires confirmation only for persistence, and performs transactional deletion plus post-save reread without invoking lifecycle actions.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for native Domain resolution in object deletion — see [PR #106](https://github.com/lennix1337/Genexus18MCP/pull/106).
 
 ### Changed
 
