@@ -2,14 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- **Native atomic Data View authoring with `genexus_data_view`.** The new `inspect`, `dry_run`, `create`, `update`, and `delete` actions validate existing table metadata, global attributes, types and complete primary keys before saving a root-only Business Component Transaction and its Data View mapping inside one GeneXus SDK transaction. Responses include optimistic version tokens, persisted reread evidence, physical schema/table mapping, and a no-DDL reorganization preview. The tool never invokes Specify, Generate, Build, Rebuild, Reorg, compilation, publishing, execution, or tests implicitly.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for the native atomic Data View authoring — see [PR #104](https://github.com/lennix1337/Genexus18MCP/pull/104).
+
 ### Fixed
 
-- **Multi-KB target selection is now predictable.** `genexus_kb action=set_default` controls the implicit target for calls that omit `kb`, while explicit aliases remain available for parallel work. Gateway and OpenCode KB catalogs now preserve all registered entries across array/map config formats, and `whoami`/`genexus_kb list` expose the active, open, known, and declared aliases.
-- **OpenCode now works across both MCP configuration layouts.** The installer automatically configures detected OpenCode installations while preserving OpenCode 1.x's direct `mcp.genexus` entry and the current nested `mcp.servers.genexus` form; KB-bound responses identify their source with `kbAlias` for text-only clients.
+- **Transaction object dry-runs no longer create the global seed Attribute.** `genexus_create action=object type=Transaction dryRun=true` now returns before constructing the SDK Transaction, reporting `persisted=false` and `mutationDetected=false` without creating the `<Transaction>Id` Attribute or any table/index metadata.
 
 ### Changed
 
+- **Multi-KB target selection is now predictable.** `genexus_kb action=set_default` controls the implicit target for calls that omit `kb`, while explicit aliases remain available for parallel work. Gateway and OpenCode KB catalogs now preserve all registered entries across array/map config formats, and `whoami`/`genexus_kb list` expose the active, open, known, and declared aliases.
+- **OpenCode now works across both MCP configuration layouts.** The installer automatically configures detected OpenCode installations while preserving OpenCode 1.x's direct `mcp.genexus` entry and the current nested `mcp.servers.genexus` form; KB-bound responses identify their source with `kbAlias` for text-only clients.
 - **KB-bound responses now avoid redundant payload cloning and serialization.** The Gateway transfers ownership of completed Worker payloads before attaching `kbAlias`, reducing allocation and response-finalization cost for large search, read, and edit results while retaining defensive cloning for shared payloads.
+
+### Internal
+
+- **Disposable U16 Data View persistence harness and schema budget.** Added `scripts/Test-DataViewAtomic.ps1` to verify dry-run immutability, atomic create/reread/delete, root-only BC shape, physical mapping, stale-version rejection, and absence of implicit lifecycle actions; raised the intentional combined tool-schema budget from 20,500 to 21,100 tokens (measured ~20,932).
 
 ## v2.41.9 - 2026-08-18
 

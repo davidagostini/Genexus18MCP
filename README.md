@@ -270,6 +270,7 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 - `genexus_edit_form` — semantic WebForm edits
 - `genexus_variable` — Variables-part CRUD
 - `genexus_create` — creation umbrella (Transaction, Procedure, Domain, SDT, API, Folder, Module, `curl_procedure` = scaffold a Procedure from a curl command, …); `object_atomic` authors definition + variables + Rules + properties + Source with preflight/read-back/rollback
+- `genexus_data_view` — atomically create/inspect/update/delete a root-only Business Component Transaction mapped through a native Data View to an existing physical table; validates attributes/keys first, supports optimistic versions and true no-mutation dry-runs, and never runs lifecycle actions implicitly
 - `genexus_delete_object` — delete an object
 - `genexus_format` — format a code snippet with the worker's rules
 

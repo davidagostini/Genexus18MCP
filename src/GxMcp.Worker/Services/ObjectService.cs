@@ -164,6 +164,26 @@ namespace GxMcp.Worker.Services
                 }
                 catch { /* lookup is best-effort; if it throws, Save will surface the duplicate error anyway */ }
 
+                // A Transaction dry-run must not even construct the SDK object. The
+                // legacy initializer creates a KB-global seed Attribute as a side effect,
+                // so returning after KBObject.Create was not a read-only preview.
+                if (dryRun && type.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
+                {
+                    return McpResponse.Ok(
+                        target: name,
+                        code: "DryRun",
+                        result: new JObject
+                        {
+                            ["dryRun"] = true,
+                            ["persisted"] = false,
+                            ["mutationDetected"] = false,
+                            ["type"] = type,
+                            ["name"] = name,
+                            ["seededDescription"] = name + "Id : Numeric(8,0) [Key]",
+                            ["hint"] = "Re-run without dryRun to create the Transaction and its seed attribute."
+                        });
+                }
+
                 KBObject newObj = KBObject.Create(kb.DesignModel, typeGuid);
                 newObj.Name = name;
                 if (newObj is Artech.Architecture.Common.Objects.Module)

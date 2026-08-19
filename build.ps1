@@ -1,6 +1,9 @@
 ﻿# GeneXus MCP - Build & Deploy Script
 # ==========================================
 
+[CmdletBinding()]
+param()
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"
@@ -23,10 +26,17 @@ function Invoke-DotNet([string[]]$arguments, [string]$failureMessage) {
 
 Write-Host "[build] Preparing build..." -ForegroundColor Cyan
 
-# 0. Stop running processes
-Write-Host "   > Stopping running processes..."
-Stop-Process -Name GxMcp.Worker -ErrorAction SilentlyContinue
-Stop-Process -Name GxMcp.Gateway -ErrorAction SilentlyContinue
+# 0. Stop only processes launched from this checkout. Other checkouts and Hub
+# profiles may be serving active tasks and must not be interrupted by a build.
+Write-Host "   > Stopping running processes from this checkout..."
+$rootPrefix = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+Get-CimInstance Win32_Process |
+    Where-Object {
+        $_.Name -in @('GxMcp.Worker.exe', 'GxMcp.Gateway.exe') -and
+        -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
+        [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
+    } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 # Verify prerequisites
 $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
@@ -74,9 +84,13 @@ if (-not (Test-Path (Join-Path $gxPath "Definitions"))) {
     Fail-Build "GeneXus Definitions folder was not found under $gxPath."
 }
 
-# Also stop dotnet processes running the Gateway (since we use 'dotnet GxMcp.Gateway.dll')
+# Also stop dotnet processes running this checkout's Gateway DLL.
 Get-CimInstance Win32_Process -Filter "Name = 'dotnet.exe'" |
-    Where-Object { $_.CommandLine -like "*GxMcp.Gateway.dll*" } |
+    Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_.CommandLine) -and
+        $_.CommandLine -like "*GxMcp.Gateway.dll*" -and
+        $_.CommandLine.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    } |
     ForEach-Object {
         Write-Host "     - Stopping dotnet process ($($_.ProcessId))..."
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
