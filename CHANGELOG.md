@@ -15,6 +15,7 @@
   and/or a generated `.js` that lost every `setProp(...)` binding. Measured against a real KB,
   the new gate flags 5 of 5 genuinely degraded files and 0 of 28 healthy IDE-generated ones
   (the previous gate flagged 27 of those 28). Fixes #103 item 4.
+- Thanks to [@danielkrueger](https://github.com/danielkrueger) for identifying the real User Control degradation signature and updating the evidence gate — see [PR #108](https://github.com/lennix1337/Genexus18MCP/pull/108).
 
 ## v2.41.10 - 2026-08-19
 
