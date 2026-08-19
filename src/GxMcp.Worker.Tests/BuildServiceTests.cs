@@ -855,8 +855,12 @@ namespace GxMcp.Worker.Tests
             }
         }
 
+        // issue #103 item 4 — the generator emits setProp("Gx Control Type",...) only
+        // sporadically (1 of 32 User Control objects in the reference KB carried it, IDE
+        // builds included). Its absence is the norm, not a degradation, and must not raise
+        // a warning: a detector that fires on every healthy build buries the real signal.
         [Fact]
-        public void GenerateEvidence_DetectsPartialUserControlTypeBindings()
+        public void GenerateEvidence_IgnoresMissingGxControlTypeBinding()
         {
             string objectName = "Dashboard";
             string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
@@ -864,21 +868,76 @@ namespace GxMcp.Worker.Tests
             Directory.CreateDirectory(web);
             File.WriteAllText(Path.Combine(web, objectName + ".cs"), "class Dashboard {}");
 
-            var js = string.Join("\n", Enumerable.Range(0, 13).Select(i =>
-                "var n" + i + " = gx.uc.getNew('Control" + i + "');\n"
-                + (i < 12
-                    ? "n" + i + ".setProp(\"Gx Control Type\",\"Gxcontroltype\",\"\",\"int\");"
-                    : string.Empty)));
+            // Healthy JS as the IDE emits it: real control name, full property list,
+            // no "Gx Control Type" binding anywhere.
+            string js = "n=gx.uc.getNew(this,6,0,\"DashboardViewer\",\"DV1Container\",\"Dashboardviewer1\",\"DV1\");"
+                      + "n.setProp(\"Class\",\"Class\",\"DashboardViewer\",\"str\");"
+                      + "n.setProp(\"Visible\",\"Visible\",!0,\"bool\");";
             File.WriteAllText(Path.Combine(web, objectName.ToLowerInvariant() + ".js"), js);
 
             var previousKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
             Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
             try
             {
-                Assert.NotNull(BuildService.DetectUserControlBindingDegradation(
+                Assert.Null(BuildService.DetectUserControlBindingDegradation(
                     objectName,
                     Path.Combine(web, objectName.ToLowerInvariant() + ".js"),
                     js));
+
+                var svc = new BuildService();
+                var status = new BuildService.BuildTaskStatus
+                {
+                    TaskId = Guid.NewGuid().ToString("N").Substring(0, 8),
+                    Action = "Build",
+                    Target = objectName,
+                    Status = "Succeeded",
+                    Phase = "Done",
+                    StartedAt = DateTime.UtcNow.AddSeconds(-1),
+                    DirtyAtStart = new List<string> { objectName }
+                };
+
+                var method = typeof(BuildService).GetMethod("AttachGenerateEvidence", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(method);
+                method!.Invoke(svc, new object[] { status, "Build", new List<string> { objectName } });
+
+                var evidence = (JObject)status.GenerateEvidence!;
+                Assert.Null(evidence["degradedUserControls"]);
+                Assert.DoesNotContain(status.Warnings, w => w.Contains("user-control-degraded"));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_KB_PATH", previousKb);
+                try { Directory.Delete(tempKb, true); } catch { }
+            }
+        }
+
+        // The real degradation, as measured against IDE baselines: the control name comes
+        // out as the literal string "this" and every setProp binding is gone.
+        [Fact]
+        public void GenerateEvidence_DetectsDegradedUserControlSignature()
+        {
+            string objectName = "GrafComercial";
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            File.WriteAllText(Path.Combine(web, objectName + ".cs"), "class GrafComercial {}");
+
+            string js = "gx.uc.getNew(this,10,5,\"QueryViewer\",this.CmpContext+\"QV1Container\",\"this\",\"QV1\");"
+                      + "i=this.QV1Container;i.setC2ShowFunction(function(n){n.show()});this.setUserControl(i);";
+            string jsPath = Path.Combine(web, objectName.ToLowerInvariant() + ".js");
+            File.WriteAllText(jsPath, js);
+
+            var previousKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
+            try
+            {
+                var direct = BuildService.DetectUserControlBindingDegradation(objectName, jsPath, js);
+                Assert.NotNull(direct);
+                Assert.Equal(1, direct!["userControlInstances"]!.Value<int>());
+                Assert.Equal(0, direct["propertyBindings"]!.Value<int>());
+                Assert.Contains((JArray)direct["placeholderControlNames"]!,
+                    t => string.Equals((string)t, "QueryViewer", StringComparison.OrdinalIgnoreCase));
+
                 var svc = new BuildService();
                 var status = new BuildService.BuildTaskStatus
                 {
@@ -899,8 +958,7 @@ namespace GxMcp.Worker.Tests
                 Assert.False(evidence["ok"]!.Value<bool>(), evidence.ToString());
                 var degraded = (JArray)evidence["degradedUserControls"]!;
                 Assert.Single(degraded);
-                Assert.Equal(13, degraded[0]["expectedBindings"]!.Value<int>());
-                Assert.Equal(12, degraded[0]["actualBindings"]!.Value<int>());
+                Assert.Equal(0, degraded[0]["propertyBindings"]!.Value<int>());
             }
             finally
             {
@@ -917,8 +975,8 @@ namespace GxMcp.Worker.Tests
             string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
             Directory.CreateDirectory(web);
 
-            string js = "var n = gx.uc.getNew('SampleViewer');\n"
-                      + "n.setProp(\"Visible\",\"Visible\",true,\"bool\");";
+            string js = "gx.uc.getNew(this,3,0,'SampleViewer','SV1Container','this','SV1');\n"
+                      + "i=this.SV1Container;this.setUserControl(i);";
             File.WriteAllText(Path.Combine(web, objectName.ToLowerInvariant() + ".js"), js);
 
             string previousKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
@@ -945,8 +1003,8 @@ namespace GxMcp.Worker.Tests
                 Assert.False(evidence["ok"]!.Value<bool>(), evidence.ToString());
                 var degraded = (JArray)evidence["degradedUserControls"]!;
                 Assert.Single(degraded);
-                Assert.Equal(1, degraded[0]["expectedBindings"]!.Value<int>());
-                Assert.Equal(0, degraded[0]["actualBindings"]!.Value<int>());
+                Assert.Equal(1, degraded[0]["userControlInstances"]!.Value<int>());
+                Assert.Equal(0, degraded[0]["propertyBindings"]!.Value<int>());
             }
             finally
             {

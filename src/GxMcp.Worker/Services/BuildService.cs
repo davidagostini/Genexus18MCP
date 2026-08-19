@@ -24,10 +24,14 @@ namespace GxMcp.Worker.Services
         private IndexCacheService _indexCacheService;
         private CallerGraphService _callerGraphService;
         private static readonly ConcurrentDictionary<string, BuildTaskStatus> _tasks = new ConcurrentDictionary<string, BuildTaskStatus>();
+        // The generator's User Control factory call together with its (non-nested)
+        // argument list: gx.uc.getNew(this,6,0,"DashboardViewer","DV1Container","Dashboardviewer1","DV1").
         private static readonly Regex _userControlFactoryRegex = new Regex(
-            @"\bgx\.uc\.getNew\s*\(", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        private static readonly Regex _userControlTypeBindingRegex = new Regex(
-            @"\bsetProp\s*\(\s*['""]Gx Control Type['""]\s*,", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            @"\bgx\.uc\.getNew\s*\(([^()]*)\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // Any runtime property binding emitted for a User Control instance. A healthy
+        // instance always carries at least Class/Visible; a degraded one carries none.
+        private static readonly Regex _userControlPropertyBindingRegex = new Regex(
+            @"\.setProp\s*\(", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // issue #42 — builds whose RunBuild is genuinely executing right now, keyed by
         // taskId. Add on entry, remove in finally. This is the source of truth for
@@ -1702,23 +1706,95 @@ namespace GxMcp.Worker.Services
             return t.Contains(":") ? t.Substring(t.LastIndexOf(':') + 1).Trim() : t;
         }
 
+        // Split a JS argument list on top-level commas, ignoring commas inside string
+        // literals. Good enough for the generator's flat factory-call argument lists
+        // (the caller only feeds it argument lists that contain no nested parentheses).
+        internal static List<string> SplitJsArguments(string argList)
+        {
+            var args = new List<string>();
+            if (argList == null) return args;
+            var sb = new StringBuilder();
+            char quote = '\0';
+            for (int i = 0; i < argList.Length; i++)
+            {
+                char c = argList[i];
+                if (quote != '\0')
+                {
+                    sb.Append(c);
+                    if (c == '\\' && i + 1 < argList.Length) { sb.Append(argList[++i]); continue; }
+                    if (c == quote) quote = '\0';
+                    continue;
+                }
+                if (c == '\'' || c == '"') { quote = c; sb.Append(c); continue; }
+                if (c == ',') { args.Add(sb.ToString().Trim()); sb.Length = 0; continue; }
+                sb.Append(c);
+            }
+            if (sb.Length > 0 || args.Count > 0) args.Add(sb.ToString().Trim());
+            return args;
+        }
+
+        // True when the argument is the string literal "this" — the placeholder the
+        // generator emits for a User Control whose control name it failed to resolve.
+        private static bool IsThisPlaceholder(string arg)
+        {
+            if (string.IsNullOrEmpty(arg) || arg.Length < 3) return false;
+            char q = arg[0];
+            if ((q != '\'' && q != '"') || arg[arg.Length - 1] != q) return false;
+            return string.Equals(arg.Substring(1, arg.Length - 2).Trim(), "this", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// issue #103 item 4. Detects a generated .js whose User Control came out degraded —
+        /// the failure mode that renders &lt;span&gt;undefined&lt;/span&gt; at runtime and, once the
+        /// screen is saved, writes the bound attribute back empty.
+        ///
+        /// The signature of a degraded instance, measured against IDE-generated baselines, is:
+        ///   - the control-name argument of gx.uc.getNew(...) emitted as the literal string
+        ///     "this" instead of the control's name (e.g. "Qv1"), and/or
+        ///   - not a single setProp(...) binding left in the file.
+        ///
+        /// Deliberately NOT a per-instance "Gx Control Type" count: that property is emitted
+        /// only sporadically by the generator (1 of 32 User Control objects in the reference
+        /// KB carried it, IDE builds included), so requiring one per gx.uc.getNew made every
+        /// healthy build report a degradation and buried the real one in the noise.
+        /// </summary>
         internal static JObject DetectUserControlBindingDegradation(string objectName, string jsPath, string jsText)
         {
             if (string.IsNullOrEmpty(jsText)) return null;
 
-            int expectedBindings = _userControlFactoryRegex.Matches(jsText).Count;
-            if (expectedBindings == 0) return null;
+            var factoryCalls = _userControlFactoryRegex.Matches(jsText);
+            if (factoryCalls.Count == 0) return null;
 
-            int actualBindings = _userControlTypeBindingRegex.Matches(jsText).Count;
-            if (actualBindings >= expectedBindings) return null;
+            var placeholders = new JArray();
+            foreach (Match m in factoryCalls)
+            {
+                var args = SplitJsArguments(m.Groups[1].Value);
+                // parentObject, ucId, lastId, className, containerName, controlName, fieldName
+                if (args.Count < 6) continue;
+                if (!IsThisPlaceholder(args[5])) continue;
+                placeholders.Add(args[3].Trim('\'', '"'));
+            }
+
+            int propertyBindings = _userControlPropertyBindingRegex.Matches(jsText).Count;
+            bool noBindings = propertyBindings == 0;
+            if (placeholders.Count == 0 && !noBindings) return null;
+
+            string reason;
+            if (placeholders.Count > 0 && noBindings)
+                reason = "User Control JS lost every setProp binding and emitted \"this\" as the control name.";
+            else if (placeholders.Count > 0)
+                reason = "User Control JS emitted \"this\" as the control name instead of the control's name.";
+            else
+                reason = "User Control JS contains gx.uc.getNew instances but not a single setProp binding.";
 
             return new JObject
             {
                 ["object"] = objectName,
                 ["jsPath"] = jsPath,
-                ["expectedBindings"] = expectedBindings,
-                ["actualBindings"] = actualBindings,
-                ["reason"] = "User Control JS contains fewer Gx Control Type bindings than gx.uc.getNew instances."
+                ["userControlInstances"] = factoryCalls.Count,
+                ["propertyBindings"] = propertyBindings,
+                ["placeholderControlNames"] = placeholders,
+                ["reason"] = reason
             };
         }
 
@@ -2064,10 +2140,12 @@ namespace GxMcp.Worker.Services
                 lock (status._lock)
                 {
                     var names = string.Join(", ", degradedUserControls.Select(x => (string)x["object"]));
-                    status.Warnings.Add("[user-control-degraded] User Control JS generated without setProp for: " + names);
+                    status.Warnings.Add("[user-control-degraded] User Control JS generated without property bindings for: " + names);
                     status.WarningCount++;
                     if (string.IsNullOrEmpty(status.Hint))
-                        status.Hint = "User Control degradation detected: generated JS for " + names + " missing setProp bindings. Verify UserControls directory.";
+                        status.Hint = "User Control degradation detected: generated JS for " + names + " lost its setProp bindings "
+                            + "(the control renders as <span>undefined</span> and saving the screen writes the bound attribute back empty). "
+                            + "Regenerate the object from the IDE and compare the setProp list against a known-good build.";
                 }
             }
             if (upToDate.Count > 0)
