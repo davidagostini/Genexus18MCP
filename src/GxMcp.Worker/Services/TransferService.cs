@@ -1,7 +1,10 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Xml.Linq;
 using GxMcp.Worker.Helpers;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Services;
@@ -292,6 +295,11 @@ namespace GxMcp.Worker.Services
             string file, ImportOptions options)
         {
             var plan = new ImportFidelityPlan();
+            // IExportItem.Object is guarded by PrepareImport in GeneXus 18 U5.
+            // Read the source WebForm from the XPZ package before preparing the
+            // item; otherwise the SDK exposes only its normalized projection and
+            // the fidelity check becomes circular (issue #102).
+            var exportedWebForms = ReadExportWebForms(file);
             var prepared = svc.PrepareImport(file, model, options);
             var exploreOptions = new ExploreExportOptions();
             svc.ExploreExport(file, model, exploreOptions, out var exportedObjects, out _, out _);
@@ -304,16 +312,24 @@ namespace GxMcp.Worker.Services
             {
                 var item = raw as IExportItem;
                 if (item == null) continue;
+
+                // Object is intentionally accessed only after PrepareImport: U5
+                // throws when the guarded getter is used earlier.
                 item.PrepareImport(item.BaseModel ?? model, model, prepared);
                 var source = item.Object;
+                string sourceType = source?.TypeDescriptor?.Name;
                 if (source == null) continue;
                 var sourcePart = WebFormXmlHelper.GetWebFormPart(source);
                 if (sourcePart == null) continue;
 
-                string expectedXml = WebFormXmlHelper.ReadEditableXml(source);
+                string expectedXml = null;
+                if (!string.IsNullOrWhiteSpace(source.Name))
+                    exportedWebForms.TryGetValue(source.Name, out expectedXml);
+                if (string.IsNullOrWhiteSpace(expectedXml))
+                    expectedXml = WebFormXmlHelper.ReadEditableXml(source);
                 if (string.IsNullOrWhiteSpace(expectedXml)) continue;
 
-                string typeFilter = source.TypeDescriptor?.Name;
+                string typeFilter = sourceType ?? source.TypeDescriptor?.Name;
                 string partName = sourcePart.TypeDescriptor?.Name ?? "WebForm";
                 string key = (typeFilter ?? string.Empty) + "|" + source.Name + "|" + partName;
                 if (!seen.Add(key)) continue;
@@ -331,6 +347,52 @@ namespace GxMcp.Worker.Services
             }
 
             return plan;
+        }
+
+        internal static Dictionary<string, string> ReadExportWebForms(string file)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(file) || !File.Exists(file)) return result;
+
+            using (var archive = ZipFile.OpenRead(file))
+            {
+                foreach (var entry in archive.Entries.Where(e =>
+                    e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)))
+                {
+                    XDocument document;
+                    try
+                    {
+                        using (var stream = entry.Open())
+                            document = XDocument.Load(stream, LoadOptions.PreserveWhitespace);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    foreach (var obj in document.Descendants("Object"))
+                    {
+                        string name = (string)obj.Attribute("name");
+                        if (string.IsNullOrWhiteSpace(name)) continue;
+
+                        foreach (var source in obj.Descendants("Part").Elements("Source"))
+                        {
+                            string xml = source.Value;
+                            if (string.IsNullOrWhiteSpace(xml)) continue;
+                            xml = xml.TrimStart();
+                            if (xml.StartsWith("<GxMultiForm", StringComparison.OrdinalIgnoreCase)
+                                || xml.StartsWith("<BODY", StringComparison.OrdinalIgnoreCase)
+                                || xml.StartsWith("<Layout", StringComparison.OrdinalIgnoreCase))
+                            {
+                                result[name] = xml;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return result;
         }
 
         private ImportFidelityResult VerifyImportedWebForms(ImportFidelityPlan plan)
@@ -464,16 +526,20 @@ namespace GxMcp.Worker.Services
             public JObject Result { get; set; }
         }
 
-        // The SDK's Default options preserve existing Theme classes through incremental
-        // integration. FullOverwrite re-symbolizes theme/class references and was the
-        // source of the import drift reported in issue #102.
-        private static ImportOptions SilentImportOptions(JObject args)
+        // The SDK's incremental defaults can normalize visual XML while importing.
+        // FullOverwrite is the lossless baseline; the post-import verifier still
+        // repairs any SDK projection drift that survives the import call.
+        internal static ImportOptions SilentImportOptions(JObject args)
         {
             ImportOptions o = null;
-            try { o = ImportOptions.Default; } catch { }
+            // FullOverwrite is the SDK mode that preserves the complete exported
+            // WebForm payload (including GxWidth/GxHeight) when overwriting an
+            // existing object.  Default performs incremental integration and was
+            // the direct cause of the reported WebForm regression.
+            try { o = ImportOptions.FullOverwrite; } catch { }
             if (o == null)
             {
-                try { o = ImportOptions.NoBackup; } catch { }
+                try { o = ImportOptions.Default; } catch { }
             }
             if (o == null) o = new ImportOptions();
 
@@ -496,9 +562,9 @@ namespace GxMcp.Worker.Services
 
         internal static string ResolveImportThemeBehavior(JObject args)
         {
-            return string.Equals(args?["themeImportBehavior"]?.ToString(), "Overwrite", StringComparison.OrdinalIgnoreCase)
-                ? "Overwrite"
-                : "IncrementalIntegration";
+            return string.Equals(args?["themeImportBehavior"]?.ToString(), "IncrementalIntegration", StringComparison.OrdinalIgnoreCase)
+                ? "IncrementalIntegration"
+                : "Overwrite";
         }
 
         private static void SetEnumValue(object target, string propertyName, string enumValueName)

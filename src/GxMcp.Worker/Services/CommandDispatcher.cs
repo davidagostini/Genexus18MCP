@@ -748,8 +748,14 @@ namespace GxMcp.Worker.Services
                 return new JObject
                 {
                     ["environment"] = env,
-                    ["version"] = ver
+                    ["version"] = ver,
+                    ["webPath"] = _kbService.GetActiveEnvironmentWebPath()
                 }.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            if (action == "SetActiveEnvironment")
+            {
+                string environment = target ?? args?["environment"]?.ToString();
+                return _kbService.SetActiveEnvironment(environment);
             }
             // v2.6.6 Stream H (FR#25) — F5 launcher resolver. Returns the KB's
             // configured startup object (or first IsMain-tagged WebPanel/SDPanel/Procedure).

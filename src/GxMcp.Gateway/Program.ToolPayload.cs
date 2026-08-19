@@ -252,6 +252,13 @@ namespace GxMcp.Gateway
                        string.Equals(action, "move", StringComparison.OrdinalIgnoreCase);
             }
 
+            if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase))
+            {
+                // Switching the SDK's active environment changes where subsequent
+                // builds and generated-artifact reads are resolved.
+                return string.Equals(args?["action"]?.ToString(), "set_environment", StringComparison.OrdinalIgnoreCase);
+            }
+
             if (string.Equals(toolName, "genexus_asset", StringComparison.OrdinalIgnoreCase))
             {
                 return string.Equals(args?["action"]?.ToString(), "write", StringComparison.OrdinalIgnoreCase);

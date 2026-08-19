@@ -182,6 +182,8 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_test", "{}", "Test", "Run")]
         [InlineData("genexus_kb", "{action:'set_startup'}", "KB", "SetStartupObject")]
         [InlineData("genexus_kb", "{action:'get_startup'}", "KB", "GetStartupObject")]
+        [InlineData("genexus_kb", "{action:'get_environment'}", "KB", "GetActiveEnvironment")]
+        [InlineData("genexus_kb", "{action:'set_environment',environment:'development'}", "KB", "SetActiveEnvironment")]
         [InlineData("genexus_kb_explorer", "{}", "KbExplorer", "Locate")]
         [InlineData("genexus_navigation", "{}", "Navigation", "View")]
         [InlineData("genexus_build_plan", "{}", "BuildPlan", "Generate")]

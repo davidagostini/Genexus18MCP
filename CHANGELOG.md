@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- **XPZ imports now use lossless overwrite options and capture fidelity from the raw export payload before SDK import preparation**, preserving WebForm `GxWidth`/`GxHeight` and preventing circular fidelity checks. Fixes #102.
+- **Build telemetry now resolves the active Environment through the KB service and audits User Control bindings in up-to-date generated JavaScript**, so stale/incomplete `Gx Control Type` output is reported instead of appearing successful. Fixes #103 items 3 and 4.
+- **Build generation evidence is now scoped to the SDK-selected environment output root**, so a newer production artifact cannot be reported for a development build; `genexus_kb` can also read/select the active environment through the official SDK path. Fixes #103 item 3.
+
 ## v2.41.9 - 2026-08-18
 
 ### Fixed
