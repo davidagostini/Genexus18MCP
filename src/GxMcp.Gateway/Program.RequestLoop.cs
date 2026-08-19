@@ -23,6 +23,43 @@ namespace GxMcp.Gateway
 {
     partial class Program
     {
+        internal static bool UpsertKbCatalogEntry(JObject environment, string alias, string path)
+        {
+            if (environment == null) throw new ArgumentNullException(nameof(environment));
+            if (string.IsNullOrWhiteSpace(alias)) throw new ArgumentException("KB alias is required.", nameof(alias));
+            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("KB path is required.", nameof(path));
+
+            if (environment["KBs"] is JArray array)
+            {
+                bool exists = array.OfType<JObject>().Any(entry =>
+                {
+                    var aliasProperty = entry.Properties().FirstOrDefault(p =>
+                        string.Equals(p.Name, "Alias", StringComparison.OrdinalIgnoreCase));
+                    return string.Equals(aliasProperty?.Value?.ToString(), alias, StringComparison.OrdinalIgnoreCase);
+                });
+                if (exists) return false;
+
+                array.Add(new JObject { ["Alias"] = alias, ["Path"] = path });
+                return true;
+            }
+
+            if (environment["KBs"] is JObject map)
+            {
+                var existing = map.Properties().FirstOrDefault(p =>
+                    string.Equals(p.Name, alias, StringComparison.OrdinalIgnoreCase));
+                if (existing != null) return false;
+
+                map[alias] = path;
+                return true;
+            }
+
+            environment["KBs"] = new JArray
+            {
+                new JObject { ["Alias"] = alias, ["Path"] = path }
+            };
+            return true;
+        }
+
         internal static bool IsLifecycleBuildDryRun(JObject args)
         {
             return args?["dryRun"]?.ToObject<bool?>() == true;
@@ -46,7 +83,10 @@ namespace GxMcp.Gateway
             };
         }
 
-        internal static async Task<JObject?> ProcessMcpRequest(JObject request, string sessionId = "stdio")
+        internal static async Task<JObject?> ProcessMcpRequest(
+            JObject request,
+            string sessionId = "stdio",
+            bool sessionContextEnabled = true)
         {
             string? method = request["method"]?.ToString();
             var idToken = request["id"];
@@ -74,8 +114,10 @@ namespace GxMcp.Gateway
             }
             if (mcpResponse != null)
             {
-                if (string.Equals(method, "initialize", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(method, "initialize", StringComparison.OrdinalIgnoreCase)
+                    && sessionContextEnabled)
                 {
+                    InitializeSessionKbContext(sessionId);
                     TriggerWorkerWarmupOnce();
                     TriggerIndexBootstrapOnce();
                     UpdateNotifier.TriggerOnce();
@@ -141,7 +183,15 @@ namespace GxMcp.Gateway
                             // Strip `kb` from worker-bound args (worker is single-KB scoped).
                             argsObj?.Remove("kb");
                         }
-                        _currentKb.Value = _kbResolver.Resolve(kbArg, _workerPool.ListOpen(), _workerPool.ListKnown());
+                        string? sessionDefaultAlias = null;
+                        bool sessionContextInitialized = sessionContextEnabled
+                            && TryGetSessionSelectedKb(sessionId, out sessionDefaultAlias);
+                        _currentKb.Value = _kbResolver.Resolve(
+                            kbArg,
+                            _workerPool.ListOpen(),
+                            _workerPool.ListKnown(),
+                            sessionDefaultAlias,
+                            sessionContextInitialized);
                     }
                     catch (KbResolutionException ex)
                     {
@@ -592,6 +642,18 @@ namespace GxMcp.Gateway
                         switch (action)
                         {
                             case "list":
+                                var openKbs = _workerPool.ListOpen();
+                                var knownKbs = _workerPool.ListKnown();
+                                string? configuredAlias = GetConfiguredDefaultKb();
+                                string? selectedAlias = sessionContextEnabled
+                                    ? GetSessionSelectedKb(sessionId)
+                                    : null;
+                                var activeHandle = !string.IsNullOrWhiteSpace(selectedAlias)
+                                    ? openKbs.FirstOrDefault(k =>
+                                        string.Equals(k.Alias, selectedAlias, StringComparison.OrdinalIgnoreCase))
+                                    : openKbs.FirstOrDefault(k =>
+                                        string.Equals(k.Alias, configuredAlias, StringComparison.OrdinalIgnoreCase))
+                                        ?? (openKbs.Count == 1 ? openKbs[0] : null);
                                 payload = new JObject
                                 {
                                     ["openKbs"] = JArray.FromObject(_workerPool.Snapshot()
@@ -607,8 +669,17 @@ namespace GxMcp.Gateway
                                             lastActivityUtc = s.LastActivityUtc,
                                             idleSeconds = (int)Math.Max(0, (DateTime.UtcNow - s.LastActivityUtc).TotalSeconds)
                                         })),
+                                    ["knownKbs"] = JArray.FromObject(knownKbs
+                                        .Select(k => new
+                                        {
+                                            alias = k.Alias,
+                                            path = k.Path,
+                                            open = _workerPool.TryGetWorker(k.NormalizedAlias) != null
+                                        })),
+                                    ["activeKb"] = selectedAlias ?? activeHandle?.Alias ?? configuredAlias,
+                                    ["selectedKb"] = selectedAlias,
                                     ["maxOpenKbs"] = _activeConfig?.Server?.MaxOpenKbs ?? 3,
-                                    ["defaultKb"] = _activeConfig?.Environment?.DefaultKb,
+                                    ["defaultKb"] = configuredAlias,
                                     ["declaredKbs"] = JArray.FromObject(
                                         (_activeConfig?.Environment?.KBs ?? new List<KbEntry>())
                                             .Select(k => new { alias = k.Alias, path = k.Path }))
@@ -661,26 +732,26 @@ namespace GxMcp.Gateway
                                 {
                                     // Persist the ad-hoc KB as a declared entry so it's resolvable
                                     // after a restart, mirroring the in-memory _known registry.
-                                    if (envObj["KBs"] is not JArray kbsArr)
+                                    promoted = UpsertKbCatalogEntry(envObj, resolvedAlias, resolvedPath);
+                                    if (promoted)
                                     {
-                                        kbsArr = new JArray();
-                                        envObj["KBs"] = kbsArr;
-                                    }
-                                    bool alreadyThere = kbsArr.OfType<JObject>().Any(o =>
-                                        string.Equals(o["Alias"]?.ToString(), resolvedAlias, StringComparison.OrdinalIgnoreCase));
-                                    if (!alreadyThere)
-                                    {
-                                        kbsArr.Add(new JObject { ["Alias"] = resolvedAlias, ["Path"] = resolvedPath });
                                         _activeConfig.Environment!.KBs.Add(new KbEntry { Alias = resolvedAlias, Path = resolvedPath });
-                                        promoted = true;
                                     }
                                 }
                                 envObj["DefaultKb"] = resolvedAlias;
+                                // The Node CLI uses ActiveKb while the gateway uses
+                                // DefaultKb. Keep both markers aligned so switching from
+                                // OpenCode or MCP cannot leave the two clients disagreeing.
+                                envObj["ActiveKb"] = resolvedAlias;
                                 System.IO.File.WriteAllText(configPath, root.ToString(Formatting.Indented));
                                 _activeConfig.Environment!.DefaultKb = resolvedAlias;
+                                _activeConfig.Environment!.ActiveKb = resolvedAlias;
+                                if (sessionContextEnabled)
+                                    SetSessionSelectedKb(sessionId, resolvedAlias);
                                 payload = new JObject
                                 {
                                     ["defaultKb"] = resolvedAlias,
+                                    ["selectedKb"] = resolvedAlias,
                                     ["persistedTo"] = configPath,
                                     ["promotedToDeclared"] = promoted
                                 };
@@ -732,22 +803,28 @@ namespace GxMcp.Gateway
                                 }
 
                                 var w = await _workerPool.AcquireAsync(handleToOpen, CancellationToken.None);
-                                // issue #26 P4: opening a KB makes it the active one for this
-                                // session so whoami/doctor and no-`kb`-arg calls reflect it,
-                                // instead of continuing to report the empty scaffold. This is
-                                // in-memory only; `set_default` persists to config.json.
-                                if (_activeConfig?.Environment != null)
-                                {
-                                    _activeConfig.Environment.DefaultKb = handleToOpen.Alias;
-                                }
-                                _currentKb.Value = handleToOpen;
+                                // Opening a worker must not mutate the persisted default or
+                                // another MCP session's selection. Use set_default to select
+                                // this KB for the current session, or pass kb explicitly.
+                                string? selectedAfterOpen = sessionContextEnabled
+                                    ? GetSessionSelectedKb(sessionId)
+                                    : null;
+                                bool selected = string.Equals(
+                                    selectedAfterOpen,
+                                    handleToOpen.Alias,
+                                    StringComparison.OrdinalIgnoreCase);
                                 payload = new JObject
                                 {
                                     ["opened"] = handleToOpen.Alias,
                                     ["path"] = handleToOpen.Path,
                                     ["workerPid"] = w?.Pid,
-                                    ["active"] = true
+                                    ["selected"] = selected,
+                                    ["active"] = selected
                                 };
+                                if (!selected)
+                                {
+                                    payload["hint"] = $"KB '{handleToOpen.Alias}' is open but not selected for this MCP session. Use genexus_kb action=set_default alias={handleToOpen.Alias} or pass kb explicitly.";
+                                }
                                 break;
                             }
                             case "close":
@@ -761,7 +838,20 @@ namespace GxMcp.Gateway
                                 // The alias may be reopened against a different KB later;
                                 // never let cached name/type resolutions cross that boundary.
                                 InvalidateFullNameTypeMap(alias!);
-                                payload = new JObject { ["closed"] = closed, ["alias"] = alias };
+                                bool selectionCleared = sessionContextEnabled
+                                    && closed
+                                    && string.Equals(GetSessionSelectedKb(sessionId), alias, StringComparison.OrdinalIgnoreCase);
+                                if (selectionCleared)
+                                    ClearSessionSelectedKb(sessionId);
+                                payload = new JObject
+                                {
+                                    ["closed"] = closed,
+                                    ["alias"] = alias,
+                                    ["selectionCleared"] = selectionCleared,
+                                    ["selectedKb"] = sessionContextEnabled
+                                        ? GetSessionSelectedKb(sessionId)
+                                        : null
+                                };
                                 break;
                             }
                             default:
@@ -1416,7 +1506,9 @@ namespace GxMcp.Gateway
                     if (string.Equals(tName, "genexus_whoami", StringComparison.OrdinalIgnoreCase))
                     {
                         bool whoamiVerbose = tArgs?["verbose"]?.ToObject<bool>() ?? false;
-                        JObject whoami = await BuildWhoamiPayloadAsync(whoamiVerbose);
+                        JObject whoami = await BuildWhoamiPayloadAsync(
+                            whoamiVerbose,
+                            sessionContextEnabled ? sessionId : null);
                         return BuildToolResultContent(whoami, false, tName, tArgs);
                     }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -633,9 +634,12 @@ namespace GxMcp.Gateway
         // v2.3.8 Task 1.2: async variant that performs a live fetch against the worker
         // before assembling whoami. The sync BuildWhoamiPayload() is kept for tests and
         // any caller that doesn't want to block on a worker round-trip.
-        internal static Task<JObject> BuildWhoamiPayloadAsync() => BuildWhoamiPayloadAsync(false);
+        internal static Task<JObject> BuildWhoamiPayloadAsync() => BuildWhoamiPayloadAsync(false, null);
 
-        internal static async Task<JObject> BuildWhoamiPayloadAsync(bool verbose)
+        internal static Task<JObject> BuildWhoamiPayloadAsync(bool verbose)
+            => BuildWhoamiPayloadAsync(verbose, null);
+
+        internal static async Task<JObject> BuildWhoamiPayloadAsync(bool verbose, string? sessionId)
         {
             // Skip the worker round-trip when our cached snapshot is recent enough.
             // whoami is the most-called first-turn tool — a stale-by-a-few-seconds
@@ -691,7 +695,7 @@ namespace GxMcp.Gateway
                     }
                 }
             }
-            var payload = BuildWhoamiPayload(verbose);
+            var payload = BuildWhoamiPayload(verbose, sessionId);
             if (!workerHealthy)
             {
                 // v2.6.8 (review C7): workerHealth is purely additive — emit it
@@ -831,7 +835,7 @@ namespace GxMcp.Gateway
         private static DateTime _crashSummaryAtUtc = DateTime.MinValue;
         private static readonly TimeSpan CrashSummaryCacheTtl = TimeSpan.FromSeconds(10);
 
-        internal static JObject BuildWhoamiPayload() => BuildWhoamiPayload(false);
+        internal static JObject BuildWhoamiPayload() => BuildWhoamiPayload(false, null);
 
         // issue #25 #5: whoami defaulted to dumping ~3k tokens of STATIC content
         // (playbooks + skills catalog) plus a session-growing stats/heatmap block
@@ -841,6 +845,9 @@ namespace GxMcp.Gateway
         // and drop the static reference blocks. verbose=true restores the full payload.
         // For a pure connection/index health probe, genexus_doctor is even leaner.
         internal static JObject BuildWhoamiPayload(bool verbose)
+            => BuildWhoamiPayload(verbose, null);
+
+        internal static JObject BuildWhoamiPayload(bool verbose, string? sessionId)
         {
             var cfg = _activeConfig;
             string? gxPath = cfg?.GeneXus?.InstallationPath;
@@ -848,32 +855,52 @@ namespace GxMcp.Gateway
             // issue #26 P4/P1: report the KB the session is ACTUALLY working against,
             // not the raw Environment.KBPath scaffold (which `kb open` never updated, so
             // whoami used to keep showing the empty "YourKB" while real work went to a
-            // different, explicitly-opened KB). Priority: currently-open worker matching
-            // DefaultKb → any open worker → a KB opened this session (known) → the
-            // declared DefaultKb entry → legacy Environment.KBPath.
+            // different, explicitly-opened KB). A default is authoritative when several
+            // workers are live; with no selection, only a single worker is reported as
+            // active so whoami never invents a target in a multi-KB session.
             string? activeAlias = null;
             string? kbPath = null;
+            IReadOnlyList<KbHandle> openKbs = Array.Empty<KbHandle>();
+            IReadOnlyList<KbHandle> knownKbs = Array.Empty<KbHandle>();
+            string? configuredDefault = GetConfiguredDefaultKb();
+            string? sessionSelected = !string.IsNullOrWhiteSpace(sessionId)
+                ? GetSessionSelectedKb(sessionId!)
+                : null;
             try
             {
                 var pool = _workerPool;
-                var open = pool?.ListOpen() ?? new List<KbHandle>();
-                var known = pool?.ListKnown() ?? new List<KbHandle>();
-                string? defAlias = cfg?.Environment?.DefaultKb;
-                KbHandle? pick =
-                    (defAlias != null ? open.FirstOrDefault(h => string.Equals(h.Alias, defAlias, StringComparison.OrdinalIgnoreCase)) : null)
-                    ?? open.FirstOrDefault()
-                    ?? (defAlias != null ? known.FirstOrDefault(h => string.Equals(h.Alias, defAlias, StringComparison.OrdinalIgnoreCase)) : null)
-                    ?? known.FirstOrDefault();
+                openKbs = pool?.ListOpen() ?? Array.Empty<KbHandle>();
+                knownKbs = pool?.ListKnown() ?? Array.Empty<KbHandle>();
+                KbHandle? pick = sessionSelected != null
+                    ? openKbs.FirstOrDefault(h => string.Equals(h.Alias, sessionSelected, StringComparison.OrdinalIgnoreCase))
+                        ?? knownKbs.FirstOrDefault(h => string.Equals(h.Alias, sessionSelected, StringComparison.OrdinalIgnoreCase))
+                    : (configuredDefault != null
+                        ? openKbs.FirstOrDefault(h => string.Equals(h.Alias, configuredDefault, StringComparison.OrdinalIgnoreCase))
+                        : null)
+                        ?? (openKbs.Count == 1 ? openKbs[0] : null)
+                        ?? (configuredDefault != null
+                            ? knownKbs.FirstOrDefault(h => string.Equals(h.Alias, configuredDefault, StringComparison.OrdinalIgnoreCase))
+                            : null)
+                        ?? (knownKbs.Count == 1 ? knownKbs[0] : null);
                 if (pick != null) { activeAlias = pick.Alias; kbPath = pick.Path; }
-                else if (!string.IsNullOrWhiteSpace(defAlias))
+                else if (!string.IsNullOrWhiteSpace(sessionSelected))
+                {
+                    var sessionDecl = cfg?.Environment?.KBs?.FirstOrDefault(
+                        k => string.Equals(k.Alias, sessionSelected, StringComparison.OrdinalIgnoreCase));
+                    if (sessionDecl != null) { activeAlias = sessionDecl.Alias; kbPath = sessionDecl.Path; }
+                }
+                else if (!string.IsNullOrWhiteSpace(configuredDefault))
                 {
                     var decl = cfg?.Environment?.KBs?.FirstOrDefault(
-                        k => string.Equals(k.Alias, defAlias, StringComparison.OrdinalIgnoreCase));
+                        k => string.Equals(k.Alias, configuredDefault, StringComparison.OrdinalIgnoreCase));
                     if (decl != null) { activeAlias = decl.Alias; kbPath = decl.Path; }
                 }
             }
             catch { }
-            if (string.IsNullOrEmpty(kbPath)) kbPath = cfg?.Environment?.KBPath;
+            // Do not report the legacy KBPath scaffold as the selected target when
+            // this session points at an alias that is currently unavailable.
+            if (string.IsNullOrEmpty(kbPath) && string.IsNullOrWhiteSpace(sessionSelected))
+                kbPath = cfg?.Environment?.KBPath;
             string? kbName = !string.IsNullOrEmpty(kbPath) ? Path.GetFileName(kbPath!.TrimEnd('\\', '/')) : null;
             bool kbExists = !string.IsNullOrEmpty(kbPath) && Directory.Exists(kbPath);
             bool kbValid = kbExists && IsKbPathValid(kbPath!);
@@ -892,7 +919,20 @@ namespace GxMcp.Gateway
                     // opened yet), and how many workers are live — so the agent can tell
                     // an opened KB apart from the config scaffold.
                     ["active"] = activeAlias,
-                    ["openCount"] = _workerPool?.ListOpen().Count ?? 0
+                    ["selected"] = sessionSelected,
+                    ["default"] = configuredDefault,
+                    ["openCount"] = openKbs.Count,
+                    // Keep whoami lean: aliases are enough to choose a target. Detailed
+                    // process/path telemetry remains in genexus_kb action=list.
+                    ["openKbs"] = JArray.FromObject(openKbs
+                        .Select(k => k.Alias)
+                        .OrderBy(alias => alias, StringComparer.OrdinalIgnoreCase)),
+                    ["knownKbs"] = JArray.FromObject(knownKbs
+                        .Select(k => k.Alias)
+                        .OrderBy(alias => alias, StringComparer.OrdinalIgnoreCase)),
+                    ["declaredKbs"] = JArray.FromObject((cfg?.Environment?.KBs ?? new List<KbEntry>())
+                        .Select(k => k.Alias)
+                        .OrderBy(alias => alias, StringComparer.OrdinalIgnoreCase))
                 },
                 ["geneXus"] = new JObject
                 {

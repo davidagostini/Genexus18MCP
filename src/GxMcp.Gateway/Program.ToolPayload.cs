@@ -431,6 +431,16 @@ namespace GxMcp.Gateway
                     ["text"] = axiPayload.ToString(Formatting.None)
                 } }
             };
+            // Legacy stdio clients (including OpenCode's text-oriented MCP path)
+            // need the resolved KB in-band to correlate a response. Modern clients
+            // can use the protocol metadata without reparsing the text.
+            string? kbAlias = _currentKb.Value?.Alias;
+            if (!string.IsNullOrWhiteSpace(kbAlias))
+            {
+                axiPayload = AddKbContextMetadata(axiPayload, kbAlias!);
+                ((JObject)((JArray)result["content"]!)[0]!) ["text"] = axiPayload.ToString(Formatting.None);
+                result["_meta"] = new JObject { ["kbAlias"] = kbAlias };
+            }
             // MCP's structuredContent lets modern clients consume the JSON result
             // without reparsing the text content. Keep the text representation for
             // legacy clients and omit structuredContent on tool errors.
@@ -439,6 +449,34 @@ namespace GxMcp.Gateway
                 result["structuredContent"] = axiPayload;
             }
             return result;
+        }
+
+        internal static JToken AddKbContextMetadata(JToken payload, string kbAlias)
+        {
+            if (payload == null) throw new ArgumentNullException(nameof(payload));
+            if (string.IsNullOrWhiteSpace(kbAlias)) throw new ArgumentException("KB alias is required.", nameof(kbAlias));
+
+            if (payload is JObject obj)
+            {
+                var clone = (JObject)obj.DeepClone();
+                clone["kbAlias"] = kbAlias.Trim();
+                return clone;
+            }
+
+            if (payload is JArray array)
+            {
+                return new JObject
+                {
+                    ["results"] = array.DeepClone(),
+                    ["kbAlias"] = kbAlias.Trim()
+                };
+            }
+
+            return new JObject
+            {
+                ["value"] = payload.DeepClone(),
+                ["kbAlias"] = kbAlias.Trim()
+            };
         }
 
         private static JToken NormalizeToolPayloadForAxi(JToken? payload, string toolName, JObject? toolArgs, bool isError)

@@ -285,6 +285,61 @@ test('kb list shows the KB auto-registered by init', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
+test('kb list reads gateway-style KB arrays and DefaultKb', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-test-'));
+    const kbA = path.join(tempRoot, 'kb-array-a');
+    const kbB = path.join(tempRoot, 'kb-array-b');
+    fs.mkdirSync(kbA, { recursive: true });
+    fs.mkdirSync(kbB, { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'config.json'), JSON.stringify({
+        Environment: {
+            DefaultKb: 'legacy',
+            KBs: [
+                { Alias: 'main', Path: kbA },
+                { alias: 'legacy', path: kbB }
+            ]
+        }
+    }));
+
+    const res = runCli(['kb', 'list', '--format', 'json'], { cwd: tempRoot });
+    assert.equal(res.status, 0);
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(parsed.ok.activeKb, 'legacy');
+    assert.deepEqual(parsed.ok.kbs.map((entry) => entry.name), ['main', 'legacy']);
+    assert.equal(parsed.ok.kbs[1].active, true);
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('kb switch preserves gateway-style array entries', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-test-'));
+    const kbA = path.join(tempRoot, 'kb-switch-a');
+    const kbB = path.join(tempRoot, 'kb-switch-b');
+    fs.mkdirSync(kbA, { recursive: true });
+    fs.mkdirSync(kbB, { recursive: true });
+    const configPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+        Environment: {
+            DefaultKb: 'main',
+            KBs: [
+                { Alias: 'main', Path: kbA },
+                { Alias: 'legacy', Path: kbB }
+            ]
+        }
+    }));
+
+    const res = runCli(['kb', 'switch', '--name', 'legacy', '--format', 'json'], { cwd: tempRoot });
+    assert.equal(res.status, 0);
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    assert.deepEqual(Object.keys(cfg.Environment.KBs).sort(), ['legacy', 'main']);
+    assert.equal(cfg.Environment.KBs.main, kbA);
+    assert.equal(cfg.Environment.KBs.legacy, kbB);
+    assert.equal(cfg.Environment.ActiveKb, 'legacy');
+    assert.equal(cfg.Environment.DefaultKb, 'legacy');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
 test('kb add and switch update active KB', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-test-'));
     const kbA = path.join(tempRoot, 'kb-a');
@@ -380,6 +435,7 @@ test('kb remove of last KB clears legacy KBPath', () => {
     const cfg = JSON.parse(fs.readFileSync(path.join(kbDir, 'config.json'), 'utf8'));
     assert.equal(cfg.Environment.KBPath, undefined, 'KBPath should be cleared after removing last KB');
     assert.equal(cfg.Environment.ActiveKb, undefined, 'ActiveKb should be cleared');
+    assert.equal(cfg.Environment.DefaultKb, undefined, 'DefaultKb should be cleared');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
@@ -734,6 +790,103 @@ test('clients add tolerates a JSONC (commented) VS Code mcp.json', () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
+test('clients add preserves OpenCode 1.x direct mcp shape', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-v1-'));
+    const env = sandboxHomeEnv(tempRoot);
+    const cfgPath = path.join(tempRoot, 'config.json');
+    const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+    fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+    fs.writeFileSync(openCodeCfg, JSON.stringify({
+        mcp: { other: { type: 'local', command: ['other-tool'] } }
+    }, null, 2));
+
+    const res = runCli(['clients', 'add', '--clients', 'opencode', '--format', 'json'], {
+        env: { ...env, GX_CONFIG_PATH: cfgPath }
+    });
+    assert.equal(res.status, 0);
+    const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+    assert.ok(written.mcp.genexus, 'direct OpenCode entry should be written');
+    assert.equal(written.mcp.genexus.enabled, true);
+    assert.equal(written.mcp.genexus.disabled, undefined);
+    assert.ok(written.mcp.other, 'unrelated direct MCP server should be preserved');
+    assert.equal(written.mcp.servers, undefined);
+    assert.deepEqual(written.mcp.genexus.environment, { GX_CONFIG_PATH: cfgPath });
+
+    const listed = runCli(['clients', '--format', 'json'], { env });
+    assert.equal(listed.status, 0);
+    const row = JSON.parse(listed.stdout).ok.clients.find((client) => client.id === 'opencode');
+    assert.ok(row && row.registered, 'clients list should read the direct OpenCode entry');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('clients add preserves OpenCode v2 nested mcp.servers shape', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-v2-'));
+    const env = sandboxHomeEnv(tempRoot);
+    const cfgPath = path.join(tempRoot, 'config.json');
+    const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+    fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+    fs.writeFileSync(openCodeCfg, JSON.stringify({
+        mcp: { servers: { other: { type: 'local', command: ['other-tool'] } } }
+    }, null, 2));
+
+    const res = runCli(['clients', 'add', '--clients', 'opencode', '--format', 'json'], {
+        env: { ...env, GX_CONFIG_PATH: cfgPath }
+    });
+    assert.equal(res.status, 0);
+    const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+    assert.ok(written.mcp.servers.genexus, 'nested OpenCode entry should be written');
+    assert.equal(written.mcp.servers.genexus.disabled, false);
+    assert.equal(written.mcp.servers.genexus.enabled, undefined);
+    assert.ok(written.mcp.servers.other, 'unrelated nested MCP server should be preserved');
+    assert.equal(written.mcp.genexus, undefined);
+    assert.deepEqual(written.mcp.servers.genexus.environment, { GX_CONFIG_PATH: cfgPath });
+
+    const listed = runCli(['clients', '--format', 'json'], { env });
+    assert.equal(listed.status, 0);
+    const row = JSON.parse(listed.stdout).ok.clients.find((client) => client.id === 'opencode');
+    assert.ok(row && row.registered, 'clients list should read the nested OpenCode entry');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('init auto-registers detected OpenCode in either config layout', () => {
+    for (const [label, mcp] of [
+        ['direct', { other: { type: 'local', command: ['other-tool'] } }],
+        ['nested', { servers: { other: { type: 'local', command: ['other-tool'] } } }]
+    ]) {
+        const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `genexus-mcp-opencode-init-${label}-`));
+        try {
+            const env = sandboxHomeEnv(tempRoot);
+            const kbDir = path.join(tempRoot, 'kb');
+            const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+            fs.mkdirSync(kbDir, { recursive: true });
+            fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+            fs.writeFileSync(openCodeCfg, JSON.stringify({ mcp }, null, 2));
+
+            const result = runCli(
+                ['init', '--kb', kbDir, '--gx', testGxPath, '--no-smoke', '--format', 'json'],
+                { cwd: kbDir, env: { ...env, ...testGatewayEnv } }
+            );
+            assert.equal(result.status, 0, `${label} OpenCode init should succeed: ${result.stderr}`);
+
+            const parsed = JSON.parse(result.stdout);
+            assert.ok(parsed.ok.clientsPatchedCount >= 1, `${label} OpenCode should be auto-registered`);
+            assert.ok(parsed.meta.patchedClients.includes('OpenCode (CLI)'));
+
+            const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+            const entry = label === 'nested' ? written.mcp.servers.genexus : written.mcp.genexus;
+            assert.ok(entry, `${label} OpenCode entry should be present after init`);
+            assert.deepEqual(entry.environment, { GX_CONFIG_PATH: path.join(kbDir, 'config.json') });
+            assert.ok(label === 'nested' ? written.mcp.servers.other : written.mcp.other);
+        } finally {
+            fs.rmSync(tempRoot, { recursive: true, force: true });
+        }
+    }
+});
+
 test('clients add replaces a legacy genexus18 entry instead of duplicating it', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-legacy-'));
     const env = sandboxHomeEnv(tempRoot);
@@ -821,6 +974,35 @@ test('clients remove drops the genexus entry (sandbox home)', () => {
     const written = JSON.parse(fs.readFileSync(cursorCfg, 'utf8'));
     assert.equal(written.mcpServers.genexus, undefined, 'genexus removed');
     assert.equal(written.mcpServers.genexus18, undefined, 'legacy genexus18 also removed');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('clients remove drops both OpenCode config shapes and legacy key', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-rm-'));
+    const env = sandboxHomeEnv(tempRoot);
+    const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+    fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+    fs.writeFileSync(openCodeCfg, JSON.stringify({
+        mcp: {
+            genexus: { type: 'local', command: ['old'] },
+            genexus18: { type: 'local', command: ['older'] },
+            servers: {
+                genexus: { type: 'local', command: ['nested'] },
+                genexus18: { type: 'local', command: ['nested-old'] },
+                other: { type: 'local', command: ['other'] }
+            }
+        }
+    }, null, 2));
+
+    const res = runCli(['clients', 'remove', '--clients', 'opencode', '--format', 'json'], { env });
+    assert.equal(res.status, 0);
+    const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+    assert.equal(written.mcp.genexus, undefined);
+    assert.equal(written.mcp.genexus18, undefined);
+    assert.equal(written.mcp.servers.genexus, undefined);
+    assert.equal(written.mcp.servers.genexus18, undefined);
+    assert.ok(written.mcp.servers.other, 'unrelated nested MCP server should be preserved');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });

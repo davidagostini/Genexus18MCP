@@ -23,8 +23,15 @@ Knowledge Base on disk
 
 - **Gateway** (`src/GxMcp.Gateway/`, **net8.0-windows**) — speaks MCP stdio with the client, owns a `WorkerPool` indexed by KB alias, routes tool calls through `Routers/*.cs` to a per-KB worker. `Program.cs` is the MCP loop + `whoami` builder + worker lifecycle.
 - **Worker** (`src/GxMcp.Worker/`, **net48 STA**) — owns the GeneXus SDK in-process. STA thread is mandatory because the SDK is COM-flavoured. `Services/CommandDispatcher.cs` is the RPC switchboard; `KbService` opens KBs; `IndexCacheService` maintains an on-disk `SearchIndex` cache; `Services/{ListService,SearchService,AnalyzeService,WriteService,…}` implement the tools.
-- **CLI** (`cli/run.js`) — what `npx genexus-mcp` invokes. Reads MCP client configs (Claude Desktop, Codex, Cursor, VS Code), writes the server entry pointing at `publish/start_mcp.bat`, then forwards stdio to the gateway. Tests are pure Node (`cli/run.test.js`).
+- **CLI** (`cli/run.js`) — what `npx genexus-mcp` invokes. Reads MCP client configs (Claude Desktop, Codex, Cursor, VS Code, OpenCode, and other supported harnesses), writes the server entry pointing at `publish/start_mcp.bat`, then forwards stdio to the gateway. Tests are pure Node (`cli/run.test.js`).
 - **publish/** — the deployable artifact. Both `install.ps1` (build-from-source) and `npm publish` (via `publish.zip`) ship from this directory. `GxMcp.Gateway.exe` at the root, `worker/GxMcp.Worker.exe` one level down. This layout is asserted by the npm-publish workflow.
+
+### Multi-KB and harness integration
+
+- Implicit KB resolution is ordered: explicit `kb` argument → MCP-session selection → persisted `Environment.DefaultKb`/`ActiveKb` → single-open-KB fallback. `genexus_kb action=open` only starts/registers a Worker; `genexus_kb action=set_default` selects the current session and persists the startup fallback.
+- `genexus_whoami` and `genexus_kb action=list` must expose enough alias state to disambiguate `selected`, `active`, `default`, `open`, `known`, and `declared` KBs. KB-bound tool results carry `kbAlias` in-band and in MCP `_meta`.
+- `genexus-mcp init` auto-configures detected supported clients. OpenCode registration must preserve both the legacy direct `mcp.<name>` layout and the current nested `mcp.servers.<name>` layout, preserving unrelated servers. When changing client registration, update `cli/run.test.js` for both layouts and the init path.
+- The modern sessionless HTTP transport must not reuse a shared server-side KB selection between independent clients; it uses an explicit `kb` or the persisted fallback.
 
 ### Tool surface lives in two synchronized places
 

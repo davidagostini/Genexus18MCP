@@ -1799,7 +1799,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Manage open KBs and startup config. list/open/close/set_default operate on WorkerPool; set_startup/get_startup mirror IDE 'Set As Startup Object'.",
+      "description": "Manage open KBs and startup config. list/open/close/set_default operate on WorkerPool; set_default selects the implicit target for calls that omit kb (an explicit kb always wins for parallel or cross-KB work); set_startup/get_startup mirror IDE 'Set As Startup Object'.",
       "inputSchema": {
         "examples": [
           {

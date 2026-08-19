@@ -413,6 +413,7 @@ function createConfigFile(kbPath, gxPath) {
     if (existing && existing.Environment) {
         if (existing.Environment.KBs) preservedEnv.KBs = existing.Environment.KBs;
         if (existing.Environment.ActiveKb) preservedEnv.ActiveKb = existing.Environment.ActiveKb;
+        if (existing.Environment.DefaultKb) preservedEnv.DefaultKb = existing.Environment.DefaultKb;
     }
     const nextConfig = {
         ...baseConfig,
@@ -868,7 +869,23 @@ function removeVsCodeServersJson(filePath) {
     return true;
 }
 
-// OpenCode (sst/opencode) uses `mcp.<name>` with `type: 'local'` and `command: string[]`.
+// OpenCode 1.x uses `mcp.<name>`, while the current v2 config nests servers under
+// `mcp.servers.<name>`. Keep the shape already present in the user's config so an
+// upgrade does not silently move or disable their other MCP servers.
+function getOpenCodeMcpContainer(cfgObj) {
+    if (!cfgObj.mcp || typeof cfgObj.mcp !== 'object' || Array.isArray(cfgObj.mcp)) {
+        cfgObj.mcp = {};
+    }
+    const nested = cfgObj.mcp.servers
+        && typeof cfgObj.mcp.servers === 'object'
+        && !Array.isArray(cfgObj.mcp.servers);
+    return {
+        mcp: cfgObj.mcp,
+        servers: nested ? cfgObj.mcp.servers : cfgObj.mcp,
+        nested: Boolean(nested)
+    };
+}
+
 function applyOpenCodeJson(filePath, launcher, targetConfigPath) {
     const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
     if (parsed === null) throw new Error('Invalid JSON');
@@ -876,14 +893,20 @@ function applyOpenCodeJson(filePath, launcher, targetConfigPath) {
     // OpenCode configs carry a top-level $schema for editor validation; set it when
     // absent (new file or a config that never had one) without clobbering a custom one.
     if (!cfgObj.$schema) cfgObj.$schema = 'https://opencode.ai/config.json';
-    cfgObj.mcp = cfgObj.mcp || {};
-    cfgObj.mcp.genexus = {
+    const { mcp, servers, nested } = getOpenCodeMcpContainer(cfgObj);
+    servers.genexus = {
         type: 'local',
         command: [launcher.command, ...(launcher.args || [])],
         environment: { GX_CONFIG_PATH: targetConfigPath },
-        enabled: true
+        ...(nested ? { disabled: false } : { enabled: true })
     };
-    if (cfgObj.mcp.genexus18) delete cfgObj.mcp.genexus18;
+    if (servers.genexus18) delete servers.genexus18;
+    // If a config was migrated manually and contains both shapes, leave unrelated
+    // servers alone but remove our duplicate legacy entry.
+    if (nested) {
+        if (mcp.genexus) delete mcp.genexus;
+        if (mcp.genexus18) delete mcp.genexus18;
+    }
     writeClientJson(filePath, cfgObj);
 }
 
@@ -891,8 +914,23 @@ function removeOpenCodeJson(filePath) {
     const parsed = readJsonFileSafe(filePath);
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
-    if (!cfgObj.mcp || !cfgObj.mcp.genexus) return false;
-    delete cfgObj.mcp.genexus;
+    if (!cfgObj.mcp || typeof cfgObj.mcp !== 'object') return false;
+    let removedAny = false;
+    for (const key of ['genexus', 'genexus18']) {
+        if (cfgObj.mcp[key]) {
+            delete cfgObj.mcp[key];
+            removedAny = true;
+        }
+    }
+    if (cfgObj.mcp.servers && typeof cfgObj.mcp.servers === 'object' && !Array.isArray(cfgObj.mcp.servers)) {
+        for (const key of ['genexus', 'genexus18']) {
+            if (cfgObj.mcp.servers[key]) {
+                delete cfgObj.mcp.servers[key];
+                removedAny = true;
+            }
+        }
+    }
+    if (!removedAny) return false;
     writeClientJson(filePath, cfgObj);
     return true;
 }
@@ -993,7 +1031,7 @@ function readClientCommandEntry(client) {
         if (client.format === 'opencode') {
             const parsed = readJsonFileSafe(client.path);
             if (!parsed || typeof parsed !== 'object') return null;
-            const entry = parsed.mcp && parsed.mcp.genexus;
+            const entry = parsed.mcp?.servers?.genexus || parsed.mcp?.genexus;
             if (!entry || !Array.isArray(entry.command) || entry.command.length === 0) return null;
             return { command: entry.command[0], args: entry.command.slice(1) };
         }
@@ -1044,14 +1082,34 @@ function readGeneXusVersionFromInstall(gxPath) {
     return null;
 }
 
+function normalizeKbCatalog(raw) {
+    if (Array.isArray(raw)) {
+        const normalized = {};
+        for (const entry of raw) {
+            if (!entry || typeof entry !== 'object') continue;
+            const name = typeof entry.alias === 'string' ? entry.alias : entry.Alias;
+            const kbPath = typeof entry.path === 'string' ? entry.path : entry.Path;
+            if (typeof name === 'string' && name && typeof kbPath === 'string' && kbPath) {
+                normalized[name] = kbPath;
+            }
+        }
+        return normalized;
+    }
+
+    return raw && typeof raw === 'object' ? raw : {};
+}
+
 function readKbCatalog(configPath) {
     if (!configPath) return { kbs: {}, activeKb: null, kbPath: null };
     const cfg = readJsonFileSafe(configPath);
     if (!cfg) return { kbs: {}, activeKb: null, kbPath: null };
     const env = cfg.Environment || {};
+    const activeKb = typeof env.ActiveKb === 'string' && env.ActiveKb
+        ? env.ActiveKb
+        : (typeof env.DefaultKb === 'string' && env.DefaultKb ? env.DefaultKb : null);
     return {
-        kbs: (env.KBs && typeof env.KBs === 'object') ? env.KBs : {},
-        activeKb: typeof env.ActiveKb === 'string' ? env.ActiveKb : null,
+        kbs: normalizeKbCatalog(env.KBs),
+        activeKb,
         kbPath: typeof env.KBPath === 'string' ? env.KBPath : null
     };
 }
@@ -1060,8 +1118,13 @@ function writeKbCatalog(configPath, { kbs, activeKb, kbPath }) {
     const cfg = readJsonFileSafe(configPath) || {};
     cfg.Environment = cfg.Environment || {};
     cfg.Environment.KBs = kbs;
-    if (activeKb) cfg.Environment.ActiveKb = activeKb;
-    else delete cfg.Environment.ActiveKb;
+    if (activeKb) {
+        cfg.Environment.ActiveKb = activeKb;
+        cfg.Environment.DefaultKb = activeKb;
+    } else {
+        delete cfg.Environment.ActiveKb;
+        delete cfg.Environment.DefaultKb;
+    }
     if (kbPath) cfg.Environment.KBPath = kbPath;
     else delete cfg.Environment.KBPath;
     writeFileAtomic(configPath, JSON.stringify(cfg, null, 2));

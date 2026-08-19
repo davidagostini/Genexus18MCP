@@ -85,6 +85,39 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("18", payload["geneXus"]?["supportedMajor"]?.ToString());
         }
 
+        [Fact]
+        public void Whoami_ExposesMultiKbSelectionContext()
+        {
+            var payload = Program.BuildWhoamiPayload();
+            var kb = Assert.IsType<Newtonsoft.Json.Linq.JObject>(payload["kb"]);
+
+            Assert.NotNull(kb["active"]);
+            Assert.NotNull(kb["openKbs"]);
+            Assert.NotNull(kb["knownKbs"]);
+            Assert.NotNull(kb["declaredKbs"]);
+            Assert.Equal(Newtonsoft.Json.Linq.JTokenType.Array, kb["openKbs"]!.Type);
+            Assert.Equal(Newtonsoft.Json.Linq.JTokenType.Array, kb["knownKbs"]!.Type);
+            Assert.Equal(Newtonsoft.Json.Linq.JTokenType.Array, kb["declaredKbs"]!.Type);
+        }
+
+        [Fact]
+        public void Whoami_Exposes_the_session_selected_alias_separately()
+        {
+            const string sessionId = "whoami-session-test";
+            Program.SetSessionSelectedKb(sessionId, "orders");
+            try
+            {
+                var payload = Program.BuildWhoamiPayload(false, sessionId);
+                var kb = Assert.IsType<Newtonsoft.Json.Linq.JObject>(payload["kb"]);
+
+                Assert.Equal("orders", kb["selected"]?.ToString());
+            }
+            finally
+            {
+                Program.ClearSessionSelectedKb(sessionId);
+            }
+        }
+
         // v2.3.8 Task 1.2: whoami surfaces index readiness so the agent can know
         // whether it should call `lifecycle action=index` before relying on
         // `search_source` / `analyze` results.

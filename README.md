@@ -86,7 +86,7 @@ What you'll see (takes ~30 seconds first time, faster on re-runs):
 
 ### Step 2 — Register the MCP in your AI client
 
-Step 1 auto-registers with Claude Desktop, Claude Code, Cursor, and Antigravity when it detects them. If yours wasn't detected, copy the JSON snippet from Step 1 into your client's MCP config manually. See the [client setup guide](TROUBLESHOOTING.md#client-setup) if unsure where that file lives.
+Step 1 auto-registers every supported client it detects, including Claude Desktop, Claude Code, Cursor, Antigravity, Gemini CLI, OpenCode, Codex CLI, and VS Code. If yours wasn't detected, copy the JSON snippet from Step 1 into your client's MCP config manually. See the [client setup guide](TROUBLESHOOTING.md#client-setup) if unsure where that file lives.
 
 ### Step 3 — Restart your AI client, then test
 
@@ -95,6 +95,8 @@ This part trips most people: **fully close** your AI client and reopen it. Not j
 - **Claude Desktop**: right-click the system-tray icon → **Quit**. Then launch it again. (Closing the window is not enough.)
 - **Claude Code**: end the session and start a fresh one.
 - **Cursor / Antigravity**: close all windows and reopen.
+- **OpenCode**: fully quit and reopen it so it reloads `opencode.json` / `opencode.jsonc`.
+- **Gemini CLI / Codex CLI**: start a new process or session.
 
 Then paste this prompt:
 
@@ -205,7 +207,7 @@ Auto-detected and auto-configured by the installer:
 | Cursor | ✅ | Restart required |
 | Antigravity | ✅ | Restart required; detected even before its MCP config exists |
 | Gemini CLI | ✅ | — |
-| OpenCode (CLI) | ✅ | Reads `opencode.json` / `opencode.jsonc` |
+| OpenCode (CLI) | ✅ | Reads both direct and nested MCP layouts; restart required |
 | Codex CLI | ✅ | Writes `~/.codex/config.toml` |
 | VS Code / VS Code Insiders | ✅ | Native MCP (`User/mcp.json`); restart required |
 | OpenCode Desktop | Detect-only | Reported as installed; add the server from the app's settings |
@@ -427,20 +429,36 @@ Once you declare more than one KB in `Environment.KBs[]`, every tool accepts an 
 ```
 
 Resolution rules when `kb` is omitted:
-- exactly 1 KB open → uses that KB
-- 0 KBs open + `DefaultKb` set → opens `DefaultKb` lazily
-- 2+ KBs open → server returns `KB_AMBIGUOUS` and you must pass `kb` explicitly
+- an explicit `kb` always wins; use it for parallel work or when a prompt touches more than one KB
+- each MCP session snapshots the configured `DefaultKb` at `initialize`; `set_default` changes the current session and persists the startup fallback for future sessions
+- `open` only starts/registers a Worker; it does not silently change another session's target. Select it with `set_default`, or pass `kb` explicitly
+- exactly 1 KB open → uses that KB when the session has no selection
+- 2+ KBs open with no session selection → server returns `KB_AMBIGUOUS`; choose one with `set_default` or pass `kb` explicitly
 
 Manage the pool at runtime:
 
 ```jsonc
 { "tool": "genexus_kb", "arguments": { "action": "list" } }
-// → { openKbs: [{alias, path, pid, workingSetMB, idleSeconds}], maxOpenKbs, defaultKb, declaredKbs }
+// → { selectedKb, activeKb, openKbs: [{alias, path, pid, workingSetMB, idleSeconds}], knownKbs, maxOpenKbs, defaultKb, declaredKbs }
 
 { "tool": "genexus_kb", "arguments": { "action": "open", "alias": "adhoc", "path": "C:/KBs/ScratchKB" } }
 { "tool": "genexus_kb", "arguments": { "action": "close", "alias": "legacy" } }
 { "tool": "genexus_kb", "arguments": { "action": "set_default", "alias": "main" } }   // persists to config.json
 ```
+
+For OpenCode, call `genexus_whoami` once at the start of a session. Use
+`kb.selected`, `kb.default`, `kb.openKbs`, `kb.knownKbs`, and `kb.declaredKbs`
+to understand the target, then select the normal working KB with
+`genexus_kb action=set_default`. Every KB-bound response also includes `kbAlias`
+in its JSON payload, which lets OpenCode correlate text-only responses. Keep
+`kb=<alias>` on calls that intentionally compare or update another KB.
+
+The installer registers both OpenCode configuration layouts: the legacy direct
+`mcp.genexus` entry used by OpenCode 1.x and the current `mcp.servers.genexus`
+layout. `clients add --clients opencode` is only needed to repair or explicitly
+re-register a client after installation; normal `init` handles detected clients
+automatically. Restart OpenCode after a registration so it reloads the MCP
+configuration.
 
 When the pool is full and no Worker is idle, the server returns `KB_POOL_FULL` — close one explicitly or raise `Server.MaxOpenKbs`. Each Worker carries the SDK in its own process (~200–400 MB idle, up to 1–2 GB on heavy KBs), so size the pool against available RAM.
 

@@ -58,9 +58,120 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void Throws_ambiguous_when_arg_null_and_multiple_open()
+        public void Uses_configured_default_when_multiple_open_kbs()
         {
             var cfg = MakeConfig(("customer", "C:/KB/Customer"), ("order", "C:/KB/Order"));
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle>
+            {
+                new KbHandle("customer", "C:/KB/Customer"),
+                new KbHandle("order", "C:/KB/Order"),
+            };
+
+            var handle = resolver.Resolve(null, open);
+
+            Assert.Equal("customer", handle.Alias);
+        }
+
+        [Fact]
+        public void Uses_declared_default_when_default_worker_is_not_open()
+        {
+            var cfg = MakeConfig(("customer", "C:/KB/Customer"), ("order", "C:/KB/Order"));
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle>
+            {
+                new KbHandle("order", "C:/KB/Order"),
+                new KbHandle("scratch", "C:/KB/Scratch"),
+            };
+
+            var handle = resolver.Resolve(null, open);
+
+            Assert.Equal("customer", handle.Alias);
+            Assert.Equal("C:/KB/Customer", handle.Path);
+        }
+
+        [Fact]
+        public void Uses_session_default_before_persisted_default()
+        {
+            var cfg = MakeConfig(("customer", "C:/KB/Customer"), ("order", "C:/KB/Order"));
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle>
+            {
+                new KbHandle("customer", "C:/KB/Customer"),
+                new KbHandle("order", "C:/KB/Order"),
+            };
+
+            var handle = resolver.Resolve(null, open, null, "order");
+
+            Assert.Equal("order", handle.Alias);
+        }
+
+        [Fact]
+        public void Explicit_alias_wins_over_session_default()
+        {
+            var cfg = MakeConfig(("customer", "C:/KB/Customer"), ("order", "C:/KB/Order"));
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle>
+            {
+                new KbHandle("customer", "C:/KB/Customer"),
+                new KbHandle("order", "C:/KB/Order"),
+            };
+
+            var handle = resolver.Resolve("customer", open, null, "order");
+
+            Assert.Equal("customer", handle.Alias);
+        }
+
+        [Fact]
+        public void Invalid_session_default_does_not_fall_back_to_another_open_kb()
+        {
+            var cfg = MakeConfig(("customer", "C:/KB/Customer"), ("order", "C:/KB/Order"));
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle>
+            {
+                new KbHandle("customer", "C:/KB/Customer"),
+                new KbHandle("order", "C:/KB/Order"),
+            };
+
+            var ex = Assert.Throws<KbResolutionException>(
+                () => resolver.Resolve(null, open, null, "closed"));
+
+            Assert.Equal("KB_NOT_FOUND", ex.Code);
+            Assert.Contains("session", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Initialized_session_without_selection_does_not_use_persisted_default()
+        {
+            var cfg = MakeConfig(("customer", "C:/KB/Customer"), ("order", "C:/KB/Order"));
+            var resolver = new KbResolver(cfg);
+            var open = new List<KbHandle>
+            {
+                new KbHandle("customer", "C:/KB/Customer"),
+                new KbHandle("order", "C:/KB/Order")
+            };
+
+            var ex = Assert.Throws<KbResolutionException>(
+                () => resolver.Resolve(null, open, null, null, sessionContextInitialized: true));
+
+            Assert.Equal("KB_AMBIGUOUS", ex.Code);
+            Assert.Contains("session", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Throws_ambiguous_when_arg_null_and_multiple_open()
+        {
+            var cfg = new Configuration
+            {
+                Environment = new EnvironmentConfig
+                {
+                    KBs =
+                    {
+                        new KbEntry { Alias = "customer", Path = "C:/KB/Customer" },
+                        new KbEntry { Alias = "order", Path = "C:/KB/Order" },
+                    }
+                }
+            };
             var resolver = new KbResolver(cfg);
             var open = new List<KbHandle>
             {

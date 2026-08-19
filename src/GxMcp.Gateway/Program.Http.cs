@@ -222,7 +222,13 @@ namespace GxMcp.Gateway
                     string httpSessionId = modern
                         ? "http-modern"
                         : session?.Id ?? request.Headers["MCP-Session-Id"].FirstOrDefault() ?? "http";
-                    var response = await ProcessMcpRequest(requestObj, httpSessionId);
+                    // The 2026-07-28 transport is explicitly sessionless. Do not
+                    // reuse a shared server-side KB selection between independent
+                    // modern clients; they use explicit kb or the persisted fallback.
+                    var response = await ProcessMcpRequest(
+                        requestObj,
+                        httpSessionId,
+                        sessionContextEnabled: !modern);
 
                     bool notification = requestObj["id"] == null
                         || requestObj["id"]!.Type == JTokenType.Null;

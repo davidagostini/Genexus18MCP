@@ -1826,7 +1826,7 @@ namespace GxMcp.Gateway
                 return new JObject
                 {
                     ["action"] = "specify_kb",
-                    ["hint"] = "More than one KB is open. Re-issue the tool call with kb=<alias>. genexus_whoami / genexus_kb action=list enumerate the open aliases. Set the alias from response.openKbs."
+                    ["hint"] = "More than one KB is open. For a one-off call, re-issue it with kb=<alias>. For a session-wide default, run genexus_kb action=set_default alias=<alias>. genexus_whoami / genexus_kb action=list enumerate the available aliases."
                 };
             }
 

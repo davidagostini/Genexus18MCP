@@ -50,6 +50,7 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(hint);
             Assert.Equal("specify_kb", hint["action"]!.ToString());
             Assert.Contains("kb=", hint["hint"]!.ToString());
+            Assert.Contains("set_default", hint["hint"]!.ToString());
         }
 
         [Fact]
