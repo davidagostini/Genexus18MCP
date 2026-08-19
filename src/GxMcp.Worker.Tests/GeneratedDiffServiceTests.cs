@@ -248,6 +248,29 @@ namespace GxMcp.Worker.Tests
             finally { try { Directory.Delete(tempKb, true); } catch { } }
         }
 
+        [Fact]
+        public void ProbeGeneratedFreshness_ScopesEvidenceToPreferredEnvironment()
+        {
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string devWeb = Path.Combine(tempKb, "DevelopmentWeb", "web");
+            string prodWeb = Path.Combine(tempKb, "ProductionWeb", "web");
+            Directory.CreateDirectory(devWeb);
+            Directory.CreateDirectory(prodWeb);
+            File.WriteAllText(Path.Combine(devWeb, "Scoped.cs"), "class Dev {} ");
+            File.WriteAllText(Path.Combine(prodWeb, "Scoped.cs"), "class Prod {} ");
+            File.SetLastWriteTimeUtc(Path.Combine(devWeb, "Scoped.cs"), DateTime.UtcNow.AddHours(-2));
+            File.SetLastWriteTimeUtc(Path.Combine(prodWeb, "Scoped.cs"), DateTime.UtcNow.AddMinutes(-1));
+            try
+            {
+                var ev = GeneratedDiffService.ProbeGeneratedFreshness(
+                    tempKb, "Scoped", DateTime.UtcNow.AddHours(-3), null, devWeb);
+                Assert.True(ev.Found);
+                Assert.EndsWith("DevelopmentWeb/web/Scoped.cs", ev.FreshestPath.Replace('\\', '/'));
+                Assert.DoesNotContain("ProductionWeb", ev.FreshestPath, StringComparison.OrdinalIgnoreCase);
+            }
+            finally { try { Directory.Delete(tempKb, true); } catch { } }
+        }
+
         // ── issue #42 hardening (B): scan pruning + no full-tree fallback ─────
 
         [Fact]

@@ -139,11 +139,9 @@ namespace GxMcp.Gateway.Routers
                 case "genexus_test":
                     return new { module = "Test", action = "Run", target = args?["name"]?.ToString() };
 
-                // genexus_kb set_startup / get_startup — SDK-bound startup-object
-                // management. IDE "Set As Startup Object" parity. The other actions
-                // (list/open/close/set_default) are handled directly in Program.cs
-                // and never reach a router. Schema (action enum) is declared on
-                // genexus_kb in tool_definitions.json.
+                // genexus_kb set_startup / get_startup and environment selection —
+                // SDK-bound operations. The other actions (list/open/close/
+                // set_default) are handled directly in Program.cs.
                 case "genexus_kb":
                 {
                     string kbAction = args?["action"]?.ToString();
@@ -163,6 +161,23 @@ namespace GxMcp.Gateway.Routers
                         {
                             module = "KB",
                             action = "GetStartupObject"
+                        };
+                    }
+                    if (string.Equals(kbAction, "get_environment", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new
+                        {
+                            module = "KB",
+                            action = "GetActiveEnvironment"
+                        };
+                    }
+                    if (string.Equals(kbAction, "set_environment", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new
+                        {
+                            module = "KB",
+                            action = "SetActiveEnvironment",
+                            target = args?["environment"]?.ToString()
                         };
                     }
                     return null;

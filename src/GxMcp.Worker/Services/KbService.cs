@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Xml.Linq;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
@@ -1192,15 +1193,253 @@ namespace GxMcp.Worker.Services
             lock (_kbLock)
             {
                 if (_kb == null) return null;
-                // SDK exposes multiple shapes across major versions; probe in order
-                // and swallow individually so a missing property on one branch
-                // doesn't strand the whole call.
-                try { var v = _kb.Environment?.Name; if (v != null) return v.ToString(); } catch { }
-                try { var v = _kb.UserInterface?.ActiveEnvironment?.Name; if (v != null) return v.ToString(); } catch { }
-                try { var v = _kb.DesignModel?.Environment?.Name; if (v != null) return v.ToString(); } catch { }
-                try { var v = _kb.ActiveModel?.Name; if (v != null) return v.ToString(); } catch { }
+                // SDK exposes multiple shapes across major versions. U5 can return
+                // an environment container whose public Name property is empty but
+                // whose inherited property bag or TargetModel carries the name.
+                // Probe all of those representations independently.
+                object[] candidates =
+                {
+                    TryGet(() => (object)_kb.Environment),
+                    TryGet(() => (object)_kb.UserInterface?.ActiveEnvironment),
+                    TryGet(() => (object)_kb.DesignModel?.Environment),
+                    TryGet(() => (object)_kb.ActiveModel)
+                };
+                foreach (var candidate in candidates)
+                {
+                    var name = TryGetEnvironmentName(candidate);
+                    if (!string.IsNullOrWhiteSpace(name)) return name;
+                }
                 return null;
             }
+        }
+
+        // Resolve the actual <KB>\<environment>\web output root. The SDK's
+        // display name can differ from the physical target folder;
+        // probing TargetPath/TargetName keeps build evidence scoped to the active
+        // environment instead of accidentally selecting another environment's newer files.
+        public string GetActiveEnvironmentWebPath()
+        {
+            lock (_kbLock)
+            {
+                if (_kb == null) return null;
+                string kbPath = Environment.GetEnvironmentVariable("GX_KB_PATH");
+                if (string.IsNullOrWhiteSpace(kbPath) || !Directory.Exists(kbPath)) return null;
+
+                object[] candidates =
+                {
+                    TryGet(() => (object)_kb.Environment),
+                    TryGet(() => (object)_kb.UserInterface?.ActiveEnvironment),
+                    TryGet(() => (object)_kb.DesignModel?.Environment),
+                    TryGet(() => (object)_kb.ActiveModel),
+                    TryGet(() => (object)_kb.Environment?.TargetModel),
+                    TryGet(() => (object)_kb.Environment?.DesignModel)
+                };
+                string activeName = GetActiveEnvironment();
+                var environmentRoots = Directory.GetDirectories(kbPath)
+                    .Where(d => Directory.Exists(Path.Combine(d, "web")))
+                    .ToList();
+                // Prefer an unambiguous semantic match before probing SDK
+                // properties: U5 can expose a stale TargetPath from another
+                // environment even while GetActiveEnvironment reports development.
+                string classifiedRoot = ResolveEnvironmentRoot(environmentRoots, activeName);
+                if (!string.IsNullOrWhiteSpace(classifiedRoot))
+                    return Path.Combine(classifiedRoot, "web");
+                foreach (var candidate in candidates)
+                {
+                    if (candidate == null) continue;
+                    foreach (var propertyName in new[] { "TargetPath", "OutputPath", "WebPath", "TargetName", "Name", "EnvironmentName" })
+                    {
+                        var value = TryGetMember(candidate, propertyName)?.ToString();
+                        var webPath = ResolveEnvironmentWebPath(kbPath, value);
+                        if (!string.IsNullOrWhiteSpace(webPath)
+                            && IsCompatibleEnvironmentPath(webPath, activeName))
+                            return webPath;
+                    }
+                }
+
+                return null;
+            }
+        }
+
+        private static string ResolveEnvironmentRoot(IEnumerable<string> roots, string activeName)
+        {
+            if (roots == null || string.IsNullOrWhiteSpace(activeName)) return null;
+            var rootList = roots.ToList();
+            string exact = rootList.FirstOrDefault(d =>
+                string.Equals(Path.GetFileName(d), activeName.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (exact != null) return exact;
+
+            bool production = activeName.IndexOf("prod", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool development = activeName.IndexOf("dev", StringComparison.OrdinalIgnoreCase) >= 0
+                || activeName.IndexOf("desenv", StringComparison.OrdinalIgnoreCase) >= 0;
+            var classified = rootList.Where(d =>
+            {
+                string folder = Path.GetFileName(d) ?? string.Empty;
+                bool isProductionFolder = folder.IndexOf("prod", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isDevelopmentFolder = folder.IndexOf("dev", StringComparison.OrdinalIgnoreCase) >= 0
+                    || folder.IndexOf("desenv", StringComparison.OrdinalIgnoreCase) >= 0
+                    || folder.IndexOf("web", StringComparison.OrdinalIgnoreCase) >= 0;
+                return production ? isProductionFolder : development && !isProductionFolder && isDevelopmentFolder;
+            }).ToList();
+            return classified.Count == 1 ? classified[0] : null;
+        }
+
+        private static bool IsCompatibleEnvironmentPath(string webPath, string activeName)
+        {
+            if (string.IsNullOrWhiteSpace(webPath) || string.IsNullOrWhiteSpace(activeName)) return true;
+            string folder = Path.GetFileName(Path.GetDirectoryName(webPath)) ?? string.Empty;
+            bool pathIsProduction = folder.IndexOf("prod", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool activeIsProduction = activeName.IndexOf("prod", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool activeIsDevelopment = activeName.IndexOf("dev", StringComparison.OrdinalIgnoreCase) >= 0
+                || activeName.IndexOf("desenv", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (activeIsDevelopment && pathIsProduction) return false;
+            if (activeIsProduction && !pathIsProduction) return false;
+            return true;
+        }
+
+        private static string ResolveEnvironmentWebPath(string kbPath, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            string trimmed = value.Trim();
+            var candidates = new List<string>();
+            if (Path.IsPathRooted(trimmed))
+            {
+                candidates.Add(trimmed);
+                candidates.Add(Path.Combine(trimmed, "web"));
+            }
+            else
+            {
+                candidates.Add(Path.Combine(kbPath, trimmed, "web"));
+                candidates.Add(Path.Combine(kbPath, trimmed));
+            }
+
+            foreach (var candidate in candidates)
+            {
+                if (string.Equals(Path.GetFileName(candidate), "web", StringComparison.OrdinalIgnoreCase)
+                    && Directory.Exists(candidate))
+                    return candidate;
+                if (Directory.Exists(Path.Combine(candidate, "web")))
+                    return Path.Combine(candidate, "web");
+            }
+            return null;
+        }
+
+        // Switch the active GeneXus environment through the same SDK/MSBuild task
+        // used by the IDE. The worker must not edit environment folders directly.
+        public string SetActiveEnvironment(string environmentName)
+        {
+            if (string.IsNullOrWhiteSpace(environmentName))
+                throw new ArgumentException("Environment name is required.", nameof(environmentName));
+
+            lock (_kbLock)
+            {
+                if (_kb == null) throw new InvalidOperationException("Knowledge Base is not open.");
+
+                string previous = GetActiveEnvironment();
+                Type taskType = ResolveMsBuildTaskType("Genexus.MsBuild.Tasks.SetActiveEnvironment");
+                object task = Activator.CreateInstance(taskType);
+                SetTaskProperty(task, "KB", _kb);
+                SetTaskProperty(task, "EnvironmentName", environmentName.Trim());
+                SetTaskProperty(task, "RedirectIPC", false);
+
+                var execute = taskType.GetMethod("Execute", BindingFlags.Public | BindingFlags.Instance);
+                if (execute == null || !(execute.Invoke(task, null) is bool ok) || !ok)
+                {
+                    string output = TryGetMember(task, "TaskOutput")?.ToString()
+                        ?? TryGetMember(task, "Output")?.ToString();
+                    throw new InvalidOperationException(
+                        "GeneXus could not activate environment '" + environmentName + "'."
+                        + (string.IsNullOrWhiteSpace(output) ? string.Empty : " " + output));
+                }
+
+                string active = GetActiveEnvironment();
+                return new JObject
+                {
+                    ["previous"] = previous,
+                    ["requested"] = environmentName.Trim(),
+                    ["active"] = active,
+                    ["changed"] = !string.Equals(previous, active, StringComparison.OrdinalIgnoreCase)
+                }.ToString(Newtonsoft.Json.Formatting.None);
+            }
+        }
+
+        private static Type ResolveMsBuildTaskType(string fullName)
+        {
+            var loaded = AppDomain.CurrentDomain.GetAssemblies()
+                .Select(a => a.GetType(fullName, false))
+                .FirstOrDefault(t => t != null);
+            if (loaded != null) return loaded;
+
+            string gxPath = Environment.GetEnvironmentVariable("GX_PROGRAM_DIR") ?? string.Empty;
+            string assemblyPath = Path.Combine(gxPath, "Genexus.MsBuild.Tasks.dll");
+            if (!File.Exists(assemblyPath))
+                throw new FileNotFoundException("GeneXus MSBuild task assembly was not found.", assemblyPath);
+
+            var assembly = Assembly.LoadFrom(assemblyPath);
+            return assembly.GetType(fullName, true);
+        }
+
+        private static void SetTaskProperty(object task, string name, object value)
+        {
+            var property = task.GetType().GetProperty(
+                name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (property == null || !property.CanWrite)
+                throw new MissingMemberException(task.GetType().FullName, name);
+            property.SetValue(task, value, null);
+        }
+
+        private static object TryGet(Func<object> getter)
+        {
+            try { return getter(); } catch { return null; }
+        }
+
+        private static string TryGetEnvironmentName(object candidate)
+        {
+            if (candidate == null) return null;
+
+            foreach (var propertyName in new[] { "Name", "EnvironmentName" })
+            {
+                var value = TryGetMember(candidate, propertyName);
+                if (value != null && !string.IsNullOrWhiteSpace(value.ToString()))
+                    return value.ToString();
+
+                value = TryGetPropertyBagValue(candidate, propertyName);
+                if (value != null && !string.IsNullOrWhiteSpace(value.ToString()))
+                    return value.ToString();
+            }
+
+            foreach (var childName in new[] { "TargetModel", "ActiveModel", "Model" })
+            {
+                var child = TryGetMember(candidate, childName);
+                var name = TryGetEnvironmentName(child);
+                if (!string.IsNullOrWhiteSpace(name)) return name;
+            }
+            return null;
+        }
+
+        private static object TryGetMember(object target, string name)
+        {
+            try
+            {
+                var property = target.GetType().GetProperty(
+                    name,
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                return property?.GetValue(target, null);
+            }
+            catch { return null; }
+        }
+
+        private static object TryGetPropertyBagValue(object target, string name)
+        {
+            try
+            {
+                var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                    .FirstOrDefault(m => m.Name == "GetPropertyValue"
+                        && m.GetParameters().Length == 1
+                        && m.GetParameters()[0].ParameterType == typeof(string));
+                return method?.Invoke(target, new object[] { name });
+            }
+            catch { return null; }
         }
 
         public string GetActiveEnvironmentVersion()

@@ -81,6 +81,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_lifecycle", "index")]
         [InlineData("genexus_lifecycle", "reorg")]
         [InlineData("genexus_lifecycle", "snapshots-restore")]
+        [InlineData("genexus_kb", "set_environment")]
         public void MutatingActions_AreDetected(string toolName, string action)
         {
             var args = new JObject { ["action"] = action };

@@ -1114,8 +1114,17 @@ namespace GxMcp.Worker.Services
             }
 
             string taskId = Guid.NewGuid().ToString().Substring(0, 8);
+            // Resolve through KbService so the result follows the same SDK shape
+            // probing used by whoami/environment telemetry.  On GeneXus 18 U5 the
+            // active environment is not consistently exposed through
+            // DesignModel.Environment, which previously left build responses with
+            // no Environment field (#103 item 3).
             string envName = null;
-            try { envName = _kbService.GetKB()?.DesignModel?.Environment?.Name; } catch { }
+            try { envName = _kbService?.GetActiveEnvironment(); } catch { }
+            if (string.IsNullOrWhiteSpace(envName))
+            {
+                try { envName = _kbService?.GetKB()?.DesignModel?.Environment?.Name; } catch { }
+            }
             var status = new BuildTaskStatus {
                 TaskId = taskId,
                 Action = action,
@@ -1736,6 +1745,8 @@ namespace GxMcp.Worker.Services
                 ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
                 : (status.DirtyAtStart ?? new List<string>());
             if (checkList.Count == 0) return;
+            Logger.Info("[GENERATE-EVIDENCE] begin action=" + action + " targets=" + string.Join(";", checkList)
+                + " specifyOnly=" + status.SpecifyOnly + " kb=" + GetKBPath());
 
             var unreachableSet = ParseUnreachableFromLog(status.FullLogPath);
             var notFoundSet = ParseNotFoundFromLog(status.FullLogPath);
@@ -1830,6 +1841,8 @@ namespace GxMcp.Worker.Services
 
             string kbPath = GetKBPath();
             if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) return;
+            string activeEnvironmentWebPath = null;
+            try { activeEnvironmentWebPath = _kbService?.GetActiveEnvironmentWebPath(); } catch { }
 
             // issue #42 hardening (A) — set of objects that were dirty (edited via MCP
             // but not yet successfully built) when the build started. GeneXus generation
@@ -1864,7 +1877,7 @@ namespace GxMcp.Worker.Services
                 DateTime? prior = null;
                 if (preMtimes != null && preMtimes.TryGetValue(bare, out var pm)) prior = pm;
                 GeneratedDiffService.GeneratedFileEvidence ev;
-                try { ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, status.StartedAt, prior); }
+                try { ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, status.StartedAt, prior, activeEnvironmentWebPath); }
                 catch { continue; }
                 if (ev.Fresh)
                 {
@@ -1941,22 +1954,43 @@ namespace GxMcp.Worker.Services
             var degradedUserControls = new JArray();
             try
             {
-                foreach (JObject item in filesWritten)
+                // A target can be successfully checked without being regenerated.
+                // Its existing JS still matters: otherwise a known degraded User
+                // Control is silently reported as
+                // a clean build whenever GeneXus says "up to date" (#103 item 4).
+                var generatedEvidence = filesWritten
+                    .Concat(upToDate)
+                    .OfType<JObject>()
+                    .GroupBy(x => x["object"]?.ToString() ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.First());
+
+                foreach (JObject item in generatedEvidence)
                 {
-                    string csPath = item["path"]?.ToString();
-                    if (string.IsNullOrEmpty(csPath)) continue;
-                    string resolvedGeneratedPath = Path.IsPathRooted(csPath)
-                        ? csPath
-                        : Path.Combine(kbPath, csPath);
-                    string dir = Path.GetDirectoryName(resolvedGeneratedPath);
                     string objName = item["object"]?.ToString();
-                    if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(objName)) continue;
-                    string jsPath = Path.Combine(dir, objName.ToLowerInvariant() + ".js");
+                    string generatedPath = item["path"]?.ToString();
+                    if (string.IsNullOrEmpty(objName) || string.IsNullOrEmpty(generatedPath)) continue;
+
+                    string resolvedGeneratedPath = Path.IsPathRooted(generatedPath)
+                        ? generatedPath
+                        : Path.Combine(kbPath, generatedPath);
+                    string jsPath;
+                    if (string.Equals(Path.GetExtension(resolvedGeneratedPath), ".js", StringComparison.OrdinalIgnoreCase))
+                    {
+                        jsPath = resolvedGeneratedPath;
+                    }
+                    else
+                    {
+                        string dir = Path.GetDirectoryName(resolvedGeneratedPath);
+                        jsPath = string.IsNullOrEmpty(dir)
+                            ? null
+                            : Path.Combine(dir, objName.ToLowerInvariant() + ".js");
+                    }
+
                     // The .cs freshness gate above identifies the generated object. The
                     // companion JS can retain an older timestamp when GeneXus rewrites
                     // files through its generator cache, so do not discard a real partial
                     // binding signal solely because the JS mtime is not newer.
-                    if (File.Exists(jsPath))
+                    if (!string.IsNullOrEmpty(jsPath) && File.Exists(jsPath))
                     {
                         string jsText = File.ReadAllText(jsPath);
                         var degradation = DetectUserControlBindingDegradation(objName, jsPath, jsText);
@@ -2037,6 +2071,9 @@ namespace GxMcp.Worker.Services
             }
 
             status.GenerateEvidence = evidence;
+            Logger.Info("[GENERATE-EVIDENCE] complete action=" + action + " objects=" + checkList.Count
+                + " emitted=" + emittedCount + " stale=" + staleOrMissing.Count
+                + " webRoot=" + (activeEnvironmentWebPath ?? "<none>"));
         }
 
         // Parse a build log for spc0217 ("Object is unreachable") diagnostics and return
@@ -2263,7 +2300,9 @@ namespace GxMcp.Worker.Services
                         foreach (var bare in gateList)
                         {
                             if (string.IsNullOrEmpty(bare)) continue;
-                            var ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, DateTime.MinValue);
+                            string activeEnvironmentWebPath = null;
+                            try { activeEnvironmentWebPath = _kbService?.GetActiveEnvironmentWebPath(); } catch { }
+                            var ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, DateTime.MinValue, null, activeEnvironmentWebPath);
                             if (ev.Found && ev.FreshestWriteUtc != null) snap[bare] = ev.FreshestWriteUtc.Value;
                         }
                         status.PreBuildMtimes = snap;
@@ -2376,6 +2415,12 @@ namespace GxMcp.Worker.Services
 
                         status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                         status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                        // Attach the evidence before publishing the terminal signal. The
+                        // gateway's async poller stops at the first Succeeded status; if the
+                        // signal fires first, it can persist a terminal result without the
+                        // evidence that is added in RunBuild's finally block (#103).
+                        try { AttachGenerateEvidence(status, action, targets); }
+                        catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
                         Logger.Info("Background Build " + status.TaskId + " " + status.Status
                                     + " (inproc, errors=" + status.ErrorCount + ", warnings=" + status.WarningCount
                                     + ", " + status.ElapsedSeconds + "s)");
@@ -2552,6 +2597,12 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
+                    // Publish GenerateEvidence before the terminal signal. The gateway's
+                    // async poller stops at the first terminal status and otherwise races
+                    // the finally block below, losing the evidence in the stored result.
+                    try { AttachGenerateEvidence(status, action, targets); }
+                    catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
+
                     // Stream F: wake any pending status wait callers.
                     try { status.StateChangeSignal.Set(); } catch { }
 
@@ -2576,7 +2627,14 @@ namespace GxMcp.Worker.Services
                 // in-process and MSBuild.exe branches (both reach here via return /
                 // fall-through). On a terminal success for a code-emitting action,
                 // verify the requested/dirty targets actually got fresh generated .cs.
-                try { AttachGenerateEvidence(status, action, targets); }
+                // The normal terminal paths attach before StateChangeSignal.Set().
+                // Keep this as a fallback for exceptional/early-return paths, but do
+                // not scan the KB a second time after a successful build.
+                try
+                {
+                    if (status.GenerateEvidence == null)
+                        AttachGenerateEvidence(status, action, targets);
+                }
                 catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
                 // Guaranteed MSBuild cleanup: on ANY exit path (success, failure, or
                 // exception — not just cancel/timeout) reap the spawned MSBuild process

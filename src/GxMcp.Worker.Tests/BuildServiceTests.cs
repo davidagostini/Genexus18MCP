@@ -909,6 +909,52 @@ namespace GxMcp.Worker.Tests
             }
         }
 
+        [Fact]
+        public void GenerateEvidence_DetectsDegradedUserControlInUpToDateJavaScript()
+        {
+            const string objectName = "SamplePanel";
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+
+            string js = "var n = gx.uc.getNew('SampleViewer');\n"
+                      + "n.setProp(\"Visible\",\"Visible\",true,\"bool\");";
+            File.WriteAllText(Path.Combine(web, objectName.ToLowerInvariant() + ".js"), js);
+
+            string previousKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
+            try
+            {
+                var svc = new BuildService();
+                var status = new BuildService.BuildTaskStatus
+                {
+                    TaskId = Guid.NewGuid().ToString("N").Substring(0, 8),
+                    Action = "Build",
+                    Target = objectName,
+                    Status = "Succeeded",
+                    Phase = "Done",
+                    StartedAt = DateTime.UtcNow.AddMinutes(-1),
+                    DirtyAtStart = new List<string>()
+                };
+
+                var method = typeof(BuildService).GetMethod("AttachGenerateEvidence", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(method);
+                method!.Invoke(svc, new object[] { status, "Build", new List<string> { objectName } });
+
+                var evidence = (JObject)status.GenerateEvidence!;
+                Assert.False(evidence["ok"]!.Value<bool>(), evidence.ToString());
+                var degraded = (JArray)evidence["degradedUserControls"]!;
+                Assert.Single(degraded);
+                Assert.Equal(1, degraded[0]["expectedBindings"]!.Value<int>());
+                Assert.Equal(0, degraded[0]["actualBindings"]!.Value<int>());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_KB_PATH", previousKb);
+                try { Directory.Delete(tempKb, true); } catch { }
+            }
+        }
+
         // Set up a temp KB, optionally write a generated .cs at a chosen mtime, run
         // AttachGenerateEvidence for a successful Build of <objectName>, and assert on
         // the resulting GenerateEvidence JObject.

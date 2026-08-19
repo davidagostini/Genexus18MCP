@@ -2,7 +2,6 @@
 
 ## Unreleased
 
-<<<<<<< HEAD
 ### Added
 
 - **Native atomic Data View authoring with `genexus_data_view`.** The new `inspect`, `dry_run`, `create`, `update`, and `delete` actions validate existing table metadata, global attributes, types and complete primary keys before saving a root-only Business Component Transaction and its Data View mapping inside one GeneXus SDK transaction. Responses include optimistic version tokens, persisted reread evidence, physical schema/table mapping, and a no-DDL reorganization preview. The tool never invokes Specify, Generate, Build, Rebuild, Reorg, compilation, publishing, execution, or tests implicitly.
@@ -16,6 +15,10 @@
 - Thanks to [@davidagostini](https://github.com/davidagostini) for the modular Business Component and atomic Structure support — see [PR #105](https://github.com/lennix1337/Genexus18MCP/pull/105).
 - **Native typed Domain resolution and atomic verification in `genexus_delete_object`.** Domain deletion now resolves through the GeneXus SDK identity API, reports native incoming references in dry-run, supports optimistic concurrency with `expectedVersion`, requires confirmation only for persistence, and performs transactional deletion plus post-save reread without invoking lifecycle actions.
 - Thanks to [@davidagostini](https://github.com/davidagostini) for native Domain resolution in object deletion — see [PR #106](https://github.com/lennix1337/Genexus18MCP/pull/106).
+- **XPZ imports now use lossless overwrite options and capture fidelity from the raw export payload before SDK import preparation**, preserving WebForm `GxWidth`/`GxHeight` and preventing circular fidelity checks. Fixes #102.
+- **Build telemetry now resolves the active Environment through the KB service and audits User Control bindings in up-to-date generated JavaScript**, so stale/incomplete `Gx Control Type` output is reported instead of appearing successful. Fixes #103 items 3 and 4.
+- **Build generation evidence is now scoped to the SDK-selected environment output root**, so a newer production artifact cannot be reported for a development build; `genexus_kb` can also read/select the active environment through the official SDK path. Fixes #103 item 3.
+- Thanks to [@danielkrueger](https://github.com/danielkrueger) for XPZ fidelity and environment-scoped build evidence — see [PR #107](https://github.com/lennix1337/Genexus18MCP/pull/107).
 
 ### Changed
 
