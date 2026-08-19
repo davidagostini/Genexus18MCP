@@ -10,6 +10,9 @@
 ### Fixed
 
 - **Transaction object dry-runs no longer create the global seed Attribute.** `genexus_create action=object type=Transaction dryRun=true` now returns before constructing the SDK Transaction, reporting `persisted=false` and `mutationDetected=false` without creating the `<Transaction>Id` Attribute or any table/index metadata.
+- **Native modular Business Component variables in `genexus_variable`.** `add` and `modify` now accept `objectType=BusinessComponent`, `objectName`, and `module`, resolve the Transaction through the GeneXus type provider, persist its native custom type, and verify the same BC GUID/module after reread. The atomic path supports `expectedVersion`, mutation-free `dryRun`, typed diffs, and complete rollback without running lifecycle actions.
+- **Atomic Transaction visual-structure updates.** `genexus_structure action=update_visual` now snapshots the Structure, authored parts, and referenced global Attributes; checks `expectedVersion`; performs a pure `dryRun`; and restores and verifies the complete snapshot on save or reread failure. Default WinForm/WebForm projections may follow a valid Structure change without producing a false `AuthoredPartsCorrupted` failure.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for the modular Business Component and atomic Structure support — see [PR #105](https://github.com/lennix1337/Genexus18MCP/pull/105).
 
 ### Changed
 
