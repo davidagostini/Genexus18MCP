@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+
+- **User Control degradation detection no longer fires on healthy builds.** The post-build
+  evidence gate required one `setProp("Gx Control Type", ...)` binding per `gx.uc.getNew(...)`
+  instance, but GeneXus emits that property only sporadically: in a reference KB with 32 User
+  Control objects, exactly one carried it — and IDE-generated output was no different from
+  MCP-generated output. Every other build was reported as `SucceededWithGaps` with a
+  `[user-control-degraded]` warning, which buried the real failure in noise. Detection now keys
+  on the signature actually observed in degraded output: the control-name argument of
+  `gx.uc.getNew(...)` emitted as the literal string `"this"` instead of the control's name,
+  and/or a generated `.js` that lost every `setProp(...)` binding. Measured against a real KB,
+  the new gate flags 5 of 5 genuinely degraded files and 0 of 28 healthy IDE-generated ones
+  (the previous gate flagged 27 of those 28). Fixes #103 item 4.
+- Thanks to [@danielkrueger](https://github.com/danielkrueger) for identifying the real User Control degradation signature and updating the evidence gate — see [PR #108](https://github.com/lennix1337/Genexus18MCP/pull/108).
+
 ## v2.41.10 - 2026-08-19
 
 ### Added
