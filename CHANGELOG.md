@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.41.11 - 2026-08-19
+
 ### Fixed
 
 - **User Control degradation detection no longer fires on healthy builds.** The post-build
