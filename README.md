@@ -20,7 +20,7 @@ In practice: you point the MCP at your KB, then ask your AI assistant things lik
 
 ## What you can do with it
 
-A quick map of what the agent can do against your real KB through the **47 tools** (details in [Tool Surface](#tool-surface)):
+A quick map of what the agent can do against your real KB through the **48 tools** (details in [Tool Surface](#tool-surface)):
 
 | Area | What the agent can do |
 |---|---|
@@ -236,7 +236,7 @@ Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) 
 
 ## Tool Surface
 
-The worker exposes **47 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json).
+The worker exposes **48 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json).
 
 **Orientation & health**
 - `genexus_whoami` — KB context, version, worker/index/database health, self-update check, next-step hints
@@ -270,8 +270,8 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 - `genexus_edit_form` — semantic WebForm edits
 - `genexus_variable` — Variables-part CRUD
 - `genexus_create` — creation umbrella (Transaction, Procedure, Domain, SDT, API, Folder, Module, `curl_procedure` = scaffold a Procedure from a curl command, …); `object_atomic` authors definition + variables + Rules + properties + Source with preflight/read-back/rollback
-- `genexus_data_view` — atomically create/inspect/update/delete a root-only Business Component Transaction mapped through a native Data View to an existing physical table; validates attributes/keys first, supports optimistic versions and true no-mutation dry-runs, and never runs lifecycle actions implicitly
-- `genexus_delete_object` — delete an object
+- `genexus_data_view` — atomically create/inspect/update/delete a root-only Business Component Transaction mapped through a native Data View to an existing physical table; validates attributes/keys first, supports optimistic versions and true no-mutation dry-runs, requires `confirm=true` for destructive delete, and reports commit/verification state separately
+- `genexus_delete_object` — delete an object by native SDK identity; use `dryRun=true` to inspect incoming references before `confirm=true`
 - `genexus_format` — format a code snippet with the worker's rules
 
 **Data model & structure authoring**

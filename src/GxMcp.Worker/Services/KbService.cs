@@ -1353,6 +1353,10 @@ namespace GxMcp.Worker.Services
                 }
 
                 string active = GetActiveEnvironment();
+                if (!string.Equals(active, environmentName.Trim(), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "GeneXus reported success but the active environment remained '"
+                        + (active ?? "<unknown>") + "' instead of '" + environmentName.Trim() + "'.");
                 return new JObject
                 {
                     ["previous"] = previous,

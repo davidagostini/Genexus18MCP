@@ -33,6 +33,14 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void SilentImportOptions_RejectsUnknownExplicitValues()
+        {
+            Assert.Throws<ArgumentException>(() =>
+                TransferService.SilentImportOptions(
+                    JObject.Parse("{\"classConflicts\":\"IgnoreEverything\"}")));
+        }
+
+        [Fact]
         public void ReadExportWebForms_UsesRawSourceFromXpz()
         {
             string path = Path.Combine(Path.GetTempPath(), "gxmcp-transfer-" + Guid.NewGuid().ToString("N") + ".xpz");
@@ -52,6 +60,28 @@ namespace GxMcp.Worker.Tests
                 Assert.True(forms.ContainsKey("SampleWebPanel"));
                 Assert.Contains("GxWidth=\"30chr\"", forms["SampleWebPanel"]);
                 Assert.Contains("GxHeight=\"1row\"", forms["SampleWebPanel"]);
+            }
+            finally
+            {
+                try { File.Delete(path); } catch { }
+            }
+        }
+
+        [Fact]
+        public void ReadExportWebForms_HandlesNamespacesAndXmlDeclaration()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "gxmcp-transfer-ns-" + Guid.NewGuid().ToString("N") + ".xpz");
+            try
+            {
+                using (var archive = ZipFile.Open(path, ZipArchiveMode.Create))
+                using (var writer = new StreamWriter(archive.CreateEntry("namespaced.xml").Open()))
+                {
+                    writer.Write("<?xml version=\"1.0\"?><gx:ExportFile xmlns:gx=\"urn:test\"><gx:Object name=\"NamespacedPanel\"><gx:Part><gx:Source><![CDATA[<?xml version=\"1.0\"?><gx:GxMultiForm xmlns:gx=\"urn:test\"><gx:gxAttribute GxWidth=\"30chr\" /></gx:GxMultiForm>]]></gx:Source></gx:Part></gx:Object></gx:ExportFile>");
+                }
+
+                var forms = TransferService.ReadExportWebForms(path);
+                Assert.True(forms.ContainsKey("NamespacedPanel"));
+                Assert.Contains("GxWidth=\"30chr\"", forms["NamespacedPanel"]);
             }
             finally
             {

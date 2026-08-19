@@ -760,12 +760,12 @@
     },
     {
       "annotations": {
-        "destructiveHint": false,
+        "destructiveHint": true,
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Native, typed, atomic Transaction + Data View authoring over an existing physical table. action=inspect|dry_run|create|update|delete. dry_run performs validation without constructing or saving SDK objects. create persists the root-only Transaction, Business Component property, Data View association, physical schema/table and attribute mappings inside one SDK transaction, then rereads and verifies them. No action implicitly runs Specify, Generate, Build, Rebuild, Reorg, compilation, publish, execution, or tests; the response includes a no-DDL reorg preview.",
+      "description": "Native, typed, atomic Transaction + Data View authoring over an existing physical table. action=inspect|dry_run|create|update|delete. dry_run performs validation without constructing or saving SDK objects. create/update persist the root-only Transaction and Data View, then reread and verify the committed pair; commit and verification status are reported separately. action=delete is destructive and requires confirm=true when dryRun=false. No action implicitly runs Specify, Generate, Build, Rebuild, Reorg, compilation, publish, execution, or tests; the response includes a no-DDL reorg preview.",
       "inputSchema": {
         "additionalProperties": false,
         "examples": [
@@ -789,6 +789,12 @@
             "table": "LEDGERENTRY",
             "transaction": "LedgerEntryView",
             "updatable": true
+          },
+          {
+            "action": "delete",
+            "confirm": true,
+            "dataViewName": "LedgerEntryDV",
+            "transaction": "LedgerEntryView"
           }
         ],
         "properties": {
@@ -824,6 +830,10 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "confirm": {
+            "description": "Required for action=delete when dryRun=false; explicitly authorizes removing the Transaction and Data View.",
+            "type": "boolean"
           },
           "dataStore": {
             "description": "Existing GeneXus data store category (default Default).",
@@ -1922,7 +1932,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Manage open KBs, startup config, and the active GeneXus environment. list/open/close/set_default operate on WorkerPool; set_startup/get_startup mirror IDE 'Set As Startup Object'; get_environment reads the SDK selection; set_environment selects an environment through the SDK task used by the IDE.",
+      "description": "Manage open KBs, startup config, and the active GeneXus environment. list/open/close/set_default operate on WorkerPool; set_default selects the implicit target for calls that omit kb (an explicit kb always wins for parallel or cross-KB work); set_startup/get_startup mirror IDE 'Set As Startup Object'; get_environment reads the SDK selection; set_environment selects an environment through the SDK task used by the IDE.",
       "inputSchema": {
         "examples": [
           {

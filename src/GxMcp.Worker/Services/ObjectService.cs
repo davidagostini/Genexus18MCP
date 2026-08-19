@@ -38,6 +38,21 @@ namespace GxMcp.Worker.Services
         private static readonly ConcurrentDictionary<string, DateTime> _recentDeletions =
             new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private static readonly TimeSpan RecentDeletionTtl = TimeSpan.FromMinutes(5);
+        private const int MaxIncomingReferences = 256;
+
+        private enum NativeResolutionStatus
+        {
+            Found,
+            Absent,
+            Failed
+        }
+
+        private sealed class NativeResolution
+        {
+            public NativeResolutionStatus Status;
+            public KBObject Object;
+            public Exception Error;
+        }
 
         private static string RecentDeletionKey(string type, string name) =>
             ((type ?? "") + ":" + (name ?? "")).ToLowerInvariant();
@@ -739,8 +754,6 @@ namespace GxMcp.Worker.Services
                         if (!string.Equals(cachedName, target, StringComparison.OrdinalIgnoreCase)) continue;
                         if (!string.IsNullOrEmpty(typeFilter) && !string.Equals(cachedType, typeFilter, StringComparison.OrdinalIgnoreCase)) continue;
 
-                        var ackName = CommandDispatcher.EscapeJsonString(cachedName);
-                        var ackType = CommandDispatcher.EscapeJsonString(cachedType);
                         var deletedAt = CommandDispatcher.EscapeJsonString(kv.Value.ToString("o"));
                         Logger.Info(string.Format("DeleteObject: {0} ({1}) already removed at {2} — confirming via recent-deletion cache.", cachedName, cachedType, deletedAt));
                         return McpResponse.Ok(target: cachedName, code: "ObjectDeleted", result: new JObject
@@ -776,12 +789,26 @@ namespace GxMcp.Worker.Services
                         });
                 }
 
-                JArray references = CollectIncomingReferences(obj, kb);
+                bool referencesTruncated;
+                JArray references = CollectIncomingReferences(obj, kb, out referencesTruncated);
 
                 // dryRun: return what would be deleted without mutating the KB.
                 if (dryRun)
                 {
-                    var reread = ResolveByNativeIdentity(kb, objGuid, objType);
+                    var rereadResult = ResolveByNativeIdentity(kb, objGuid, objType);
+                    if (rereadResult.Status == NativeResolutionStatus.Failed)
+                        return McpResponse.Err(code: "ObjectResolutionFailed",
+                            message: "The SDK could not re-resolve the object for the dry-run verification: " + rereadResult.Error?.Message,
+                            hint: "No mutation was attempted; retry after the KB/SDK becomes readable.", target: objName,
+                            extra: new JObject { ["persisted"] = false, ["verificationSucceeded"] = false });
+                    var reread = rereadResult.Object;
+                    if (rereadResult.Status == NativeResolutionStatus.Absent)
+                        return McpResponse.Err(
+                            code: "ObjectChanged",
+                            message: "The object disappeared before the dry-run verification completed.",
+                            hint: "Re-read the Knowledge Base before retrying.",
+                            target: objName,
+                            extra: new JObject { ["persisted"] = false, ["verificationSucceeded"] = false });
                     string versionAfter = WriteService.ComputeVersionToken(reread);
                     bool unchanged = reread != null
                         && string.Equals(versionBefore, versionAfter, StringComparison.Ordinal);
@@ -794,7 +821,8 @@ namespace GxMcp.Worker.Services
                             ["resolvedGuid"] = objGuid.ToString(),
                             ["qualifiedName"] = qualifiedName,
                             ["references"] = references,
-                            ["dependents"] = references.DeepClone(),
+                            ["referencesTruncated"] = referencesTruncated,
+                            ["referenceLimit"] = MaxIncomingReferences,
                             ["wouldDelete"] = true,
                             ["persisted"] = false,
                             ["mutationDetected"] = !unchanged,
@@ -821,8 +849,19 @@ namespace GxMcp.Worker.Services
                     bool committed = false;
                     try
                     {
-                        var current = ResolveByNativeIdentity(kb, objGuid, objType);
-                        if (current == null)
+                        var currentResult = ResolveByNativeIdentity(kb, objGuid, objType);
+                        if (currentResult.Status == NativeResolutionStatus.Failed)
+                        {
+                            tx.Rollback();
+                            return McpResponse.Err(
+                                code: "ObjectResolutionFailed",
+                                message: "The SDK could not resolve the target inside the deletion transaction: " + currentResult.Error?.Message,
+                                hint: "The transaction was rolled back; retry after the KB/SDK becomes readable.",
+                                target: objName,
+                                extra: new JObject { ["persisted"] = false, ["verificationSucceeded"] = false });
+                        }
+                        var current = currentResult.Object;
+                        if (currentResult.Status == NativeResolutionStatus.Absent)
                         {
                             tx.Rollback();
                             return McpResponse.Err(
@@ -851,11 +890,22 @@ namespace GxMcp.Worker.Services
                                 });
                         }
 
-                        references = CollectIncomingReferences(current, kb);
+                        references = CollectIncomingReferences(current, kb, out referencesTruncated);
                         deleteStarted = true;
                         current.Delete();
 
-                        if (ResolveByNativeIdentity(kb, objGuid, objType) != null)
+                        var afterDelete = ResolveByNativeIdentity(kb, objGuid, objType);
+                        if (afterDelete.Status == NativeResolutionStatus.Failed)
+                        {
+                            tx.Rollback();
+                            return McpResponse.Err(
+                                code: "ObjectResolutionFailed",
+                                message: "The SDK could not verify Delete() inside the transaction: " + afterDelete.Error?.Message,
+                                hint: "The transaction was rolled back; retry after the KB/SDK becomes readable.",
+                                target: objName,
+                                extra: new JObject { ["persisted"] = false, ["verificationSucceeded"] = false });
+                        }
+                        if (afterDelete.Status == NativeResolutionStatus.Found)
                         {
                             tx.Rollback();
                             return McpResponse.Err(
@@ -880,9 +930,22 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                bool absentAfterCommit = ResolveByNativeIdentity(kb, objGuid, objType) == null
-                    && FindObject(objName, objType) == null;
-                if (!absentAfterCommit)
+                var afterCommit = ResolveByNativeIdentity(kb, objGuid, objType);
+                if (afterCommit.Status == NativeResolutionStatus.Failed)
+                {
+                    return McpResponse.Err(
+                        code: "DeleteVerificationUnavailable",
+                        message: "The deletion transaction committed, but the SDK could not verify the original object identity: " + afterCommit.Error?.Message,
+                        hint: "Do not retry blindly; re-read the KB after the SDK is healthy.",
+                        target: objName,
+                        extra: new JObject
+                        {
+                            ["commitSucceeded"] = true,
+                            ["verificationSucceeded"] = false,
+                            ["persisted"] = JValue.CreateNull()
+                        });
+                }
+                if (afterCommit.Status == NativeResolutionStatus.Found)
                 {
                     return McpResponse.Err(
                         code: "DeleteNotPersisted",
@@ -891,8 +954,10 @@ namespace GxMcp.Worker.Services
                         target: objName,
                         extra: new JObject
                         {
+                            ["commitSucceeded"] = true,
+                            ["verificationSucceeded"] = true,
                             ["persisted"] = false,
-                            ["rereadConfirmed"] = true
+                            ["rereadConfirmed"] = false
                         });
                 }
 
@@ -909,7 +974,7 @@ namespace GxMcp.Worker.Services
                 try
                 {
                     var idx = _kbService?.GetIndexCache();
-                    if (idx != null) idx.RemoveEntry(objType, objName);
+                    if (idx != null) idx.RemoveEntryByGuid(objGuid.ToString());
                 }
                 catch (Exception ex) { Logger.Error("DeleteObject: index RemoveEntry failed for " + objName + ": " + ex.Message); }
 
@@ -921,7 +986,8 @@ namespace GxMcp.Worker.Services
                     ["resolvedGuid"] = objGuid.ToString(),
                     ["qualifiedName"] = qualifiedName,
                     ["references"] = references,
-                    ["dependents"] = references.DeepClone(),
+                    ["referencesTruncated"] = referencesTruncated,
+                    ["referenceLimit"] = MaxIncomingReferences,
                     ["wouldDelete"] = true,
                     ["persisted"] = true,
                     ["rereadConfirmed"] = true,
@@ -937,9 +1003,15 @@ namespace GxMcp.Worker.Services
                 try
                 {
                     var kb = _kbService.GetKB();
-                    stillExists = objGuid == Guid.Empty || ResolveByNativeIdentity(kb, objGuid, objType) != null;
+                    if (objGuid == Guid.Empty) stillExists = true;
+                    else
+                    {
+                        var resolution = ResolveByNativeIdentity(kb, objGuid, objType);
+                        stillExists = resolution.Status == NativeResolutionStatus.Found;
+                        if (resolution.Status == NativeResolutionStatus.Failed) stillExists = true;
+                    }
                 }
-                catch { }
+                catch { stillExists = true; }
                 return McpResponse.Err(
                     code: "DeleteFailed",
                     message: ex.InnerException?.Message ?? ex.Message,
@@ -949,7 +1021,8 @@ namespace GxMcp.Worker.Services
                     target: objName,
                     extra: new JObject
                     {
-                        ["persisted"] = !stillExists,
+                        ["persisted"] = objGuid == Guid.Empty ? false : (stillExists ? false : JValue.CreateNull()),
+                        ["verificationSucceeded"] = objGuid != Guid.Empty && !stillExists,
                         ["rollback"] = new JObject
                         {
                             ["attempted"] = deleteStarted && !transactionCommitted,
@@ -973,24 +1046,43 @@ namespace GxMcp.Worker.Services
             return obj.Name;
         }
 
-        private static KBObject ResolveByNativeIdentity(KnowledgeBase kb, Guid guid, string typeName)
+        private static NativeResolution ResolveByNativeIdentity(KnowledgeBase kb, Guid guid, string typeName)
         {
-            if (kb == null || guid == Guid.Empty) return null;
-            if (string.Equals(typeName, "Domain", StringComparison.OrdinalIgnoreCase))
+            if (kb == null || guid == Guid.Empty)
+                return new NativeResolution { Status = NativeResolutionStatus.Absent };
+            try
             {
-                try { return Artech.Genexus.Common.Objects.Domain.Get(kb.DesignModel, guid); }
-                catch { return null; }
+                KBObject result;
+                if (string.Equals(typeName, "Domain", StringComparison.OrdinalIgnoreCase))
+                    result = Artech.Genexus.Common.Objects.Domain.Get(kb.DesignModel, guid);
+                else
+                    result = kb.DesignModel.Objects.Get(guid);
+                return new NativeResolution
+                {
+                    Status = result == null ? NativeResolutionStatus.Absent : NativeResolutionStatus.Found,
+                    Object = result
+                };
             }
-            try { return kb.DesignModel.Objects.Get(guid); }
-            catch { return null; }
+            catch (Exception ex)
+            {
+                Logger.Error("Native object resolution failed for " + guid + ": " + ex.Message);
+                return new NativeResolution { Status = NativeResolutionStatus.Failed, Error = ex };
+            }
         }
 
-        private static JArray CollectIncomingReferences(KBObject obj, KnowledgeBase kb)
+        private static JArray CollectIncomingReferences(KBObject obj, KnowledgeBase kb, out bool truncated)
         {
             var result = new JArray();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            truncated = false;
+            int inspected = 0;
             foreach (var reference in obj.GetReferencesTo())
             {
+                if (++inspected > MaxIncomingReferences)
+                {
+                    truncated = true;
+                    break;
+                }
                 string key = null;
                 try { key = reference.From?.ToString(); } catch { }
                 if (string.IsNullOrWhiteSpace(key) || !seen.Add(key)) continue;

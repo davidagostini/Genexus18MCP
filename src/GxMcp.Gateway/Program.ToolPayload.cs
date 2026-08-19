@@ -224,6 +224,8 @@ namespace GxMcp.Gateway
 
             if (string.Equals(toolName, "genexus_import_object", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(toolName, "genexus_delete_object", StringComparison.OrdinalIgnoreCase) ||
+                (string.Equals(toolName, "genexus_data_view", StringComparison.OrdinalIgnoreCase) &&
+                    IsDataViewMutation(args)) ||
                 string.Equals(toolName, "genexus_rename_across_kb", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(toolName, "genexus_apply_pattern", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(toolName, "genexus_kb_import", StringComparison.OrdinalIgnoreCase) ||
@@ -343,6 +345,15 @@ namespace GxMcp.Gateway
             }
 
             return false;
+        }
+
+        private static bool IsDataViewMutation(JObject? args)
+        {
+            if (args?["dryRun"]?.ToObject<bool?>() == true) return false;
+            string? action = args?["action"]?.ToString();
+            return string.Equals(action, "create", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "update", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "delete", StringComparison.OrdinalIgnoreCase);
         }
 
         // Items 54/55/56: resolve a "KB ref" argument that may be either an alias

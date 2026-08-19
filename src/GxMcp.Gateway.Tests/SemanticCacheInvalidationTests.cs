@@ -52,6 +52,9 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_history", "save")]
         [InlineData("genexus_history", "restore")]
         [InlineData("genexus_transfer", "import")]
+        [InlineData("genexus_data_view", "create")]
+        [InlineData("genexus_data_view", "update")]
+        [InlineData("genexus_data_view", "delete")]
         [InlineData("genexus_structure", "update_visual")]
         [InlineData("genexus_structure", "create_index")]
         [InlineData("genexus_structure", "drop_index")]
@@ -102,6 +105,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_lifecycle")]
         [InlineData("genexus_gxserver")]
         [InlineData("genexus_transfer")]
+        [InlineData("genexus_data_view")]
         [InlineData("genexus_db")]
         [InlineData("genexus_history")]
         [InlineData("genexus_properties")]
@@ -123,6 +127,8 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_history", "list")]
         [InlineData("genexus_transfer", "export")]
         [InlineData("genexus_transfer", "inspect")]
+        [InlineData("genexus_data_view", "inspect")]
+        [InlineData("genexus_data_view", "dry_run")]
         [InlineData("genexus_structure", "get_visual")]
         [InlineData("genexus_structure", "get_indexes")]
         [InlineData("genexus_structure", "get_logic")]
@@ -148,6 +154,19 @@ namespace GxMcp.Gateway.Tests
             var args = new JObject { ["action"] = action };
             Assert.False(Program.IsMutatingTool(toolName, args),
                 $"expected {toolName} action={action} to be treated as read-only");
+        }
+
+        [Theory]
+        [InlineData("create")]
+        [InlineData("update")]
+        [InlineData("delete")]
+        public void DataView_DryRun_DoesNotInvalidate(string action)
+        {
+            Assert.False(Program.IsMutatingTool("genexus_data_view", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = true
+            }));
         }
 
         // ── The exact reported scenario ─────────────────────────────────────────

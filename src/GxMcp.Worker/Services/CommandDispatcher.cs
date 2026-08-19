@@ -1233,7 +1233,8 @@ namespace GxMcp.Worker.Services
                         args?["varName"]?.ToString(), args?["objectName"]?.ToString(),
                         args?["objectModule"]?.ToString(), varDryRun,
                         args?["expectedVersion"]?.ToString(),
-                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true);
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                        args?["collection"]?.ToObject<bool?>());
                 }
                 // issue #32 item 1: batch form — a `variables` array adds many in one call
                 // (one save/flush), avoiding N sequential round-trips + concurrent-write risk.
@@ -1275,7 +1276,8 @@ namespace GxMcp.Worker.Services
                         args?["varName"]?.ToString(), args?["objectName"]?.ToString(),
                         args?["objectModule"]?.ToString(), varDryRun,
                         args?["expectedVersion"]?.ToString(),
-                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true);
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                        args?["collection"]?.ToObject<bool?>());
                 }
                 var modResp = _writeService.ModifyVariable(
                     target,

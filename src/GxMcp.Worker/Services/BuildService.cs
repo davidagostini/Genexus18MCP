@@ -1843,6 +1843,38 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) return;
             string activeEnvironmentWebPath = null;
             try { activeEnvironmentWebPath = _kbService?.GetActiveEnvironmentWebPath(); } catch { }
+            // A running worker always has KbService injected. Keep the unscoped probe
+            // only for direct unit/legacy callers that construct BuildService alone;
+            // those callers have no SDK environment to resolve or accidentally cross.
+            bool environmentResolutionRequired = _kbService != null;
+            if (environmentResolutionRequired
+                && (string.IsNullOrWhiteSpace(activeEnvironmentWebPath) || !Directory.Exists(activeEnvironmentWebPath)))
+            {
+                var unresolved = new JObject
+                {
+                    ["ok"] = false,
+                    ["environmentScoped"] = false,
+                    ["environmentUnresolved"] = true,
+                    ["objectsChecked"] = checkList.Count,
+                    ["staleOrMissing"] = new JArray(checkList.Select(t => new JObject
+                    {
+                        ["object"] = BareName(t),
+                        ["reason"] = "activeEnvironmentOutputRootUnavailable"
+                    })),
+                    ["note"] = "Build completed without a uniquely resolved active-environment Web output root; generated-file evidence was not inferred from another environment."
+                };
+                lock (status._lock)
+                {
+                    status.GenerateEvidence = unresolved;
+                    status.Status = "Failed";
+                    status.ErrorCount++;
+                    status.Warnings.Add("[generate-gap] active environment output root could not be resolved; build evidence is unavailable.");
+                    status.WarningCount++;
+                    if (string.IsNullOrEmpty(status.Hint))
+                        status.Hint = "The build was not reported as a clean success because the active environment output root could not be resolved safely.";
+                }
+                return;
+            }
 
             // issue #42 hardening (A) — set of objects that were dirty (edited via MCP
             // but not yet successfully built) when the build started. GeneXus generation
@@ -1944,7 +1976,14 @@ namespace GxMcp.Worker.Services
                         if (string.IsNullOrEmpty(cbare) || !seen.Add(cbare)) continue;
                         if (checkSet.Contains(cbare)) continue; // already built
                         bool hasCs;
-                        try { hasCs = GeneratedDiffService.FindGeneratedFiles(kbPath, cbare, allRoots: true).Count > 0; }
+                        try
+                        {
+                            // Reuse the same active-environment filter as the primary
+                            // freshness probe; a newer callee file in another environment
+                            // must not make this build look complete.
+                            hasCs = GeneratedDiffService.ProbeGeneratedFreshness(
+                                kbPath, cbare, DateTime.MinValue, null, activeEnvironmentWebPath).Found;
+                        }
                         catch { hasCs = true; }
                         if (!hasCs) referencedButNotBuilt.Add(cbare);
                     }
@@ -2297,11 +2336,11 @@ namespace GxMcp.Worker.Services
                             ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase)
                             : (status.DirtyAtStart ?? new List<string>()).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase);
                         var snap = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+                        string activeEnvironmentWebPath = null;
+                        try { activeEnvironmentWebPath = _kbService?.GetActiveEnvironmentWebPath(); } catch { }
                         foreach (var bare in gateList)
                         {
                             if (string.IsNullOrEmpty(bare)) continue;
-                            string activeEnvironmentWebPath = null;
-                            try { activeEnvironmentWebPath = _kbService?.GetActiveEnvironmentWebPath(); } catch { }
                             var ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, DateTime.MinValue, null, activeEnvironmentWebPath);
                             if (ev.Found && ev.FreshestWriteUtc != null) snap[bare] = ev.FreshestWriteUtc.Value;
                         }

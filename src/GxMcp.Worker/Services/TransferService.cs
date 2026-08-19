@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Xml;
 using System.Xml.Linq;
 using GxMcp.Worker.Helpers;
 using Artech.Architecture.Common.Objects;
@@ -233,7 +234,18 @@ namespace GxMcp.Worker.Services
                     message: "action=import with dryRun=false requires confirm=true (it mutates the KB).",
                     hint: "Preview first with dryRun=true, then pass confirm=true to apply.");
 
-            var options = SilentImportOptions(args);
+            ImportOptions options;
+            try
+            {
+                options = SilentImportOptions(args);
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "InvalidTransferOptions",
+                    message: "The requested XPZ import options could not be applied; no import was attempted. " + ex.Message,
+                    hint: "Use the supported conflict/theme option values or omit them to use the safe defaults.");
+            }
             ImportFidelityPlan fidelityPlan;
             try
             {
@@ -306,7 +318,10 @@ namespace GxMcp.Worker.Services
             var candidates = AsEnumerable(exportedObjects).ToList();
             if (candidates.Count == 0)
                 candidates = AsEnumerable(prepared?.Items).ToList();
+            if (candidates.Count == 0 && exportedWebForms.Count > 0)
+                throw new InvalidDataException("The XPZ contains raw WebForm payloads but the SDK exposed no import candidates for them.");
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            bool sawWebFormCandidate = false;
 
             foreach (var raw in candidates)
             {
@@ -321,13 +336,14 @@ namespace GxMcp.Worker.Services
                 if (source == null) continue;
                 var sourcePart = WebFormXmlHelper.GetWebFormPart(source);
                 if (sourcePart == null) continue;
+                sawWebFormCandidate = true;
 
-                string expectedXml = null;
-                if (!string.IsNullOrWhiteSpace(source.Name))
-                    exportedWebForms.TryGetValue(source.Name, out expectedXml);
-                if (string.IsNullOrWhiteSpace(expectedXml))
-                    expectedXml = WebFormXmlHelper.ReadEditableXml(source);
-                if (string.IsNullOrWhiteSpace(expectedXml)) continue;
+                if (string.IsNullOrWhiteSpace(source.Name)
+                    || !exportedWebForms.TryGetValue(source.Name, out string expectedXml)
+                    || string.IsNullOrWhiteSpace(expectedXml))
+                    throw new InvalidDataException(
+                        "The XPZ contains a WebForm candidate without a readable raw WebForm payload for '"
+                        + (source.Name ?? "<unnamed>") + "'. Fidelity verification cannot use the SDK projection as a baseline.");
 
                 string typeFilter = sourceType ?? source.TypeDescriptor?.Name;
                 string partName = sourcePart.TypeDescriptor?.Name ?? "WebForm";
@@ -346,6 +362,9 @@ namespace GxMcp.Worker.Services
                 });
             }
 
+            if (sawWebFormCandidate && plan.Items.Count == 0)
+                throw new InvalidDataException("The XPZ exposed WebForm objects but no raw WebForm payload could be mapped.");
+
             return plan;
         }
 
@@ -354,37 +373,48 @@ namespace GxMcp.Worker.Services
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(file) || !File.Exists(file)) return result;
 
+            const int maxXmlEntries = 2048;
+            const long maxEntryBytes = 8L * 1024 * 1024;
+            const long maxTotalBytes = 64L * 1024 * 1024;
+            int xmlEntries = 0;
+            long totalBytes = 0;
+
             using (var archive = ZipFile.OpenRead(file))
             {
                 foreach (var entry in archive.Entries.Where(e =>
                     e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)))
                 {
-                    XDocument document;
-                    try
-                    {
-                        using (var stream = entry.Open())
-                            document = XDocument.Load(stream, LoadOptions.PreserveWhitespace);
-                    }
-                    catch
-                    {
-                        continue;
-                    }
+                    if (++xmlEntries > maxXmlEntries)
+                        throw new InvalidDataException("The XPZ contains too many XML entries for safe fidelity inspection.");
+                    if (entry.Length > maxEntryBytes || (totalBytes += entry.Length) > maxTotalBytes)
+                        throw new InvalidDataException("The XPZ XML payload exceeds the safe fidelity-inspection limit.");
 
-                    foreach (var obj in document.Descendants("Object"))
+                    XDocument document;
+                    using (var stream = entry.Open())
+                    using (var reader = XmlReader.Create(stream, new XmlReaderSettings
                     {
-                        string name = (string)obj.Attribute("name");
+                        DtdProcessing = DtdProcessing.Prohibit,
+                        XmlResolver = null,
+                        MaxCharactersFromEntities = 0
+                    }))
+                        document = XDocument.Load(reader, LoadOptions.PreserveWhitespace);
+
+                    foreach (var obj in document.Descendants().Where(e => string.Equals(e.Name.LocalName, "Object", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        string name = obj.Attributes().FirstOrDefault(a =>
+                            string.Equals(a.Name.LocalName, "name", StringComparison.OrdinalIgnoreCase))?.Value;
                         if (string.IsNullOrWhiteSpace(name)) continue;
 
-                        foreach (var source in obj.Descendants("Part").Elements("Source"))
+                        foreach (var source in obj.Descendants().Where(e =>
+                            string.Equals(e.Name.LocalName, "Source", StringComparison.OrdinalIgnoreCase)
+                            && e.Parent != null
+                            && string.Equals(e.Parent.Name.LocalName, "Part", StringComparison.OrdinalIgnoreCase)))
                         {
                             string xml = source.Value;
                             if (string.IsNullOrWhiteSpace(xml)) continue;
-                            xml = xml.TrimStart();
-                            if (xml.StartsWith("<GxMultiForm", StringComparison.OrdinalIgnoreCase)
-                                || xml.StartsWith("<BODY", StringComparison.OrdinalIgnoreCase)
-                                || xml.StartsWith("<Layout", StringComparison.OrdinalIgnoreCase))
+                            if (IsWebFormPayload(xml))
                             {
-                                result[name] = xml;
+                                result[name] = xml.Trim();
                                 break;
                             }
                         }
@@ -393,6 +423,27 @@ namespace GxMcp.Worker.Services
             }
 
             return result;
+        }
+
+        private static bool IsWebFormPayload(string xml)
+        {
+            try
+            {
+                using (var reader = XmlReader.Create(new StringReader(xml), new XmlReaderSettings
+                {
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null,
+                    MaxCharactersFromEntities = 0
+                }))
+                {
+                    var root = XDocument.Load(reader, LoadOptions.PreserveWhitespace).Root;
+                    string local = root?.Name.LocalName;
+                    return string.Equals(local, "GxMultiForm", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(local, "BODY", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(local, "Layout", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+            catch { return false; }
         }
 
         private ImportFidelityResult VerifyImportedWebForms(ImportFidelityPlan plan)
@@ -547,8 +598,25 @@ namespace GxMcp.Worker.Services
             try { o.RollBackOnError = true; } catch { }
             try { o.AutomaticRollbackOnCancel = true; } catch { }
 
-            SetEnumValue(o, "ClassConflicts", ResolveImportClassConflicts(args));
-            SetEnumValue(o, "ThemeImportBehavior", ResolveImportThemeBehavior(args));
+            string classConflicts = args?["classConflicts"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(classConflicts))
+            {
+                if (!string.Equals(classConflicts, "UseExisting", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(classConflicts, "UseFromExport", StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException("classConflicts must be UseExisting or UseFromExport.");
+                if (!SetEnumValue(o, "ClassConflicts", classConflicts))
+                    throw new InvalidOperationException("The installed GeneXus SDK does not expose a writable ClassConflicts option.");
+            }
+
+            string themeImportBehavior = args?["themeImportBehavior"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(themeImportBehavior))
+            {
+                if (!string.Equals(themeImportBehavior, "IncrementalIntegration", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(themeImportBehavior, "Overwrite", StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException("themeImportBehavior must be IncrementalIntegration or Overwrite.");
+                if (!SetEnumValue(o, "ThemeImportBehavior", themeImportBehavior))
+                    throw new InvalidOperationException("The installed GeneXus SDK does not expose a writable ThemeImportBehavior option.");
+            }
 
             return o;
         }
@@ -567,19 +635,18 @@ namespace GxMcp.Worker.Services
                 : "Overwrite";
         }
 
-        private static void SetEnumValue(object target, string propertyName, string enumValueName)
+        private static bool SetEnumValue(object target, string propertyName, string enumValueName)
         {
             try
             {
-                if (target == null) return;
+                if (target == null) return false;
                 var prop = target.GetType().GetProperty(propertyName);
-                if (prop != null && prop.PropertyType.IsEnum)
-                {
-                    var val = Enum.Parse(prop.PropertyType, enumValueName, true);
-                    prop.SetValue(target, val, null);
-                }
+                if (prop == null || !prop.PropertyType.IsEnum || !prop.CanWrite) return false;
+                var val = Enum.Parse(prop.PropertyType, enumValueName, true);
+                prop.SetValue(target, val, null);
+                return true;
             }
-            catch { }
+            catch { return false; }
         }
 
         // A fresh ExportOptions with the dialog-free defaults the SDK uses for silent exports;

@@ -1518,7 +1518,7 @@ namespace GxMcp.Worker.Services
         /// </summary>
         public string ChangeBusinessComponentVariable(string action, string target, string varName,
             string objectName, string moduleName, bool dryRun, string expectedVersion,
-            bool rollbackOnFailure = true)
+            bool rollbackOnFailure = true, bool? collection = null)
         {
             action = (action ?? "add").Trim().ToLowerInvariant();
             if (action != "add" && action != "modify")
@@ -1652,6 +1652,7 @@ namespace GxMcp.Worker.Services
             global::Artech.Architecture.Common.Objects.KnowledgeBase kb =
                 _objectService.GetKbService().GetKB();
             bool committed = false;
+            string versionAfterCommit = null;
             try
             {
                 using (var tx = kb.BeginTransaction())
@@ -1668,11 +1669,14 @@ namespace GxMcp.Worker.Services
                         var currentVariable = currentPart.Variables.FirstOrDefault(v =>
                             string.Equals(v.Name, normalizedName, StringComparison.OrdinalIgnoreCase));
                         string description = null;
-                        bool isCollection = false;
+                        bool isCollection = collection ?? false;
                         if (currentVariable != null)
                         {
                             try { description = currentVariable.Description; } catch { }
-                            try { isCollection = currentVariable.IsCollection; } catch { }
+                            if (!collection.HasValue)
+                            {
+                                try { isCollection = currentVariable.IsCollection; } catch { }
+                            }
                             currentPart.Variables.Remove(currentVariable);
                         }
 
@@ -1699,6 +1703,7 @@ namespace GxMcp.Worker.Services
                 var persistedPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(persistedOwner);
                 var persistedVariable = persistedPart?.Variables.FirstOrDefault(v =>
                     string.Equals(v.Name, normalizedName, StringComparison.OrdinalIgnoreCase));
+                versionAfterCommit = ComputeVersionToken(persistedOwner);
                 bool bindingValid = VariableReferencesBusinessComponent(persistedVariable,
                     persistedPart?.Model, bc, out string bindingError);
                 var authoredComparison = snapshot.Compare(persistedOwner, "Variables", "ProcedureVariables",
@@ -1708,7 +1713,7 @@ namespace GxMcp.Worker.Services
                         ? bindingError
                         : "A non-Variables authored part changed unexpectedly: " + authoredComparison.ChangedParts);
 
-                string versionAfter = ComputeVersionToken(persistedOwner);
+                string versionAfter = versionAfterCommit;
                 JObject persistedIdentity = DescribeVariableBinding(persistedVariable, persistedPart.Model);
                 diff["persisted"] = persistedIdentity.DeepClone();
                 MarkDirtyIfSuccess("{\"status\":\"ok\"}", target);
@@ -1722,6 +1727,7 @@ namespace GxMcp.Worker.Services
                         ["versionToken"] = versionAfter,
                         ["diff"] = diff,
                         ["typedIdentity"] = persistedIdentity,
+                        ["collection"] = persistedVariable?.IsCollection,
                         ["reReadConfirmed"] = true,
                         ["rollbackOnFailure"] = rollbackOnFailure,
                         ["implicitLifecycleActions"] = new JArray()
@@ -1729,11 +1735,31 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                JObject rollback = RestoreObjectSnapshot(kb, owner.Guid, snapshot,
-                    normalizedName, originalVariableData);
+                bool versionConflict = ex.Message.StartsWith("VersionConflict:", StringComparison.Ordinal);
+                bool concurrentMutation = false;
+                if (!versionConflict && versionAfterCommit != null)
+                {
+                    try
+                    {
+                        var current = kb.DesignModel.Objects.Get(owner.Guid) ?? owner;
+                        concurrentMutation = !string.Equals(
+                            ComputeVersionToken(current), versionAfterCommit, StringComparison.Ordinal);
+                    }
+                    catch { concurrentMutation = true; }
+                }
+                JObject rollback = versionConflict || concurrentMutation
+                    ? new JObject
+                    {
+                        ["attempted"] = false,
+                        ["verified"] = false,
+                        ["skipped"] = true,
+                        ["reason"] = versionConflict
+                            ? "Version conflict was detected before mutation."
+                            : "The owner changed after this operation; restoring the old snapshot would overwrite a concurrent edit."
+                    }
+                    : RestoreObjectSnapshot(kb, owner.Guid, snapshot, normalizedName, originalVariableData);
                 bool restored = rollback["verified"]?.ToObject<bool?>() == true;
-                string code = ex.Message.StartsWith("VersionConflict:", StringComparison.Ordinal)
-                    ? "VersionConflict" : "VariableTypeNotPersisted";
+                string code = versionConflict ? "VersionConflict" : "VariableTypeNotPersisted";
                 return McpResponse.Err(code: code,
                     message: restored
                         ? "The Business Component variable change failed and the complete object snapshot was restored. " + ex.Message
@@ -1745,7 +1771,7 @@ namespace GxMcp.Worker.Services
                     extra: new JObject
                     {
                         ["persisted"] = !restored && committed,
-                        ["mutationDetected"] = !restored && committed,
+                        ["mutationDetected"] = committed && !restored,
                         ["beforeVersion"] = versionBefore,
                         ["rollback"] = rollback,
                         ["diff"] = diff,

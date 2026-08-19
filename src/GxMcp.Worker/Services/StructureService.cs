@@ -215,6 +215,26 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex)
                 {
                     var current = trn.Model.Objects.Get(trn.Guid) as Transaction ?? trn;
+                    if (ex.Message.StartsWith("VersionConflict:", StringComparison.Ordinal))
+                        return Models.McpResponse.Err(
+                            code: "VersionConflict",
+                            message: ex.Message,
+                            hint: "The SDK transaction was rolled back; the concurrent version was preserved and no old snapshot was restored.",
+                            target: targetName,
+                            extra: new JObject
+                            {
+                                ["persisted"] = false,
+                                ["mutationDetected"] = false,
+                                ["beforeVersion"] = versionBefore,
+                                ["rollback"] = new JObject
+                                {
+                                    ["attempted"] = false,
+                                    ["skipped"] = true,
+                                    ["verified"] = false,
+                                    ["reason"] = "Restoring the old snapshot could overwrite a concurrent edit."
+                                },
+                                ["implicitLifecycleActions"] = new JArray()
+                            });
                     bool unchanged = !committed && TransactionMatchesSnapshot(current, snapshot);
                     if (unchanged)
                         return Models.McpResponse.Err(code: ex.Message.StartsWith("VersionConflict:", StringComparison.Ordinal)

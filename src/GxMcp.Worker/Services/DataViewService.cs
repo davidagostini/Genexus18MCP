@@ -49,6 +49,7 @@ namespace GxMcp.Worker.Services
             public string TableName;
             public bool Updatable;
             public bool DryRun;
+            public bool Confirm;
             public bool RollbackOnFailure;
             public string ExpectedVersion;
             public readonly List<Mapping> Mappings = new List<Mapping>();
@@ -76,6 +77,13 @@ namespace GxMcp.Worker.Services
 
                 if (request.Action == "delete")
                 {
+                    if (!request.DryRun && !request.Confirm)
+                        return McpResponse.Err(
+                            "ConfirmRequired",
+                            "action=delete requires confirm=true because it removes the Transaction and Data View.",
+                            "Preview with dryRun=true, then repeat with confirm=true to apply the deletion.",
+                            target: request.TransactionName,
+                            errorExtra: new JObject { ["persisted"] = false });
                     if (request.DryRun)
                         return DeleteDryRun(request, transaction, dataView);
                     return Delete(request, transaction, dataView);
@@ -98,6 +106,15 @@ namespace GxMcp.Worker.Services
                         "ObjectNotFound",
                         "action=update requires both the Transaction and Data View to exist.",
                         target: request.TransactionName);
+
+                if (request.Action == "update")
+                {
+                    string pairError = ValidatePairAssociation(transaction, dataView, request.TransactionName,
+                        "The Data View is not associated with the Transaction's logical table; refusing to update an unrelated pair.");
+                    if (pairError != null) return pairError;
+                    string structureError = ValidateUpdateStructure(request, transaction);
+                    if (structureError != null) return structureError;
+                }
 
                 Table sourceTable;
                 GxDataStore dataStore;
@@ -139,6 +156,7 @@ namespace GxMcp.Worker.Services
                 TableName = args["table"]?.ToString()?.Trim(),
                 Updatable = args["updatable"]?.ToObject<bool?>() ?? true,
                 DryRun = args["dryRun"]?.ToObject<bool?>() ?? false,
+                Confirm = args["confirm"]?.ToObject<bool?>() ?? false,
                 RollbackOnFailure = args["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
                 ExpectedVersion = args["expectedVersion"]?.ToString()?.Trim()
             };
@@ -275,6 +293,8 @@ namespace GxMcp.Worker.Services
             var kb = _kbService.GetKB();
             var model = kb.DesignModel;
             bool committed = false;
+            bool rollbackAttempted = false;
+            bool rollbackSucceeded = false;
             string failure = null;
             using (var tx = kb.BeginTransaction())
             {
@@ -307,7 +327,9 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex)
                 {
                     failure = ex.Message;
-                    try { tx.Rollback(); } catch (Exception rollbackEx) { failure += " Rollback: " + rollbackEx.Message; }
+                    rollbackAttempted = true;
+                    try { tx.Rollback(); rollbackSucceeded = true; }
+                    catch (Exception rollbackEx) { failure += " Rollback: " + rollbackEx.Message; }
                 }
             }
 
@@ -322,6 +344,10 @@ namespace GxMcp.Worker.Services
                     errorExtra: new JObject
                     {
                         ["rolledBack"] = clean,
+                        ["rollbackAttempted"] = rollbackAttempted,
+                        ["rollbackSucceeded"] = rollbackSucceeded && clean,
+                        ["commitSucceeded"] = false,
+                        ["verificationSucceeded"] = false,
                         ["orphanTransaction"] = persistedTrn != null,
                         ["orphanDataView"] = persistedDv != null,
                         ["implicitLifecycleActions"] = new JArray()
@@ -331,8 +357,16 @@ namespace GxMcp.Worker.Services
             JObject verified = VerifyPersisted(request, persistedTrn, persistedDv);
             if (!(verified["confirmed"]?.ToObject<bool>() ?? false))
                 return McpResponse.Err("DataViewVerificationFailed", "The atomic save committed, but persisted reread did not match the requested pair.",
-                    "Inspect the returned verification details before using the Transaction.", target: request.TransactionName,
-                    errorExtra: new JObject { ["verification"] = verified });
+                    "The SDK commit succeeded but verification failed; inspect the pair before retrying.", target: request.TransactionName,
+                    errorExtra: new JObject
+                    {
+                        ["commitSucceeded"] = true,
+                        ["verificationSucceeded"] = false,
+                        ["persisted"] = true,
+                        ["orphanTransaction"] = persistedTrn != null,
+                        ["orphanDataView"] = persistedDv != null,
+                        ["verification"] = verified
+                    });
 
             string afterVersion = ComputeVersion(request, persistedTrn, persistedDv, sourceTable);
             TryUpdateIndex(persistedTrn, persistedDv);
@@ -341,49 +375,74 @@ namespace GxMcp.Worker.Services
 
         private string Update(Request request, string beforeVersion, Transaction transaction, DataView dataView, Table sourceTable, GxDataStore dataStore)
         {
-            JArray existingNames = new JArray(transaction.Structure.Root.Attributes.Select(a => a.Name));
-            var requestedNames = request.Mappings.Select(m => m.AttributeName).ToArray();
-            if (transaction.Structure.Root.Levels.Count != 0 || !transaction.Structure.Root.Attributes.Select(a => a.Name).SequenceEqual(requestedNames, StringComparer.OrdinalIgnoreCase))
-                return McpResponse.Err("DataViewStructureChangeUnsupported",
-                    "action=update does not add, remove, reorder, or nest Transaction attributes; nothing was changed.",
-                    "Create a new atomic pair for a different root structure. Updating Data View columns/properties is supported when the root structure is unchanged.",
-                    target: request.TransactionName,
-                    errorExtra: new JObject { ["persistedRootAttributes"] = existingNames, ["requestedRootAttributes"] = new JArray(requestedNames) });
+            string structureError = ValidateUpdateStructure(request, transaction);
+            if (structureError != null) return structureError;
 
             var kb = _kbService.GetKB();
             var model = kb.DesignModel;
             bool committed = false;
+            bool rollbackAttempted = false;
+            bool rollbackSucceeded = false;
             string failure = null;
             using (var tx = kb.BeginTransaction())
             {
                 try
                 {
-                    string current = ComputeVersion(request, transaction, dataView, sourceTable);
+                    var currentTransaction = FindTransaction(model, request.TransactionName);
+                    var currentDataView = FindDataView(model, request.DataViewName);
+                    if (currentTransaction == null || currentDataView == null)
+                        throw new InvalidOperationException("The Transaction/Data View pair disappeared before the update.");
+                    if (currentTransaction.Structure.Root.AssociatedTable == null
+                        || currentDataView.AssociatedTableKey == null
+                        || currentDataView.AssociatedTableKey.Id != currentTransaction.Structure.Root.AssociatedTable.Id)
+                        throw new InvalidOperationException("DataViewPairMismatch: the Data View association changed before the update.");
+
+                    string current = ComputeVersion(request, currentTransaction, currentDataView, sourceTable);
                     if (!string.IsNullOrEmpty(request.ExpectedVersion) && !string.Equals(current, request.ExpectedVersion, StringComparison.Ordinal))
                         throw new InvalidOperationException("Concurrent modification detected before the first save.");
-                    transaction.SetPropertyValue("idISBUSINESSCOMPONENT", true);
-                    transaction.Save(new KBObjectSavePreferences { ForceSave = true, ForceSaveDefaultParts = true, SkipValidation = false });
-                    Table logicalTable = transaction.Structure.Root.AssociatedTable;
-                    ConfigureDataView(dataView, request, dataStore, logicalTable);
-                    dataView.Save(new KBObjectSavePreferences { ForceSave = true, ForceSaveDefaultParts = true, SkipValidation = false });
-                    VerifyPair(request, transaction, dataView, logicalTable);
+                    currentTransaction.SetPropertyValue("idISBUSINESSCOMPONENT", true);
+                    currentTransaction.Save(new KBObjectSavePreferences { ForceSave = true, ForceSaveDefaultParts = true, SkipValidation = false });
+                    Table logicalTable = currentTransaction.Structure.Root.AssociatedTable;
+                    ConfigureDataView(currentDataView, request, dataStore, logicalTable);
+                    currentDataView.Save(new KBObjectSavePreferences { ForceSave = true, ForceSaveDefaultParts = true, SkipValidation = false });
+                    VerifyPair(request, currentTransaction, currentDataView, logicalTable);
                     tx.Commit();
                     committed = true;
                 }
                 catch (Exception ex)
                 {
                     failure = ex.Message;
-                    try { tx.Rollback(); } catch (Exception rollbackEx) { failure += " Rollback: " + rollbackEx.Message; }
+                    rollbackAttempted = true;
+                    try { tx.Rollback(); rollbackSucceeded = true; }
+                    catch (Exception rollbackEx) { failure += " Rollback: " + rollbackEx.Message; }
                 }
             }
             if (!committed)
                 return McpResponse.Err("DataViewUpdateFailed", failure ?? "Atomic update failed.",
                     "The SDK transaction was rolled back; reread the pair and retry with its current version.", target: request.TransactionName,
-                    errorExtra: new JObject { ["rolledBack"] = true, ["implicitLifecycleActions"] = new JArray() });
+                    errorExtra: new JObject
+                    {
+                        ["rolledBack"] = rollbackSucceeded,
+                        ["rollbackAttempted"] = rollbackAttempted,
+                        ["rollbackSucceeded"] = rollbackSucceeded,
+                        ["commitSucceeded"] = false,
+                        ["verificationSucceeded"] = false,
+                        ["implicitLifecycleActions"] = new JArray()
+                    });
 
             Transaction persistedTrn = FindTransaction(model, request.TransactionName);
             DataView persistedDv = FindDataView(model, request.DataViewName);
             JObject verified = VerifyPersisted(request, persistedTrn, persistedDv);
+            if (!(verified["confirmed"]?.ToObject<bool>() ?? false))
+                return McpResponse.Err("DataViewVerificationFailed", "The update committed, but persisted reread did not match the requested pair.",
+                    "The SDK commit succeeded but verification failed; inspect the pair before retrying.", target: request.TransactionName,
+                    errorExtra: new JObject
+                    {
+                        ["commitSucceeded"] = true,
+                        ["verificationSucceeded"] = false,
+                        ["persisted"] = true,
+                        ["verification"] = verified
+                    });
             string afterVersion = ComputeVersion(request, persistedTrn, persistedDv, sourceTable);
             TryUpdateIndex(persistedTrn, persistedDv);
             return McpResponse.Ok(request.TransactionName, "DataViewUpdated", SuccessPayload(request, beforeVersion, afterVersion, persistedTrn, persistedDv, verified));
@@ -393,15 +452,18 @@ namespace GxMcp.Worker.Services
         {
             if (transaction == null || dataView == null)
                 return McpResponse.Err("ObjectNotFound", "Both the Transaction and Data View are required for atomic delete.", target: request.TransactionName);
+            string pairError = ValidatePairAssociation(transaction, dataView, request.TransactionName,
+                "The Data View is not associated with the Transaction's logical table; refusing to delete unrelated objects.");
+            if (pairError != null) return pairError;
             Table logicalTable = transaction.Structure.Root.AssociatedTable;
-            if (logicalTable == null || dataView.AssociatedTableKey == null || dataView.AssociatedTableKey.Id != logicalTable.Id)
-                return McpResponse.Err("DataViewPairMismatch", "The Data View is not associated with the Transaction's logical table; refusing to delete unrelated objects.", target: request.TransactionName);
 
             var model = transaction.Model;
             string beforeVersion = ComputeVersion(request, transaction, dataView, logicalTable);
             string concurrency = ValidateExpectedVersion(request, beforeVersion);
             if (concurrency != null) return concurrency;
             bool committed = false;
+            bool rollbackAttempted = false;
+            bool rollbackSucceeded = false;
             string failure = null;
             using (var tx = transaction.KB.BeginTransaction())
             {
@@ -415,7 +477,9 @@ namespace GxMcp.Worker.Services
                 catch (Exception ex)
                 {
                     failure = ex.Message;
-                    try { tx.Rollback(); } catch (Exception rollbackEx) { failure += " Rollback: " + rollbackEx.Message; }
+                    rollbackAttempted = true;
+                    try { tx.Rollback(); rollbackSucceeded = true; }
+                    catch (Exception rollbackEx) { failure += " Rollback: " + rollbackEx.Message; }
                 }
             }
             Transaction remainingTrn = FindTransaction(model, request.TransactionName);
@@ -423,9 +487,21 @@ namespace GxMcp.Worker.Services
             if (!committed || remainingTrn != null || remainingDv != null)
                 return McpResponse.Err("DataViewDeleteFailed", failure ?? "Persisted reread found an object after delete.",
                     "The SDK transaction was rolled back when deletion failed.", target: request.TransactionName,
-                    errorExtra: new JObject { ["rolledBack"] = !committed, ["transactionExists"] = remainingTrn != null, ["dataViewExists"] = remainingDv != null });
+                    errorExtra: new JObject
+                    {
+                        ["rolledBack"] = rollbackSucceeded,
+                        ["rollbackAttempted"] = rollbackAttempted,
+                        ["rollbackSucceeded"] = rollbackSucceeded,
+                        ["commitSucceeded"] = committed,
+                        ["verificationSucceeded"] = false,
+                        ["transactionExists"] = remainingTrn != null,
+                        ["dataViewExists"] = remainingDv != null
+                    });
+            TryRemoveIndex(transaction, dataView);
             return McpResponse.Ok(request.TransactionName, "DataViewDeleted", new JObject
             {
+                ["commitSucceeded"] = true,
+                ["verificationSucceeded"] = true,
                 ["persisted"] = true,
                 ["beforeVersion"] = beforeVersion,
                 ["afterVersion"] = null,
@@ -539,6 +615,11 @@ namespace GxMcp.Worker.Services
                 throw new InvalidOperationException("The Data View is not associated with the Transaction's logical table.");
             if (!dataView.DataViewStructure.Attributes.Select(a => a.Attribute?.Name).SequenceEqual(request.Mappings.Select(m => m.AttributeName), StringComparer.OrdinalIgnoreCase))
                 throw new InvalidOperationException("The Data View attribute list differs from the requested mappings.");
+            if (!transaction.Structure.Root.Attributes.Select(a => a.IsKey).SequenceEqual(request.Mappings.Select(m => m.IsKey)))
+                throw new InvalidOperationException("The Transaction key flags differ from the requested mappings.");
+            DataViewStructurePlatform platform = dataView.DataViewStructure.Platforms.FirstOrDefault();
+            if (platform == null || platform.Dbms == 0)
+                throw new InvalidOperationException("The Data View physical platform/DBMS did not persist.");
         }
 
         private JObject VerifyPersisted(Request request, Transaction transaction, DataView dataView)
@@ -556,17 +637,21 @@ namespace GxMcp.Worker.Services
             bool assoc = logicalTable != null && dataView.AssociatedTableKey != null && dataView.AssociatedTableKey.Id == logicalTable.Id;
             bool mappings = dataView.DataViewStructure.Attributes.Select(a => new { Name = a.Attribute?.Name, a.ExternalName })
                 .SequenceEqual(request.Mappings.Select(m => new { Name = m.AttributeName, ExternalName = m.ColumnName }));
+            bool keyFlags = transaction.Structure.Root.Attributes.Select(a => a.IsKey)
+                .SequenceEqual(request.Mappings.Select(m => m.IsKey));
             DataViewStructurePlatform platform = dataView.DataViewStructure.Platforms.FirstOrDefault();
             bool physical = platform != null
                 && string.Equals(platform.Properties.GetPropertyValue<string>("NAME"), request.TableName, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(platform.Properties.GetPropertyValue<string>("SCHEMA"), request.Schema, StringComparison.OrdinalIgnoreCase);
+                && string.Equals(platform.Properties.GetPropertyValue<string>("SCHEMA"), request.Schema, StringComparison.OrdinalIgnoreCase)
+                && platform.Dbms != 0;
             result["businessComponent"] = bc;
             result["rootOnly"] = rootOnly;
             result["rootAttributes"] = attrs;
             result["associatedTable"] = assoc;
             result["attributeMappings"] = mappings;
+            result["keyFlags"] = keyFlags;
             result["physicalMapping"] = physical;
-            result["confirmed"] = bc && rootOnly && attrs && assoc && mappings && physical;
+            result["confirmed"] = bc && rootOnly && attrs && assoc && mappings && keyFlags && physical;
             return result;
         }
 
@@ -655,6 +740,28 @@ namespace GxMcp.Worker.Services
         private static DataView FindDataView(KBModel model, string name)
             => string.IsNullOrWhiteSpace(name) ? null : model.GetObjects<DataView>().GetByName(name).FirstOrDefault();
 
+        private static string ValidatePairAssociation(Transaction transaction, DataView dataView, string target, string message)
+        {
+            Table logicalTable = transaction?.Structure?.Root?.AssociatedTable;
+            if (logicalTable == null || dataView?.AssociatedTableKey == null || dataView.AssociatedTableKey.Id != logicalTable.Id)
+                return McpResponse.Err("DataViewPairMismatch", message, target: target);
+            return null;
+        }
+
+        private static string ValidateUpdateStructure(Request request, Transaction transaction)
+        {
+            JArray existingNames = new JArray(transaction.Structure.Root.Attributes.Select(a => a.Name));
+            string[] requestedNames = request.Mappings.Select(m => m.AttributeName).ToArray();
+            if (transaction.Structure.Root.Levels.Count == 0
+                && transaction.Structure.Root.Attributes.Select(a => a.Name).SequenceEqual(requestedNames, StringComparer.OrdinalIgnoreCase))
+                return null;
+            return McpResponse.Err("DataViewStructureChangeUnsupported",
+                "action=update does not add, remove, reorder, or nest Transaction attributes; nothing was changed.",
+                "Create a new atomic pair for a different root structure. Updating Data View columns/properties is supported when the root structure is unchanged.",
+                target: request.TransactionName,
+                errorExtra: new JObject { ["persistedRootAttributes"] = existingNames, ["requestedRootAttributes"] = new JArray(requestedNames) });
+        }
+
         private static void TrySetProperty(KBObject obj, string name, object value)
         {
             try { obj.SetPropertyValue(name, value); } catch { }
@@ -665,6 +772,18 @@ namespace GxMcp.Worker.Services
             try
             {
                 foreach (KBObject obj in objects) if (obj != null) _kbService.GetIndexCache()?.UpdateEntry(obj);
+            }
+            catch { }
+        }
+
+        private void TryRemoveIndex(params KBObject[] objects)
+        {
+            try
+            {
+                var index = _kbService.GetIndexCache();
+                if (index == null) return;
+                foreach (KBObject obj in objects)
+                    if (obj != null) index.RemoveEntryByGuid(obj.Guid.ToString());
             }
             catch { }
         }
