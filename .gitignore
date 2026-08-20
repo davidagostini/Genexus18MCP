@@ -51,6 +51,8 @@ out/
 
 # --- Scratch / debug artifacts ---
 scripts/_*
+scratchpad/
+worktrees/
 
 # --- Claude Code session state (per-user, not source) ---
 .claude/
