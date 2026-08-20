@@ -1579,9 +1579,8 @@ namespace GxMcp.Worker.Services
                         failureStage = "part_save";
                         Logger.Info(string.Format("[DEBUG-SAVE] Invoking part.Save() for {0}...", part.TypeDescriptor?.Name));
                         bool skippedPartSave = false;
-                        if (preferFastSourceSave &&
-                            part is global::Artech.Architecture.Common.Objects.ISource &&
-                            WritePolicy.IsLogicalSourcePart(partName))
+                        if ((preferFastSourceSave || WritePolicy.IsLogicalSourcePart(partName)) &&
+                            part is global::Artech.Architecture.Common.Objects.ISource)
                         {
                             skippedPartSave = true;
                             retryStrategy = "object_save_only_fast_path";

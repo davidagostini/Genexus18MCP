@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 
 namespace GxMcp.Worker.Services
@@ -30,6 +31,70 @@ namespace GxMcp.Worker.Services
                 int count = 0;
                 var results = new JArray();
 
+                if (changes == null || changes.Count == 0)
+                    return McpResponse.Ok(target: target, code: "BatchEditCompleted", result: new JObject { ["count"] = 0, ["results"] = results, ["duration"] = 0 });
+
+                bool allDirect = true;
+                foreach (var c in changes)
+                {
+                    string mode = c["mode"]?.ToString();
+                    bool dryRun = c["dryRun"]?.ToObject<bool?>() ?? false;
+                    if (mode == "patch" || dryRun) { allDirect = false; break; }
+                }
+
+                if (allDirect && changes.Count > 1)
+                {
+                    var obj = _objectService.FindObject(target);
+                    if (obj != null)
+                    {
+                        using (var trans = obj.Model.KB.BeginTransaction())
+                        {
+                            bool ok = false;
+                            try
+                            {
+                                foreach (var change in changes)
+                                {
+                                    string partName = change["part"]?.ToString() ?? "Source";
+                                    string content = change["content"]?.ToString();
+                                    var part = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, partName);
+                                    if (part == null)
+                                        throw new Exception($"Part '{partName}' not found on object '{target}'.");
+
+                                    if (part is Artech.Architecture.Common.Objects.ISource srcPart)
+                                    {
+                                        srcPart.Source = content ?? "";
+                                    }
+                                    else
+                                    {
+                                        var prop = part.GetType().GetProperty("Source") ?? part.GetType().GetProperty("Content");
+                                        if (prop == null)
+                                            throw new Exception($"Part '{partName}' does not expose a writable text Source/Content property.");
+                                        prop.SetValue(part, content ?? "");
+                                    }
+                                    results.Add(new JObject { ["status"] = "ok", ["part"] = partName });
+                                    count++;
+                                }
+                                obj.EnsureSave(check: false);
+                                trans.Commit();
+                                ok = true;
+                            }
+                            finally
+                            {
+                                if (!ok) { try { trans.Rollback(); } catch { } }
+                            }
+                        }
+                        return McpResponse.Ok(
+                            target: target,
+                            code: "BatchEditCompleted",
+                            result: new JObject
+                            {
+                                ["count"] = count,
+                                ["results"] = results,
+                                ["duration"] = sw.ElapsedMilliseconds
+                            });
+                    }
+                }
+
                 foreach (var change in changes)
                 {
                     string part = change["part"]?.ToString() ?? "Source";
@@ -39,10 +104,6 @@ namespace GxMcp.Worker.Services
                     string operation = change["operation"]?.ToString() ?? "Replace";
                     int expectedCount = change["expectedCount"]?.ToObject<int?>() ?? 1;
                     bool dryRun = change["dryRun"]?.ToObject<bool?>() ?? false;
-                    // Item 9 follow-up: forward replaceAll into the batch path so
-                    // genexus_edit {targets:[...]} honours the same semantics as the
-                    // single-target call. Without this, a per-change replaceAll is
-                    // silently dropped and the call returns Ambiguous on N>1 matches.
                     bool replaceAll = change["replaceAll"]?.ToObject<bool?>() ?? false;
 
                     string result;
@@ -127,25 +188,50 @@ namespace GxMcp.Worker.Services
                         code: "NoItemsProvided",
                         message: "No items provided.",
                         hint: "Pass a non-empty items array where each entry has name and changes.");
-                // no-nextStep: caller controls the items array; no specific tool call can resolve an empty input
 
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 var allResults = new JArray();
                 int totalChanges = 0;
 
+                var grouped = new System.Collections.Generic.Dictionary<string, JArray>(StringComparer.OrdinalIgnoreCase);
                 foreach (var item in items)
                 {
-                    string name = item["name"]?.ToString();
-                    var changes = item["changes"] as JArray;
-                    if (string.IsNullOrEmpty(name) || changes == null) continue;
+                    if (item is JObject jo)
+                    {
+                        string name = (jo["name"] ?? jo["target"])?.ToString();
+                        if (string.IsNullOrEmpty(name)) continue;
+
+                        if (jo["changes"] is JArray chArr)
+                        {
+                            if (!grouped.TryGetValue(name, out var list))
+                            {
+                                list = new JArray();
+                                grouped[name] = list;
+                            }
+                            foreach (var ch in chArr) list.Add(ch);
+                        }
+                        else
+                        {
+                            if (!grouped.TryGetValue(name, out var list))
+                            {
+                                list = new JArray();
+                                grouped[name] = list;
+                            }
+                            list.Add(jo);
+                        }
+                    }
+                }
+
+                foreach (var kvp in grouped)
+                {
+                    string name = kvp.Key;
+                    var changes = kvp.Value;
 
                     string result = BatchEdit(name, changes);
                     try {
                         var parsed = JObject.Parse(result);
                         parsed["object"] = name;
                         allResults.Add(parsed);
-                        // BatchEdit (above) only ever returns via McpResponse.Ok/Err — canonical
-                        // envelope only, no legacy top-level "count". Read from result.count.
                         totalChanges += parsed["result"]?["count"]?.ToObject<int>() ?? 0;
                     } catch {
                         allResults.Add(new JObject { ["object"] = name, ["error"] = result });
@@ -156,7 +242,7 @@ namespace GxMcp.Worker.Services
                     code: "MultiEditCompleted",
                     result: new JObject
                     {
-                        ["objectCount"] = items.Count,
+                        ["objectCount"] = grouped.Count,
                         ["totalChanges"] = totalChanges,
                         ["results"] = allResults,
                         ["duration"] = sw.ElapsedMilliseconds

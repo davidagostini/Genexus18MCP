@@ -43,6 +43,26 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ParseAndValidate_WithProperties_PreservesProperties()
+        {
+            var args = JObject.Parse(@"{
+                ""type"": ""Procedure"",
+                ""name"": ""P1"",
+                ""properties"": {
+                    ""Description"": ""My Procedure Description"",
+                    ""Folder"": ""Module1""
+                }
+            }");
+
+            var spec = AtomicCreateService.ParseAndValidate(args);
+
+            Assert.Empty(spec.Errors);
+            Assert.NotNull(spec.Properties);
+            Assert.Equal("My Procedure Description", spec.Properties["Description"]?.ToString());
+            Assert.Equal("Module1", spec.Properties["Folder"]?.ToString());
+        }
+
+        [Fact]
         public void ParseAndValidate_TypeAndNameRequired()
         {
             var spec = AtomicCreateService.ParseAndValidate(new JObject());

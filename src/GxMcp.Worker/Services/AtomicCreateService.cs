@@ -17,8 +17,8 @@ namespace GxMcp.Worker.Services
     /// syntax-checked through VariableTypeResolver AND reference-checked against the
     /// open KB (the issue #56 failure mode: a bare name that looks like a Domain/SDT/BC
     /// reference but doesn't exist), rules get a parenthesis sanity check, mode/type/
-    /// name are validated — then composes the existing SDK write primitives
-    /// (CreateObject + AddVariables + WriteObject + SetProperty) in sequence.
+    /// name are validated — then mutates all parts and properties directly in-memory
+    /// on the single KBObject instance and executes EnsureSave() exactly once.
     ///
     /// On any step failure it compensates so the operation is all-or-nothing:
     /// create mode → delete the freshly-created object; update mode → restore the
@@ -448,94 +448,137 @@ namespace GxMcp.Worker.Services
                 }
 
                 var steps = new JObject();
-                // Parts written by this call so far (update mode compensation restores
-                // each of them from the pre-write snapshots captured below).
-
-                // Pre-write snapshot capture (update mode): WriteObject snapshots
-                // Source/Rules itself, but AddVariables does not — capture every part
-                // this call will touch so a mid-pipeline failure can restore all of it.
                 if (exists) CapturePreWriteSnapshots(spec);
 
-                // Step 1 — create (create mode only). CreateObject persists; a later
-                // failure compensates by deleting this object.
+                Artech.Architecture.Common.Objects.KBObject obj = null;
                 if (!exists)
                 {
-                    // Arm compensation before entering the SDK create call: the SDK can
-                    // persist the object and then throw while finalizing its response.
                     createdFreshObject = true;
-                    var createResp = _objectService.CreateObject(spec.Type, spec.Name, args);
-                    var createJson = SafeParse(createResp);
-                    steps["create"] = createJson;
-                    if (!IsOk(createJson))
-                        return CompensateAndFail(spec, exists, createJson, "create", touchedParts);
+                    obj = _objectService.CreateObjectInstance(spec.Type, spec.Name, args, out string seededDesc, out JObject domainMeta);
+                    steps["create"] = new JObject
+                    {
+                        ["status"] = "ok",
+                        ["type"] = spec.Type,
+                        ["name"] = spec.Name,
+                        ["seededDescription"] = seededDesc
+                    };
+                }
+                else
+                {
+                    obj = _objectService.FindObject(spec.Name, spec.Type);
+                    if (obj == null)
+                        return McpResponse.Err(
+                            code: "ObjectNotFound",
+                            message: $"Object '{spec.Name}' not found for update.",
+                            hint: "Verify the target name and that the KB is open, or use mode=create.",
+                            nextSteps: new JArray(McpResponse.NextStep(
+                                tool: "genexus_list_objects",
+                                args: new JObject { ["name"] = spec.Name },
+                                why: "Checks if the object exists under a different type or casing.")),
+                            target: spec.Name);
                 }
 
-                // Step 2 — variables (batch). Reuses the per-item outcomes and the
-                // issue #56/#59 post-save verification already inside AddVariables.
+                // Step 2 — variables (in-memory batch)
                 if (spec.Variables != null && spec.Variables.Count > 0)
                 {
                     currentField = "variables";
                     touchedParts.Add("Variables");
-                    var varResp = _writeService.AddVariables(spec.Name, spec.Variables, false);
-                    var varJson = SafeParse(varResp);
-                    steps["variables"] = varJson;
-                    if (!IsOk(varJson))
-                        return CompensateAndFail(spec, exists, varJson, "variables", touchedParts);
+                    var varPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj);
+                    if (varPart == null)
+                        return CompensateAndFail(spec, exists, new JObject { ["error"] = new JObject { ["message"] = "Variables part not found in " + obj.TypeDescriptor.Name } }, "variables", touchedParts);
+
+                    _writeService.PopulateVariablesInto(varPart, spec.Variables, out var outcomes, out int added, out int existed, out int failed, out var domainBound, out var addedNames);
+
+                    steps["variables"] = new JObject
+                    {
+                        ["status"] = failed == 0 ? "ok" : "partial",
+                        ["counts"] = new JObject { ["added"] = added, ["existed"] = existed, ["failed"] = failed },
+                        ["outcomes"] = outcomes
+                    };
+                    if (failed > 0 && added == 0 && existed == 0)
+                    {
+                        return CompensateAndFail(spec, exists, (JObject)steps["variables"], "variables", touchedParts);
+                    }
                 }
 
-                // Step 3 — rules.
+                // Step 3 — rules (in-memory)
                 if (!string.IsNullOrWhiteSpace(spec.RulesText))
                 {
                     currentField = "rules";
                     touchedParts.Add("Rules");
-                    var rulesResp = _writeService.WriteObject(spec.Name, "Rules", spec.RulesText, spec.Type,
-                        autoValidate: false, preferFastSourceSave: true, autoInjectVariables: true, dryRun: false);
-                    var rulesJson = SafeParse(rulesResp);
-                    steps["rules"] = rulesJson;
-                    if (!IsOk(rulesJson))
-                        return CompensateAndFail(spec, exists, rulesJson, "rules", touchedParts);
+                    var rulesPart = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, "Rules");
+                    if (rulesPart is Artech.Architecture.Common.Objects.ISource rulesSrc)
+                    {
+                        rulesSrc.Source = spec.RulesText;
+                        steps["rules"] = new JObject { ["status"] = "ok", ["part"] = "Rules" };
+                    }
+                    else if (rulesPart != null)
+                    {
+                        var p = rulesPart.GetType().GetProperty("Source") ?? rulesPart.GetType().GetProperty("Content");
+                        p?.SetValue(rulesPart, spec.RulesText);
+                        steps["rules"] = new JObject { ["status"] = "ok", ["part"] = "Rules" };
+                    }
+                    else
+                    {
+                        return CompensateAndFail(spec, exists, new JObject { ["error"] = new JObject { ["message"] = "Rules part not found in " + obj.TypeDescriptor.Name } }, "rules", touchedParts);
+                    }
                 }
 
-                // Step 4 — source.
+                // Step 4 — source (in-memory)
                 if (!string.IsNullOrWhiteSpace(spec.Source))
                 {
                     currentField = "source";
                     touchedParts.Add("Source");
-                    var srcResp = _writeService.WriteObject(spec.Name, "Source", spec.Source, spec.Type,
-                        autoValidate: false, preferFastSourceSave: true, autoInjectVariables: true, dryRun: false);
-                    var srcJson = SafeParse(srcResp);
-                    steps["source"] = srcJson;
-                    if (!IsOk(srcJson))
-                        return CompensateAndFail(spec, exists, srcJson, "source", touchedParts);
+                    var srcPart = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, "Source");
+                    if (srcPart is Artech.Architecture.Common.Objects.ISource srcSrc)
+                    {
+                        srcSrc.Source = spec.Source;
+                        steps["source"] = new JObject { ["status"] = "ok", ["part"] = "Source" };
+                    }
+                    else if (srcPart != null)
+                    {
+                        var p = srcPart.GetType().GetProperty("Source") ?? srcPart.GetType().GetProperty("Content");
+                        p?.SetValue(srcPart, spec.Source);
+                        steps["source"] = new JObject { ["status"] = "ok", ["part"] = "Source" };
+                    }
+                    else
+                    {
+                        return CompensateAndFail(spec, exists, new JObject { ["error"] = new JObject { ["message"] = "Source part not found in " + obj.TypeDescriptor.Name } }, "source", touchedParts);
+                    }
                 }
 
-                // Step 5 — object-level properties.
+                // Step 5 — properties (in-memory)
                 if (spec.Properties != null && spec.Properties.Count > 0)
                 {
+                    currentField = "properties";
+                    PropertyService.ApplyPropertiesDirect(obj, spec.Properties);
                     var propResults = new JObject();
                     foreach (var p in spec.Properties.Properties())
                     {
-                        currentField = "properties." + p.Name;
-                        string propResp = _propertyService.SetProperty(spec.Name, p.Name, p.Value?.ToString(), null, spec.Type);
-                        var propJson = SafeParse(propResp);
-                        propResults[p.Name] = propJson;
-                        if (!IsOk(propJson))
-                        {
-                            var propErr = new JObject
-                            {
-                                ["stepStatus"] = "Error",
-                                ["code"] = "PropertyApplyFailed",
-                                ["error"] = new JObject
-                                {
-                                    ["code"] = propJson["error"]?["code"]?.ToString() ?? propJson["code"]?.ToString() ?? "PropertyApplyFailed",
-                                    ["message"] = propJson["error"]?["message"]?.ToString() ?? propJson["message"]?.ToString() ?? propResp
-                                }
-                            };
-                            propResults[p.Name] = propErr;
-                            return CompensateAndFail(spec, exists, propErr, "properties." + p.Name, touchedParts);
-                        }
+                        propResults[p.Name] = new JObject { ["status"] = "ok", ["value"] = p.Value?.ToString() };
                     }
                     steps["properties"] = propResults;
+                }
+
+                // SINGLE ATOMIC SAVE FOR THE ENTIRE OBJECT
+                currentField = "save";
+                obj.EnsureSave(check: false);
+
+                try
+                {
+                    var idx = _objectService.GetKbService()?.GetIndexCache();
+                    if (idx != null) idx.UpdateEntry(obj);
+                }
+                catch { }
+
+                if (!exists && (args?["folder"] != null || args?["module"] != null || args?["parentPath"] != null))
+                {
+                    string reqPlacement = args?["folder"]?.ToString() ?? args?["module"]?.ToString() ?? args?["parentPath"]?.ToString();
+                    string reqKind = args?["module"] != null ? "Module" : args?["folder"] != null ? "Folder" : null;
+                    if (!string.IsNullOrWhiteSpace(reqPlacement))
+                    {
+                        _objectService.MoveObject(spec.Name, reqPlacement, typeFilter: spec.Type, destKind: reqKind);
+                    }
                 }
 
                 string newVersion = ReadFingerprint(spec.Name, spec.Type);
@@ -605,16 +648,29 @@ namespace GxMcp.Worker.Services
                 {
                     try
                     {
-                        string delResp = _objectService.DeleteObject(args?["name"]?.ToString(), args?["type"]?.ToString(), true);
-                        var delJson = SafeParse(delResp);
-                        compensation = new JObject
+                        var onDisk = _objectService.FindObject(args?["name"]?.ToString(), args?["type"]?.ToString());
+                        if (onDisk != null)
                         {
-                            ["action"] = "delete_created_object",
-                            ["status"] = IsOk(delJson) ? "Deleted" : "Failed",
-                            ["note"] = IsOk(delJson)
-                                ? "The freshly-created object was deleted after the exception."
-                                : "The freshly-created object may remain (delete via genexus_delete_object if so)."
-                        };
+                            string delResp = _objectService.DeleteObject(args?["name"]?.ToString(), args?["type"]?.ToString(), true);
+                            var delJson = SafeParse(delResp);
+                            compensation = new JObject
+                            {
+                                ["action"] = "delete_created_object",
+                                ["status"] = IsOk(delJson) ? "Deleted" : "Failed",
+                                ["note"] = IsOk(delJson)
+                                    ? "The freshly-created object was deleted after the exception."
+                                    : "The freshly-created object may remain (delete via genexus_delete_object if so)."
+                            };
+                        }
+                        else
+                        {
+                            compensation = new JObject
+                            {
+                                ["action"] = "discard_in_memory_instance",
+                                ["status"] = "Discarded",
+                                ["note"] = "The object was never committed to the Knowledge Base; the in-memory instance was discarded."
+                            };
+                        }
                     }
                     catch
                     {
@@ -726,14 +782,24 @@ namespace GxMcp.Worker.Services
 
             if (!exists)
             {
-                string delResp = _objectService.DeleteObject(spec.Name, spec.Type, true);
-                var delJson = SafeParse(delResp);
-                compensation["action"] = "delete_created_object";
-                compensation["status"] = IsOk(delJson) ? "Deleted" : "Failed";
-                if (!IsOk(delJson))
-                    compensation["note"] = "Object deletion after the failed step did not complete; verify and remove '" + spec.Name + "' with genexus_delete_object.";
+                var onDisk = _objectService.FindObject(spec.Name, spec.Type);
+                if (onDisk != null)
+                {
+                    string delResp = _objectService.DeleteObject(spec.Name, spec.Type, true);
+                    var delJson = SafeParse(delResp);
+                    compensation["action"] = "delete_created_object";
+                    compensation["status"] = IsOk(delJson) ? "Deleted" : "Failed";
+                    if (!IsOk(delJson))
+                        compensation["note"] = "Object deletion after the failed step did not complete; verify and remove '" + spec.Name + "' with genexus_delete_object.";
+                    else
+                        compensation["note"] = "The freshly-created object was deleted so the failed operation leaves nothing behind.";
+                }
                 else
-                    compensation["note"] = "The freshly-created object was deleted so the failed operation leaves nothing behind.";
+                {
+                    compensation["action"] = "discard_in_memory_instance";
+                    compensation["status"] = "Discarded";
+                    compensation["note"] = "The object was never committed to the Knowledge Base; the in-memory instance was discarded.";
+                }
             }
             else
             {

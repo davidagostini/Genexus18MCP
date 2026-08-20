@@ -199,63 +199,7 @@ namespace GxMcp.Worker.Services
                         });
                 }
 
-                KBObject newObj = KBObject.Create(kb.DesignModel, typeGuid);
-                newObj.Name = name;
-                if (newObj is Artech.Architecture.Common.Objects.Module)
-                    newObj.Module = kb.DesignModel.RootModule;
-
-                // Initialize with some default content if possible
-                if (newObj.GetType().Name == "Procedure")
-                {
-                    var partProp = newObj.GetType().GetProperty("ProcedurePart");
-                    if (partProp != null) {
-                        object part = partProp.GetValue(newObj);
-                        if (part != null) {
-                            var sourceProp = part.GetType().GetProperty("Source");
-                            if (sourceProp != null) sourceProp.SetValue(part, "// Procedure: " + name + "\n\n");
-                        }
-                    }
-                }
-                else if (newObj.GetType().Name == "DataProvider")
-                {
-                    var partsProp = newObj.GetType().GetProperty("Parts");
-                    if (partsProp != null) {
-                        var parts = (System.Collections.IEnumerable)partsProp.GetValue(newObj);
-                        foreach (object p in parts)
-                        {
-                            if (p.GetType().Name == "SourcePart")
-                            {
-                                var sourceProp = p.GetType().GetProperty("Source");
-                                if (sourceProp != null) sourceProp.SetValue(p, "// Data Provider: " + name + "\n\n");
-                                break;
-                            }
-                        }
-                    }
-                }
-                string seededDescription = null;
-                JObject domainMeta = null;
-                if (type.Equals("SDT", StringComparison.OrdinalIgnoreCase) || type.Equals("StructuredDataType", StringComparison.OrdinalIgnoreCase))
-                {
-                    // issue #28 item 7: the SDK rejects an empty SDT Save, so a first item
-                    // must be seeded. Instead of a bogus Item1:VARCHAR(40) the caller can
-                    // name the real first field via firstItem/firstItemType, so the seed is
-                    // meaningful rather than throwaway. Defaults preserve prior behavior.
-                    string firstItem = options?["firstItem"]?.ToString();
-                    string firstItemType = options?["firstItemType"]?.ToString();
-                    if (string.IsNullOrWhiteSpace(firstItem)) firstItem = "Item1";
-                    if (string.IsNullOrWhiteSpace(firstItemType)) firstItemType = "VARCHAR";
-                    string seededType = InitializeSDTWithDefaultItem(newObj, name, firstItem, firstItemType);
-                    seededDescription = firstItem + " : " + (seededType ?? firstItemType);
-                }
-                else if (newObj is Artech.Genexus.Common.Objects.Transaction newTrn)
-                {
-                    InitializeTransactionWithDefaultKey(newTrn, name);
-                    seededDescription = name + "Id : Numeric(8,0) [Key]";
-                }
-                else if (type.Equals("Domain", StringComparison.OrdinalIgnoreCase))
-                {
-                    domainMeta = InitializeDomain(newObj, name, options, kb);
-                }
+                KBObject newObj = CreateObjectInstance(type, name, options, out string seededDescription, out JObject domainMeta);
 
                 if (dryRun)
                 {
@@ -275,14 +219,6 @@ namespace GxMcp.Worker.Services
                             ["hint"] = "Re-run without dryRun to call Save()."
                         });
                 }
-
-                // Raw KBObject.Create does not run GeneXus' property default-resolvers the
-                // way the IDE does, so security-bearing objects (API/Procedure/WebPanel/
-                // Transaction/…) are persisted with IntegratedSecurityLevel left at its
-                // invalid zero value, which the IDE renders as "(Unknown)". The only valid
-                // values are None / Authentication / Authorization; normalize to None (the
-                // default when GAM/integrated security isn't enabled) before saving.
-                NormalizeIntegratedSecurityLevel(newObj);
 
                 newObj.Save();
 
@@ -394,6 +330,75 @@ namespace GxMcp.Worker.Services
                 Logger.Error("CreateObject failed: " + ex.Message);
                 return McpResponse.Err(code: "CreateObjectFailed", message: ex.Message);
             }
+        }
+
+        public KBObject CreateObjectInstance(string type, string name, JObject options, out string seededDescription, out JObject domainMeta)
+        {
+            seededDescription = null;
+            domainMeta = null;
+
+            var kb = _kbService.GetKB();
+            if (kb == null) throw new Exception("KB not opened");
+
+            var typeGuid = ResolveObjectTypeGuid(type);
+            if (typeGuid == Guid.Empty)
+                throw new ArgumentException($"Unknown object type: {type}");
+
+            KBObject newObj = KBObject.Create(kb.DesignModel, typeGuid);
+            newObj.Name = name;
+            if (newObj is Artech.Architecture.Common.Objects.Module)
+                newObj.Module = kb.DesignModel.RootModule;
+
+            // Initialize with some default content if possible
+            if (newObj.GetType().Name == "Procedure")
+            {
+                var partProp = newObj.GetType().GetProperty("ProcedurePart");
+                if (partProp != null) {
+                    object part = partProp.GetValue(newObj);
+                    if (part != null) {
+                        var sourceProp = part.GetType().GetProperty("Source");
+                        if (sourceProp != null) sourceProp.SetValue(part, "// Procedure: " + name + "\n\n");
+                    }
+                }
+            }
+            else if (newObj.GetType().Name == "DataProvider")
+            {
+                var partsProp = newObj.GetType().GetProperty("Parts");
+                if (partsProp != null) {
+                    var parts = (System.Collections.IEnumerable)partsProp.GetValue(newObj);
+                    foreach (object p in parts)
+                    {
+                        if (p.GetType().Name == "SourcePart")
+                        {
+                            var sourceProp = p.GetType().GetProperty("Source");
+                            if (sourceProp != null) sourceProp.SetValue(p, "// Data Provider: " + name + "\n\n");
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (type.Equals("SDT", StringComparison.OrdinalIgnoreCase) || type.Equals("StructuredDataType", StringComparison.OrdinalIgnoreCase))
+            {
+                string firstItem = options?["firstItem"]?.ToString();
+                string firstItemType = options?["firstItemType"]?.ToString();
+                if (string.IsNullOrWhiteSpace(firstItem)) firstItem = "Item1";
+                if (string.IsNullOrWhiteSpace(firstItemType)) firstItemType = "VARCHAR";
+                string seededType = InitializeSDTWithDefaultItem(newObj, name, firstItem, firstItemType);
+                seededDescription = firstItem + " : " + (seededType ?? firstItemType);
+            }
+            else if (newObj is Artech.Genexus.Common.Objects.Transaction newTrn)
+            {
+                InitializeTransactionWithDefaultKey(newTrn, name);
+                seededDescription = name + "Id : Numeric(8,0) [Key]";
+            }
+            else if (type.Equals("Domain", StringComparison.OrdinalIgnoreCase))
+            {
+                domainMeta = InitializeDomain(newObj, name, options, kb);
+            }
+
+            NormalizeIntegratedSecurityLevel(newObj);
+            return newObj;
         }
 
         // IntegratedSecurityLevel is a Combo property whose stored value is one of the ids

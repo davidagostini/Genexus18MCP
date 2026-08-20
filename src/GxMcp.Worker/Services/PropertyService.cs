@@ -211,6 +211,95 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        public string SetProperties(string target, JObject properties, string controlName = null, string typeFilter = null)
+        {
+            try
+            {
+                if (properties == null || properties.Count == 0)
+                    return Models.McpResponse.Ok(target: target, code: "WriteNoChange", result: new JObject { ["details"] = "No properties provided." });
+
+                var obj = _objectService.FindObject(target, typeFilter);
+                if (obj == null) return Models.McpResponse.Err(code: "ObjectNotFound", message: "Object not found.", hint: "Check the target name and that the KB is open.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists available objects to verify the target name.")), target: target);
+
+                dynamic container = obj;
+                if (!string.IsNullOrEmpty(controlName))
+                {
+                    container = FindControl(obj, controlName);
+                    if (container == null) return Models.McpResponse.Err(code: "ControlNotFound", message: $"Control '{controlName}' not found in {obj.Name}.", hint: "Use genexus_inspect to list controls available in this object's layout.", nextSteps: new JArray(Models.McpResponse.NextStep("genexus_inspect", new JObject { ["name"] = target }, "Returns the layout controls for this object.")), target: target);
+                }
+
+                var beforeValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                using (var trans = obj.Model.KB.BeginTransaction())
+                {
+                    bool committed = false;
+                    try
+                    {
+                        foreach (var p in properties.Properties())
+                        {
+                            string propName = p.Name;
+                            string val = p.Value?.ToString();
+
+                            if (string.IsNullOrEmpty(controlName) && IsObjectPlacementProperty(propName))
+                                continue;
+                            if (string.IsNullOrEmpty(controlName) && string.Equals(propName?.Trim(), "Name", StringComparison.OrdinalIgnoreCase))
+                                throw new InvalidOperationException($"Cannot rename '{target}' via property batch setter.");
+                            if (IsNonScalarProperty(propName))
+                                throw new InvalidOperationException($"'{propName}' is a structured property and cannot be set as a scalar string.");
+
+                            string before = TryReadPropertyString(container, propName);
+                            if (before != null) beforeValues[propName] = before;
+
+                            ApplyPropertyValue(container, propName, val, controlName, obj);
+
+                            string after = TryReadPropertyString(container, propName);
+                            if (!string.IsNullOrEmpty(val) && !string.IsNullOrEmpty(before) && string.IsNullOrEmpty(after))
+                            {
+                                throw new PropertyWipeException(propName, before);
+                            }
+                        }
+
+                        try { if (container != obj) container.Dirty = true; } catch { }
+                        obj.EnsureSave();
+                        trans.Commit();
+                        committed = true;
+                        InvalidatePropertyCache(obj);
+                    }
+                    finally
+                    {
+                        if (!committed)
+                        {
+                            try { trans.Rollback(); } catch (Exception rbEx) { Logger.Warn("[PROPERTY] Rollback failed: " + rbEx.Message); }
+                        }
+                    }
+                }
+
+                return Models.McpResponse.Ok(target: target, code: "PropertiesApplied", result: new JObject { ["properties"] = properties });
+            }
+            catch (PropertyWipeException pwe)
+            {
+                return Models.McpResponse.Err(
+                    code: "PropertyWriteWipedValue",
+                    message: $"Setting '{pwe.PropertyName}' emptied a previously non-empty value; the write was rolled back to avoid data loss.",
+                    target: target);
+            }
+            catch (Exception ex)
+            {
+                return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+            }
+        }
+
+        internal static void ApplyPropertiesDirect(KBObject obj, JObject properties, dynamic container = null)
+        {
+            if (obj == null || properties == null || properties.Count == 0) return;
+            dynamic targetContainer = container ?? obj;
+            foreach (var p in properties.Properties())
+            {
+                string pName = p.Name;
+                string pVal = p.Value?.ToString();
+                ApplyPropertyValue(targetContainer, pName, pVal, null, obj);
+            }
+        }
+
         // issue #59 — re-read the property from a freshly-resolved object after the SDK
         // commit and confirm the requested value persisted. Returns either:
         //   - an error envelope (PropertyNotPersisted) when the re-read disagrees,
@@ -433,7 +522,7 @@ namespace GxMcp.Worker.Services
         // (e.g. idISBUSINESSCOMPONENT, idISBCEJB). Coerce by inspecting the existing value's type
         // or the property Definition before delegating, then fall back to the string-overload setter
         // (SetPropertyValueString) which the SDK provides for textual input.
-        private static void ApplyPropertyValue(dynamic container, string propName, string rawValue, string controlName, KBObject obj)
+        internal static void ApplyPropertyValue(dynamic container, string propName, string rawValue, string controlName, KBObject obj)
         {
             Exception lastError = null;
 

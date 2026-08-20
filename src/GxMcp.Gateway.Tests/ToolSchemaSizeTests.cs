@@ -138,7 +138,10 @@ namespace GxMcp.Gateway.Tests
             //   2026-08-20 (typed generator references): 21100 → 21700 for
             //   genexus_generator_reference list/add/remove, dry-run, optimistic
             //   concurrency and exact rollback. Measured ~21563; ~137 headroom.
-            Assert.True(approxTokens < 21700, $"tool_definitions.json is ~{approxTokens} tokens; budget 21700.");
+            //   2026-08-20 (batch properties & multi-part edit): 21700 → 21900 for
+            //   genexus_edit parts array and genexus_properties properties map
+            //   enabling single-pass atomic persistence. Measured ~21744; ~156 headroom.
+            Assert.True(approxTokens < 21900, $"tool_definitions.json is ~{approxTokens} tokens; budget 21900.");
         }
     }
 }

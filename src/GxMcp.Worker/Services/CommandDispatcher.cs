@@ -1932,9 +1932,19 @@ namespace GxMcp.Worker.Services
                 bool rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
                 return _objectService.MoveObject(target, destination, propType, destKind, moveDry, baseVersion, rollbackOnFailure);
             }
-            if (action == "Set")
+            if (action == "Set" || action == "SetMultiple" || (action == "set" && args?["properties"] != null))
             {
-                var propResp = _propertyService.SetProperty(
+                if (args?["properties"] is JObject propsObj && propsObj.Count > 0)
+                {
+                    var propResp = _propertyService.SetProperties(
+                        target,
+                        propsObj,
+                        args?["control"]?.ToString(),
+                        propType);
+                    return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(propResp, target, args);
+                }
+
+                var singleResp = _propertyService.SetProperty(
                     target,
                     args?["propertyName"]?.ToString(),
                     args?["value"]?.ToString(),
@@ -1942,7 +1952,7 @@ namespace GxMcp.Worker.Services
                     propType);
                 // issue #60 — validationMode="specify" runs the inline Specify pass against
                 // the edited object and surfaces structured diagnostics (or rolls back).
-                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(propResp, target, args);
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(singleResp, target, args);
             }
             return _propertyService.GetProperties(target, args?["control"]?.ToString(), propType);
         }

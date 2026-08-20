@@ -1011,7 +1011,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Delete an object from the KB through its native SDK identity. Irreversible — confirm=true required. Inspects native incoming references first; dryRun=true previews without persisting.",
+      "description": "Delete an object from the KB through its native SDK identity. Irreversible — confirm=true required. Inspects native incoming references first; dryRun=true previews without deleting it.",
       "inputSchema": {
         "examples": [
           {
@@ -1279,6 +1279,28 @@
           },
           "part": {
             "type": "string"
+          },
+          "parts": {
+            "description": "Multi-part edit on a single object. Each item: {part, content, mode?}. Saves the object once atomically.",
+            "items": {
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "part": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "part",
+                "content"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           },
           "patch": {
             "description": "Shorthand for {find,replace}. Equivalent to operation=Replace + context=find + content=replace."
@@ -2803,6 +2825,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "properties": {
+            "description": "Batch set: map of propertyName to value applied in 1 transaction.",
+            "type": "object"
           },
           "propertyName": {
             "type": "string"

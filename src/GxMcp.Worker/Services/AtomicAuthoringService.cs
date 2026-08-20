@@ -63,7 +63,8 @@ namespace GxMcp.Worker.Services
             var phases = new JArray();
             try
             {
-                if (existing == null)
+                Artech.Architecture.Common.Objects.KBObject obj = existing;
+                if (obj == null)
                 {
                     JObject createArgs = (JObject)args.DeepClone();
                     createArgs.Remove("variables"); createArgs.Remove("rules"); createArgs.Remove("source"); createArgs.Remove("properties");
@@ -72,37 +73,56 @@ namespace GxMcp.Worker.Services
                         createArgs["destModule"] = createArgs["module"].DeepClone();
                         createArgs.Remove("module");
                     }
-                    JObject createdResponse = JObject.Parse(_objects.CreateObject(type, name, createArgs));
-                    EnsureSuccess(createdResponse, "create");
+                    obj = _objects.CreateObjectInstance(type, name, createArgs, out _, out _);
                     created = true;
-                    phases.Add(new JObject { ["phase"] = "create", ["response"] = createdResponse });
+                    phases.Add(new JObject { ["phase"] = "create", ["status"] = "ok" });
                 }
 
                 if (args?["variables"] is JArray variables && variables.Count > 0)
                 {
-                    var normalizedVariables = new JArray();
-                    foreach (JToken item in variables)
+                    var varPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj);
+                    if (varPart != null)
                     {
-                        JObject variable = item as JObject;
-                        if (variable == null) { normalizedVariables.Add(item.DeepClone()); continue; }
-                        variable = (JObject)variable.DeepClone();
-                        if (variable["typeName"] == null && variable["basedOn"] != null)
-                            variable["typeName"] = variable["basedOn"].DeepClone();
-                        normalizedVariables.Add(variable);
+                        var normalizedVariables = new JArray();
+                        foreach (JToken item in variables)
+                        {
+                            JObject variable = item as JObject;
+                            if (variable == null) { normalizedVariables.Add(item.DeepClone()); continue; }
+                            variable = (JObject)variable.DeepClone();
+                            if (variable["typeName"] == null && variable["basedOn"] != null)
+                                variable["typeName"] = variable["basedOn"].DeepClone();
+                            normalizedVariables.Add(variable);
+                        }
+                        _write.PopulateVariablesInto(varPart, normalizedVariables, out var outcomes, out _, out _, out _, out _, out _);
+                        phases.Add(new JObject { ["phase"] = "variables", ["status"] = "ok", ["outcomes"] = outcomes });
                     }
-                    ApplyAndRecord("variables", _write.AddVariables(name, normalizedVariables, false), phases);
                 }
 
                 string rules = JoinText(args?["rules"]);
-                if (rules != null) ApplyAndRecord("rules", WritePart(name, "Rules", rules), phases);
+                if (rules != null)
+                {
+                    var rPart = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, "Rules");
+                    if (rPart is Artech.Architecture.Common.Objects.ISource rSrc) rSrc.Source = rules;
+                    else (rPart?.GetType().GetProperty("Source") ?? rPart?.GetType().GetProperty("Content"))?.SetValue(rPart, rules);
+                    phases.Add(new JObject { ["phase"] = "rules", ["status"] = "ok" });
+                }
 
                 string source = JoinText(args?["source"]);
-                if (source != null) ApplyAndRecord("source", WritePart(name, "Source", source), phases);
+                if (source != null)
+                {
+                    var sPart = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, "Source");
+                    if (sPart is Artech.Architecture.Common.Objects.ISource sSrc) sSrc.Source = source;
+                    else (sPart?.GetType().GetProperty("Source") ?? sPart?.GetType().GetProperty("Content"))?.SetValue(sPart, source);
+                    phases.Add(new JObject { ["phase"] = "source", ["status"] = "ok" });
+                }
 
                 if (args?["properties"] is JObject properties)
-                    foreach (var property in properties.Properties())
-                        ApplyAndRecord("property:" + property.Name,
-                            _properties.SetProperty(name, property.Name, property.Value?.ToString(), null, type), phases);
+                {
+                    PropertyService.ApplyPropertiesDirect(obj, properties);
+                    phases.Add(new JObject { ["phase"] = "properties", ["status"] = "ok" });
+                }
+
+                obj.EnsureSave(check: false);
 
                 bool validate = args?["validate"]?.ToObject<bool?>() ?? false;
                 string validationMode = args?["validationMode"]?.ToString() ?? "specify";
@@ -227,9 +247,18 @@ namespace GxMcp.Worker.Services
             {
                 if (created)
                 {
-                    JObject deletion = JObject.Parse(_objects.DeleteObject(name, type, true, false));
-                    attempts.Add(new JObject { ["phase"] = "delete-created-object", ["response"] = deletion });
-                    success = IsSuccess(deletion);
+                    var existingOnDisk = _objects.FindObject(name, type);
+                    if (existingOnDisk != null)
+                    {
+                        JObject deletion = JObject.Parse(_objects.DeleteObject(name, type, true, false));
+                        attempts.Add(new JObject { ["phase"] = "delete-created-object", ["response"] = deletion });
+                        success = IsSuccess(deletion);
+                    }
+                    else
+                    {
+                        attempts.Add(new JObject { ["phase"] = "discard-in-memory", ["status"] = "ok" });
+                        success = true;
+                    }
                 }
                 else if (snapshot != null)
                 {

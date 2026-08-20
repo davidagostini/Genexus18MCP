@@ -127,6 +127,17 @@ namespace GxMcp.Gateway.Routers
                         };
                     }
 
+                    if (hasNameEdit && args?["parts"] is JArray partsEditArr && partsEditArr.Count > 0)
+                    {
+                        return new {
+                            module = "Batch",
+                            action = "BatchEdit",
+                            target = target,
+                            changes = partsEditArr,
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                        };
+                    }
+
                     string? mode = args?["mode"]?.ToString();
                     ValidateEditMode(mode);
 

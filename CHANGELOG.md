@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- **Multi-part editing on a single object in `genexus_edit`.** `genexus_edit` now accepts a `parts` array (`[{ part: "Rules", content: "..." }, { part: "Source", content: "..." }]`) alongside `name`, updating all specified parts and saving the object exactly once in a single atomic transaction.
+- **Batch property setting in `genexus_properties action=set`.** `genexus_properties` now accepts a `properties: { "Prop1": "Val1", "Prop2": "Val2" }` map to set multiple properties on an object in memory and commit them with a single `EnsureSave()` and SQL Server transaction.
+
+### Performance
+
+- **Eliminated redundant multiple saves and KB history bloat across all authoring and batch tools.** Previously, creating an object with variables, rules, source, and properties, or batch editing multiple parts, would sequentially invoke `EnsureSave()` 5 to 10 times, generating dozens of intermediate `EntityVersion` revisions and slowing down execution.
+  - `genexus_create action=object_atomic` (`AtomicCreateService`): Refactored to instantiate the object in memory, apply variables, rules, source, and properties directly in memory, and commit the entire object with **exactly 1 `EnsureSave()`**.
+  - `genexus_authoring` (`AtomicAuthoringService`): Coalesces creation, variables, rules, source, and properties in memory before performing a single save.
+  - `genexus_edit` / `MultiEdit` (`BatchService`): Groups edits by target object and executes coalesced in-memory part mutations, reducing N saves to 1 single `EnsureSave()` per object.
+  - `WriteService`: Logical source parts (`ISource` parts: Source, Rules, Events, Variables) now bypass the redundant intermediate `part.Save()` during transaction save and commit directly via `obj.EnsureSave()`, eliminating duplicate SQL Server `EntityVersion` rows.
+
 ## v2.42.0 - 2026-08-20
 
 ### Added

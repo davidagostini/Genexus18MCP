@@ -1202,6 +1202,7 @@ namespace GxMcp.Gateway.Routers
                     target = args?["name"]?.ToString(),
                     propertyName = args?["propertyName"]?.ToString(),
                     value = args?["value"]?.ToString(),
+                    properties = args?["properties"] as JObject,
                     control = args?["control"]?.ToString(),
                     type = args?["type"]?.ToString(),
                     // issue #60 — validationMode="specify" runs the inline Specify pass after

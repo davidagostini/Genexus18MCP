@@ -293,7 +293,7 @@ namespace GxMcp.Worker.Services
         // AddVariables (batch). Result of building one typed variable into a part.
         private enum VarBuildResult { Added, DomainNotFound, DomainNotPersistable, PrimitiveNotApplied }
 
-        private sealed class ExpectedDomainBinding
+        internal sealed class ExpectedDomainBinding
         {
             public string VarName { get; set; }
             public string DomainName { get; set; }
@@ -457,142 +457,7 @@ namespace GxMcp.Worker.Services
                 // Resolve the target object / VariablesPart once for the whole batch.
                 string scratch = "_";
                 var err = ResolveVariableTarget(target, ref scratch, out var obj, out var varPart, out _);
-                if (err != null) return err;
-
-                var outcomes = new JArray();
-                int added = 0, existed = 0, failed = 0;
-                var domainBound = new System.Collections.Generic.List<ExpectedDomainBinding>();
-                var addedNames = new System.Collections.Generic.List<string>();
-
-                foreach (var item in variables)
-                {
-                    var jo = item as JObject;
-                    if (jo == null)
-                    {
-                        failed++;
-                        outcomes.Add(new JObject { ["status"] = "Failed", ["reason"] = "Item is not an object." });
-                        continue;
-                    }
-
-                    string vName = (jo["varName"] ?? jo["name"])?.ToString();
-                    if (string.IsNullOrWhiteSpace(vName))
-                    {
-                        failed++;
-                        outcomes.Add(new JObject { ["status"] = "Failed", ["reason"] = "Missing varName." });
-                        continue;
-                    }
-                    vName = vName.TrimStart('&');
-
-                    string vType = jo["typeName"]?.ToString();
-                    string vBasedOn = jo["basedOn"]?.ToString();
-                    int? vLen = jo["length"]?.ToObject<int?>();
-                    int? vDec = jo["decimals"]?.ToObject<int?>();
-                    bool? vColl = jo["collection"]?.ToObject<bool?>();
-
-                    if (varPart.Variables.Any(v => string.Equals(v.Name, vName, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        existed++;
-                        outcomes.Add(new JObject { ["name"] = vName, ["itemStatus"] = "Exists" });
-                        continue;
-                    }
-
-                    // Type resolution (mirrors AddVariableInternal's Task 4.2 gate).
-                    GxMcp.Worker.Helpers.TypeResolution res = null;
-                    string rSdk = vType;
-                    int? rLen = null, rDec = null;
-                    if (!string.IsNullOrEmpty(vType))
-                    {
-                        res = GxMcp.Worker.Helpers.VariableTypeResolver.Resolve(vType);
-                        if (!res.Recognized)
-                        {
-                            failed++;
-                            outcomes.Add(new JObject
-                            {
-                                ["name"] = vName,
-                                ["status"] = "Failed",
-                                ["reason"] = "UnknownType",
-                                ["suggestion"] = res.Suggestion
-                            });
-                            continue;
-                        }
-                        if (res.CanonicalType == "DomainReference" && !string.IsNullOrEmpty(res.DomainName))
-                        {
-                            rSdk = res.DomainName;
-                        }
-                        else { rLen = res.Length; rDec = res.Decimals; rSdk = res.CanonicalType; }
-                    }
-                    if (!string.IsNullOrWhiteSpace(vBasedOn))
-                    {
-                        rSdk = vBasedOn.Trim();
-                        res = new GxMcp.Worker.Helpers.TypeResolution
-                        {
-                            Recognized = true,
-                            CanonicalType = "DomainReference",
-                            DomainName = rSdk,
-                            Suggestion = rSdk
-                        };
-                    }
-
-                    try
-                    {
-                        if (!string.IsNullOrEmpty(vType) || !string.IsNullOrWhiteSpace(vBasedOn))
-                        {
-                            var batchBuild = BuildResolvedVariableInto(varPart, vName, res, rSdk, rLen, rDec, vLen, vDec, vColl, vBasedOn ?? vType,
-                                out var domainBinding, out var bindFailure);
-                            if (batchBuild == VarBuildResult.DomainNotFound)
-                            {
-                                failed++;
-                                outcomes.Add(new JObject
-                                {
-                                    ["name"] = vName,
-                                    ["status"] = "Failed",
-                                    ["reason"] = "UnknownType",
-                                    ["details"] = $"Type '{vType}' not found in KB."
-                                });
-                                continue;
-                            }
-                            if (batchBuild == VarBuildResult.PrimitiveNotApplied)
-                            {
-                                // issue #34: don't silently persist a default NUMERIC(4) for a
-                                // recognized-but-unmappable primitive.
-                                failed++;
-                                outcomes.Add(new JObject
-                                {
-                                    ["name"] = vName,
-                                    ["status"] = "Failed",
-                                    ["reason"] = "TypeNotApplied",
-                                    ["details"] = $"Recognized type '{vType}' could not be applied (SDK type-map gap); variable skipped."
-                                });
-                                continue;
-                            }
-                            if (batchBuild == VarBuildResult.DomainNotPersistable)
-                            {
-                                failed++;
-                                outcomes.Add(new JObject
-                                {
-                                    ["name"] = vName,
-                                    ["status"] = "Failed",
-                                    ["reason"] = "VariableTypeNotPersisted",
-                                    ["details"] = bindFailure ?? "The Domain could not be represented as a native SDK reference."
-                                });
-                                continue;
-                            }
-                            if (domainBinding != null) domainBound.Add(domainBinding);
-                        }
-                        else
-                        {
-                            AddInferredVariableInto(varPart, vName, vLen, vDec, vColl);
-                        }
-                        added++;
-                        addedNames.Add(vName);
-                        outcomes.Add(new JObject { ["name"] = vName, ["status"] = "Added" });
-                    }
-                    catch (Exception exItem)
-                    {
-                        failed++;
-                        outcomes.Add(new JObject { ["name"] = vName, ["status"] = "Failed", ["reason"] = exItem.Message });
-                    }
-                }
+                PopulateVariablesInto(varPart, variables, out var outcomes, out int added, out int existed, out int failed, out var domainBound, out var addedNames);
 
                 if (added > 0)
                 {
@@ -668,8 +533,154 @@ namespace GxMcp.Worker.Services
                     nextSteps: new JArray(McpResponse.NextStep(
                         tool: "genexus_read",
                         args: new JObject { ["name"] = target, ["part"] = "Variables" },
-                        why: "Lists current variables to confirm state.")),
+                        why: "Lists current variables to verify existence before retrying.")),
                     target: target);
+            }
+        }
+
+        internal void PopulateVariablesInto(
+            global::Artech.Genexus.Common.Parts.VariablesPart varPart,
+            JArray variables,
+            out JArray outcomes,
+            out int added,
+            out int existed,
+            out int failed,
+            out System.Collections.Generic.List<ExpectedDomainBinding> domainBound,
+            out System.Collections.Generic.List<string> addedNames)
+        {
+            outcomes = new JArray();
+            added = 0; existed = 0; failed = 0;
+            domainBound = new System.Collections.Generic.List<ExpectedDomainBinding>();
+            addedNames = new System.Collections.Generic.List<string>();
+
+            if (varPart == null || variables == null || variables.Count == 0) return;
+
+            foreach (var item in variables)
+            {
+                var jo = item as JObject;
+                if (jo == null)
+                {
+                    failed++;
+                    outcomes.Add(new JObject { ["status"] = "Failed", ["reason"] = "Item is not an object." });
+                    continue;
+                }
+
+                string vName = (jo["varName"] ?? jo["name"])?.ToString();
+                if (string.IsNullOrWhiteSpace(vName))
+                {
+                    failed++;
+                    outcomes.Add(new JObject { ["status"] = "Failed", ["reason"] = "Missing varName." });
+                    continue;
+                }
+                vName = vName.TrimStart('&');
+
+                string vType = jo["typeName"]?.ToString();
+                string vBasedOn = jo["basedOn"]?.ToString();
+                int? vLen = jo["length"]?.ToObject<int?>();
+                int? vDec = jo["decimals"]?.ToObject<int?>();
+                bool? vColl = jo["collection"]?.ToObject<bool?>();
+
+                if (varPart.Variables.Any(v => string.Equals(v.Name, vName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    existed++;
+                    outcomes.Add(new JObject { ["name"] = vName, ["itemStatus"] = "Exists" });
+                    continue;
+                }
+
+                // Type resolution
+                GxMcp.Worker.Helpers.TypeResolution res = null;
+                string rSdk = vType;
+                int? rLen = null, rDec = null;
+                if (!string.IsNullOrEmpty(vType))
+                {
+                    res = GxMcp.Worker.Helpers.VariableTypeResolver.Resolve(vType);
+                    if (!res.Recognized)
+                    {
+                        failed++;
+                        outcomes.Add(new JObject
+                        {
+                            ["name"] = vName,
+                            ["status"] = "Failed",
+                            ["reason"] = "UnknownType",
+                            ["suggestion"] = res.Suggestion
+                        });
+                        continue;
+                    }
+                    if (res.CanonicalType == "DomainReference" && !string.IsNullOrEmpty(res.DomainName))
+                    {
+                        rSdk = res.DomainName;
+                    }
+                    else { rLen = res.Length; rDec = res.Decimals; rSdk = res.CanonicalType; }
+                }
+                if (!string.IsNullOrWhiteSpace(vBasedOn))
+                {
+                    rSdk = vBasedOn.Trim();
+                    res = new GxMcp.Worker.Helpers.TypeResolution
+                    {
+                        Recognized = true,
+                        CanonicalType = "DomainReference",
+                        DomainName = rSdk,
+                        Suggestion = rSdk
+                    };
+                }
+
+                try
+                {
+                    if (!string.IsNullOrEmpty(vType) || !string.IsNullOrWhiteSpace(vBasedOn))
+                    {
+                        var batchBuild = BuildResolvedVariableInto(varPart, vName, res, rSdk, rLen, rDec, vLen, vDec, vColl, vBasedOn ?? vType,
+                            out var domainBinding, out var bindFailure);
+                        if (batchBuild == VarBuildResult.DomainNotFound)
+                        {
+                            failed++;
+                            outcomes.Add(new JObject
+                            {
+                                ["name"] = vName,
+                                ["status"] = "Failed",
+                                ["reason"] = "UnknownType",
+                                ["details"] = $"Type '{vType}' not found in KB."
+                            });
+                            continue;
+                        }
+                        if (batchBuild == VarBuildResult.PrimitiveNotApplied)
+                        {
+                            failed++;
+                            outcomes.Add(new JObject
+                            {
+                                ["name"] = vName,
+                                ["status"] = "Failed",
+                                ["reason"] = "TypeNotApplied",
+                                ["details"] = $"Recognized type '{vType}' could not be applied (SDK type-map gap); variable skipped."
+                            });
+                            continue;
+                        }
+                        if (batchBuild == VarBuildResult.DomainNotPersistable)
+                        {
+                            failed++;
+                            outcomes.Add(new JObject
+                            {
+                                ["name"] = vName,
+                                ["status"] = "Failed",
+                                ["reason"] = "VariableTypeNotPersisted",
+                                ["details"] = bindFailure ?? "The Domain could not be represented as a native SDK reference."
+                            });
+                            continue;
+                        }
+                        if (domainBinding != null) domainBound.Add(domainBinding);
+                    }
+                    else
+                    {
+                        AddInferredVariableInto(varPart, vName, vLen, vDec, vColl);
+                    }
+                    added++;
+                    addedNames.Add(vName);
+                    outcomes.Add(new JObject { ["name"] = vName, ["status"] = "Added" });
+                }
+                catch (Exception exItem)
+                {
+                    failed++;
+                    outcomes.Add(new JObject { ["name"] = vName, ["status"] = "Failed", ["reason"] = exItem.Message });
+                }
             }
         }
 
