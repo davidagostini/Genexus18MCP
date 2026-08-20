@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.42.0 - 2026-08-20
+
 ### Added
 
 - **Single-roundtrip Smart Read and 360° Task Context (`genexus_read` and `genexus_analyze mode=context`).** AI coding agents can now obtain full object context in a single tool call instead of incurring multiple roundtrips across parts, variables, rules, and dependencies:
