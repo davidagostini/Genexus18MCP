@@ -2,8 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **Single-roundtrip Smart Read and 360° Task Context (`genexus_read` and `genexus_analyze mode=context`).** AI coding agents can now obtain full object context in a single tool call instead of incurring multiple roundtrips across parts, variables, rules, and dependencies:
+  - `genexus_read`: Omitting the `part` argument (the new recommended default) returns the complete, tailored object payload for any GeneXus object type in 1 call: rules (with `parm`), source/events, compact variables array, structure DSL, signature, and called procedures' signatures. Single-part reads remain fully supported when `part` is explicitly provided.
+  - `genexus_analyze mode=context`: Bundles complete 360° task context in 1 roundtrip: the full target object + inlined parameter signatures of all called procedures + physical schemas and primary keys of referenced tables + structures of referenced SDTs + top callers.
+  - Smart Variable Pruning: Prunes 100% of unused GeneXus SDK built-in system noise variables (`&Time`, `&Pgmname`, `&Pgmdesc`, `&Page`, `&Line`, etc.) from variable lists, saving context budget while preserving all user-declared and referenced variables.
+  - `inline_read_top` Smart Reads: `genexus_query`, `genexus_list_objects`, and `genexus_search_source` now populate `inline_reads` with full `FullObjectRead` payloads on Turn 1.
+  - AXI Guidance: Embedded proactive playbooks and schema annotations in `tool_definitions.json`, `genexus_whoami(verbose=true)`, and Next Legal Actions to guide LLMs toward the 1-roundtrip path, maximizing speed and context economy.
+
 ### Fixed
 
+- **Robust Native SDK Object Resolution across all modules.** Fixed edge cases where newly created or unindexed objects (and Transactions sharing names with physical Table shadow objects) would fail resolution during single-roundtrip reads; resolution now seamlessly uses native SDK `GetByName` and promotes physical tables to source-bearing Transactions.
 - **SDT attribute-based members (`Attribute:<Name>` / `basedOnAttribute`) now persist and round-trip through `genexus_structure`, `genexus_read`, `genexus_inspect`, and `genexus_edit`.** Previously, SDT fields referencing a KB Attribute were ignored or stripped when setting structure, reading visual structure, or serializing to the Structure DSL, causing `basedOnAttribute` to be lost and `dryRun` to report false negatives. The SDT authoring pipeline now binds `AttributeBasedOn` via the native SDK reference provider, parses and emits `Attribute:<Name>` in DSL round-trips, surfaces `basedOnAttribute` in `genexus_structure action=get_visual`, `genexus_inspect`, and `genexus_read part=Structure`, and accurately detects visual structure mutations on attribute changes. Fixes #109.
 
 ## v2.41.11 - 2026-08-19

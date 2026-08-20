@@ -1581,6 +1581,10 @@ namespace GxMcp.Worker.Services
         {
             string t = type.Trim();
             if (t.Equals("StructuredDataType", StringComparison.OrdinalIgnoreCase)) return "SDT";
+            if (t.Equals("Structure", StringComparison.OrdinalIgnoreCase)) return "SDT";
+            if (t.Equals("Trn", StringComparison.OrdinalIgnoreCase)) return "Transaction";
+            if (t.Equals("Proc", StringComparison.OrdinalIgnoreCase)) return "Procedure";
+            if (t.Equals("WP", StringComparison.OrdinalIgnoreCase)) return "WebPanel";
             if (t.Equals("BusinessProcessDiagram", StringComparison.OrdinalIgnoreCase)) return "WorkflowDiagram";
             if (t.Equals("BPD", StringComparison.OrdinalIgnoreCase)) return "WorkflowDiagram";
             if (t.Equals("PanelForSD", StringComparison.OrdinalIgnoreCase)) return "SDPanel";
@@ -2151,6 +2155,106 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        private static KBObject ResolveTypedObjectDirect(Artech.Architecture.Common.Objects.KBModel model, string type, string name)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(name)) return null;
+            string norm = !string.IsNullOrWhiteSpace(type) ? NormalizeTypeAlias(type) : null;
+            try
+            {
+                // 1. Try ObjectNameHelper (built-in module-aware resolver)
+                var helperObj = global::Artech.Architecture.Common.Helpers.ObjectNameHelper.Get(model, name) as KBObject;
+                if (helperObj != null)
+                {
+                    // If helper resolved to a physical Table, promote to the source-bearing Transaction if one exists with the same name
+                    if (helperObj is global::Artech.Genexus.Common.Objects.Table ||
+                        string.Equals(helperObj.TypeDescriptor?.Name, "Table", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            var trn = global::Artech.Genexus.Common.Objects.Transaction.Get(model, new global::Artech.Architecture.Common.Objects.QualifiedName(name));
+                            if (trn != null) helperObj = trn;
+                        }
+                        catch { }
+                    }
+
+                    string hType = helperObj.TypeDescriptor?.Name ?? helperObj.GetType().Name;
+                    if (string.IsNullOrEmpty(norm) || string.Equals(NormalizeTypeAlias(hType), norm, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Debug(string.Format("ResolveTypedObjectDirect: ObjectNameHelper matched '{0}' as {1}", name, hType));
+                        return helperObj;
+                    }
+                    else
+                    {
+                        Logger.Debug(string.Format("ResolveTypedObjectDirect: ObjectNameHelper returned '{0}' of type {1}, but wanted {2}", name, hType, norm));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug(string.Format("ResolveTypedObjectDirect ObjectNameHelper error for '{0}': {1}", name, ex.Message));
+            }
+
+            // 2. Native SDK GetByName across modules
+            try
+            {
+                Guid? filterGuid = !string.IsNullOrEmpty(norm) ? (Guid?)ResolveObjectTypeGuid(norm) : null;
+                if (filterGuid == Guid.Empty) filterGuid = null;
+
+                var sdkMatches = model.Objects.GetByName(null, filterGuid, name);
+                if (sdkMatches != null)
+                {
+                    foreach (KBObject o in sdkMatches)
+                    {
+                        if (o != null)
+                        {
+                            // If it's a Table and untyped, prefer Transaction
+                            if (string.IsNullOrEmpty(norm) && (o is global::Artech.Genexus.Common.Objects.Table || string.Equals(o.TypeDescriptor?.Name, "Table", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                try
+                                {
+                                    var trn = global::Artech.Genexus.Common.Objects.Transaction.Get(model, new global::Artech.Architecture.Common.Objects.QualifiedName(name));
+                                    if (trn != null) return trn;
+                                }
+                                catch { }
+                            }
+                            return o;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug(string.Format("ResolveTypedObjectDirect GetByName error for '{0}': {1}", name, ex.Message));
+            }
+
+            if (!string.IsNullOrEmpty(norm))
+            {
+                try
+                {
+                    // 3. Try simple QualifiedName (root-module relative)
+                    var qName = new global::Artech.Architecture.Common.Objects.QualifiedName(name);
+
+                    if (norm.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+                        return global::Artech.Genexus.Common.Objects.SDT.Get(model, qName);
+                    if (norm.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
+                        return global::Artech.Genexus.Common.Objects.Transaction.Get(model, qName);
+                    if (norm.Equals("Procedure", StringComparison.OrdinalIgnoreCase))
+                        return global::Artech.Genexus.Common.Objects.Procedure.Get(model, qName);
+                    if (norm.Equals("WebPanel", StringComparison.OrdinalIgnoreCase))
+                        return global::Artech.Genexus.Common.Objects.WebPanel.Get(model, qName);
+                    if (norm.Equals("DataProvider", StringComparison.OrdinalIgnoreCase))
+                        return global::Artech.Genexus.Common.Objects.DataProvider.Get(model, qName);
+                    if (norm.Equals("DataSelector", StringComparison.OrdinalIgnoreCase))
+                        return global::Artech.Genexus.Common.Objects.DataSelector.Get(model, qName);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug(string.Format("ResolveTypedObjectDirect static Get error for '{0}' as {1}: {2}", name, norm, ex.Message));
+                }
+            }
+            return null;
+        }
+
         public KBObject FindObject(string target, string typeFilter = null)
         {
             if (string.IsNullOrEmpty(target)) return null;
@@ -2187,6 +2291,54 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            // Direct typed probe: if a specific type is requested, probe the SDK directly (<1ms)
+            if (typePart != null)
+            {
+                var directTyped = ResolveTypedObjectDirect(kb.DesignModel, typePart, namePart);
+                if (directTyped != null)
+                {
+                    Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Direct-Typed-Static: {1}) in {2}ms", target, typePart, sw.ElapsedMilliseconds));
+                    return directTyped;
+                }
+
+                Guid directTypeGuid = ResolveObjectTypeGuid(typePart);
+                if (directTypeGuid != Guid.Empty)
+                {
+                    try
+                    {
+                        var directObj = kb.DesignModel.Objects.Get(directTypeGuid, namePart);
+                        if (directObj != null)
+                        {
+                            Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Direct-Typed: {1}) in {2}ms", target, typePart, sw.ElapsedMilliseconds));
+                            return directObj;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            else
+            {
+                // Direct untyped probe via native SDK ObjectNameHelper (<1ms)
+                var directUntyped = ResolveTypedObjectDirect(kb.DesignModel, null, namePart);
+                if (directUntyped != null)
+                {
+                    Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Direct-Untyped-Helper) in {1}ms", target, sw.ElapsedMilliseconds));
+                    return directUntyped;
+                }
+
+                // Fast direct probe on primary logic types using native SDK static Get methods (<1ms)
+                string[] directCandidates = { "Procedure", "Transaction", "WebPanel", "SDT", "DataProvider", "DataSelector" };
+                foreach (var cand in directCandidates)
+                {
+                    var directTyped = ResolveTypedObjectDirect(kb.DesignModel, cand, namePart);
+                    if (directTyped != null)
+                    {
+                        Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Direct-Probe-Static: {1}) in {2}ms", target, cand, sw.ElapsedMilliseconds));
+                        return directTyped;
+                    }
+                }
+            }
+
             // 1. FAST PATH: Use Search Index — non-blocking. If the index hasn't been
             // loaded yet we DON'T cold-load it here (that blocks the shared STA thread
             // 30-60s and stalls every queued tool call); we fall through to the SDK's
@@ -2197,9 +2349,21 @@ namespace GxMcp.Worker.Services
                 if (typePart != null)
                 {
                     string key = string.Format("{0}:{1}", typePart, namePart);
-                    if (index.Objects.TryGetValue(key, out var entry) && !string.IsNullOrEmpty(entry.Guid))
+                    if (index.Objects.TryGetValue(key, out var entry))
                     {
-                        var obj = kb.DesignModel.Objects.Get(new Guid(entry.Guid));
+                        KBObject obj = null;
+                        if (!string.IsNullOrEmpty(entry.Guid))
+                        {
+                            try { obj = kb.DesignModel.Objects.Get(new Guid(entry.Guid)); } catch { }
+                        }
+                        if (obj == null && !string.IsNullOrEmpty(entry.Type))
+                        {
+                            Guid tGuid = ResolveObjectTypeGuid(entry.Type);
+                            if (tGuid != Guid.Empty)
+                            {
+                                try { obj = kb.DesignModel.Objects.Get(tGuid, entry.Name); } catch { }
+                            }
+                        }
                         if (obj != null) {
                             Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Index-Typed) in {1}ms", target, sw.ElapsedMilliseconds));
                             return obj;
@@ -2211,23 +2375,61 @@ namespace GxMcp.Worker.Services
                     // Global search in index
                     // OPTIMIZATION: Prioritize logic types if no filter is provided
                     var matches = new List<SearchIndex.IndexEntry>();
-                    foreach (var entry in index.Objects.Values)
+                    string[] candidateIndexTypes = { "Procedure", "Transaction", "WebPanel", "SDT", "DataProvider", "DataSelector", "Domain", "Table" };
+                    foreach (var cand in candidateIndexTypes)
                     {
-                        if (string.Equals(entry.Name, namePart, StringComparison.OrdinalIgnoreCase))
+                        string candKey = string.Format("{0}:{1}", cand, namePart);
+                        if (index.Objects.TryGetValue(candKey, out var directEntry))
                         {
-                            matches.Add(entry);
+                            matches.Add(directEntry);
+                        }
+                    }
+
+                    if (matches.Count == 0)
+                    {
+                        foreach (var kv in index.Objects)
+                        {
+                            var entry = kv.Value;
+                            if (string.Equals(entry?.Name, namePart, StringComparison.OrdinalIgnoreCase) ||
+                                kv.Key.EndsWith(":" + namePart, StringComparison.OrdinalIgnoreCase))
+                            {
+                                matches.Add(entry);
+                            }
                         }
                     }
 
                     if (matches.Count > 0)
                     {
-                        // Order: 1. Non-Folders/Modules, 2. Logic Types (Procedure, WP, Trn), 3. Files/Images (last)
-                        var prioritizedMatch = PrioritizeNameMatches(matches);
+                        var orderedMatches = matches
+                            .OrderBy(m => (m.Type == "Folder" || m.Type == "Module") ? 100 : 0)
+                            .ThenBy(m => (m.Type == "File" || m.Type == "Image") ? 50 : 0)
+                            .ThenBy(m => IsGeneratedPhysical(m.Type) ? 10 : 0)
+                            .ThenBy(m => m.Type ?? string.Empty, StringComparer.OrdinalIgnoreCase);
 
-                        if (prioritizedMatch != null && !string.IsNullOrEmpty(prioritizedMatch.Guid))
+                        foreach (var m in orderedMatches)
                         {
-                             var obj = kb.DesignModel.Objects.Get(new Guid(prioritizedMatch.Guid));
-                             if (obj != null) return obj;
+                            KBObject obj = null;
+                            if (!string.IsNullOrEmpty(m.Type))
+                            {
+                                obj = ResolveTypedObjectDirect(kb.DesignModel, m.Type, m.Name ?? namePart);
+                            }
+                            if (obj == null && !string.IsNullOrEmpty(m.Guid))
+                            {
+                                try { obj = kb.DesignModel.Objects.Get(new Guid(m.Guid)); } catch { }
+                            }
+                            if (obj == null && !string.IsNullOrEmpty(m.Type))
+                            {
+                                Guid tGuid = ResolveObjectTypeGuid(m.Type);
+                                if (tGuid != Guid.Empty)
+                                {
+                                    try { obj = kb.DesignModel.Objects.Get(tGuid, m.Name ?? namePart); } catch { }
+                                }
+                            }
+                            if (obj != null)
+                            {
+                                Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Index-Ordered: {1}) in {2}ms", target, m.Type, sw.ElapsedMilliseconds));
+                                return obj;
+                            }
                         }
                     }
                 }
@@ -2237,10 +2439,32 @@ namespace GxMcp.Worker.Services
             // If the index wasn't loaded, kick off the background warm so subsequent
             // lookups hit the fast path — idempotent, fire-and-forget, never blocks.
             if (index == null) { try { _kbService.GetIndexCache().EnsureLoadStarted(); } catch { /* best-effort */ } }
-            var sdkMatches = kb.DesignModel.Objects.GetByName(null, null, namePart);
             if (typePart != null)
             {
-                foreach (KBObject obj in sdkMatches)
+                Guid typeGuid = ResolveObjectTypeGuid(typePart);
+                if (typeGuid != Guid.Empty)
+                {
+                    try
+                    {
+                        var directObj = kb.DesignModel.Objects.Get(typeGuid, namePart);
+                        if (directObj != null) return directObj;
+                    }
+                    catch { }
+
+                    try
+                    {
+                        var desc = KBObjectDescriptor.Get(typeGuid);
+                        if (desc != null)
+                        {
+                            var sdkMatchesDesc = kb.DesignModel.Objects.GetByName(null, desc, namePart);
+                            foreach (KBObject o in sdkMatchesDesc) return o;
+                        }
+                    }
+                    catch { }
+                }
+
+                var sdkMatchesTyped = kb.DesignModel.Objects.GetByName(null, null, namePart);
+                foreach (KBObject obj in sdkMatchesTyped)
                 {
                     if (obj.TypeDescriptor != null && string.Equals(obj.TypeDescriptor.Name, typePart, StringComparison.OrdinalIgnoreCase))
                     {
@@ -2248,15 +2472,55 @@ namespace GxMcp.Worker.Services
                         return obj;
                     }
                 }
-                // A typed lookup must never silently fall through to an object of a
-                // different type that happens to share the same name.
                 return null;
             }
 
-            // Global search, prioritizing non-container objects and avoiding Files if others exist.
-            // v2.8.5: also prefer an editable logic object (Transaction/Procedure/WebPanel/…)
-            // over the generated Table/View when a name collides, mirroring the index fast-path
-            // and PrioritizeNameMatches so SDK-fallback resolution stays deterministic too.
+            // Global search without type filter:
+            // 1. Direct typed probes across primary logic types (fastest & most reliable across modules)
+            string[] probeCandidateTypes = { "Procedure", "Transaction", "WebPanel", "SDT", "DataProvider", "DataSelector", "Domain" };
+            foreach (var cand in probeCandidateTypes)
+            {
+                Guid candGuid = ResolveObjectTypeGuid(cand);
+                if (candGuid != Guid.Empty)
+                {
+                    try
+                    {
+                        var directObj = kb.DesignModel.Objects.Get(candGuid, namePart);
+                        if (directObj != null)
+                        {
+                            Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Probe-Direct: {1}) in {2}ms", target, cand, sw.ElapsedMilliseconds));
+                            return directObj;
+                        }
+                    }
+                    catch { }
+
+                    try
+                    {
+                        var desc = KBObjectDescriptor.Get(candGuid);
+                        if (desc != null)
+                        {
+                            var sdkMatchesDesc = kb.DesignModel.Objects.GetByName(null, desc, namePart);
+                            foreach (KBObject o in sdkMatchesDesc)
+                            {
+                                Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Probe-Desc: {1}) in {2}ms", target, cand, sw.ElapsedMilliseconds));
+                                return o;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            // 2. Try ObjectNameHelper (resolves Transactions, Procedures, WebPanels, SDTs across modules)
+            try
+            {
+                var helperObj = global::Artech.Architecture.Common.Helpers.ObjectNameHelper.Get(kb.DesignModel, namePart) as KBObject;
+                if (helperObj != null) return helperObj;
+            }
+            catch { }
+
+            // 3. Fallback to generic GetByName
+            var sdkMatches = kb.DesignModel.Objects.GetByName(null, null, namePart);
             KBObject firstPrimaryLogic = null;
             KBObject firstLogicMatch = null;
             KBObject firstMatch = null;
@@ -2277,8 +2541,10 @@ namespace GxMcp.Worker.Services
             if (result != null)
             {
                 Logger.Debug(string.Format("FindObject '{0}' SUCCESS (SDK-Fallback) in {1}ms", target, sw.ElapsedMilliseconds));
+                return result;
             }
-            return result;
+
+            return null;
         }
 
         internal static string NormalizeDomainLookupName(string name)
@@ -2470,6 +2736,283 @@ namespace GxMcp.Worker.Services
                 ["type"] = obj.TypeDescriptor?.Name,
                 ["parts"] = partsObj
             }.ToString();
+        }
+
+        private string ReadPartTextSafe(KBObject obj, string partName)
+        {
+            try
+            {
+                string resolvedPart = ResolvePartName(obj, partName);
+                string json = ReadObjectSourceInternal(obj, resolvedPart, null, null, "mcp", false);
+                if (string.IsNullOrEmpty(json)) return null;
+                var parsed = JObject.Parse(json);
+                if (parsed["source"] != null) return parsed["source"].ToString();
+                if (parsed["error"] == null && parsed["contentType"] != null) return json;
+            }
+            catch { }
+            return null;
+        }
+
+        public JArray GetVariablesCompact(KBObject obj, string referencedSource = null)
+        {
+            var varsArr = new JArray();
+            if (obj == null) return varsArr;
+
+            try
+            {
+                var varPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj);
+                if (varPart != null)
+                {
+                    dynamic p = varPart;
+                    foreach (var v in p.Variables)
+                    {
+                        dynamic dv = v;
+                        string vName = null;
+                        try { vName = (string)dv.Name; } catch { }
+                        if (string.IsNullOrEmpty(vName)) continue;
+
+                        bool isStandard = false;
+                        try { isStandard = (bool)dv.IsStandard; } catch { }
+
+                        // Prune SDK built-in variables that are not referenced in the object's code
+                        if (isStandard)
+                        {
+                            if (string.IsNullOrEmpty(referencedSource) ||
+                                referencedSource.IndexOf("&" + vName, StringComparison.OrdinalIgnoreCase) < 0)
+                            {
+                                continue;
+                            }
+                        }
+
+                        string typeStr = "Unknown";
+                        try { typeStr = dv.Type?.ToString(); } catch { }
+
+                        int length = 0;
+                        try { length = Convert.ToInt32(dv.Length); } catch { }
+
+                        int decimals = 0;
+                        try { decimals = Convert.ToInt32(dv.Decimals); } catch { }
+
+                        bool isColl = false;
+                        try { isColl = (bool)dv.IsCollection; } catch { }
+
+                        string domainName = null;
+                        try { domainName = (string)dv.Domain?.Name ?? (string)dv.Attribute?.Domain?.Name; } catch { }
+
+                        string sdtName = null;
+                        try
+                        {
+                            if (string.Equals(typeStr, "GX_SDT", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(typeStr, "SDT", StringComparison.OrdinalIgnoreCase))
+                            {
+                                sdtName = (string)dv.DataType?.ToString();
+                            }
+                        }
+                        catch { }
+
+                        var vObj = new JObject
+                        {
+                            ["name"] = vName.StartsWith("&") ? vName : "&" + vName,
+                            ["type"] = typeStr
+                        };
+                        if (length > 0) vObj["length"] = length;
+                        if (decimals > 0) vObj["decimals"] = decimals;
+                        if (isColl) vObj["isCollection"] = true;
+                        if (!string.IsNullOrEmpty(domainName)) vObj["domain"] = domainName;
+                        if (!string.IsNullOrEmpty(sdtName)) vObj["sdt"] = sdtName;
+
+                        varsArr.Add(vObj);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("GetVariablesCompact error: " + ex.Message);
+            }
+
+            return varsArr;
+        }
+
+        /// <summary>
+        /// SOTA 1-roundtrip object read: delivers all authored parts, rules, variables,
+        /// and called signatures tailored to the target object type in a single fast call.
+        /// Eliminates the multi-roundtrip exploration loop.
+        /// </summary>
+        public string ReadFullObject(string target, string typeFilter = null)
+        {
+            var obj = FindObject(target, typeFilter);
+            if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+
+            string typeName = obj.TypeDescriptor?.Name ?? "Object";
+            var result = new JObject
+            {
+                ["name"] = obj.Name,
+                ["type"] = typeName
+            };
+
+            string parentName = null;
+            string moduleName = null;
+            try { parentName = obj.Parent?.Name; } catch { }
+            try { moduleName = obj.Module?.Name; } catch { }
+            if (!string.IsNullOrEmpty(parentName)) result["parent"] = parentName;
+            if (!string.IsNullOrEmpty(moduleName)) result["module"] = moduleName;
+
+            var parts = new JObject();
+            string combinedCode = "";
+
+            if (typeName.Equals("Procedure", StringComparison.OrdinalIgnoreCase))
+            {
+                string rules = ReadPartTextSafe(obj, "Rules");
+                if (!string.IsNullOrWhiteSpace(rules))
+                {
+                    parts["rules"] = rules;
+                    combinedCode += "\n" + rules;
+                }
+
+                string source = ReadPartTextSafe(obj, "Source");
+                if (!string.IsNullOrWhiteSpace(source))
+                {
+                    parts["source"] = source;
+                    combinedCode += "\n" + source;
+                }
+
+                string conditions = ReadPartTextSafe(obj, "Conditions");
+                if (!string.IsNullOrWhiteSpace(conditions))
+                {
+                    parts["conditions"] = conditions;
+                    combinedCode += "\n" + conditions;
+                }
+            }
+            else if (typeName.Equals("WebPanel", StringComparison.OrdinalIgnoreCase) ||
+                     typeName.Equals("WebComponent", StringComparison.OrdinalIgnoreCase) ||
+                     typeName.Equals("SDPanel", StringComparison.OrdinalIgnoreCase) ||
+                     typeName.Equals("Dashboard", StringComparison.OrdinalIgnoreCase) ||
+                     typeName.Equals("Prompt", StringComparison.OrdinalIgnoreCase))
+            {
+                string rules = ReadPartTextSafe(obj, "Rules");
+                if (!string.IsNullOrWhiteSpace(rules))
+                {
+                    parts["rules"] = rules;
+                    combinedCode += "\n" + rules;
+                }
+
+                string events = ReadPartTextSafe(obj, "Events");
+                if (string.IsNullOrWhiteSpace(events)) events = ReadPartTextSafe(obj, "SDEEvents");
+                if (!string.IsNullOrWhiteSpace(events))
+                {
+                    parts["events"] = events;
+                    combinedCode += "\n" + events;
+                }
+
+                string conditions = ReadPartTextSafe(obj, "Conditions");
+                if (!string.IsNullOrWhiteSpace(conditions))
+                {
+                    parts["conditions"] = conditions;
+                    combinedCode += "\n" + conditions;
+                }
+
+                try
+                {
+                    if (_uiService != null)
+                    {
+                        var uiStruct = _uiService.GetSimplifiedUIStructure(obj);
+                        if (uiStruct != null && uiStruct.Count > 0) result["uiStructure"] = uiStruct;
+                    }
+                }
+                catch { }
+            }
+            else if (typeName.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
+            {
+                string structDsl = ReadPartTextSafe(obj, "Structure");
+                if (!string.IsNullOrWhiteSpace(structDsl)) parts["structure"] = structDsl;
+
+                string rules = ReadPartTextSafe(obj, "Rules");
+                if (!string.IsNullOrWhiteSpace(rules))
+                {
+                    parts["rules"] = rules;
+                    combinedCode += "\n" + rules;
+                }
+
+                string events = ReadPartTextSafe(obj, "Events");
+                if (!string.IsNullOrWhiteSpace(events))
+                {
+                    parts["events"] = events;
+                    combinedCode += "\n" + events;
+                }
+
+                try
+                {
+                    dynamic trn = obj;
+                    result["isBusinessComponent"] = (bool)trn.IsBusinessComponent;
+                }
+                catch { }
+            }
+            else if (typeName.Equals("Table", StringComparison.OrdinalIgnoreCase))
+            {
+                string structDsl = ReadPartTextSafe(obj, "Structure");
+                if (!string.IsNullOrWhiteSpace(structDsl)) parts["structure"] = structDsl;
+            }
+            else if (typeName.Equals("SDT", StringComparison.OrdinalIgnoreCase))
+            {
+                string structDsl = ReadPartTextSafe(obj, "Structure");
+                if (!string.IsNullOrWhiteSpace(structDsl)) parts["structure"] = structDsl;
+
+                try
+                {
+                    dynamic sdt = obj;
+                    result["isCollection"] = (bool)sdt.IsCollection;
+                    if (!string.IsNullOrEmpty((string)sdt.CollectionItemName))
+                        result["collectionItemName"] = (string)sdt.CollectionItemName;
+                }
+                catch { }
+            }
+            else if (typeName.Equals("DataSelector", StringComparison.OrdinalIgnoreCase))
+            {
+                return DataSelectorReadService.Read((DataSelector)obj, null);
+            }
+            else
+            {
+                var availParts = GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj);
+                foreach (var p in availParts)
+                {
+                    string src = ReadPartTextSafe(obj, p);
+                    if (!string.IsNullOrWhiteSpace(src))
+                    {
+                        parts[p] = src;
+                        combinedCode += "\n" + src;
+                    }
+                }
+            }
+
+            result["parts"] = parts;
+
+            // Signature
+            try
+            {
+                var (parmRule, parms) = GetParametersInternal(obj);
+                if (!string.IsNullOrEmpty(parmRule))
+                {
+                    result["signature"] = parmRule;
+                }
+            }
+            catch { }
+
+            // Variables (with SDK standard variables pruned unless referenced in combined code)
+            var vars = GetVariablesCompact(obj, combinedCode);
+            if (vars != null && vars.Count > 0) result["variables"] = vars;
+
+            // Called signatures
+            if (!string.IsNullOrWhiteSpace(combinedCode))
+            {
+                var callsResult = new JObject();
+                AddCallSignatures(obj, combinedCode, callsResult);
+                if (callsResult["calls"] != null) result["calledSignatures"] = callsResult["calls"];
+            }
+
+            var avail = GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj);
+            if (avail != null && avail.Length > 0) result["availableParts"] = new JArray(avail);
+
+            return Models.McpResponse.Ok(target: obj.Name, code: "FullObjectRead", result: result);
         }
 
         public void MarkReadCacheDirty(KBObject obj, string partName = null)
@@ -3153,14 +3696,13 @@ namespace GxMcp.Worker.Services
                         if (target != null && target.Guid != obj.Guid)
                         {
                             var (parmRule, parms) = GetParametersInternal(target);
-                            if (!string.IsNullOrEmpty(parmRule))
+                            var cObj = new JObject
                             {
-                                var cObj = new JObject();
-                                cObj["name"] = target.Name;
-                                cObj["type"] = target.TypeDescriptor.Name;
-                                cObj["parmRule"] = parmRule;
-                                calls.Add(cObj);
-                            }
+                                ["name"] = target.Name,
+                                ["type"] = target.TypeDescriptor.Name
+                            };
+                            if (!string.IsNullOrEmpty(parmRule)) cObj["parmRule"] = parmRule;
+                            calls.Add(cObj);
                         }
                     }
                     if (calls.Count > 0) result["calls"] = calls;
@@ -3263,6 +3805,15 @@ namespace GxMcp.Worker.Services
                             }
                         }
                     } catch {}
+                }
+
+                if (string.IsNullOrEmpty(parmRule))
+                {
+                    string rText = ReadPartTextSafe(obj, "Rules");
+                    if (!string.IsNullOrEmpty(rText))
+                    {
+                        parmRule = rText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault(l => l.Trim().StartsWith("parm(", StringComparison.OrdinalIgnoreCase));
+                    }
                 }
 
                 if (!string.IsNullOrEmpty(parmRule))

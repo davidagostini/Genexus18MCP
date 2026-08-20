@@ -9,7 +9,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Use this for cross-object semantic analysis: impact, dependencies, complexity, naming, summary. See tool-help for mode selection. Requires the KB index to be Ready for impact/callers modes — check genexus_lifecycle action=status if results look empty.",
+      "description": "Use this for cross-object semantic analysis. mode=context returns 360° task context in 1 call (object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs + callers). Other modes: impact, callers, hierarchy, navigation, linter, summary. Requires Ready index for impact/callers.",
       "inputSchema": {
         "examples": [
           {
@@ -36,6 +36,7 @@
           },
           "mode": {
             "enum": [
+              "context",
               "linter",
               "navigation",
               "hierarchy",
@@ -1333,7 +1334,7 @@
           },
           "verifyMode": {
             "default": "normalized",
-            "description": "Post-save text comparison for patch mode. Source/Rules default to normalized (EOL, encoding marker, trailing whitespace and repeated blank lines); exact preserves logical text but treats CRLF/LF as the same SDK Source rendering; semantic also tolerates SDK casing/spacing format changes. Comment-only Replace writes require baseVersion and return CommentOnlyWriteNotPersisted on a divergent forced re-read. The part is always re-read after Save.",
+            "description": "Post-save text comparison for patch mode. Source/Rules default to normalized (EOL, encoding marker, trailing whitespace and repeated blank lines); exact preserves logical text but treats CRLF/LF as the same SDK Source rendering; semantic also tolerates SDK casing/spacing format changes. Comment-only Replace writes require baseVersion and return CommentOnlyWriteNotPersisted on a forced re-read. The part is always re-read after Save.",
             "enum": [
               "semantic",
               "normalized",
@@ -2824,7 +2825,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Read object parts, including DataSelector definitions. name or targets + parts=[...]. Paginate via offset/limit. Response carries versionToken — pass it as baseVersion on genexus_edit for a safe write. See genexus://kb/tool-help/genexus_read.",
+      "description": "Read object code and metadata. Omitting 'part' (RECOMMENDED) returns the COMPLETE object in 1 call (rules with parm, source/events, variables, structure, called signatures) tailored to the object type. Pass 'part' only for targeted single-part reads. Response carries versionToken for safe writes. See genexus://kb/tool-help/genexus_read.",
       "inputSchema": {
         "examples": [
           {

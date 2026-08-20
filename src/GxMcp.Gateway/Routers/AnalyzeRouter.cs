@@ -23,6 +23,9 @@ namespace GxMcp.Gateway.Routers
                     string? mode = args?["mode"]?.ToString();
                     switch (mode)
                     {
+                        case "context":
+                        case "deep_context":
+                            return new { module = "Analyze", action = "Get360Context", target = target, type = type };
                         case "linter":
                             bool linterFix = args?["fix"]?.ToObject<bool?>() ?? false;
                             return new { module = "Linter", action = "linter", target = target, type = type, @params = new JObject { ["fix"] = linterFix } };

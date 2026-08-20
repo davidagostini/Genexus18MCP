@@ -1519,6 +1519,227 @@ namespace GxMcp.Worker.Services
             return src.Substring(0, cap) + "\n\n// ... [inspect source truncated — use genexus_read for the full part] ...";
         }
 
+        /// <summary>
+        /// SOTA 360-degree task context: returns the complete target object +
+        /// signatures of all called procedures/panels + schemas and PKs of referenced tables +
+        /// structures of referenced SDTs + top callers in a single roundtrip.
+        /// </summary>
+        public string Get360Context(string target, string typeFilter = null)
+        {
+            try
+            {
+                var obj = _objectService.FindObject(target, typeFilter);
+                if (obj == null) return HealingService.FormatNotFoundError(target, _indexCacheService.GetIndex());
+
+                // 1. Read full object
+                string fullObjJson = _objectService.ReadFullObject(target, typeFilter);
+                JObject fullObjResult = null;
+                try
+                {
+                    var parsed = JObject.Parse(fullObjJson);
+                    fullObjResult = (parsed["result"] as JObject) ?? parsed;
+                }
+                catch
+                {
+                    fullObjResult = new JObject { ["name"] = obj.Name, ["type"] = obj.TypeDescriptor?.Name };
+                }
+
+                var result = new JObject
+                {
+                    ["object"] = fullObjResult
+                };
+
+                // 2. Discover called procedures / webpanels and their parm signatures
+                var calledSignatures = new JArray();
+                var referencedTables = new JArray();
+                var referencedSDTs = new JArray();
+                var callers = new JArray();
+
+                var seenCalled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var seenTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var seenSdts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                dynamic kb = _kbService?.GetKB();
+
+                // 2a. Outgoing references from SDK
+                if (kb != null)
+                {
+                    try
+                    {
+                        foreach (var reference in obj.GetReferences())
+                        {
+                            try
+                            {
+                                var refObj = kb.DesignModel.Objects.Get(reference.To);
+                                if (refObj == null) continue;
+
+                                string rName = refObj.Name;
+                                string rType = refObj.TypeDescriptor?.Name;
+
+                                if (rType == "Procedure" || rType == "WebPanel" || rType == "DataProvider" || rType == "WebComponent")
+                                {
+                                    if (seenCalled.Add(rName) && !rName.Equals(obj.Name, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        var calleeObj = _objectService.FindObject(rName, rType) ?? (KBObject)refObj;
+                                        var pResult = _objectService.GetParametersInternal(calleeObj);
+                                        var cObj = new JObject
+                                        {
+                                            ["name"] = rName,
+                                            ["type"] = rType
+                                        };
+                                        if (!string.IsNullOrEmpty(pResult.parmRule)) cObj["parmRule"] = pResult.parmRule;
+                                        calledSignatures.Add(cObj);
+                                    }
+                                }
+                                else if (rType == "Table" || rType == "Transaction")
+                                {
+                                    string tblName = rName;
+                                    if (seenTables.Add(tblName))
+                                    {
+                                        var tObj = _objectService.FindObject(tblName) as Table;
+                                        if (tObj == null && refObj is Transaction trn)
+                                        {
+                                            tObj = _objectService.FindObject(trn.Name, "Table") as Table;
+                                        }
+
+                                        if (tObj != null)
+                                        {
+                                            var tblStruct = GetTableStructureCompact(tObj);
+                                            if (tblStruct != null) referencedTables.Add(tblStruct);
+                                        }
+                                    }
+                                }
+                                else if (rType == "SDT")
+                                {
+                                    if (seenSdts.Add(rName))
+                                    {
+                                        var sdtStruct = GetSdtStructureCompact(refObj);
+                                        if (sdtStruct != null) referencedSDTs.Add(sdtStruct);
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 2b. Also scan variables for SDT references that might not be in Direct References
+                var vars = fullObjResult["variables"] as JArray;
+                if (vars != null)
+                {
+                    foreach (var v in vars)
+                    {
+                        string sdtName = v["sdt"]?.ToString();
+                        if (!string.IsNullOrEmpty(sdtName) && seenSdts.Add(sdtName))
+                        {
+                            var sdtObj = _objectService.FindObject(sdtName, "SDT");
+                            if (sdtObj != null)
+                            {
+                                var sdtStruct = GetSdtStructureCompact(sdtObj);
+                                if (sdtStruct != null) referencedSDTs.Add(sdtStruct);
+                            }
+                        }
+                    }
+                }
+
+                // 2c. Discover incoming callers (top 10)
+                if (kb != null)
+                {
+                    try
+                    {
+                        var seenCallerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var reference in obj.GetReferencesTo())
+                        {
+                            try
+                            {
+                                var sourceObj = kb.DesignModel.Objects.Get(reference.From);
+                                if (sourceObj != null && seenCallerNames.Add(sourceObj.Name))
+                                {
+                                    callers.Add(new JObject
+                                    {
+                                        ["name"] = sourceObj.Name,
+                                        ["type"] = sourceObj.TypeDescriptor?.Name
+                                    });
+                                    if (callers.Count >= 10) break;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { }
+                }
+
+                result["calledSignatures"] = calledSignatures;
+                result["referencedTables"] = referencedTables;
+                result["referencedSDTs"] = referencedSDTs;
+                result["callers"] = callers;
+
+                return Models.McpResponse.Ok(target: obj.Name, code: "360ContextRead", result: result);
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "Context360Failed",
+                    message: ex.Message,
+                    hint: "Check that the KB is open and the object is accessible.",
+                    target: target);
+            }
+        }
+
+        private JObject GetTableStructureCompact(Table tbl)
+        {
+            try
+            {
+                var res = new JObject
+                {
+                    ["name"] = tbl.Name,
+                    ["description"] = tbl.Description
+                };
+
+                var pkArr = new JArray();
+                var colsArr = new JArray();
+
+                foreach (var attr in tbl.TableStructure.Attributes)
+                {
+                    if (attr.IsKey) pkArr.Add(attr.Name);
+                    var col = new JObject
+                    {
+                        ["name"] = attr.Name,
+                        ["type"] = attr.Attribute?.Type.ToString()
+                    };
+                    if (attr.IsKey) col["isKey"] = true;
+                    colsArr.Add(col);
+                }
+
+                res["primaryKey"] = pkArr;
+                res["columns"] = colsArr;
+                return res;
+            }
+            catch { return null; }
+        }
+
+        private JObject GetSdtStructureCompact(KBObject sdtObj)
+        {
+            try
+            {
+                var res = new JObject
+                {
+                    ["name"] = sdtObj.Name
+                };
+                dynamic sdt = sdtObj;
+                try { res["isCollection"] = (bool)sdt.IsCollection; } catch { }
+                try
+                {
+                    string dsl = StructureParser.SerializeToText(sdtObj);
+                    if (!string.IsNullOrWhiteSpace(dsl)) res["structure"] = dsl;
+                }
+                catch { }
+                return res;
+            }
+            catch { return null; }
+        }
+
         public string GetSignature(string name, string typeFilter = null)
         {
             try

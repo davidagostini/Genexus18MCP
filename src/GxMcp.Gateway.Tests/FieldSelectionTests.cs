@@ -67,26 +67,26 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void EmptyPartsArray_RoutesToExtractSource()
+        public void EmptyPartsArray_RoutesToExtractFullObject()
         {
             var args = JObject.Parse(
                 "{\"name\":\"Customer\",\"parts\":[]}");
             var msg = _router.ConvertToolCall("genexus_read", args);
             var obj = JObject.FromObject(msg!);
 
-            // Empty array means "no selection" → fall back to legacy single-part
-            Assert.Equal("ExtractSource", obj["action"]?.ToString());
+            // Empty array means "no part selection" → fall back to SOTA 1-roundtrip full object
+            Assert.Equal("ExtractFullObject", obj["action"]?.ToString());
         }
 
         [Fact]
-        public void NullParts_RoutesToExtractSource()
+        public void NullParts_RoutesToExtractFullObject()
         {
             var args = JObject.Parse(
                 "{\"name\":\"Customer\"}");
             var msg = _router.ConvertToolCall("genexus_read", args);
             var obj = JObject.FromObject(msg!);
 
-            Assert.Equal("ExtractSource", obj["action"]?.ToString());
+            Assert.Equal("ExtractFullObject", obj["action"]?.ToString());
         }
 
         // ── parts= + targets= should preserve field selection ────────────────

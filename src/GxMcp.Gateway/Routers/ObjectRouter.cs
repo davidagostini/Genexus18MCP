@@ -84,6 +84,18 @@ namespace GxMcp.Gateway.Routers
                             type = args?["type"]?.ToString()
                         };
                     }
+                    bool hasExplicitPart = args?["part"] != null && !string.IsNullOrWhiteSpace(args["part"]?.ToString());
+                    if (!hasExplicitPart)
+                    {
+                        // SOTA 1-roundtrip default: omitting 'part' extracts the full object
+                        // (rules, source/events, variables, structure, signatures) tailored to the type.
+                        return new {
+                            module = "Read",
+                            action = "ExtractFullObject",
+                            target = target,
+                            type = args?["type"]?.ToString()
+                        };
+                    }
                     return new {
                         module = "Read",
                         action = "ExtractSource",

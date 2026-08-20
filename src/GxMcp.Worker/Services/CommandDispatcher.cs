@@ -478,7 +478,7 @@ namespace GxMcp.Worker.Services
                 string action = request["action"]?.ToString();
                 string target = request["target"]?.ToString();
                 var payload = request["payload"]?.ToString();
-                var args = request["params"] as JObject;
+                var args = (request["params"] as JObject) ?? request;
                 // OperationsRouter cases that pass-through original tool args via
                 // `@params = args` (apply_pattern, apply_template, bulk_edit, diff)
                 // produce a doubly-nested params shape on the RPC envelope:
@@ -1091,9 +1091,28 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Read(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            if (action == "ExtractFullObject")
+            {
+                string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
+                string fullJson = _objectService.ReadFullObject(target, typeFilter);
+                try
+                {
+                    string kbPath = _kbService?.GetKbPath();
+                    string objectType = typeFilter;
+                    if (string.IsNullOrEmpty(objectType))
+                    {
+                        try { objectType = _objectService?.FindObject(target, typeFilter)?.TypeDescriptor?.Name; } catch { }
+                    }
+                    return MemoryService.AttachRelevantMemory(kbPath, fullJson, target, objectType);
+                }
+                catch
+                {
+                    return fullJson;
+                }
+            }
             if (action == "ExtractSource")
             {
-                string typeFilter = args?["type"]?.ToString();
+                string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
                 string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter);
                 // Phase 2: genexus_read piggyback. Attached here (the tool boundary),
                 // not inside ObjectService, so it (a) never pollutes the mcp read
@@ -1442,6 +1461,7 @@ namespace GxMcp.Worker.Services
                 return _translationsService.Import(payload);
             }
             if (action == "GetParameters") return _analyzeService.GetSignature(target, analyzeType);
+            if (action == "Get360Context" || action == "GetContext") return _analyzeService.Get360Context(target, analyzeType);
             if (action == "GetHierarchy") return _analyzeService.GetHierarchy(target, analyzeType);
             if (action == "GetDataContext") return _dataInsightService.GetDataContext(target);
             if (action == "GetConversionContext")
@@ -2509,12 +2529,12 @@ namespace GxMcp.Worker.Services
         private string AppendInlineReads(string responseJson, int n)
         {
             return AppendInlineReadsCore(responseJson, n,
-                (name, type) => _objectService.ReadObjectSourceParts(name, null, type));
+                (name, type) => _objectService.ReadFullObject(name, type));
         }
 
         private string AppendInlineReadsForSourceSearch(string responseJson, int n) =>
             AppendInlineReadsCore(responseJson, n,
-                (name, type) => _objectService.ReadObjectSourceParts(name, null, type),
+                (name, type) => _objectService.ReadFullObject(name, type),
                 arrayKey: "hits", nameField: "objectName", dedupe: true);
 
         /// <summary>
@@ -2529,7 +2549,7 @@ namespace GxMcp.Worker.Services
             try
             {
                 var responseObj = JObject.Parse(responseJson);
-                var items = responseObj[arrayKey] as JArray;
+                var items = (responseObj[arrayKey] as JArray) ?? (responseObj["items"] as JArray) ?? (responseObj["results"] as JArray);
                 if (items == null || items.Count == 0) return responseJson;
 
                 var reads = new JArray();
