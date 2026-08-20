@@ -2083,6 +2083,14 @@ namespace GxMcp.Worker.Services
                 try { typeStr = item.Type != null ? item.Type.ToString() : null; } catch { }
                 if (!string.IsNullOrEmpty(typeStr)) node["type"] = typeStr;
 
+                // issue #109: surface basedOnAttribute if member is based on an Attribute.
+                try
+                {
+                    string attrName = GxMcp.Worker.Helpers.DomainPropertyApplier.GetAttributeBasedOnName((object)item);
+                    if (!string.IsNullOrEmpty(attrName)) node["basedOnAttribute"] = attrName;
+                }
+                catch { }
+
                 // issue #51: surface basedOnDomain if member is based on a Domain.
                 try
                 {

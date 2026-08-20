@@ -1136,11 +1136,17 @@ namespace GxMcp.Worker.Helpers
             return null;
         }
 
-        private static global::Artech.Genexus.Common.Objects.Attribute FindAttribute(global::Artech.Architecture.Common.Objects.KBModel model, string name)
+        public static global::Artech.Genexus.Common.Objects.Attribute FindAttribute(global::Artech.Architecture.Common.Objects.KBModel model, string name)
         {
+            if (model == null || string.IsNullOrWhiteSpace(name)) return null;
+            string clean = name.Trim();
+            if (clean.StartsWith("Attribute:", StringComparison.OrdinalIgnoreCase))
+                clean = clean.Substring("Attribute:".Length).Trim();
+            if (clean.StartsWith("&"))
+                clean = clean.TrimStart('&');
             try
             {
-                foreach (var result in model.Objects.GetByName(null, null, name))
+                foreach (var result in model.Objects.GetByName(null, null, clean))
                 {
                     if (result is global::Artech.Genexus.Common.Objects.Attribute attr) return attr;
                 }

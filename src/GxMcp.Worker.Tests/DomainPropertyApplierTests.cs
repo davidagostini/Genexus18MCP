@@ -10,6 +10,7 @@ namespace GxMcp.Worker.Tests
         // Type:string mirrors the test-fake path (eDBType enum on the real SDK).
         public class FakeDomain
         {
+            public string Name { get; set; }
             public string Type { get; set; }
             public int Length { get; set; }
             public int Decimals { get; set; }
@@ -70,6 +71,57 @@ namespace GxMcp.Worker.Tests
             };
             int applied = DomainPropertyApplier.ApplyEnumValues(d, values);
             Assert.Equal(-1, applied);
+        }
+
+        public class FakeItem
+        {
+            public string Name { get; set; }
+            public string Type { get; set; }
+            public int Length { get; set; }
+            public int Decimals { get; set; }
+            public bool Signed { get; set; }
+            public object DomainBasedOn { get; set; }
+            public object AttributeBasedOn { get; set; }
+        }
+
+        public class FakeAttribute
+        {
+            public string Name { get; set; }
+            public string Type { get; set; }
+        }
+
+        [Fact]
+        public void ApplyAttributeBasedOn_SetsProperty_AndGetsName()
+        {
+            var item = new FakeItem();
+            var attr = new FakeAttribute { Name = "CardapioID", Type = "NUMERIC" };
+            Assert.True(DomainPropertyApplier.ApplyAttributeBasedOn(item, attr));
+            Assert.Same(attr, item.AttributeBasedOn);
+            Assert.Equal("CardapioID", DomainPropertyApplier.GetAttributeBasedOnName(item));
+        }
+
+        [Fact]
+        public void ApplyDomainBasedOn_SetsProperty_AndGetsName()
+        {
+            var item = new FakeItem();
+            var dom = new FakeDomain { Name = "FakeDomain", Type = "VARCHAR" };
+            Assert.True(DomainPropertyApplier.ApplyDomainBasedOn(item, dom));
+            Assert.Same(dom, item.DomainBasedOn);
+            Assert.Equal("FakeDomain", DomainPropertyApplier.GetDomainBasedOnName(item));
+        }
+
+        [Fact]
+        public void ClearAttributeAndDomainBasedOn_ClearsProperties()
+        {
+            var item = new FakeItem
+            {
+                AttributeBasedOn = new FakeAttribute { Name = "CardapioID" },
+                DomainBasedOn = new FakeDomain { Type = "VARCHAR" }
+            };
+            Assert.True(DomainPropertyApplier.ClearAttributeBasedOn(item));
+            Assert.Null(item.AttributeBasedOn);
+            Assert.True(DomainPropertyApplier.ClearDomainBasedOn(item));
+            Assert.Null(item.DomainBasedOn);
         }
 
         [Fact]

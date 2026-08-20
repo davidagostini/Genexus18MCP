@@ -1348,6 +1348,14 @@ namespace GxMcp.Worker.Services
         // this re-establishes the reference the type token alone doesn't carry.
         private static void CopySdtItemTypeReference(object srcItem, object newItem, string typeToken, Artech.Architecture.Common.Objects.KBModel model)
         {
+            // Attribute link — copy the AttributeBasedOn reference directly.
+            try
+            {
+                dynamic abo = ((dynamic)srcItem).AttributeBasedOn;
+                if (abo != null) { try { ((dynamic)newItem).AttributeBasedOn = abo; return; } catch { } }
+            }
+            catch { }
+
             // Domain link — copy the DomainBasedOn reference (a shared Domain KBObject) directly.
             try
             {

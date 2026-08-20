@@ -58,16 +58,33 @@ namespace GxMcp.Worker.Services
                             extra: new JObject { ["expectedVersion"] = expectedVersion,
                                 ["currentVersion"] = sdtVersion, ["persisted"] = false });
                     if (dryRun)
+                    {
+                        JObject currentSdt = null;
+                        try { currentSdt = JObject.Parse(_sdtService.GetSDTStructure(targetName)); } catch { }
+                        JArray beforeChildren = currentSdt?["children"] as JArray ?? new JArray();
+                        bool beforeIsColl = currentSdt?["isCollection"]?.ToObject<bool>() ?? false;
+
+                        JObject reqObj = null;
+                        try { reqObj = string.IsNullOrWhiteSpace(payload) ? new JObject() : JObject.Parse(payload); } catch { }
+                        JArray reqChildren = reqObj?["children"] as JArray ?? new JArray();
+                        bool? reqIsColl = reqObj?["isCollection"]?.ToObject<bool>();
+
+                        JArray sdtDiff = CompareRequestedStructure(reqChildren, beforeChildren, "children");
+                        bool mutationDetected = sdtDiff.Count > 0 || (reqIsColl.HasValue && reqIsColl.Value != beforeIsColl);
+
                         return Models.McpResponse.Ok(target: targetName, code: "DryRun", result: new JObject
                         {
                             ["persisted"] = false,
-                            ["mutationDetected"] = false,
+                            ["mutationDetected"] = mutationDetected,
                             ["beforeVersion"] = sdtVersion,
                             ["afterVersion"] = sdtVersion,
                             ["versionToken"] = sdtVersion,
-                            ["requested"] = string.IsNullOrWhiteSpace(payload) ? null : JToken.Parse(payload),
+                            ["before"] = beforeChildren,
+                            ["requested"] = reqObj,
+                            ["diff"] = sdtDiff,
                             ["implicitLifecycleActions"] = new JArray()
                         });
+                    }
                     return _sdtService.UpdateSDTStructure(targetName, payload);
                 }
 
@@ -1970,7 +1987,7 @@ namespace GxMcp.Worker.Services
                     diff.Add(new JObject { ["path"] = itemPath, ["requested"] = wanted.DeepClone(), ["persisted"] = JValue.CreateNull() });
                     continue;
                 }
-                foreach (string property in new[] { "nullable", "type", "description", "formula", "isKey" })
+                foreach (string property in new[] { "nullable", "type", "description", "formula", "isKey", "basedOnDomain", "basedOnAttribute", "isCollection", "isLevel", "referencedType" })
                     if (wanted[property] != null && !string.Equals(wanted[property].ToString().Trim(), actual[property]?.ToString().Trim(), StringComparison.OrdinalIgnoreCase))
                         diff.Add(new JObject { ["path"] = itemPath + "/" + property, ["requested"] = wanted[property].DeepClone(), ["persisted"] = actual[property]?.DeepClone() ?? JValue.CreateNull() });
                 if (wanted["children"] is JArray requestedChildren)

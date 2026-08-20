@@ -59,8 +59,94 @@ namespace GxMcp.Worker.Helpers
             if (domain == null || basedOnDomain == null) return false;
             var p = AttributeTypeApplier.GetPropertyUnambiguous(domain.GetType(), "DomainBasedOn");
             if (p == null) return false;
-            try { p.SetValue(domain, basedOnDomain, null); return true; }
+            try
+            {
+                p.SetValue(domain, basedOnDomain, null);
+                return true;
+            }
             catch { return false; }
+        }
+
+        public static bool ApplyAttributeBasedOn(object target, object basedOnAttribute)
+        {
+            if (target == null || basedOnAttribute == null) return false;
+            var p = AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "AttributeBasedOn");
+            if (p == null) return false;
+            try
+            {
+                p.SetValue(target, basedOnAttribute, null);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static bool ClearDomainBasedOn(object target)
+        {
+            if (target == null) return false;
+            var p = AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "DomainBasedOn");
+            if (p == null) return false;
+            try { p.SetValue(target, null, null); return true; }
+            catch { return false; }
+        }
+
+        public static bool ClearAttributeBasedOn(object target)
+        {
+            if (target == null) return false;
+            var p = AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "AttributeBasedOn");
+            if (p == null) return false;
+            try { p.SetValue(target, null, null); return true; }
+            catch { return false; }
+        }
+
+        public static string GetAttributeBasedOnName(object target)
+        {
+            if (target == null) return null;
+            try
+            {
+                dynamic d = target;
+                object abo = d.AttributeBasedOn;
+                if (abo != null)
+                {
+                    dynamic attr = abo;
+                    string name = (string)attr.Name;
+                    if (!string.IsNullOrEmpty(name)) return name;
+                }
+            }
+            catch { }
+            try
+            {
+                dynamic d = target;
+                object bo = d.BasedOn;
+                if (bo != null)
+                {
+                    dynamic r = bo;
+                    string typeName = r.BasedOn?.ToString();
+                    if (string.Equals(typeName, "Attribute", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string n = r.Name?.ToString();
+                        if (!string.IsNullOrEmpty(n)) return n;
+                    }
+                }
+            }
+            catch { }
+            try
+            {
+                var p = AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "AttributeBasedOn");
+                if (p != null)
+                {
+                    var val = p.GetValue(target, null);
+                    if (val != null)
+                    {
+                        var nameProp = val.GetType().GetProperty("Name");
+                        if (nameProp != null)
+                        {
+                            return (string)nameProp.GetValue(val, null);
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
         }
 
         public static string GetDomainBasedOnName(object target)
@@ -75,6 +161,22 @@ namespace GxMcp.Worker.Helpers
                     dynamic dom = dbo;
                     string name = (string)dom.Name;
                     if (!string.IsNullOrEmpty(name)) return name;
+                }
+            }
+            catch { }
+            try
+            {
+                dynamic d = target;
+                object bo = d.BasedOn;
+                if (bo != null)
+                {
+                    dynamic r = bo;
+                    string typeName = r.BasedOn?.ToString();
+                    if (string.Equals(typeName, "Domain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string n = r.Name?.ToString();
+                        if (!string.IsNullOrEmpty(n)) return n;
+                    }
                 }
             }
             catch { }
