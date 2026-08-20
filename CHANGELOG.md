@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.43.0 - 2026-08-20
+
 ### Added
 
 - **Multi-part editing on a single object in `genexus_edit`.** `genexus_edit` now accepts a `parts` array (`[{ part: "Rules", content: "..." }, { part: "Source", content: "..." }]`) alongside `name`, updating all specified parts and saving the object exactly once in a single atomic transaction.
