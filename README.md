@@ -20,14 +20,14 @@ In practice: you point the MCP at your KB, then ask your AI assistant things lik
 
 ## What you can do with it
 
-A quick map of what the agent can do against your real KB through the **48 tools** (details in [Tool Surface](#tool-surface)):
+A quick map of what the agent can do against your real KB through the **49 tools** (details in [Tool Surface](#tool-surface)):
 
 | Area | What the agent can do |
 |---|---|
 | 🔎 **Explore** | Search & list objects, read any part (source, rules, events, structure, docs, pattern XML), inspect metadata & callers, regex-search source, view the navigation report |
 | ✏️ **Edit code** | Edit any object part (`full`/`patch`/`ops` modes), variables CRUD, format, create & delete objects, scaffold a Procedure from a **curl command**, edit + rebuild callers in one shot |
 | 🗄️ **Author the data model** | Transaction structure (DSL), **unique/non-unique indexes** (create & drop), **attribute formulas & subtypes**, level Description/Image attributes, **Domain enum values**, folders & modules, table↔transaction relations & redundant-attribute detection |
-| 🧩 **Author other objects** | External Object methods & properties, Menu options, REST API objects, WorkWithPlus / WorkWith patterns |
+| 🧩 **Author other objects** | External Object methods & properties, Menu options, REST API objects, WorkWithPlus / WorkWith patterns, typed .NET generator references |
 | 🎨 **UI & WorkWithPlus** | Full read/write of pattern XML (controls, actions, grids, orders, groups), theme classes & styling, native WebForm/layout edits, **control catalog & design-system tokens/classes/images**, headless-browser verification |
 | 🔬 **Analyze** | Impact/dependency analysis, complexity & code metrics, naming, explain-what-this-does, KB activity/freshness, reorg/DDL impact preview, native security scan, schema-drift check |
 | 🛠️ **Build, test & deploy** | Build (full or fast `compile_check`), validate, reorg, index, run native GXtest tests, deploy the application (targets + deploy) |
@@ -236,7 +236,7 @@ Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) 
 
 ## Tool Surface
 
-The worker exposes **48 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json).
+The worker exposes **49 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json).
 
 **Orientation & health**
 - `genexus_whoami` — KB context, version, worker/index/database health, self-update check, next-step hints
@@ -278,6 +278,7 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 - `genexus_structure` — read/write the data model: `get_visual`/`get_logic`, `update_visual` (structure DSL), `create_index`/`drop_index` (unique/non-unique indexes — the GeneXus way to enforce uniqueness), `set_attribute` (Formula, subtype, Title/ColumnTitle, IsCollection, basedOnDomain), `set_level` (level Description/Image attribute), `set_domain` (edit an existing Domain's enum values / base type). For `create_index`, `dryRun:true` validates and returns the projected diff without saving; use the `versionToken` from `get_indexes` as `baseVersion` for concurrency protection. A real write is re-read and verified exactly, with snapshot rollback on failure. It never triggers Specify, Generate, Build, Rebuild, compilation, reorganization, execution, or tests.
 - `genexus_authoring` — members of object types the structure DSL doesn't cover: `add_external_method`/`add_external_property` (External Objects), `add_menu_option` (Menus)
 - `genexus_properties` — read/update object-level properties
+- `genexus_generator_reference` — list/preview/add/remove native .NET generator references with managed-assembly validation, optimistic concurrency, save/re-read verification, and exact full-snapshot rollback; never runs lifecycle actions implicitly
 
 **Refactor, patterns & compare**
 - `genexus_refactor` — rename, extract procedure, WWP condition set

@@ -25,6 +25,14 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                case "genexus_generator_reference":
+                    return new
+                    {
+                        module = "GeneratorReference",
+                        action = "Run",
+                        @params = args
+                    };
+
                 case "genexus_delete_object":
                     return new
                     {

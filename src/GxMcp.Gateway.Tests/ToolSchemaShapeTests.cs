@@ -125,6 +125,22 @@ namespace GxMcp.Gateway.Tests
             Assert.True(dupes.Count == 0, "Duplicate tool names: " + string.Join(", ", dupes));
         }
 
+        [Fact]
+        public void GeneratorReferenceToolHasExactTypedActionsAndSelection()
+        {
+            using var doc = LoadTools();
+            var tool = doc.RootElement.EnumerateArray()
+                .Single(t => t.GetProperty("name").GetString() == "genexus_generator_reference");
+            var schema = tool.GetProperty("inputSchema");
+            var actions = schema.GetProperty("properties").GetProperty("action").GetProperty("enum")
+                .EnumerateArray().Select(x => x.GetString()).ToArray();
+            var required = schema.GetProperty("required").EnumerateArray()
+                .Select(x => x.GetString()).ToArray();
+
+            Assert.Equal(new[] { "list", "dry_run_add", "add", "dry_run_remove", "remove" }, actions);
+            Assert.Equal(new[] { "action", "environment", "generator" }, required);
+        }
+
         // ---- recursive walkers --------------------------------------------------------
 
         private static void WalkForArrayMissingItems(JsonElement node, string pointer, List<string> violations)

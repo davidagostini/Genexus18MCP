@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **Native typed .NET generator references.** `genexus_generator_reference` lists, previews,
+  adds, and removes the managed assemblies that GeneXus emits through `GxExternalReference`.
+  Mutations require an optimistic token, save and reread only the native `GeneratorsPart`, avoid
+  duplicates, and restore the complete generator-property snapshot on divergence. The tool never
+  invokes Specify, Generate, Build, Rebuild, compilation, reorganization, publish, execution, or tests.
+
 ## v2.41.11 - 2026-08-19
 
 ### Fixed
@@ -52,6 +60,7 @@
 ### Internal
 
 - **Disposable U16 Data View persistence harness and schema budget.** Added `scripts/Test-DataViewAtomic.ps1` to verify dry-run immutability, atomic create/reread/delete, root-only BC shape, physical mapping, stale-version rejection, and absence of implicit lifecycle actions; raised the intentional combined tool-schema budget from 20,500 to 21,100 tokens (measured ~20,932).
+- **Typed generator-reference schema budget.** Raised the intentional combined tool-schema budget from 21,100 to 21,700 tokens for native .NET generator reference list/add/remove, dry-run, optimistic concurrency, and exact rollback (measured ~21,563).
 
 ## v2.41.9 - 2026-08-18
 

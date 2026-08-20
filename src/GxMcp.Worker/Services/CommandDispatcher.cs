@@ -48,6 +48,7 @@ namespace GxMcp.Worker.Services
         // Issue #62 — atomic create/update (variables + rules + parms + properties + source in one validated op).
         private readonly AtomicCreateService _atomicCreateService;
         private readonly DataViewService _dataViewService;
+        private readonly GeneratorReferenceService _generatorReferenceService;
         private readonly AssetService _assetService;
         private readonly VersionControlService _versionControlService;
         private readonly ConversionService _conversionService;
@@ -215,6 +216,7 @@ namespace GxMcp.Worker.Services
             _atomicAuthoringService = new AtomicAuthoringService(_objectService, _writeService, _propertyService, _buildService);
             _atomicCreateService = new AtomicCreateService(_objectService, _writeService, _propertyService, _saveSpecifyOrchestrator, _historyService);
             _dataViewService = new DataViewService(_kbService, _objectService);
+            _generatorReferenceService = new GeneratorReferenceService(_kbService);
             _conversionService = new ConversionService(_objectService);
             _selfTestService = new SelfTestService(_kbService, _searchService, _linterService);
             _kbValidationService = new KbValidationService(_indexCacheService, _objectService, _patternAnalysisService);
@@ -563,6 +565,7 @@ namespace GxMcp.Worker.Services
                 ["object"] = Handle_Object,
                 ["atomiccreate"] = Handle_AtomicCreate,
                 ["dataview"] = Handle_DataView,
+                ["generatorreference"] = Handle_GeneratorReference,
                 ["write"] = Handle_Write,
                 ["editandbuild"] = Handle_EditAndBuild,
                 ["semanticops"] = Handle_SemanticOps,
@@ -2236,6 +2239,11 @@ namespace GxMcp.Worker.Services
             // list|add_action|update_action|move_action|remove_action over the host's
             // PatternInstance XML; dryRun supported; no Security permissions created.
             return _wwpActionService.Run(target, args ?? new JObject());
+        }
+
+        private string Handle_GeneratorReference(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            return _generatorReferenceService.Run(args ?? new JObject());
         }
 
         private string Handle_CurlProc(JObject request, string method, string action, string target, string payload, JObject args)
