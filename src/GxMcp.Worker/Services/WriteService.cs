@@ -587,7 +587,7 @@ namespace GxMcp.Worker.Services
             // write when the object changed since (e.g. the user edited it in the IDE).
             // Better a StaleObject error the agent can recover from than silently
             // clobbering the user's concurrent change. No token → no guard (back-compat).
-            if (!string.IsNullOrEmpty(facadeArgs.BaseVersion) && !facadeArgs.DryRun)
+            if (!string.IsNullOrEmpty(facadeArgs.BaseVersion))
             {
                 string staleErr = CheckStaleVersion(target, facadeArgs.PartName, facadeArgs.TypeFilter, facadeArgs.BaseVersion);
                 if (staleErr != null) return staleErr;
@@ -632,7 +632,8 @@ namespace GxMcp.Worker.Services
                     facadeArgs.AutoInjectVariables,
                     facadeArgs.DryRun,
                     facadeArgs.ExplicitBase64,
-                    strictVerify);
+                    strictVerify,
+                    facadeArgs.RollbackOnFailure);
             }
 
             // Friction 2026-05-22: KBs default to WIN1252 (codepage 1252) on
@@ -899,7 +900,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true)
+        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false)
         {
             // Friction 2026-05-22 fix: hold the per-target lock around the
             // ENTIRE write pipeline (snapshot + internal write + wrap). This is
@@ -972,6 +973,9 @@ namespace GxMcp.Worker.Services
             // wrap just computed; turns the silent data loss into a recoverable error.
             if (!dryRun)
                 wrapped = ApplyEmptyPersistGuard(wrapped, target, partName, code);
+
+            if (!dryRun && rollbackOnFailure && snapshot?.PriorContent != null)
+                wrapped = RollbackFullWriteFailure(wrapped, target, partName, typeFilter, snapshot.PriorContent);
 
             // issue #31.2: a no-op write (WrapWithPersistedState flipped code to
             // WriteNoChange because persisted == prior) shouldn't keep the pre-write

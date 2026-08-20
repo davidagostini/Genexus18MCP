@@ -304,6 +304,14 @@ namespace GxMcp.Gateway
         public string? Summary { get; set; }
         public JObject? Result { get; set; }
 
+        // Async mutations keep the physical worker and authored target identity so a
+        // lifecycle cancel can recycle a non-preemptible STA call without guessing which
+        // KB owns it, and can require a read-back of the exact part before the next write.
+        public string? WorkerAlias { get; set; }
+        public string? Target { get; set; }
+        public string? Part { get; set; }
+        public string? ObjectType { get; set; }
+
         // Issue #27 item 1: the worker-side build task id (BuildTaskStatus key) this
         // job maps to. The async build poller (Program.cs) is fire-and-forget and can
         // wedge — stale worker pipe, STA serialization, worker recycle — leaving the job

@@ -291,14 +291,19 @@ namespace GxMcp.Gateway.Routers
                         return new {
                             module = "Write",
                             action = part,
+                            part = part,
+                            mode = "full",
                             target = target,
                             payload = args?["content"]?.ToString(),
+                            content = args?["content"]?.ToString(),
                             type = args?["type"]?.ToString(),
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
                             visualVerify = visualVerify,
                             validate = args?["validate"]?.ToString(),
                             validationMode = args?["validationMode"]?.ToString(),
                             rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
+                            baseVersion = args?["baseVersion"]?.ToString(),
+                            expectedVersion = args?["expectedVersion"]?.ToString(),
                             autoDeclareVariables = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false
                         };
                     }

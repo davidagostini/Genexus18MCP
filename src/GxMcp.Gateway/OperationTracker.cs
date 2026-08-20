@@ -191,6 +191,23 @@ namespace GxMcp.Gateway
             return true;
         }
 
+        internal bool TryGetContext(string operationId, out string? toolName, out JObject? toolArguments)
+        {
+            toolName = null;
+            toolArguments = null;
+            if (string.IsNullOrWhiteSpace(operationId)
+                || !_operations.TryGetValue(operationId, out var record))
+                return false;
+            lock (record.SyncRoot)
+            {
+                toolName = record.ToolName;
+                toolArguments = record.ToolArguments != null
+                    ? (JObject)record.ToolArguments.DeepClone()
+                    : null;
+                return true;
+            }
+        }
+
         // A4: a worker progress frame carries progressToken == operationId (see
         // SendWorkerCommandAsync). Bump the record's UpdatedAtUtc so a status poll
         // (genexus_lifecycle action=status target=op:<id>) shows real liveness

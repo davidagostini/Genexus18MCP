@@ -81,6 +81,7 @@ namespace GxMcp.Gateway
         private static HttpSessionRegistry _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(10));
         private static IdempotencyCache _idempotencyCache = new IdempotencyCache(15, 1000);
         private static readonly OperationTracker _operationTracker = new OperationTracker(TimeSpan.FromMinutes(60));
+        private static readonly MutationRecoveryRegistry _mutationRecovery = new MutationRecoveryRegistry();
         internal static OperationTracker OperationTracker => _operationTracker;
 
         // User-macro storage: <configRoot>/recipes/user-macros/<name>.json.

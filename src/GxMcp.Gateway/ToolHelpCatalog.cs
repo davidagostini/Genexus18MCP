@@ -60,12 +60,13 @@ namespace GxMcp.Gateway
                 "## Required\n" +
                 "- Either `name` (single object) **or** `targets` (array) — never both.\n" +
                 "- `mode`: `full` (replace whole part) or `patch` (Replace/Insert_After/Append over a context anchor).\n" +
-                "- `dryRun: true` with `mode: 'patch'` first to preview without persisting.\n\n" +
+                "- `dryRun: true` first for either mode. A preview is synchronous, never calls Save, and never starts a lifecycle action.\n\n" +
                 "## Output\n" +
                 "- Returns `post_state.diff` (unified diff) by default.\n" +
                 "- `verbose: true` adds slices with ±15 lines of context.\n" +
                 "- `return_post_state: false` opts out of the post-state block to save tokens.\n" +
-                "- `async: true` returns immediately with `operationId` / `job_id`; poll `genexus_lifecycle action=status|result target=op:<id>` for completion.\n\n" +
+                "- `async: true` returns immediately with one `operationId` / `job_id`; the same ID is used by Worker busy telemetry and lifecycle status/result/cancel. Cancellation terminalizes the operation and recycles a blocked non-preemptible Worker.\n" +
+                "- Full Source writes return the independently re-read `source`, `postSaveVerification.versionToken`, `persisted`, and `implicitLifecycleActions`. After a timeout or cancellation, another write to that object is blocked until `genexus_read` confirms its actual state.\n\n" +
                 "## Patch persistence verification\n" +
                 "Source and Rules are always re-read after the single SDK save. `verifyMode: 'normalized'` is the default and tolerates EOL, encoding marker, trailing-whitespace, and repeated-blank-line rendering by the SDK; `exact` preserves comments, whitespace, and blank lines but treats CRLF/LF as the same logical Source representation; `semantic` also tolerates harmless SDK casing/spacing changes. Comment-only Replace writes require `baseVersion`, are verified against the requested comment, report active old-statement presence, and return `CommentOnlyWriteNotPersisted` if the SDK re-read diverges. The response separates `saved` from `verified` and includes raw/normalized hashes, `normalizationApplied`, `diffNormalized`, `matchCount`, `persistedMatchCount`, `oldContentPresent`, `replacementPresent`, `reReadConfirmed`, and `implicitOperations` (always empty for this path). A mismatch is never reported as Applied. Rollback occurs only with `rollbackOnFailure: true` and a valid snapshot, and reports its own save/verification hashes. Pass the prior read's `versionToken` as `baseVersion` to reject concurrent edits. No Specify, Generate, Build, Rebuild, compilation, reorganization, execution, or tests are invoked by a patch write.\n\n" +
                 "## Disambiguation\n" +

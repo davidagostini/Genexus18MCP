@@ -193,6 +193,7 @@ namespace GxMcp.Worker.Services
                 return parsed.ToString();
 
             string finalSource = "";
+            string finalVersionToken = null;
             bool verificationReadTruncated = false;
             string verificationReadFailure = null;
             try
@@ -213,6 +214,7 @@ namespace GxMcp.Worker.Services
                             ?? readObj["content"]?.ToString()
                             ?? readObj["parts"]?[partName ?? "Source"]?.ToString()
                             ?? "";
+                        finalVersionToken = readObj["versionToken"]?.ToString();
                     }
                     else
                     {
@@ -230,9 +232,16 @@ namespace GxMcp.Worker.Services
             // prior source, so the edited region is shown even past the first ~10 lines.
             int? editLine = priorSource != null ? (int?)FirstDiffLine(priorSource, finalSource) : null;
             bool verificationReadReliable = !verificationReadTruncated && verificationReadFailure == null;
+            bool isDryRun = string.Equals(parsed["code"]?.ToString(), "WriteDryRun", StringComparison.OrdinalIgnoreCase);
             if (verificationReadReliable)
             {
                 AppendPersistedState(parsed, finalSource, editLine);
+                parsed["source"] = finalSource;
+                parsed[isDryRun ? "currentState" : "postSaveVerification"] = new JObject
+                {
+                    ["reReadConfirmed"] = true,
+                    ["versionToken"] = finalVersionToken
+                };
             }
             else
             {
@@ -240,6 +249,17 @@ namespace GxMcp.Worker.Services
                 // as though it represented the complete persisted part.
                 parsed["persistedHash"] = null;
                 parsed["persistedSnippet"] = null;
+                parsed[isDryRun ? "currentState" : "postSaveVerification"] = new JObject
+                {
+                    ["reReadConfirmed"] = false,
+                    ["reason"] = verificationReadFailure ?? (verificationReadTruncated ? "truncation" : "unknown")
+                };
+            }
+            parsed["implicitLifecycleActions"] = new JArray();
+            if (isDryRun)
+            {
+                parsed["persisted"] = false;
+                parsed["mutationDetected"] = false;
             }
 
             // #59: every textual mutation exposes the requested/persisted comparison,
@@ -270,6 +290,8 @@ namespace GxMcp.Worker.Services
                         ? JValue.CreateNull()
                         : (JToken)verification.Matches
                 };
+                if (!isDryRun)
+                    parsed["persisted"] = !verification.IsIndeterminate && verification.Matches;
 
                 string responseStatus = parsed["status"]?.ToString();
                 bool successful = string.Equals(responseStatus, "ok", StringComparison.OrdinalIgnoreCase)
@@ -294,10 +316,16 @@ namespace GxMcp.Worker.Services
                         extra: new JObject
                         {
                             ["part"] = partName,
-                            ["mutation"] = mutation,
-                            ["persistedHash"] = parsed["persistedHash"]?.DeepClone(),
-                            ["persistedSnippet"] = parsed["persistedSnippet"]?.DeepClone()
-                        });
+                             ["mutation"] = mutation,
+                             ["persistedHash"] = parsed["persistedHash"]?.DeepClone(),
+                             ["persistedSnippet"] = parsed["persistedSnippet"]?.DeepClone(),
+                             ["source"] = finalSource,
+                             ["postSaveVerification"] = parsed["postSaveVerification"]?.DeepClone(),
+                             ["partialPersistenceDetected"] = priorSource != null
+                                 && !string.Equals(priorSource, finalSource, StringComparison.Ordinal),
+                             ["persisted"] = false,
+                             ["implicitLifecycleActions"] = new JArray()
+                         });
                 }
             }
 
@@ -337,6 +365,94 @@ namespace GxMcp.Worker.Services
             }
 
             return parsed.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        private string RollbackFullWriteFailure(
+            string responseJson,
+            string target,
+            string partName,
+            string typeFilter,
+            string priorSource)
+        {
+            JObject response;
+            try { response = JObject.Parse(responseJson); }
+            catch { return responseJson; }
+
+            string status = response["status"]?.ToString();
+            if (!string.Equals(status, "error", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+                return responseJson;
+
+            string current = response["source"]?.ToString();
+            if (current != null && string.Equals(current, priorSource, StringComparison.Ordinal))
+            {
+                response["rollback"] = new JObject
+                {
+                    ["requested"] = true,
+                    ["rolledBack"] = true,
+                    ["saveRequired"] = false,
+                    ["reReadConfirmed"] = true
+                };
+                response["persisted"] = false;
+                return response.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            string restoreError = null;
+            try
+            {
+                string restore = WriteObjectInternal(
+                    target,
+                    partName,
+                    priorSource,
+                    typeFilter,
+                    autoValidate: false,
+                    preferFastSourceSave: false,
+                    autoInjectVariables: false,
+                    dryRun: false,
+                    explicitBase64: false,
+                    strictVerify: true);
+                JObject restoreEnvelope = JObject.Parse(restore);
+                if (!string.Equals(restoreEnvelope["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(restoreEnvelope["status"]?.ToString(), "success", StringComparison.OrdinalIgnoreCase))
+                    restoreError = restoreEnvelope["error"]?["message"]?.ToString() ?? restoreEnvelope.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch (Exception ex)
+            {
+                restoreError = ex.Message;
+            }
+
+            string after = null;
+            string afterVersion = null;
+            try
+            {
+                JObject read = JObject.Parse(_objectService.ReadObjectSourceForVerification(target, partName));
+                after = read["source"]?.ToString() ?? read["content"]?.ToString();
+                afterVersion = read["versionToken"]?.ToString();
+            }
+            catch (Exception ex)
+            {
+                if (restoreError == null) restoreError = "Rollback re-read failed: " + ex.Message;
+            }
+
+            bool restored = restoreError == null && string.Equals(after, priorSource, StringComparison.Ordinal);
+            response["rollback"] = new JObject
+            {
+                ["requested"] = true,
+                ["rolledBack"] = restored,
+                ["saveRequired"] = true,
+                ["reReadConfirmed"] = after != null,
+                ["error"] = restoreError
+            };
+            response["postSaveVerification"] = new JObject
+            {
+                ["reReadConfirmed"] = after != null,
+                ["versionToken"] = afterVersion
+            };
+            response["source"] = after;
+            response["persisted"] = false;
+            if (!restored)
+                response["rollbackFailed"] = true;
+            return response.ToString(Newtonsoft.Json.Formatting.None);
         }
 
         internal sealed class PersistedVerificationResult

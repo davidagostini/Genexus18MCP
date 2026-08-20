@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- **`genexus_edit mode=full` now keeps dry-runs non-persistent and recovers deterministically from blocked SDK calls.** Preview requests never enter the asynchronous mutation path or call `Save`; background edits use one operation ID across accepted/status/result/cancel and Worker busy telemetry; cancellation terminalizes the operation and recycles only its blocked Worker. Timed-out or cancelled writes require a successful read-back before another write to the same object. Full writes preserve `baseVersion`/`expectedVersion`, honor `rollbackOnFailure`, and return the independently re-read Source, version token, persistence state, and empty implicit lifecycle list.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for stabilizing full edit dry-runs, optimistic concurrency, and async mutation recovery — see [PR #110](https://github.com/lennix1337/Genexus18MCP/pull/110).
 - **Robust Native SDK Object Resolution across all modules.** Fixed edge cases where newly created or unindexed objects (and Transactions sharing names with physical Table shadow objects) would fail resolution during single-roundtrip reads; resolution now seamlessly uses native SDK `GetByName` and promotes physical tables to source-bearing Transactions.
 - **SDT attribute-based members (`Attribute:<Name>` / `basedOnAttribute`) now persist and round-trip through `genexus_structure`, `genexus_read`, `genexus_inspect`, and `genexus_edit`.** Previously, SDT fields referencing a KB Attribute were ignored or stripped when setting structure, reading visual structure, or serializing to the Structure DSL, causing `basedOnAttribute` to be lost and `dryRun` to report false negatives. The SDT authoring pipeline now binds `AttributeBasedOn` via the native SDK reference provider, parses and emits `Attribute:<Name>` in DSL round-trips, surfaces `basedOnAttribute` in `genexus_structure action=get_visual`, `genexus_inspect`, and `genexus_read part=Structure`, and accurately detects visual structure mutations on attribute changes. Fixes #109.
 
@@ -66,6 +68,11 @@
 ### Internal
 
 - **Disposable U16 Data View persistence harness and schema budget.** Added `scripts/Test-DataViewAtomic.ps1` to verify dry-run immutability, atomic create/reread/delete, root-only BC shape, physical mapping, stale-version rejection, and absence of implicit lifecycle actions; raised the intentional combined tool-schema budget from 20,500 to 21,100 tokens (measured ~20,932).
+=======
+### Fixed
+
+- **`genexus_edit mode=full` now keeps dry-runs non-persistent and recovers deterministically from blocked SDK calls.** Preview requests never enter the asynchronous mutation path or call `Save`; background edits use one operation ID across accepted/status/result/cancel and Worker busy telemetry; cancellation terminalizes the operation and recycles only its blocked Worker. Timed-out or cancelled writes require a successful read-back before another write to the same object. Full writes preserve `baseVersion`/`expectedVersion`, honor `rollbackOnFailure`, and return the independently re-read Source, version token, persistence state, and empty implicit lifecycle list.
+>>>>>>> pr-110
 
 ## v2.41.9 - 2026-08-18
 
