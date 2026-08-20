@@ -135,7 +135,10 @@ namespace GxMcp.Gateway.Tests
             //   genexus_data_view inspect/dry_run/create/update/delete, typed
             //   mappings, optimistic concurrency and atomic rollback. Measured
             //   ~20932; ~168 headroom.
-            Assert.True(approxTokens < 21100, $"tool_definitions.json is ~{approxTokens} tokens; budget 21100.");
+            //   2026-08-20 (typed generator references): 21100 → 21700 for
+            //   genexus_generator_reference list/add/remove, dry-run, optimistic
+            //   concurrency and exact rollback. Measured ~21563; ~137 headroom.
+            Assert.True(approxTokens < 21700, $"tool_definitions.json is ~{approxTokens} tokens; budget 21700.");
         }
     }
 }

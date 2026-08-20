@@ -85,6 +85,8 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_lifecycle", "reorg")]
         [InlineData("genexus_lifecycle", "snapshots-restore")]
         [InlineData("genexus_kb", "set_environment")]
+        [InlineData("genexus_generator_reference", "add")]
+        [InlineData("genexus_generator_reference", "remove")]
         public void MutatingActions_AreDetected(string toolName, string action)
         {
             var args = new JObject { ["action"] = action };
@@ -149,6 +151,9 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_lifecycle", "result")]
         [InlineData("genexus_lifecycle", "reorg_preview")]
         [InlineData("genexus_deploy", "list_targets")]
+        [InlineData("genexus_generator_reference", "list")]
+        [InlineData("genexus_generator_reference", "dry_run_add")]
+        [InlineData("genexus_generator_reference", "dry_run_remove")]
         public void ReadOnlyActions_AreNotFlagged(string toolName, string action)
         {
             var args = new JObject { ["action"] = action };
@@ -163,6 +168,18 @@ namespace GxMcp.Gateway.Tests
         public void DataView_DryRun_DoesNotInvalidate(string action)
         {
             Assert.False(Program.IsMutatingTool("genexus_data_view", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = true
+            }));
+        }
+
+        [Theory]
+        [InlineData("add")]
+        [InlineData("remove")]
+        public void GeneratorReference_DryRunFlag_DoesNotInvalidate(string action)
+        {
+            Assert.False(Program.IsMutatingTool("genexus_generator_reference", new JObject
             {
                 ["action"] = action,
                 ["dryRun"] = true

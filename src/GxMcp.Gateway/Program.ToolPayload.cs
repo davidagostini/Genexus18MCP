@@ -254,6 +254,14 @@ namespace GxMcp.Gateway
                        string.Equals(action, "move", StringComparison.OrdinalIgnoreCase);
             }
 
+            if (string.Equals(toolName, "genexus_generator_reference", StringComparison.OrdinalIgnoreCase))
+            {
+                if (args?["dryRun"]?.ToObject<bool?>() == true) return false;
+                string? action = args?["action"]?.ToString();
+                return string.Equals(action, "add", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "remove", StringComparison.OrdinalIgnoreCase);
+            }
+
             if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase))
             {
                 // Switching the SDK's active environment changes where subsequent

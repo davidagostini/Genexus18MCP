@@ -1641,6 +1641,94 @@
     {
       "annotations": {
         "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Native typed .NET generator references used by GxExternalReference. list and dry-run actions are read-only. add/remove validate a managed assembly when a path is supplied, require optimistic baseVersion for changes, save only the native GeneratorsPart, reread it, and restore the complete generator-property snapshot on verification failure. No lifecycle action runs implicitly.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "action": "list",
+            "environment": ".Net Environment",
+            "generator": "Default (.NET)"
+          },
+          {
+            "action": "dry_run_add",
+            "assembly": "SpreadsheetLibrary.dll",
+            "assemblyPath": "C:\\KBs\\Sample\\CSharpModel\\web\\bin\\SpreadsheetLibrary.dll",
+            "environment": ".Net Environment",
+            "generator": "Default (.NET)"
+          },
+          {
+            "action": "add",
+            "assembly": "SpreadsheetLibrary.dll",
+            "assemblyPath": "C:\\KBs\\Sample\\CSharpModel\\web\\bin\\SpreadsheetLibrary.dll",
+            "baseVersion": "sha256:<token>",
+            "environment": ".Net Environment",
+            "generator": "Default (.NET)",
+            "rollbackOnFailure": true
+          }
+        ],
+        "properties": {
+          "action": {
+            "enum": [
+              "list",
+              "dry_run_add",
+              "add",
+              "dry_run_remove",
+              "remove"
+            ],
+            "type": "string"
+          },
+          "assembly": {
+            "description": "Assembly file name for add/remove, e.g. SpreadsheetLibrary.dll.",
+            "type": "string"
+          },
+          "assemblyPath": {
+            "description": "Absolute path or KB-relative path used to validate a managed assembly. Required for add unless found in a standard model/bin location.",
+            "type": "string"
+          },
+          "baseVersion": {
+            "description": "Optimistic token returned by list or a dry-run. Required for a real state change.",
+            "type": "string"
+          },
+          "dryRun": {
+            "default": false,
+            "description": "Force add/remove to remain read-only.",
+            "type": "boolean"
+          },
+          "environment": {
+            "description": "Active GeneXus Environment name; the tool never switches environments.",
+            "type": "string"
+          },
+          "generator": {
+            "description": "Generator display name, e.g. Default (.NET).",
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
+          "rollbackOnFailure": {
+            "default": true,
+            "description": "Restore and verify the complete prior generator-property snapshot if save/reread diverges.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "environment",
+          "generator"
+        ],
+        "type": "object"
+      },
+      "name": "genexus_generator_reference"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false

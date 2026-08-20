@@ -10,6 +10,8 @@
   - Smart Variable Pruning: Prunes 100% of unused GeneXus SDK built-in system noise variables (`&Time`, `&Pgmname`, `&Pgmdesc`, `&Page`, `&Line`, etc.) from variable lists, saving context budget while preserving all user-declared and referenced variables.
   - `inline_read_top` Smart Reads: `genexus_query`, `genexus_list_objects`, and `genexus_search_source` now populate `inline_reads` with full `FullObjectRead` payloads on Turn 1.
   - AXI Guidance: Embedded proactive playbooks and schema annotations in `tool_definitions.json`, `genexus_whoami(verbose=true)`, and Next Legal Actions to guide LLMs toward the 1-roundtrip path, maximizing speed and context economy.
+- **Native typed .NET generator references with `genexus_generator_reference`.** Lists, previews, adds, and removes the managed assemblies that GeneXus emits through `GxExternalReference`. Mutations require an optimistic token, save and reread only the native `GeneratorsPart`, avoid duplicates, and restore the complete generator-property snapshot on divergence. The tool never invokes Specify, Generate, Build, Rebuild, compilation, reorganization, publish, execution, or tests.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for native typed .NET generator references — see [PR #111](https://github.com/lennix1337/Genexus18MCP/pull/111).
 
 ### Fixed
 
@@ -68,11 +70,15 @@
 ### Internal
 
 - **Disposable U16 Data View persistence harness and schema budget.** Added `scripts/Test-DataViewAtomic.ps1` to verify dry-run immutability, atomic create/reread/delete, root-only BC shape, physical mapping, stale-version rejection, and absence of implicit lifecycle actions; raised the intentional combined tool-schema budget from 20,500 to 21,100 tokens (measured ~20,932).
+<<<<<<< HEAD
 =======
 ### Fixed
 
 - **`genexus_edit mode=full` now keeps dry-runs non-persistent and recovers deterministically from blocked SDK calls.** Preview requests never enter the asynchronous mutation path or call `Save`; background edits use one operation ID across accepted/status/result/cancel and Worker busy telemetry; cancellation terminalizes the operation and recycles only its blocked Worker. Timed-out or cancelled writes require a successful read-back before another write to the same object. Full writes preserve `baseVersion`/`expectedVersion`, honor `rollbackOnFailure`, and return the independently re-read Source, version token, persistence state, and empty implicit lifecycle list.
 >>>>>>> pr-110
+=======
+- **Typed generator-reference schema budget.** Raised the intentional combined tool-schema budget from 21,100 to 21,700 tokens for native .NET generator reference list/add/remove, dry-run, optimistic concurrency, and exact rollback (measured ~21,563).
+>>>>>>> pr-111
 
 ## v2.41.9 - 2026-08-18
 
