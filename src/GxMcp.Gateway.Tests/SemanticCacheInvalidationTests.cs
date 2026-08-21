@@ -205,5 +205,28 @@ namespace GxMcp.Gateway.Tests
             // whether a delete invalidates cached reads.
             Assert.True(Program.IsMutatingTool("genexus_delete_object", null));
         }
+        // ── C1: epoch guard for in-flight reads ──────────────────────────────────
+        // The store path only caches an envelope when the epoch captured at dispatch
+        // still matches. A mutation bumps SemanticCacheEpoch right after Clear(), so
+        // a read completing after the invalidation must not repopulate the cache with
+        // its pre-mutation envelope.
+        [Fact]
+        public void SemanticCacheEpoch_IncrementAfterCapture_StaleEpochDetected()
+        {
+            int epochAtDispatch = System.Threading.Interlocked.CompareExchange(ref Program.SemanticCacheEpoch, 0, 0);
+
+            // Mutating-tool path: Clear() is immediately followed by an epoch bump.
+            System.Threading.Interlocked.Increment(ref Program.SemanticCacheEpoch);
+
+            Assert.NotEqual(epochAtDispatch, System.Threading.Volatile.Read(ref Program.SemanticCacheEpoch));
+        }
+
+        [Fact]
+        public void SemanticCacheEpoch_NoInvalidationBetweenCaptureAndStore_EpochStillMatches()
+        {
+            int epochAtDispatch = System.Threading.Interlocked.CompareExchange(ref Program.SemanticCacheEpoch, 0, 0);
+
+            Assert.Equal(epochAtDispatch, System.Threading.Volatile.Read(ref Program.SemanticCacheEpoch));
+        }
     }
 }

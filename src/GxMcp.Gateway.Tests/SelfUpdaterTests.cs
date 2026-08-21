@@ -121,5 +121,33 @@ namespace GxMcp.Gateway.Tests
                 try { Directory.Delete(install, recursive: true); } catch { }
             }
         }
+
+        // C4 regression: if moving the staged file in fails AFTER the live binary was
+        // renamed to its .old-* backup, ReplaceFile must restore the backup (otherwise
+        // the install is left with a MISSING binary) and rethrow.
+        [Fact]
+        public void ReplaceFile_RestoresBackup_WhenMoveOfNewFileFails()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "gxmcp-replace-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                string dst = Path.Combine(dir, "GxMcp.Gateway.exe");
+                File.WriteAllText(dst, "OLD");
+                // src deliberately does not exist => File.Move(src, dst) throws after
+                // dst has already been moved to its .old-* backup.
+                string src = Path.Combine(dir, "staged", "GxMcp.Gateway.exe");
+
+                Assert.Throws<FileNotFoundException>(() => SelfUpdater.ReplaceFile(src, dst, "20990101000000"));
+
+                Assert.True(File.Exists(dst), "dst must be restored, never left missing");
+                Assert.Equal("OLD", File.ReadAllText(dst));
+                Assert.Empty(Directory.GetFiles(dir, "*.old-*"));
+            }
+            finally
+            {
+                try { Directory.Delete(dir, recursive: true); } catch { }
+            }
+        }
     }
 }

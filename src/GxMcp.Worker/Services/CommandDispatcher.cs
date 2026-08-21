@@ -358,14 +358,27 @@ namespace GxMcp.Worker.Services
 
         public bool IsThreadSafe(string line)
         {
+            JObject request;
+            try { request = JObject.Parse(line); }
+            catch { return false; }
+            return IsThreadSafe(request);
+        }
+
+        // P3 perf: overload que recebe o comando já parseado. O loop principal
+        // (Program.cs) parseia o JSON uma única vez e propaga o JObject pelos
+        // caminhos IsThreadSafe → Dispatch → DispatchInternal sem re-parsear.
+        public bool IsThreadSafe(JObject request)
+        {
             try
             {
-                var request = JObject.Parse(line);
                 string method = request["method"]?.ToString();
                 string action = request["action"]?.ToString();
 
                 if (string.IsNullOrEmpty(method)) return false;
-                method = method.ToLower();
+                // ToLower() é culture-aware: em culturas Turkish-I um método contendo
+                // "I" não bate com a whitelist e muda de thread de execução conforme
+                // a cultura do SO.
+                method = method.ToLowerInvariant();
 
                 // Only allow strictly non-SDK or pure read-cache operations to bypass STA thread
                 if (method == "ping" || method == "health")
@@ -418,22 +431,35 @@ namespace GxMcp.Worker.Services
 
         public string Dispatch(string line)
         {
+            JObject req0;
+            try { req0 = JObject.Parse(line); }
+            catch { req0 = null; }
+
+            if (req0 == null)
+            {
+                // Compatibilidade: com o parse falho, requestId/method0 seriam null ⇒
+                // nunca cacheável — o fluxo legado seguia direto para DispatchInternal,
+                // que parseava dentro do próprio try e convertia a exceção de parse em
+                // envelope DispatcherException. Reproduzir exatamente esse comportamento.
+                return DispatchInternal(line);
+            }
+            return Dispatch(req0, line);
+        }
+
+        // P3 perf: fluxo completo sem re-parsear. Idempotência e roteamento leem o
+        // request já parseado; rawLine é mantido apenas para o caminho de fallback
+        // (não é usado no corpo). Chamado pelo caminho MTA do Program.cs.
+        public string Dispatch(JObject request, string rawLine)
+        {
             // v2.8.0 — idempotency. When the caller threads a `clientRequestId`
             // through the RPC params, this dispatcher serves a cached response
             // for the same id within a 5-minute TTL. Lets LLM clients retry
             // safely after a socket drop / gateway timeout without double-
             // applying the underlying mutation. Excluded methods (ping, control)
             // skip the cache because they're meta operations.
-            string requestId = null;
-            string method0 = null;
-            try
-            {
-                var req0 = JObject.Parse(line);
-                method0 = req0["method"]?.ToString()?.ToLowerInvariant();
-                requestId = req0["params"]?["clientRequestId"]?.ToString()
-                    ?? (req0["params"]?["params"] as JObject)?["clientRequestId"]?.ToString();
-            }
-            catch { /* fall through to normal dispatch */ }
+            string requestId = request["params"]?["clientRequestId"]?.ToString()
+                ?? (request["params"]?["params"] as JObject)?["clientRequestId"]?.ToString();
+            string method0 = request["method"]?.ToString()?.ToLowerInvariant();
 
             bool cacheable = !string.IsNullOrEmpty(requestId)
                 && method0 != "ping" && method0 != "control";
@@ -452,7 +478,7 @@ namespace GxMcp.Worker.Services
             string result;
             try
             {
-                result = DispatchInternal(line);
+                result = DispatchInternal(request);
             }
             catch
             {
@@ -460,22 +486,72 @@ namespace GxMcp.Worker.Services
                 throw;
             }
 
-            if (cacheable && !string.IsNullOrEmpty(result))
+            if (cacheable && !string.IsNullOrEmpty(result) && IsCacheableSuccessEnvelope(result))
             {
                 GxMcp.Worker.Helpers.IdempotencyCache.Store(requestId, result);
             }
             else if (cacheable)
             {
+                // A5: envelopes de erro (ou resultados não-parseáveis) NÃO são
+                // cacheados — cachear erro faz um retry com o mesmo clientRequestId
+                // reproduzir falhas transitórias (KB not open durante warm-up,
+                // busy-reject) em vez de re-executar.
                 GxMcp.Worker.Helpers.IdempotencyCache.AbortInflight(requestId);
             }
             return result;
+        }
+
+        // Statuses que indicam falha (ou estado não-conclusivo) e portanto nunca
+        // devem virar replay de idempotência.
+        private static readonly HashSet<string> NonCacheableStatuses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Error", "NotFound", "NotImplemented", "WorkerBusy", "Busy", "IndexNotReady",
+            "Reindexing", "IndexCold", "Timeout", "Cancelled", "Running"
+        };
+
+        // A5: retorna true somente para envelopes de sucesso cacheáveis — sem token
+        // top-level "error" e sem "status" em {Error, NotFound, NotImplemented,
+        // WorkerBusy, Busy, IndexNotReady, Reindexing, IndexCold, Timeout,
+        // Cancelled, Running}. JSON inválido ou vazio retorna false.
+        internal static bool IsCacheableSuccessEnvelope(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return false;
+            JObject envelope;
+            try
+            {
+                envelope = JObject.Parse(json);
+            }
+            catch
+            {
+                return false;
+            }
+            if (envelope["error"] != null) return false;
+            string status = envelope["status"]?.ToString();
+            return status == null || !NonCacheableStatuses.Contains(status);
         }
 
         private string DispatchInternal(string line)
         {
             try
             {
-                var request = JObject.Parse(line);
+                return DispatchInternal(JObject.Parse(line));
+            }
+            catch (Exception ex)
+            {
+                // Compatibilidade: o parse legado acontecia dentro do try abaixo; um
+                // JSON malformado era convertido em envelope DispatcherException aqui.
+                return Models.McpResponse.Err(
+                    code: "DispatcherException",
+                    message: ex.Message,
+                    hint: "Inspect worker logs for the full exception chain; this is an unhandled dispatcher error.");
+            }
+        }
+
+        // P3 perf: recebe o comando já parseado (caminho MTA) — sem re-parse.
+        private string DispatchInternal(JObject request)
+        {
+            try
+            {
                 string method = request["method"]?.ToString();
                 string action = request["action"]?.ToString();
                 string target = request["target"]?.ToString();

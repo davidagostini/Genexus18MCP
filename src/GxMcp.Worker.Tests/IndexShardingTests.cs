@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Services;
 using Xunit;
@@ -170,6 +171,92 @@ namespace GxMcp.Worker.Tests
                 var idx2 = reloaded.GetIndex();
                 Assert.True(idx2.Objects.ContainsKey("Procedure:Legacy1"));
                 Assert.Equal("legacy-guid-1", idx2.Objects["Procedure:Legacy1"].Guid);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        // ── C3 regression: MarkDirty must mark shards BEFORE bumping the generation ──
+        // FlushToDisk captures _dirtyGeneration, then pops+writes dirty shards, then
+        // publishes _flushedGeneration = captured gen on success. If MarkDirtyForKey
+        // incremented the generation BEFORE marking the shard dirty, a concurrent flush
+        // could capture the new generation without the shard in _dirtyShards and certify
+        // a mutation whose bytes never reached disk (stale-index-forever on cold start).
+        // Fixed order (shard first, Interlocked.Increment last): any flush observing
+        // generation N is guaranteed by the Interlocked fence to see every shard marked
+        // by mutations <= N, so a certified generation always implies durable bytes.
+
+        [Fact]
+        public void MarkDirtyForKey_BumpsGeneration_AndLeavesIndexUnflushedBeforeAnyFlush()
+        {
+            var cache = new IndexCacheService();
+            cache.Initialize(UniqueKbPath(), proactiveLoad: false);
+            try
+            {
+                // Deterministic half of the fix: after a fully-confirmed flush, a single
+                // MarkDirtyForKey raises the generation by exactly one and flips
+                // IsFullyFlushed back to false — the shard went dirty together with the
+                // generation, before any subsequent flush could run.
+                cache.GetIndex();               // FlushNow no-ops while _index is null
+                cache.SetFlushThrottleForTest(0);
+                Assert.True(cache.FlushNow());
+                Assert.True(cache.IsFullyFlushed);
+
+                long before = cache.DirtyGeneration;
+                cache.MarkDirtyForKey("Procedure:ProbeProc");
+
+                Assert.Equal(before + 1, cache.DirtyGeneration);
+                Assert.False(cache.IsFullyFlushed);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task FlushNow_ConcurrentWithRepeatedMarkDirtyForKey_CertifiedGenerationIsAlwaysDurable()
+        {
+            const int Rounds = 200;
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.GetIndex();
+                cache.SetFlushThrottleForTest(0);
+                Assert.True(cache.FlushNow()); // baseline
+
+                // Background flusher keeps racing the mutations below, widening the
+                // generation-capture window the old Increment-then-mark order could
+                // lose a mutation in.
+                int stop = 0;
+                var flusher = Task.Run(() =>
+                {
+                    while (System.Threading.Volatile.Read(ref stop) == 0)
+                        cache.FlushNow(50); // best-effort; may return false while busy
+                });
+
+                try
+                {
+                    for (int i = 1; i <= Rounds; i++)
+                    {
+                        long before = cache.DirtyGeneration;
+                        cache.AddOrUpdateBatch(new[] { new SearchIndex.IndexEntry { Name = "RaceProc", Type = "Procedure", Guid = "race-guid", Description = "v" + i } });
+                        Assert.True(cache.DirtyGeneration > before);
+                        Assert.True(cache.FlushNow(), $"FlushNow failed to confirm at round {i}");
+                        Assert.True(cache.IsFullyFlushed);
+
+                        // The discriminating check: whatever generation FlushNow just
+                        // certified MUST contain this round's bytes on disk.
+                        var probe = new IndexCacheService();
+                        probe.Initialize(kbPath, proactiveLoad: false);
+                        var idx = probe.GetIndex();
+                        Assert.True(idx.Objects.TryGetValue("Procedure:RaceProc", out var e), $"entry missing from disk at round {i}");
+                        Assert.Equal("v" + i, e.Description);
+                    }
+                }
+                finally
+                {
+                    System.Threading.Volatile.Write(ref stop, 1);
+                    await flusher;
+                }
             }
             finally { cache.DeleteOnDiskSnapshot(); }
         }

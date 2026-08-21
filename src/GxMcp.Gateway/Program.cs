@@ -67,6 +67,10 @@ namespace GxMcp.Gateway
             public DateTime CreatedAtUtc { get; init; } = DateTime.UtcNow;
             /// <summary>Worker (KB) the command was routed to; used to abort pending on per-worker crash.</summary>
             public string? WorkerAlias { get; init; }
+            /// <summary>MCP client request id (tools/call `id`) that spawned this worker request, when known.
+            /// notifications/cancelled carries THIS id, not the gateway-generated key of _pendingRequests,
+            /// so the cancel handler needs the bridge to find what to abort.</summary>
+            public string? McpRequestId { get; init; }
             // PERFORMANCE (perf-review): parsed response envelope. WorkerProcess already
             // parses every line to route it (notifications vs responses + in-flight
             // bookkeeping); HandleWorkerResponse stashes the JObject here so the await
@@ -77,7 +81,12 @@ namespace GxMcp.Gateway
         }
 
         private static ConcurrentDictionary<string, PendingWorkerRequest> _pendingRequests = new ConcurrentDictionary<string, PendingWorkerRequest>();
-        private static ConcurrentDictionary<string, JObject> _semanticCache = new ConcurrentDictionary<string, JObject>();
+        private static readonly SemanticCacheStore _semanticCache = new SemanticCacheStore();
+        // C1 (race fix): bumped on every semantic-cache invalidation (Clear). In-flight reads
+        // capture the epoch before dispatching to the worker and must skip the cache store
+        // when it moved on — otherwise a read completing after a mutation would repopulate
+        // the cache with its pre-mutation envelope.
+        internal static int SemanticCacheEpoch;
         private static HttpSessionRegistry _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(10));
         private static IdempotencyCache _idempotencyCache = new IdempotencyCache(15, 1000);
         private static readonly OperationTracker _operationTracker = new OperationTracker(TimeSpan.FromMinutes(60));
@@ -170,6 +179,13 @@ namespace GxMcp.Gateway
         private static readonly System.Threading.SemaphoreSlim _stdoutGate = new System.Threading.SemaphoreSlim(1, 1);
         private static Configuration? _activeConfig;
         internal static Configuration? ActiveConfig => _activeConfig;
+        // .gx_mirror watcher: rooted in a static field for the process lifetime (same
+        // pattern as the tool_definitions watcher in McpRouter) and disposed on
+        // ProcessExit. Debounce state lives with it — editors fire multiple Changed
+        // events per save and each one must not clear the whole semantic cache.
+        private static FileSystemWatcher? _gxMirrorWatcher;
+        private static readonly object _gxMirrorWatcherLock = new object();
+        private static System.Threading.Timer? _gxMirrorDebounceTimer;
 
         public static void TryWriteStderr(string message)
         {
@@ -399,6 +415,19 @@ namespace GxMcp.Gateway
             AppDomain.CurrentDomain.ProcessExit += (_, __) =>
             {
                 try { _gatewayLifetime.Cancel(); } catch { }
+                try
+                {
+                    // Dispose the .gx_mirror watcher (and its pending debounce timer) on
+                    // shutdown so the process doesn't keep file handles open during teardown.
+                    lock (_gxMirrorWatcherLock)
+                    {
+                        _gxMirrorDebounceTimer?.Dispose();
+                        _gxMirrorDebounceTimer = null;
+                    }
+                    _gxMirrorWatcher?.Dispose();
+                    _gxMirrorWatcher = null;
+                }
+                catch { }
                 if (_activeConfig != null)
                 {
                     GatewayProcessLease.ReleaseCurrentProcess(_activeConfig);
@@ -526,20 +555,38 @@ namespace GxMcp.Gateway
             if (!string.IsNullOrEmpty(config.Environment?.KBPath))
             {
                 Log("[Gateway] Setting up .gx_mirror watcher...");
-                try 
+                try
                 {
                     string mirrorPath = Path.Combine(config.Environment.KBPath, ".gx_mirror");
                     if (!Directory.Exists(mirrorPath)) Directory.CreateDirectory(mirrorPath);
-                    var watcher = new FileSystemWatcher(mirrorPath) 
+                    _gxMirrorWatcher = new FileSystemWatcher(mirrorPath)
                     {
-                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
-                        EnableRaisingEvents = true
+                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName
                     };
-                    watcher.Changed += (s, e) => {
-                        Log($"[Cache] Invalidation triggered by external change: {e.Name}");
-                        _semanticCache.Clear();
-                        BroadcastResourceUpdated("genexus://objects", "external_kb_change");
+                    FileSystemEventHandler onMirrorChange = (s, e) =>
+                    {
+                        // Coalesce the editor's event burst into a single invalidation
+                        // 300ms after the last event (same debounce pattern as
+                        // tool_definitions.json in McpRouter.SetupToolDefinitionsWatcher).
+                        lock (_gxMirrorWatcherLock)
+                        {
+                            _gxMirrorDebounceTimer?.Dispose();
+                            _gxMirrorDebounceTimer = new System.Threading.Timer(_ =>
+                            {
+                                try
+                                {
+                                    Log("[Cache] Invalidation triggered by external change.");
+                                    _semanticCache.Clear();
+                                    BroadcastResourceUpdated("genexus://objects", "external_kb_change");
+                                }
+                                catch (Exception exInval) { Log($"[Cache] Invalidation error: {exInval.Message}"); }
+                            }, null, 300, System.Threading.Timeout.Infinite);
+                        }
                     };
+                    _gxMirrorWatcher.Changed += onMirrorChange;
+                    _gxMirrorWatcher.Created += onMirrorChange;
+                    _gxMirrorWatcher.Renamed += (_, e) => onMirrorChange(_, e);
+                    _gxMirrorWatcher.EnableRaisingEvents = true;
                     Log("[Gateway] .gx_mirror watcher active.");
                 } catch (Exception ex) { Log($"[Cache] Watcher error: {ex.Message}"); }
             }

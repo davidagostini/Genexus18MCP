@@ -447,6 +447,13 @@ namespace GxMcp.Worker.Services
                 // and a null/cold index fast-fails at the gate, so this path is effectively
                 // unreachable today. Kept as ground-truth SDK enumeration for future index-
                 // loading changes rather than deleted.
+                // STA guard: this fallback enumerates via the COM-flavoured SDK
+                // (kb.DesignModel), which must not be touched off the STA thread —
+                // list runs on the thread-pool (MTA) since it's marked thread-safe
+                // in CommandDispatcher.IsThreadSafe. Surface a typed, retriable
+                // error instead of risking a native AV.
+                if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA)
+                    return Finalize("{\"status\":\"Error\",\"code\":\"StaRequired\",\"message\":\"Runtime-SDK enumeration requires the STA thread; the in-memory index is unavailable in this state.\",\"retriable\":true}");
                 source = "runtime-sdk";
                 var kb = _kbService.GetKB();
                 if (kb == null) return Finalize("{\"status\":\"Error\",\"message\":\"KB not open\"}");

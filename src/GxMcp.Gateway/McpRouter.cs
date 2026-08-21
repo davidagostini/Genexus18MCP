@@ -1598,7 +1598,13 @@ namespace GxMcp.Gateway
         internal static void PiggybackJobs(JObject toolResult, string sessionId, BackgroundJobRegistry registry)
         {
             var snapshot = registry.SnapshotForSession(sessionId);
-            if (snapshot.Count == 0) return;
+            if (snapshot.Count == 0) return; // early-out: no job to inject → zero parse/serialize cost
+
+            // PERF note: the JObject.Parse below cannot be avoided by reusing the caller's
+            // PendingWorkerRequest.ParsedResponse — that holds the RPC envelope whose `result`
+            // IS toolInnerResult (already reused upstream). The inner content[0].text payload
+            // only exists serialized here (built inside BuildToolResultContent), so one
+            // parse + serialize when a job actually exists is the structural minimum.
 
             var jobsArr = new JArray(snapshot.Select(j => new JObject
             {
@@ -1664,31 +1670,33 @@ namespace GxMcp.Gateway
                 var meta = (JObject?)inner["_meta"] ?? new JObject();
                 if (meta["tokens"] == null)
                 {
-                    // Stamp the block first so the size estimate reflects the *emitted*
-                    // payload, not the pre-injection text — otherwise responses near the
-                    // 50% threshold are under-reported and never get the pagination hint.
-                    // `hint` is only attached when usage crosses 50% of the budget
-                    // (~95% of responses are well under). Omitting the field on the
-                    // common path saves ~15 bytes per response; clients that read
-                    // `hint` should treat a missing key as "no hint".
+                    // PERF: estimate the emitted size from the PRE-injection text (already in hand)
+                    // plus a constant for the injected block, instead of a throwaway full serialize.
+                    // The few-byte estimation error is immaterial against the 50% threshold
+                    // (~12500 tokens). Single serialize on the common path carries the REAL `used`.
+                    bool hadMeta = inner["_meta"] != null;
+                    int blockOverhead = (hadMeta ? 0 : "\"_meta\":{}".Length + 1)
+                                        + ",\"tokens\":{\"used\":1234567,\"limit\":".Length + MetaTokenLimit.ToString().Length + "}".Length;
+                    int used = Math.Max(1, (int)Math.Round((textStr.Length + blockOverhead) / 4.0));
                     var tokenBlock = new JObject
                     {
-                        ["used"] = 0,
+                        ["used"] = used,
                         ["limit"] = MetaTokenLimit
                     };
                     meta["tokens"] = tokenBlock;
                     inner["_meta"] = meta;
 
                     string emitted = inner.ToString(Newtonsoft.Json.Formatting.None);
-                    int used = (int)Math.Round(emitted.Length / 4.0);
-                    tokenBlock["used"] = used;
                     if (used > MetaTokenLimit / 2)
                     {
                         tokenBlock["hint"] = used > MetaTokenLimit
                             ? "Response exceeds token limit. Use fields/axiCompact=true, narrower filters, or pagination to reduce size."
                             : "Response is over 50% of the token limit. Consider fields/axiCompact=true or pagination for follow-up calls.";
+                        // Block changed after measurement — one re-serialize on this rare path only,
+                        // so the emitted text carries the hint; still a single assignment to first["text"].
+                        emitted = inner.ToString(Newtonsoft.Json.Formatting.None);
                     }
-                    first["text"] = inner.ToString(Newtonsoft.Json.Formatting.None);
+                    first["text"] = emitted;
                 }
             }
             catch { /* token injection must never break the response */ }

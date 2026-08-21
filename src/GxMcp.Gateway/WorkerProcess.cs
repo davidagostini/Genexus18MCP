@@ -343,6 +343,7 @@ namespace GxMcp.Gateway
                                     }
 
                                     Program.Log($"[Gateway] ERROR: Cannot send command {id}, pipe not available after wait.");
+                                    EmitSendFailure(id, $"Worker for KB '{Kb.Alias}' pipe unavailable after 30s wait. Try again or reconnect the worker.");
                                 }
                             }
                             catch (Exception ex)
@@ -353,6 +354,7 @@ namespace GxMcp.Gateway
                                 }
 
                                 Program.Log($"[Gateway] IPC Send Error ({id}): {ex.Message}");
+                                EmitSendFailure(id, $"Worker for KB '{Kb.Alias}' command send failed: {ex.Message}");
                             }
                         }
                     }
@@ -408,6 +410,21 @@ namespace GxMcp.Gateway
             {
                 return false;
             }
+        }
+
+        // C5 fix: a send failure (pipe never became ready within the wait window — including
+        // the TimeoutException from WaitForPipeReadyAsync — or any IPC exception while
+        // writing) must surface as a JSON-RPC error response; otherwise the pending MCP
+        // request hangs until its overall timeout fires. Mirrors the WorkerCrashed envelope.
+        internal void EmitSendFailure(string id, string message)
+        {
+            var errResponse = new JObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = id == "unknown" ? (JToken)JValue.CreateNull() : new JValue(id),
+                ["error"] = new JObject { ["code"] = -32000, ["message"] = message }
+            };
+            OnRpcResponse?.Invoke(errResponse.ToString(Formatting.None), errResponse);
         }
 
         private async Task WaitForPipeReadyAsync(string id, CancellationToken cancellationToken)
@@ -500,11 +517,13 @@ namespace GxMcp.Gateway
         }
 
         // Hard "exactly one worker per KB" backstop. Run at the top of every Start():
-        // kill any OTHER GxMcp.Worker process bound to this KB (matched on the --kb path
-        // in its command line) before we spawn ours. This reaps orphans left by crashes,
-        // reload races, or a gateway that died without cleaning up — so a KB can never
-        // accumulate duplicate workers regardless of how the previous one ended. Our own
-        // live process (when self != exited) is preserved. Best-effort per process.
+        // reap only ORPHANED GxMcp.Worker processes bound to this KB (matched on the
+        // --kb path in its command line) — i.e. workers whose owning gateway is no
+        // longer alive (crash, reload race, gateway died without cleanup). Workers
+        // still owned by a live gateway (ours or a sibling serving the same KB) are
+        // skipped: the sibling's own BusyReject/FR#19 flow already handles them, and
+        // reaping them would cause two gateways to kill each other in a loop.
+        // Our own live process (when self != exited) is preserved. Best-effort per process.
         private void KillOrphanWorkers()
         {
             try
@@ -524,7 +543,18 @@ namespace GxMcp.Gateway
                         if (string.IsNullOrEmpty(cmd)) continue;
                         if (!CommandLineTargetsKb(cmd, norm)) continue;
 
-                        Program.Log($"[Gateway] KillOrphanWorkers: reaping duplicate worker pid={proc.Id} for KB '{Kb?.Alias}'.");
+                        int parentPid = GetParentProcessId(proc);
+                        if (IsOwnedByLiveGateway(parentPid))
+                        {
+                            // Worker still owned by a live gateway (ours or a sibling
+                            // serving the same KB): not an orphan. The sibling's own
+                            // BusyReject/FR#19 flow handles contention; killing here
+                            // would cause a mutual kill loop between gateways.
+                            Program.Log($"[Gateway] KillOrphanWorkers: skipping pid={proc.Id} — owned by live gateway (parent pid={parentPid}).");
+                            continue;
+                        }
+
+                        Program.Log($"[Gateway] KillOrphanWorkers: reaping orphan worker pid={proc.Id} for KB '{Kb?.Alias}' (parent pid={parentPid} not a live gateway).");
                         proc.Kill(true);
                         proc.WaitForExit(3000);
                     }
@@ -624,6 +654,63 @@ namespace GxMcp.Gateway
             }
 
             return string.Empty;
+        }
+
+        private static int GetParentProcessId(Process process)
+        {
+            try
+            {
+                using var searcher = new ManagementObjectSearcher("SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = " + process.Id);
+                using var objects = searcher.Get();
+                foreach (var obj in objects)
+                {
+                    return Convert.ToInt32(obj["ParentProcessId"]);
+                }
+            }
+            catch
+            {
+            }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// True when <paramref name="parentPid"/> is a currently running GxMcp.Gateway
+        /// (or the dotnet host used during dev via `dotnet run`). Workers whose parent
+        /// matches are live siblings' children, not orphans.
+        /// </summary>
+        private static bool IsOwnedByLiveGateway(int parentPid)
+        {
+            if (parentPid <= 0) return false;
+
+            foreach (string name in new[] { "GxMcp.Gateway", "dotnet" })
+            {
+                Process[] candidates;
+                try
+                {
+                    candidates = Process.GetProcessesByName(name);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var candidate in candidates)
+                {
+                    using (candidate)
+                    {
+                        try
+                        {
+                            if (!candidate.HasExited && candidate.Id == parentPid) return true;
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+            }
+
+            return false;
         }
 
         public void Start()

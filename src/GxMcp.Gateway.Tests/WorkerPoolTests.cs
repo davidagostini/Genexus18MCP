@@ -37,15 +37,16 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void IsAtCapacity_respects_MaxOpenKbs()
         {
-            // IsAtCapacity uses strict ">", matching AcquireAsync's eviction threshold.
-            // At-max (count == max) is NOT at capacity; over-max (count > max) IS.
+            // IsAtCapacity uses ">=", matching SpawnWorkerAsync's eviction threshold.
+            // At-max (count == max) IS at capacity: opening one more KB would evict.
             var pool = new WorkerPool(CfgWithMax(2));
             Assert.False(pool.IsAtCapacity());
             pool.RegisterForTest(new KbHandle("a", "C:/A"));
+            Assert.False(pool.IsAtCapacity());
             pool.RegisterForTest(new KbHandle("b", "C:/B"));
-            Assert.False(pool.IsAtCapacity()); // exactly at max — not yet at capacity
+            Assert.True(pool.IsAtCapacity());  // exactly at max — at capacity
             pool.RegisterForTest(new KbHandle("c", "C:/C"));
-            Assert.True(pool.IsAtCapacity());  // one over max — at capacity
+            Assert.True(pool.IsAtCapacity());  // over max — at capacity
         }
 
         [Fact]
@@ -169,17 +170,17 @@ namespace GxMcp.Gateway.Tests
             Assert.DoesNotContain(pool.ListKnown(), h => h.Alias == "adhoc");
         }
 
-        // Fix 9b: IsAtCapacity uses ">", matching AcquireAsync's eviction threshold.
+        // Fix 9b (revised): IsAtCapacity and SpawnWorkerAsync share the same threshold.
         [Fact]
         public void IsAtCapacity_and_AcquireAsync_use_same_threshold()
         {
-            // Both use count > max. IsAtCapacity at exactly max is false;
-            // at max+1 is true — consistent with AcquireAsync which only evicts when count > max.
+            // Both use count >= max. IsAtCapacity at exactly max is true;
+            // consistent with SpawnWorkerAsync, which evicts when the other entries
+            // alone already fill the cap (post-spawn total stays <= max).
             var pool = new WorkerPool(CfgWithMax(1));
+            Assert.False(pool.IsAtCapacity()); // 0 entries, max=1 → 0 >= 1 is false
             pool.RegisterForTest(new KbHandle("a", "C:/A"));
-            Assert.False(pool.IsAtCapacity()); // 1 entry, max=1 → 1 > 1 is false
-            pool.RegisterForTest(new KbHandle("b", "C:/B"));
-            Assert.True(pool.IsAtCapacity());  // 2 entries, max=1 → 2 > 1 is true
+            Assert.True(pool.IsAtCapacity());  // 1 entry, max=1 → 1 >= 1 is true
         }
     }
 }

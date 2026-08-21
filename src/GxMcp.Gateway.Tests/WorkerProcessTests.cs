@@ -1,4 +1,5 @@
 using System.Threading;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace GxMcp.Gateway.Tests
@@ -89,6 +90,52 @@ namespace GxMcp.Gateway.Tests
         {
             Assert.False(WorkerProcess.CommandLineTargetsKb("", "c:\\kbs\\foo"));
             Assert.False(WorkerProcess.CommandLineTargetsKb(Cmd, ""));
+        }
+    }
+
+    // C5 regression: send failures (pipe not ready after the 30s wait — including the
+    // WaitForPipeReadyAsync TimeoutException — and IPC write exceptions) used to be
+    // swallowed after CompleteInFlight + Log, leaving the pending MCP request hanging
+    // until the overall timeout. EmitSendFailure must surface a JSON-RPC error envelope
+    // (code -32000) via OnRpcResponse, mirroring the existing WorkerCrashed path.
+    public class WorkerProcessSendFailureTests
+    {
+        private static WorkerProcess NewWorker() =>
+            new WorkerProcess(new Configuration(), new KbHandle("test", "C:\\fake\\path"));
+
+        [Fact]
+        public void EmitSendFailure_WithCommandId_EmitsErrorEnvelope_OnRpcResponse()
+        {
+            var worker = NewWorker();
+            string? raw = null;
+            JObject? parsed = null;
+            worker.OnRpcResponse += (r, p) => { raw = r; parsed = p; };
+
+            worker.EmitSendFailure("42", "Worker for KB 'test' pipe unavailable after 30s wait.");
+
+            Assert.NotNull(raw);
+            Assert.NotNull(parsed);
+            Assert.Equal("2.0", parsed!["jsonrpc"]?.ToString());
+            Assert.Equal("42", parsed["id"]?.ToString());
+            Assert.Equal(-32000, parsed["error"]?["code"]?.Value<int>());
+            Assert.Contains("pipe unavailable", parsed["error"]?["message"]?.ToString());
+            // The raw string must be the compact serialization of the parsed envelope.
+            Assert.Equal(parsed.ToString(Newtonsoft.Json.Formatting.None), raw);
+        }
+
+        [Fact]
+        public void EmitSendFailure_WithUnknownId_EmitsNullId()
+        {
+            var worker = NewWorker();
+            JObject? parsed = null;
+            worker.OnRpcResponse += (_, p) => parsed = p;
+
+            worker.EmitSendFailure("unknown", "Worker for KB 'test' command send failed: boom.");
+
+            Assert.NotNull(parsed);
+            Assert.True(parsed!["id"] is null || parsed["id"]!.Type == Newtonsoft.Json.Linq.JTokenType.Null);
+            Assert.Equal(-32000, parsed["error"]?["code"]?.Value<int>());
+            Assert.Contains("command send failed", parsed["error"]?["message"]?.ToString());
         }
     }
 }

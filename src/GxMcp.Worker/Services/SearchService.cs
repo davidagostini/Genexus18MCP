@@ -629,6 +629,11 @@ namespace GxMcp.Worker.Services
 
                     Program.EnqueueBackground(() => {
                         try {
+                            // STA guard: this runs on a background (MTA) thread and
+                            // kb.DesignModel.Objects.Get touches the COM-flavoured
+                            // SDK — same crash class as TryDirectLookup off-STA.
+                            // Warm-up is best-effort cache priming; skip silently.
+                            if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA) return;
                             var kb = _indexCacheService.KbService?.GetKB();
                             if (kb == null) return;
                             foreach (var guid in topGuids) {
@@ -658,6 +663,12 @@ namespace GxMcp.Worker.Services
         private string TryDirectLookup(string query, string typeFilter, bool exactMatch)
         {
             if (_objectService == null) return null;
+            // STA guard: search runs on the thread-pool (MTA) because it's marked
+            // thread-safe in CommandDispatcher.IsThreadSafe, but FindObject touches
+            // the COM-flavoured SDK — same class of native AV documented for
+            // SearchSource. Losing the exact-match boost off-STA is acceptable;
+            // crashing the worker is not. Fall through to the in-memory index path.
+            if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA) return null;
             if (string.IsNullOrWhiteSpace(query)) return null;
 
             string trimmed = query.Trim();

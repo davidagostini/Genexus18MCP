@@ -318,7 +318,25 @@ namespace GxMcp.Gateway
             {
                 string file = GetCacheFile();
                 Directory.CreateDirectory(Path.GetDirectoryName(file)!);
-                File.WriteAllText(file, JsonConvert.SerializeObject(entry));
+                string json = JsonConvert.SerializeObject(entry);
+                // Atomic publish (same pattern as GatewayProcessLease.WriteLeaseFile):
+                // write to a unique temp file on the same volume, then rename over the
+                // target. A plain File.WriteAllText is NOT atomic — a concurrent reader
+                // could see a half-written JSON. A rename is atomic on NTFS, so readers
+                // always see either the old cache or the complete new one.
+                string tmp = file + ".tmp." + Guid.NewGuid().ToString("N");
+                try
+                {
+                    File.WriteAllText(tmp, json);
+                    if (File.Exists(file))
+                        File.Replace(tmp, file, null);
+                    else
+                        File.Move(tmp, file);
+                }
+                finally
+                {
+                    try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                }
             }
             catch { }
         }

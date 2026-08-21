@@ -419,8 +419,12 @@ namespace GxMcp.Worker
                 {
                     if (CommandQueue.TryTake(out string line, 100))
                     {
-                        if (_dispatcher.IsThreadSafe(line))
-                            System.Threading.Tasks.Task.Run(() => ProcessCommand(line));
+                        // P3 perf: parseia o comando UMA vez aqui e propaga o JObject pelo
+                        // caminho MTA (Task.Run) — elimina os 3 re-parses em IsThreadSafe/
+                        // Dispatch/DispatchInternal. A fila STA segue recebendo a string crua.
+                        var cmdObj = TryParseCommand(line);
+                        if (_dispatcher.IsThreadSafe(cmdObj))
+                            System.Threading.Tasks.Task.Run(() => ProcessCommand(cmdObj, line));
                         else if (TryRejectBusy(line))
                         { /* answered with a WorkerBusy envelope — do not queue behind the long op */ }
                         else
@@ -811,15 +815,51 @@ namespace GxMcp.Worker
 
         private static void ProcessCommand(string line)
         {
+            JObject obj;
+            try { obj = JObject.Parse(line); }
+            catch (Exception ex)
+            {
+                // Compatibilidade: o parse legado acontecia dentro do try do corpo; uma
+                // linha malformada respondia WorkerInternalError com id "null". Preservar
+                // envelope e mensagem exatamente como antes.
+                Logger.Error("ProcessCommand Error: " + ex.Message);
+                SendWorkerErrorEnvelope("WorkerInternalError", "Unhandled worker error: " + ex.Message, "null");
+                return;
+            }
+            ProcessCommand(obj, line);
+        }
+
+        // P3 perf: parse tolerante usado pelo loop principal. null = JSON malformado —
+        // IsThreadSafe(JObject null) devolve false (NRE capturada), mesma resposta do
+        // overload por string, e a linha segue para TryRejectBusy/fila STA como antes.
+        private static JObject TryParseCommand(string line)
+        {
+            try { return JObject.Parse(line); }
+            catch { return null; }
+        }
+
+        private static void SendWorkerErrorEnvelope(string code, string message, string idJson)
+        {
+            try {
+                string errResult = GxMcp.Worker.Models.McpResponse.Err(code: code, message: message);
+                SendResponse(errResult, idJson);
+            } catch (Exception sendEx) {
+                Logger.Error("ProcessCommand failed to send error response: " + sendEx.Message);
+            }
+        }
+
+        // P3 perf: overload que recebe o comando já parseado pelo loop principal —
+        // usado apenas no caminho MTA (Task.Run); a fila STA continua por string.
+        private static void ProcessCommand(JObject obj, string line)
+        {
             MarkWorkerActivity();
             string idJson = "null";
             try {
-                var obj = JObject.Parse(line);
                 idJson = obj["id"]?.ToString() ?? "null";
                 string method = obj["method"]?.ToString();
                 string correlationId = obj["params"]?["correlationId"]?.ToString() ?? "n/a";
                 Logger.Info($"[WORKER] Command: {method} ({idJson}) [cid:{correlationId}]");
-                string result = _dispatcher.Dispatch(line);
+                string result = _dispatcher.Dispatch(obj, line);
                 SendResponse(result, idJson);
             } catch (Exception ex) when (GxMcp.Worker.Helpers.WorkerCrashGuard.IsCorruptedState(ex)) {
                 // Native/corrupted-state SDK crash: the heap may be inconsistent, so answer THIS

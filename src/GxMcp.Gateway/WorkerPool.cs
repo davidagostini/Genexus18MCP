@@ -101,7 +101,10 @@ namespace GxMcp.Gateway
         public bool IsAtCapacity()
         {
             int max = _config.Server?.MaxOpenKbs ?? 3;
-            return _entries.Count > max;
+            // Count >= max: when the pool already holds `max` entries, opening one
+            // more forces an eviction (SpawnWorkerAsync's threshold), so we ARE at
+            // capacity. The old strict ">" allowed max+1 KBs before flagging.
+            return _entries.Count >= max;
         }
 
         public IReadOnlyList<string> GetKnownAliases()
@@ -111,7 +114,8 @@ namespace GxMcp.Gateway
 
         public WorkerProcess? TryGetWorker(string alias)
         {
-            if (_entries.TryGetValue(alias, out var entry)) return entry.Worker;
+            if (alias == null) return null;
+            if (_entries.TryGetValue(alias.ToLowerInvariant(), out var entry)) return entry.Worker;
             return null;
         }
 
@@ -150,7 +154,18 @@ namespace GxMcp.Gateway
             // to GetOrAdd a new empty one.
             if (entry.Draining)
             {
-                await entry.DrainComplete.Task.ConfigureAwait(false);
+                // Bound the drain wait: if DrainAndReplaceAsync wedges between marking
+                // Draining=true and signalling DrainComplete, an unbounded await here
+                // hung every future acquire for this KB forever (each tool call escaped
+                // only via the gateway-wide 60s timeout, then hung again).
+                try
+                {
+                    await entry.DrainComplete.Task.WaitAsync(TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    throw new TimeoutException($"Worker reload for KB '{handle.Alias}' did not finish within 60s; acquire aborted instead of hanging.");
+                }
                 // After the drain the entry was replaced — re-read.
                 entry = _entries.GetOrAdd(handle.NormalizedAlias, _ => new Entry { Handle = handle });
             }
@@ -182,7 +197,13 @@ namespace GxMcp.Gateway
                 lock (_capacityLock)
                 {
                     int max = _config.Server?.MaxOpenKbs ?? 3;
-                    if (_entries.Count > max)
+                    // `_entries` already contains the entry being spawned (Worker == null
+                    // here), so the number of *other* potentially-open KBs is Count - 1.
+                    // Evict when those alone fill the cap; post-spawn total stays <= max.
+                    // SelectVictim skips Worker == null entries, so it never evicts the
+                    // entry being created.
+                    int others = Math.Max(0, _entries.Count - 1);
+                    if (others >= max)
                     {
                         var victim = SelectVictim();
                         if (victim != null)
@@ -190,7 +211,8 @@ namespace GxMcp.Gateway
                             EvictEntry(victim);
                         }
 
-                        if (_entries.Count > max)
+                        others = Math.Max(0, _entries.Count - 1);
+                        if (others >= max)
                         {
                             _entries.TryRemove(handle.NormalizedAlias, out _);
                             throw new WorkerPoolFullException(ListOpen());

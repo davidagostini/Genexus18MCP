@@ -192,12 +192,22 @@ namespace GxMcp.Gateway
             }
             else if (result is JArray arr)
             {
-                // Truncate arrays if they exceed limits
-                while (arr.Count > 5 && arr.ToString(Formatting.None).Length > 80000)
+                // Truncate arrays if they exceed limits.
+                // PERF: this used to serialize the entire array inside the while condition
+                // after every single removal (O(n²) on large lists). Measure once, drop an
+                // estimated block of items (avg serialized bytes per item, small safety
+                // margin), and re-measure only after each block — not per item.
+                int totalLen = arr.ToString(Formatting.None).Length;
+                while (arr.Count > 5 && totalLen > 80000)
                 {
-                    arr.RemoveAt(arr.Count - 1);
+                    long avgItemLen = Math.Max(1L, totalLen / arr.Count);
+                    long estimatedRemove = (long)Math.Ceiling((totalLen - 80000) / (double)avgItemLen * 1.05);
+                    int block = (int)Math.Min(arr.Count - 5L, Math.Max(1L, estimatedRemove));
+                    for (int i = 0; i < block; i++)
+                        arr.RemoveAt(arr.Count - 1);
+                    totalLen = arr.ToString(Formatting.None).Length;
                 }
-                if (arr.ToString(Formatting.None).Length > 80000)
+                if (totalLen > 80000)
                 {
                     return JToken.FromObject(new { 
                         error = "Array response exceeded 80k token budget. Try lower limits or pagination.", 

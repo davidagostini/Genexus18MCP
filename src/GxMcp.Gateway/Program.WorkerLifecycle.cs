@@ -372,7 +372,8 @@ namespace GxMcp.Gateway
             bool trackOperation = false,
             JToken? progressToken = null,
             Func<JObject, Task>? heartbeat = null,
-            string? operationIdentity = null)
+            string? operationIdentity = null,
+            string? mcpRequestId = null)
         {
             string requestId = Guid.NewGuid().ToString();
             string correlationId = Guid.NewGuid().ToString("N");
@@ -430,7 +431,8 @@ namespace GxMcp.Gateway
                     CorrelationId = correlationId,
                     OperationId = operationId,
                     CreatedAtUtc = DateTime.UtcNow,
-                    WorkerAlias = worker.Kb?.NormalizedAlias
+                    WorkerAlias = worker.Kb?.NormalizedAlias,
+                    McpRequestId = mcpRequestId
                 };
                 _pendingRequests[attemptRequestId] = pending;
                 // A worker-crash retry mints a fresh attemptRequestId; the worker's completion

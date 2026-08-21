@@ -1430,6 +1430,7 @@ namespace GxMcp.Gateway
                     {
                         if (_verboseRequestLogs) Log($"[Cache] Invalidation triggered by {tName}");
                         _semanticCache.Clear();
+                        System.Threading.Interlocked.Increment(ref SemanticCacheEpoch);
                         BroadcastResourcesListChanged($"cache_invalidated:{tName}");
                         BroadcastResourceUpdated("genexus://objects", $"tool:{tName}");
                     }
@@ -1460,7 +1461,7 @@ namespace GxMcp.Gateway
                     string? cKey = !isMutating && !isLiveTool
                         ? $"{kbScope}|{tName}:{tArgs?.ToString(Formatting.None)}"
                         : null;
-                    if (cKey != null && _semanticCache.TryGetValue(cKey, out var cachedResponse))
+                    if (cKey != null && _semanticCache.TryGet(cKey, out var cachedResponse))
                     {
                         if (_verboseRequestLogs) Log($"[Cache] HIT for {tName}");
                         var cached = cachedResponse["result"] as JObject;
@@ -2055,6 +2056,10 @@ namespace GxMcp.Gateway
                     // request timeout. No-op when the client omits the token.
                     var toolProgressToken = (request["params"] as JObject)?["_meta"]?["progressToken"];
                     bool toolHasProgressToken = toolProgressToken != null && toolProgressToken.Type != JTokenType.Null;
+                    // C1 (race fix): capture the cache epoch before dispatch; if a concurrent
+                    // mutation clears the cache while this read is in flight, the store below
+                    // is skipped because the epoch will no longer match.
+                    int cacheEpochAtDispatch = System.Threading.Interlocked.CompareExchange(ref SemanticCacheEpoch, 0, 0);
                     innerResult = await SendWorkerCommandAsync(
                         workerCmd,
                         timeoutMs,
@@ -2177,14 +2182,17 @@ namespace GxMcp.Gateway
                             // cleared the cache and must not pollute it with a write
                             // result). The old `Contains("write")/Contains("patch")` check
                             // missed tools like genexus_edit.
-                            if (!isErr && !isTransient && !tName.Contains("write") && !tName.Contains("patch") && !isLiveTool && cKey != null)
+                            // C1 (race fix): if a mutation invalidated the cache while this read
+                            // was in flight, the pre-mutation envelope must not be stored.
+                            if (!isErr && !isTransient && !tName.Contains("write") && !tName.Contains("patch") && !isLiveTool && cKey != null
+                                && System.Threading.Volatile.Read(ref SemanticCacheEpoch) == cacheEpochAtDispatch)
                             {
                                 // Store full envelope in semantic cache (rebuilt on hit above)
-                                _semanticCache[cKey] = new JObject
+                                _semanticCache.Set(cKey, new JObject
                                 {
                                     ["jsonrpc"] = "2.0",
                                     ["result"] = toolResult
-                                };
+                                });
                             }
 
                             return toolResult;
@@ -2232,7 +2240,11 @@ namespace GxMcp.Gateway
                         toolArgs: tArgs,
                         trackOperation: true,
                         progressToken: toolProgressToken,
-                        heartbeat: toolHasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null);
+                        heartbeat: toolHasProgressToken ? (n => TryWriteStdout(n.ToString(Formatting.None))) : null,
+                        // E9: bind this worker request to the MCP client request id so
+                        // notifications/cancelled can find and abort it (the _pendingRequests
+                        // key is a gateway GUID, invisible to the client).
+                        mcpRequestId: idToken?.ToString());
 
                     // apply_pattern { validate: true } — post-apply build of the
                     // generated host so the LLM sees compile failures in a single
@@ -2246,6 +2258,10 @@ namespace GxMcp.Gateway
                         && (tArgs?["validate"]?.ToObject<bool?>() ?? false))
                     {
                         string applyText = (innerResult["content"] as JArray)?[0]?["text"]?.ToString() ?? "";
+                        // Round-trip is structural: innerResult.content[0].text was serialized
+                        // by BuildToolResultContent inside SendWorkerCommandAsync's sync onSuccess
+                        // lambda (after truncation/normalization) and no parsed payload survives;
+                        // we must parse to read patternHost AND to fold the validation block back in.
                         JObject applyPayload = null;
                         try { applyPayload = JObject.Parse(applyText); } catch { }
                         string hostName = applyPayload?["patternHost"]?.ToString();
@@ -2483,14 +2499,40 @@ namespace GxMcp.Gateway
                 };
             }
 
-            // Fix 6e: notifications/cancelled — acknowledge by resolving/aborting matching request.
+            // Fix 6e: notifications/cancelled — abort matching pending request(s).
+            // The cancelled id is the MCP client's request id; _pendingRequests is keyed
+            // by gateway-generated GUIDs, so match through the McpRequestId bridge set
+            // at dispatch. Entries already completed (or calls dispatched without an
+            // MCP id) are not in the map under this id — ignore silently.
             if (string.Equals(method, "notifications/cancelled", StringComparison.OrdinalIgnoreCase))
             {
                 var cancelledId = request["params"]?["requestId"];
                 if (cancelledId != null)
                 {
-                    Log($"[Protocol] notifications/cancelled for requestId={cancelledId}");
-                    // Best-effort: no tracked pending-request map yet; the caller will time out naturally.
+                    string cancelled = cancelledId.ToString();
+                    Log($"[Protocol] notifications/cancelled for requestId={cancelled}");
+                    int aborted = 0;
+                    foreach (var kvp in _pendingRequests.ToArray())
+                    {
+                        if (!string.Equals(kvp.Value.McpRequestId, cancelled, StringComparison.Ordinal))
+                            continue;
+                        if (_pendingRequests.TryRemove(kvp.Key, out var pending))
+                        {
+                            _operationTracker.MarkFailedByRequest(kvp.Key, "Cancelled by client");
+                            // Same envelope shape as the worker-crash abort path: resolve the
+                            // awaiter with a JSON-RPC error instead of letting it run to timeout.
+                            var errorJson = JsonConvert.SerializeObject(new
+                            {
+                                jsonrpc = "2.0",
+                                id = kvp.Key,
+                                error = new { code = -32800, message = "Request cancelled by client" }
+                            });
+                            pending.CompletionSource.TrySetResult(errorJson);
+                            aborted++;
+                        }
+                    }
+                    if (aborted > 0)
+                        Log($"[Protocol] notifications/cancelled aborted {aborted} pending worker request(s) for requestId={cancelled}.");
                 }
                 return null;
             }

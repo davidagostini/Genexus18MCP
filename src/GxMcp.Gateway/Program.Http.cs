@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -35,14 +38,61 @@ namespace GxMcp.Gateway
             return allowedOrigins.Any(allowed => string.Equals(allowed, origin, StringComparison.OrdinalIgnoreCase));
         }
 
+        // P5: SSE delivery via bounded channels instead of polling
+        // session.PendingMessages under a lock every 5 seconds. Every producer goes
+        // through QueueSessionMessage below; the GET /mcp consumer awaits
+        // reader.ReadAsync and a separate watchdog writes ": keepalive" only after
+        // ~20s without traffic.
+        private const int SseChannelCapacity = 64;
+        private static readonly TimeSpan SseKeepaliveInterval = TimeSpan.FromSeconds(20);
+        // Keyed by session Id so payloads queued before (or without) an attached SSE
+        // reader buffer exactly like the old PendingMessages queue did — including
+        // across client reconnects. Entries are completed+removed when the session
+        // ends: DELETE /mcp or the orphan sweep in CreateHttpSession.
+        private static readonly ConcurrentDictionary<string, Channel<string>> _sseChannels =
+            new ConcurrentDictionary<string, Channel<string>>(StringComparer.Ordinal);
+
+        private static Channel<string> GetOrAddSseChannel(string sessionId)
+        {
+            return _sseChannels.GetOrAdd(sessionId, _ => Channel.CreateBounded<string>(
+                new BoundedChannelOptions(SseChannelCapacity)
+                {
+                    // DropOldest keeps producers non-blocking (all call sites are sync
+                    // fire-and-forget paths that cannot await WriteAsync) and sheds the
+                    // oldest payload first — same overflow semantics the registry's
+                    // Enqueue cap had.
+                    FullMode = BoundedChannelFullMode.DropOldest,
+                    SingleReader = true,
+                    SingleWriter = false
+                }));
+        }
+
         private static HttpSessionState CreateHttpSession()
         {
+            // Orphan sweep: complete and drop channels whose session the registry has
+            // already expired. Done here (rather than in the shared cleanup loop in
+            // Program.Notifications.cs) to keep this change confined to this file;
+            // runs once per legacy-session creation, which bounds any leak to the
+            // sessions created since the previous sweep.
+            foreach (var pair in _sseChannels)
+            {
+                if (!_httpSessions.TryGet(pair.Key, out _)
+                    && _sseChannels.TryRemove(pair.Key, out var orphan))
+                {
+                    orphan.Writer.TryComplete();
+                }
+            }
+
             return _httpSessions.Create();
         }
 
         private static void QueueSessionMessage(HttpSessionState session, string payload)
         {
-            _httpSessions.Enqueue(session, payload);
+            var channel = GetOrAddSseChannel(session.Id);
+            if (!channel.Writer.TryWrite(payload))
+            {
+                Log($"[HTTP] Failed to queue SSE message for session {session.Id} (channel completed).");
+            }
         }
 
         private static async Task<IResult> HandleMcpSseStream(HttpContext context)
@@ -85,30 +135,60 @@ namespace GxMcp.Gateway
             try
             {
                 // Ironclad SSE: No deadline, keep alive indefinitely until client or server disconnects.
-                while (!context.RequestAborted.IsCancellationRequested)
+                ChannelReader<string> reader = GetOrAddSseChannel(session.Id).Reader;
+                long lastWriteTicks = DateTime.UtcNow.Ticks;
+                using var sseWriteLock = new SemaphoreSlim(1, 1);
+                using var linkCts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
+
+                // Keepalive watchdog: writes ": keepalive" only after ~20s without
+                // traffic (messages or prior keepalives), replacing the old poll
+                // loop's fixed 5-second wake-up. Consumer and watchdog run on
+                // separate tasks, so every response write goes through sseWriteLock.
+                Task keepalive = Task.Run(async () =>
                 {
-                    string? payload = null;
-                    lock (session.PendingMessages)
+                    while (!linkCts.Token.IsCancellationRequested)
                     {
-                        if (session.PendingMessages.Count > 0)
-                            payload = session.PendingMessages.Dequeue();
-                    }
+                        await Task.Delay(SseKeepaliveInterval, linkCts.Token);
+                        if (DateTime.UtcNow.Ticks - Interlocked.Read(ref lastWriteTicks) < SseKeepaliveInterval.Ticks)
+                            continue;
 
-                    if (payload != null)
+                        await sseWriteLock.WaitAsync(linkCts.Token);
+                        try
+                        {
+                            await context.Response.WriteAsync(": keepalive\n\n", linkCts.Token);
+                            await context.Response.Body.FlushAsync(linkCts.Token);
+                        }
+                        finally { sseWriteLock.Release(); }
+                        Interlocked.Exchange(ref lastWriteTicks, DateTime.UtcNow.Ticks);
+                    }
+                }, linkCts.Token);
+
+                try
+                {
+                    // Signal-driven delivery: blocks until a producer writes or the
+                    // client disconnects — no polling latency, no idle wake-ups.
+                    // Frame format is byte-identical to the previous implementation.
+                    while (true)
                     {
+                        string payload = await reader.ReadAsync(context.RequestAborted);
                         string encodedPayload = payload.Replace("\r", "").Replace("\n", "\ndata: ");
-                        await context.Response.WriteAsync($"event: message\ndata: {encodedPayload}\n\n");
-                        await context.Response.Body.FlushAsync();
-                        continue;
+                        await sseWriteLock.WaitAsync(context.RequestAborted);
+                        try
+                        {
+                            await context.Response.WriteAsync($"event: message\ndata: {encodedPayload}\n\n", context.RequestAborted);
+                            await context.Response.Body.FlushAsync(context.RequestAborted);
+                        }
+                        finally { sseWriteLock.Release(); }
+                        Interlocked.Exchange(ref lastWriteTicks, DateTime.UtcNow.Ticks);
                     }
-
-                    try
-                    {
-                        await context.Response.WriteAsync(": keepalive\n\n");
-                        await context.Response.Body.FlushAsync();
-                        await Task.Delay(5000, context.RequestAborted);
-                    }
-                    catch (OperationCanceledException) { break; }
+                }
+                catch (OperationCanceledException) { }
+                catch (ChannelClosedException) { } // session ended (DELETE /mcp or expiry sweep)
+                finally
+                {
+                    linkCts.Cancel();
+                    try { await keepalive; }
+                    catch (OperationCanceledException) { }
                 }
             }
             catch (Exception ex)
@@ -346,6 +426,9 @@ namespace GxMcp.Gateway
             Log($"[HTTP] Starting server on {bindAddress}:{serverConfig.HttpPort}...");
             var builder = WebApplication.CreateBuilder();
             builder.WebHost.UseUrls($"http://{bindAddress}:{serverConfig.HttpPort}");
+            // P4: MCP payloads are small JSON-RPC envelopes; cap request bodies
+            // explicitly at 2MB instead of relying on Kestrel's ~30MB default.
+            builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 2 * 1024 * 1024);
             builder.Logging.ClearProviders();
             builder.Services.AddResponseCompression(options => { options.EnableForHttps = true; });
             var app = builder.Build();
@@ -417,6 +500,10 @@ namespace GxMcp.Gateway
                     return Results.Json(new { error = protocolError.Value.Message }, statusCode: protocolError.Value.StatusCode);
 
                 _httpSessions.Remove(sessionId);
+                if (_sseChannels.TryRemove(sessionId, out var ended))
+                {
+                    ended.Writer.TryComplete(); // unblocks the SSE consumer, if attached
+                }
 
                 Log($"[HTTP] Session {sessionId} terminated by client.");
                 return Results.NoContent();

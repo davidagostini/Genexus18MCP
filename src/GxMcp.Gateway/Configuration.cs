@@ -23,6 +23,12 @@ namespace GxMcp.Gateway
 
         public static string? CurrentConfigPath { get; private set; }
         private static FileSystemWatcher? _watcher;
+        // Debounce state for the config hot-reload, same pattern as tool_definitions.json
+        // (McpRouter): editors fire multiple Changed events per save, so coalesce them into
+        // one reload ~300ms after the last event. The lock serialises parse+dispatch so
+        // handlers never run in parallel or duplicated.
+        private static readonly object _reloadLock = new object();
+        private static System.Threading.Timer? _reloadDebounceTimer;
         public static event Action<Configuration>? OnConfigurationChanged;
 
         public static Configuration Load()
@@ -79,8 +85,23 @@ namespace GxMcp.Gateway
                 try
                 {
                     string json = File.ReadAllText(path);
-                    var config = JsonConvert.DeserializeObject<Configuration>(json);
-                    if (config == null) throw new Exception("Failed to parse config.json");
+                    // Tolerant parse (E6): a single invalid scalar (e.g. "HttpPort": "abc")
+                    // must not take the whole gateway down. Log the offending member and
+                    // keep every member that did deserialize.
+                    var settings = new JsonSerializerSettings
+                    {
+                        Error = (sender, args) =>
+                        {
+                            Program.Log($"[Gateway] WARNING: invalid config.json value at '{args.ErrorContext.Path}' ({args.ErrorContext.Error.Message}) — ignoring it and keeping the rest.");
+                            args.ErrorContext.Handled = true;
+                        }
+                    };
+                    var config = JsonConvert.DeserializeObject<Configuration>(json, settings);
+                    if (config == null)
+                    {
+                        Program.Log("[Gateway] WARNING: config.json could not be deserialized into any usable state — using defaults.");
+                        return new Configuration();
+                    }
 
                     if (config.Environment != null &&
                         string.IsNullOrWhiteSpace(config.Environment.DefaultKb) &&
@@ -209,13 +230,30 @@ namespace GxMcp.Gateway
             _watcher.NotifyFilter = NotifyFilters.LastWrite;
             _watcher.Changed += (s, e) => {
                 Program.Log($"[Gateway] Configuration file changed: {e.FullPath}");
-                // Add a small delay to ensure writing process has released the lock
-                Thread.Sleep(200);
-                try {
-                    var newConfig = ParseConfig(path);
-                    OnConfigurationChanged?.Invoke(newConfig);
-                } catch (Exception ex) {
-                    Program.Log($"[Gateway] Failed to reload configuration: {ex.Message}");
+                // Coalesce the editor's event burst into a single reload 300ms after the
+                // last event (same debounce pattern as tool_definitions.json in McpRouter).
+                // The timer callback takes _reloadLock so parse+dispatch are serialised:
+                // handlers never run in parallel, and a half-written file never reaches them
+                // (ParseConfig already retries briefly on IOException for the write lock).
+                lock (_reloadLock)
+                {
+                    _reloadDebounceTimer?.Dispose();
+                    _reloadDebounceTimer = new System.Threading.Timer(_ =>
+                    {
+                        try
+                        {
+                            Configuration newConfig;
+                            lock (_reloadLock)
+                            {
+                                newConfig = ParseConfig(path);
+                                OnConfigurationChanged?.Invoke(newConfig);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Program.Log($"[Gateway] Failed to reload configuration: {ex.Message}");
+                        }
+                    }, null, 300, Timeout.Infinite);
                 }
             };
             _watcher.EnableRaisingEvents = true;

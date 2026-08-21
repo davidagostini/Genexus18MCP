@@ -78,3 +78,5 @@ docs/sdk-probe/raw.json
 .agents/
 skills-lock.json
 .freebuff/
+
+/.commandcode/

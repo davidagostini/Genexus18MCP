@@ -55,7 +55,12 @@ namespace GxMcp.Gateway
         private static string StagedDir => Path.Combine(InstallDir, ".staged");
         private static string StagedTmpDir => Path.Combine(InstallDir, ".staged.tmp");
         private static string StagedMarker => Path.Combine(StagedDir, "staged.json");
-        private static string MutexName => @"Global\GenexusMCP-SelfUpdate-" + InstallDir.ToLowerInvariant().GetHashCode();
+
+        // string.GetHashCode é randomizado por processo no .NET 8 — dois gateways
+        // derivariam nomes de mutex diferentes e ambos poderiam aplicar o update
+        // simultaneamente. SHA-256 do caminho é estável entre processos.
+        private static string MutexName =>
+            @"Global\GenexusMCP-SelfUpdate-" + Sha256Hex(System.Text.Encoding.UTF8.GetBytes(InstallDir.ToLowerInvariant())).Substring(0, 24);
 
         // A managed install is one materialized by scripts/install.ps1 (version.txt
         // present next to the gateway exe). npx-cache launches have neither.
@@ -125,10 +130,14 @@ namespace GxMcp.Gateway
                 if (!held) return; // another process is applying — let it
                 try
                 {
-                    SweepOld(InstallDir); // clear *.old-* leftovers from a prior apply
+                    // SweepOld is intentionally NOT run before ApplyStagedUpdate: it deletes
+                    // the *.old-* backups, which are the only recovery path if the apply
+                    // fails mid-swap. Sweep only AFTER a successful apply (below); the
+                    // early-out above (nothing staged) keeps its own sweep - safe there.
                     if (ApplyStagedUpdate(InstallDir))
                     {
                         Program.Log($"[SelfUpdate] Applied staged update -> v{StagedVersionWasApplied}. Active session continues on the previous version; the new binary loads on next launch.");
+                        SweepOld(InstallDir); // clear *.old-* leftovers now that the apply succeeded
                     }
                 }
                 finally { try { mutex.ReleaseMutex(); } catch { } }
@@ -226,16 +235,30 @@ namespace GxMcp.Gateway
 
         // Move src over dst, renaming an existing dst out of the way first (works even
         // when dst is the running exe — Windows allows renaming an in-use file).
-        private static void ReplaceFile(string src, string dst, string stamp)
+        internal static void ReplaceFile(string src, string dst, string stamp)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+            string? backup = null;
             if (File.Exists(dst))
             {
-                string backup = dst + ".old-" + stamp;
+                backup = dst + ".old-" + stamp;
                 try { if (File.Exists(backup)) File.Delete(backup); } catch { }
                 File.Move(dst, backup);
             }
-            File.Move(src, dst);
+            try
+            {
+                File.Move(src, dst);
+            }
+            catch
+            {
+                // Rollback: without dst in place the install is left with a MISSING
+                // binary (worse than a stale one). Restore the backup before rethrowing.
+                if (backup != null && !File.Exists(dst) && File.Exists(backup))
+                {
+                    try { File.Move(backup, dst); } catch { }
+                }
+                throw;
+            }
         }
 
         private static bool IsRenamable(string path)

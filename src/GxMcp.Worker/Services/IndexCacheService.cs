@@ -39,8 +39,12 @@ namespace GxMcp.Worker.Services
         // MarkDirtyForKey is the precise per-object path (UpdateEntry/RemoveEntry/…) that
         // only dirties the one shard the mutated storage key falls into, which is what
         // lets FlushToDisk skip clean shards instead of re-serializing everything.
-        internal void MarkDirty() { System.Threading.Interlocked.Increment(ref _dirtyGeneration); MarkAllShardsDirty(); }
-        internal void MarkDirtyForKey(string storageKey) { System.Threading.Interlocked.Increment(ref _dirtyGeneration); MarkShardDirty(storageKey); }
+        // Ordem importa: shard primeiro, geração depois. Um flush que capturar a geração
+        // após o Increment tem garantia (fence do Interlocked) de enxergar os shards já
+        // marcados; na ordem inversa, um flush podia capturar a geração nova sem o shard
+        // e gravar _flushedGeneration sem a mutação (stale-index-forever).
+        internal void MarkDirty() { MarkAllShardsDirty(); System.Threading.Interlocked.Increment(ref _dirtyGeneration); }
+        internal void MarkDirtyForKey(string storageKey) { MarkShardDirty(storageKey); System.Threading.Interlocked.Increment(ref _dirtyGeneration); }
         internal long DirtyGeneration => System.Threading.Interlocked.Read(ref _dirtyGeneration);
 
         // ── Sharded on-disk snapshot (plan 003) ─────────────────────────────────
@@ -1270,7 +1274,7 @@ namespace GxMcp.Worker.Services
 
         /// <summary>
         /// Persist the validation sidecar. Call AFTER a body flush, only when the body is in a
-        /// trustworthy (fully-enriched or delta-merged) state. Atomic temp-then-move.
+        /// trustworthy (fully-enriched or delta-merged) state. Atomic temp-then-Replace/Move.
         /// </summary>
         public void WriteMetaSidecar(int objectCount)
         {
@@ -1292,8 +1296,15 @@ namespace GxMcp.Worker.Services
                 if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                 string tmp = metaPath + ".tmp";
                 File.WriteAllText(tmp, json, new UTF8Encoding(false));
-                if (File.Exists(metaPath)) File.Delete(metaPath);
-                File.Move(tmp, metaPath);
+                // Atomic swap: File.Replace replaces the destination in one NTFS operation,
+                // so there is no Delete→Move window where the sidecar is missing — a crash
+                // in that window used to lose the sidecar and force a full reindex on the
+                // next warm start. Mirrors MemoryService.WriteCompacted. First write has
+                // no destination yet, so it falls back to a plain Move (Replace throws).
+                if (File.Exists(metaPath))
+                    File.Replace(tmp, metaPath, null);   // atomic swap on NTFS; consumes tmp
+                else
+                    File.Move(tmp, metaPath);
                 Logger.Info($"[INDEX-META] sidecar written: schema={CurrentSchemaVersion} hwm={meta.HighWaterMarkUtc ?? "<none>"} objects={objectCount}");
             }
             catch (Exception ex) { Logger.Warn("WriteMetaSidecar failed: " + ex.Message); }
@@ -1768,8 +1779,15 @@ namespace GxMcp.Worker.Services
                         }
 
                         // Inverted Index (CalledBy) — copy-on-write, see AddEdgeCow.
-                        string targetIndexKey = $"{targetType}:{targetName}";
-                        if (index.Objects.TryGetValue(targetIndexKey, out var targetEntry)) {
+                        // E4: resolve the target's REAL storage key instead of assuming the bare
+                        // "Type:Name" shape — GetEntryStorageKey scopes Folder/Module keys with
+                        // their path (Type:Path), so a direct lookup silently missed those
+                        // targets and their CalledBy edges were dropped.
+                        string targetGuid = null;
+                        try { object g = targetKey.Guid; if (g != null) targetGuid = g.ToString(); } catch { /* key shape without Guid */ }
+                        string targetIndexKey = ResolveTargetStorageKey(index, targetType, targetName, targetGuid);
+                        if (!string.IsNullOrEmpty(targetIndexKey)
+                            && index.Objects.TryGetValue(targetIndexKey, out var targetEntry)) {
                             if (AddCalledByCow(targetEntry, entry.Name)) { changed = true; MarkShardDirty(targetIndexKey); }
                         }
                     } catch { }
@@ -1795,6 +1813,49 @@ namespace GxMcp.Worker.Services
             // shards touched via CalledBy were marked inline above / in the textual scan.
             // Only bump the generation here — precise per-shard marking already happened.
             if (changed) { System.Threading.Interlocked.Increment(ref _dirtyGeneration); MarkShardDirty(GetEntryStorageKey(entry)); ScheduleThrottledFlush(); }
+        }
+
+        // E4: resolve an edge target to its REAL storage key (the shape GetEntryStorageKey
+        // produces), so CalledBy no longer silently drops matches when the stored key isn't
+        // the bare Type:Name (Folder/Module keys are scoped with their path). Preference:
+        // 1) the maintained Guid→storage-key map (authoritative, rename-safe), guarded by a
+        //    presence check so a stale guid mapping can never shadow a live direct key;
+        // 2) the direct Type:Name key — Objects' comparer is OrdinalIgnoreCase, so original
+        //    casing differences are already covered there;
+        // 3) the ByNameIndex multimap filtered by type as a deterministic fallback.
+        // Read-only: never mutates the stored key format (on-disk cache stays compatible).
+        private static string ResolveTargetStorageKey(SearchIndex index, string targetType, string targetName, string targetGuid)
+        {
+            if (index?.Objects == null || string.IsNullOrEmpty(targetName)) return null;
+
+            if (!string.IsNullOrEmpty(targetGuid)
+                && index.GuidToKey != null
+                && index.GuidToKey.TryGetValue(targetGuid, out var byGuid)
+                && !string.IsNullOrEmpty(byGuid)
+                && index.Objects.ContainsKey(byGuid))
+            {
+                return byGuid;
+            }
+
+            string direct = string.Format("{0}:{1}", targetType, targetName);
+            if (index.Objects.ContainsKey(direct)) return direct;
+
+            if (index.ByNameIndex != null && index.ByNameIndex.TryGetValue(targetName, out var candidates))
+            {
+                lock (candidates)
+                {
+                    foreach (var candidate in candidates)
+                    {
+                        if (index.Objects.TryGetValue(candidate, out var entry) && entry != null
+                            && string.Equals(entry.Type, targetType, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+
+            return null;
         }
 
         // FR#3 (friction-report 2026-05-14): textual call-site scan that augments the SDK
