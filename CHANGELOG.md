@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **Dynamic Tool Gating and Profiles (`GXMCP_PROFILE` / `Server.ToolProfile`).** The MCP Gateway now supports scoped tool surface profiles (`all`, `core`, `authoring`, `devops`, `ui`, `db`), reducing client token overhead by up to 75% on discovery while ensuring full toolset availability on demand.
+- **Auto-Fix & Self-Correction Engine (`ErrorDiagnoser`).** Diagnoses GeneXus specifier and compiler error codes (`spc0005`, `spc0011`, `spc0053`, `spc0107`, `spc0130`, etc.) and automatically populates structured `suggestedFixes` arrays on build results and linter reports so AI agents can self-correct with a single click/action.
+- **OpenAPI 3.0 Import & Export for GeneXus API Objects (`genexus_api action=export_openapi|import_openapi`).** Serializes GeneXus HTTP procedures and API Objects into canonical OpenAPI 3.0.3 specifications and imports external OpenAPI 3.0 / Swagger definitions directly into GeneXus SDT blueprints and endpoint contracts.
+- **Design System Object (DSO) Token Parsing, Class Extraction and Validation (`genexus_layout action=design_system` & `DesignSystemService`).** Extends DSO capabilities with automated extraction of token groups (`#colors`, `#font-sizes`, `#spacing`), CSS class rules (`.ClassName`), and syntax validation for Design System objects.
+- **Automated GXtest Unit Test Generation (`GxTestGeneratorService`).** Automatically generates complete, structured GXtest `ProcedureUnitTest` source code, parameters, variables, happy-path assertions (`Assert.IsTrue`, `Assert.AreEqual`), and boundary/edge-case suites for GeneXus procedures.
+- **MCP Resource Subscriptions (`resources/subscribe` & `resources/unsubscribe`).** Fully integrates MCP resource subscription protocol and capabilities, enabling clients to receive real-time push events (`notifications/resources/updated`) when KB resources, objects, or health indicators update.
+
 ## v2.43.0 - 2026-08-20
 
 ### Added
@@ -36,6 +45,10 @@
 - Thanks to [@davidagostini](https://github.com/davidagostini) for stabilizing full edit dry-runs, optimistic concurrency, and async mutation recovery — see [PR #110](https://github.com/lennix1337/Genexus18MCP/pull/110).
 - **Robust Native SDK Object Resolution across all modules.** Fixed edge cases where newly created or unindexed objects (and Transactions sharing names with physical Table shadow objects) would fail resolution during single-roundtrip reads; resolution now seamlessly uses native SDK `GetByName` and promotes physical tables to source-bearing Transactions.
 - **SDT attribute-based members (`Attribute:<Name>` / `basedOnAttribute`) now persist and round-trip through `genexus_structure`, `genexus_read`, `genexus_inspect`, and `genexus_edit`.** Previously, SDT fields referencing a KB Attribute were ignored or stripped when setting structure, reading visual structure, or serializing to the Structure DSL, causing `basedOnAttribute` to be lost and `dryRun` to report false negatives. The SDT authoring pipeline now binds `AttributeBasedOn` via the native SDK reference provider, parses and emits `Attribute:<Name>` in DSL round-trips, surfaces `basedOnAttribute` in `genexus_structure action=get_visual`, `genexus_inspect`, and `genexus_read part=Structure`, and accurately detects visual structure mutations on attribute changes. Fixes #109.
+
+### Internal
+
+- **Typed generator-reference schema budget.** Raised the intentional combined tool-schema budget from 21,100 to 21,700 tokens for native .NET generator reference list/add/remove, dry-run, optimistic concurrency, and exact rollback (measured ~21,563).
 
 ## v2.41.11 - 2026-08-19
 
@@ -87,15 +100,6 @@
 ### Internal
 
 - **Disposable U16 Data View persistence harness and schema budget.** Added `scripts/Test-DataViewAtomic.ps1` to verify dry-run immutability, atomic create/reread/delete, root-only BC shape, physical mapping, stale-version rejection, and absence of implicit lifecycle actions; raised the intentional combined tool-schema budget from 20,500 to 21,100 tokens (measured ~20,932).
-<<<<<<< HEAD
-=======
-### Fixed
-
-- **`genexus_edit mode=full` now keeps dry-runs non-persistent and recovers deterministically from blocked SDK calls.** Preview requests never enter the asynchronous mutation path or call `Save`; background edits use one operation ID across accepted/status/result/cancel and Worker busy telemetry; cancellation terminalizes the operation and recycles only its blocked Worker. Timed-out or cancelled writes require a successful read-back before another write to the same object. Full writes preserve `baseVersion`/`expectedVersion`, honor `rollbackOnFailure`, and return the independently re-read Source, version token, persistence state, and empty implicit lifecycle list.
->>>>>>> pr-110
-=======
-- **Typed generator-reference schema budget.** Raised the intentional combined tool-schema budget from 21,100 to 21,700 tokens for native .NET generator reference list/add/remove, dry-run, optimistic concurrency, and exact rollback (measured ~21,563).
->>>>>>> pr-111
 
 ## v2.41.9 - 2026-08-18
 

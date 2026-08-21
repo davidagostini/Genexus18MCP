@@ -169,6 +169,7 @@ namespace GxMcp.Gateway
         private static readonly object _logLock = new object();
         private static readonly System.Threading.SemaphoreSlim _stdoutGate = new System.Threading.SemaphoreSlim(1, 1);
         private static Configuration? _activeConfig;
+        internal static Configuration? ActiveConfig => _activeConfig;
 
         public static void TryWriteStderr(string message)
         {

@@ -278,6 +278,11 @@ namespace GxMcp.Gateway
         /// (LRU); if all are busy, the request fails with KB_POOL_FULL.
         /// </summary>
         public int MaxOpenKbs { get; set; } = 3;
+        /// <summary>
+        /// Active tool profile to gate tool surface (all, core, authoring, devops, ui, db).
+        /// Can be overridden via GXMCP_PROFILE environment variable. Default: all.
+        /// </summary>
+        public string ToolProfile { get; set; } = "all";
     }
 
     public class LoggingConfig

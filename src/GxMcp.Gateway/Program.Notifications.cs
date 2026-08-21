@@ -145,7 +145,13 @@ namespace GxMcp.Gateway
 
         private static bool ShouldForwardNotificationToStdio(string method, object? payload)
         {
-            if (method == "notifications/progress") return true;
+            if (method == "notifications/progress" ||
+                method == "notifications/resources/updated" ||
+                method == "notifications/resources/list_changed" ||
+                method == "notifications/tools/list_changed")
+            {
+                return true;
+            }
             if (method != "notifications/message") return false;
 
             // notifications/message is the loudest channel — be strict. Only surface

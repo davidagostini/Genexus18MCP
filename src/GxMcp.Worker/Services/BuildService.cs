@@ -585,6 +585,18 @@ namespace GxMcp.Worker.Services
                             : "Spec diagnostics (spc####/gen####/src####/qry####) depend on a fully generated build environment. ")
                        + "If a spc#### cites a fixed line unrelated to the actual Source, or fires regardless of what the Source contains (even on known-good objects), regenerate the environment (genexus_lifecycle action=rebuild, then action=reorg) before treating it as an authored-code error. For build-independent Source validation use genexus_lifecycle action=validate (save-time SDK check).")
                     : null;
+            [JsonProperty("suggestedFixes", NullValueHandling = NullValueHandling.Ignore)]
+            public List<AutoFixSuggestion> SuggestedFixes
+            {
+                get
+                {
+                    var rawLines = (ErrorsDetailed != null && ErrorsDetailed.Count > 0)
+                        ? ErrorsDetailed.Select(e => e.raw ?? e.rewritten)
+                        : (Errors ?? new List<string>());
+                    var diagnosed = ErrorDiagnoser.Diagnose(rawLines, Target ?? CurrentObject);
+                    return (diagnosed != null && diagnosed.Count > 0) ? diagnosed : null;
+                }
+            }
             // FR#9 (v2.6.6 Stream E): CS2001 errors referencing "<obj>_bc.cs" where
             // the underlying Transaction no longer exists (or isn't a Transaction)
             // are demoted to warnings — counted here, full lines preserved in

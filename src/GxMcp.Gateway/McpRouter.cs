@@ -317,7 +317,7 @@ namespace GxMcp.Gateway
                 {
                     ["prompts"] = new JObject { ["listChanged"] = false },
                     ["tools"] = new JObject { ["listChanged"] = true },
-                    ["resources"] = new JObject { ["listChanged"] = true },
+                    ["resources"] = new JObject { ["listChanged"] = true, ["subscribe"] = true },
                     ["completion"] = new JObject()
                 },
                 ["serverInfo"] = new JObject
@@ -379,13 +379,27 @@ namespace GxMcp.Gateway
                 case "server/discover":
                     return BuildServerDiscoverResponse();
                 case "tools/list":
-                    return _cachedToolsListResponse ?? new JObject
                     {
-                        ["resultType"] = "complete",
-                        ["tools"] = _toolDefinitions,
-                        ["ttlMs"] = 3600000,
-                        ["cacheScope"] = "public"
-                    };
+                        string activeProfile = ToolProfileFilter.ResolveActiveProfile(Program.ActiveConfig?.Server?.ToolProfile);
+                        if (string.IsNullOrEmpty(activeProfile) || activeProfile == "all")
+                        {
+                            return _cachedToolsListResponse ?? new JObject
+                            {
+                                ["resultType"] = "complete",
+                                ["tools"] = _toolDefinitions,
+                                ["ttlMs"] = 3600000,
+                                ["cacheScope"] = "public"
+                            };
+                        }
+                        return new JObject
+                        {
+                            ["resultType"] = "complete",
+                            ["tools"] = ToolProfileFilter.Filter(_toolDefinitions, activeProfile),
+                            ["profile"] = activeProfile,
+                            ["ttlMs"] = 3600000,
+                            ["cacheScope"] = "public"
+                        };
+                    }
                 case "resources/list":
                     {
                         // v2.8.0 — also surface curated, source-verified GeneXus
@@ -510,6 +524,26 @@ namespace GxMcp.Gateway
                         ttlMs = 3600000,
                         cacheScope = "public"
                     };
+                case "resources/subscribe":
+                    {
+                        var uri = (request["params"] as JObject)?["uri"]?.ToString();
+                        return new
+                        {
+                            resultType = "complete",
+                            subscribed = true,
+                            uri = uri
+                        };
+                    }
+                case "resources/unsubscribe":
+                    {
+                        var uri = (request["params"] as JObject)?["uri"]?.ToString();
+                        return new
+                        {
+                            resultType = "complete",
+                            subscribed = false,
+                            uri = uri
+                        };
+                    }
                 case "completion/complete":
                     return HandleCompletion(request);
                 case "prompts/list":

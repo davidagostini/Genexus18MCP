@@ -64,8 +64,12 @@ namespace GxMcp.Worker.Services
                         return DoSnapshot(args?["name"]?.ToString());
                     case "diff_baseline":
                         return DoDiffBaseline(args?["baseline"]?.ToString());
+                    case "export_openapi":
+                        return DoExportOpenApi(args?["title"]?.ToString(), args?["version"]?.ToString(), args?["pathPrefix"]?.ToString());
+                    case "import_openapi":
+                        return DoImportOpenApi(args?["spec"]?.ToString() ?? args?["content"]?.ToString());
                     default:
-                        return Err("InvalidAction", $"Unknown action '{action}'. Use list|describe|diff_baseline|snapshot.");
+                        return Err("InvalidAction", $"Unknown action '{action}'. Use list|describe|diff_baseline|snapshot|export_openapi|import_openapi.");
                 }
             }
             catch (Exception ex)
@@ -201,6 +205,33 @@ namespace GxMcp.Worker.Services
                 result: diff);
         }
 
+        private string DoExportOpenApi(string title, string version, string pathPrefix)
+        {
+            var endpoints = EnumerateHttpEndpoints(pathPrefix).ToList();
+            var spec = ApiOpenApiService.ExportOpenApi(endpoints, title, version);
+            return McpResponse.Ok(
+                code: "ApiOpenApiExported",
+                result: new JObject
+                {
+                    ["openapi"] = spec,
+                    ["endpointCount"] = endpoints.Count
+                });
+        }
+
+        private string DoImportOpenApi(string specContent)
+        {
+            if (string.IsNullOrWhiteSpace(specContent))
+                return Err("InvalidSpec", "spec content (OpenAPI 3 JSON) is required for action=import_openapi.");
+
+            var blueprint = ApiOpenApiService.ImportOpenApi(specContent);
+            if (!blueprint.Success)
+                return Err("OpenApiParseError", blueprint.ErrorMessage ?? "Failed to parse OpenAPI specification.");
+
+            return McpResponse.Ok(
+                code: "ApiOpenApiImported",
+                result: JObject.FromObject(blueprint));
+        }
+
         private string ResolveBaselinePath(string baselineArg)
         {
             // Absolute path wins.
@@ -289,7 +320,7 @@ namespace GxMcp.Worker.Services
             return name != "." && name != "..";
         }
 
-        internal class HttpEndpoint
+        public class HttpEndpoint
         {
             public string Name;
             public string HttpMethod = "POST"; // GeneXus REST default; overridden by HttpMethod rule.
@@ -301,7 +332,7 @@ namespace GxMcp.Worker.Services
             public List<Parm> Parms = new List<Parm>();
         }
 
-        internal class Parm
+        public class Parm
         {
             public string Name;
             public string Direction; // in | out | inout
