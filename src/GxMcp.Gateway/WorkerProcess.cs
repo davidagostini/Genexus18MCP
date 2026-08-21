@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
@@ -23,6 +24,18 @@ namespace GxMcp.Gateway
         Wedged,          // BUG-03: an in-flight command exceeded WedgedCommandTimeoutMinutes with no response
         HeapRecycle      // idle worker exceeded WorkerHeapRecycleMB; recycled proactively so a long
                          // session can't drift into an OOM/fragmented state. Eager-respawns.
+    }
+
+    /// <summary>
+    /// issue #112 — result of worker-exe resolution: the configured value, every location
+    /// probed (in order), and the winner (null when nothing exists). Surfaced by Start()
+    /// errors and the genexus-mcp doctor worker_binary check.
+    /// </summary>
+    public sealed class WorkerExecutableResolution
+    {
+        public string? ResolvedPath { get; init; }
+        public string ConfiguredPath { get; init; } = string.Empty;
+        public List<string> TriedPaths { get; init; } = new();
     }
 
     public class WorkerProcess
@@ -81,6 +94,14 @@ namespace GxMcp.Gateway
         // (no stdout/stderr) this long. Below it, an old-but-chatty command is treated as
         // progressing (long update/build), not reaped.
         private const int WedgedSilenceSeconds = 120;
+        // issue #113 — a background build is NOT an in-flight RPC, so idle-reap decisions
+        // can't rely on _inFlightCommands alone. The worker emits notifications/worker/
+        // build_active every 20s while a build runs (BuildService.buildHeartbeat); each
+        // notification refreshes _lastBuildActiveUtcTicks, and both reap guards refuse to
+        // act while that signal is fresher than this window (2× heartbeat interval + margin).
+        private static readonly TimeSpan BuildActiveGraceWindow = TimeSpan.FromSeconds(90);
+        // 0 = never signalled (IsBuildActive short-circuits on it).
+        private long _lastBuildActiveUtcTicks;
         // Proactive idle heap-recycle ceiling (bytes; 0 = disabled) and a grace so we only
         // recycle a worker that has been genuinely idle, not one momentarily between commands.
         private readonly long _heapRecycleBytes;
@@ -131,6 +152,58 @@ namespace GxMcp.Gateway
                 try { return _process?.HasExited == false ? _process.WorkingSet64 : (long?)null; }
                 catch { return null; }
             }
+        }
+
+        // issue #112 — single source of truth for locating GxMcp.Worker.exe: the configured
+        // GeneXus.WorkerExecutable (absolute, or relative to the gateway's base dir), then
+        // the dev bin/Debug fallbacks, then the gateway-relative worker\ dir. Logs a warning
+        // when the configured path is dead so it's never "silently ignored" again.
+        internal static WorkerExecutableResolution ResolveWorkerExecutable(Configuration config, string? baseDir = null)
+        {
+            baseDir ??= AppDomain.CurrentDomain.BaseDirectory;
+            string configured = config.GeneXus?.WorkerExecutable ?? string.Empty;
+            string workerPath = configured;
+            if (!string.IsNullOrWhiteSpace(workerPath) && !Path.IsPathRooted(workerPath))
+            {
+                workerPath = Path.Combine(baseDir, workerPath);
+            }
+
+            var tried = new List<string>();
+            if (!string.IsNullOrWhiteSpace(workerPath))
+            {
+                tried.Add(workerPath);
+            }
+
+            if (string.IsNullOrWhiteSpace(workerPath) || !File.Exists(workerPath))
+            {
+                if (!string.IsNullOrWhiteSpace(configured))
+                {
+                    Program.Log($"[Gateway] WARNING: GeneXus.WorkerExecutable '{workerPath}' (from config.json) does not exist — trying fallback locations.");
+                }
+
+                string[] devPaths = new[]
+                {
+                    Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\..\..\src\GxMcp.Worker\bin\Debug\GxMcp.Worker.exe")),
+                    Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\src\GxMcp.Worker\bin\Debug\GxMcp.Worker.exe")),
+                    Path.Combine(baseDir, @"worker\GxMcp.Worker.exe")
+                };
+
+                foreach (var path in devPaths)
+                {
+                    tried.Add(path);
+                    if (File.Exists(path))
+                    {
+                        return new WorkerExecutableResolution { ResolvedPath = path, ConfiguredPath = configured, TriedPaths = tried };
+                    }
+                }
+            }
+
+            return new WorkerExecutableResolution
+            {
+                ResolvedPath = !string.IsNullOrWhiteSpace(workerPath) && File.Exists(workerPath) ? workerPath : null,
+                ConfiguredPath = configured,
+                TriedPaths = tried
+            };
         }
 
         public WorkerProcess(Configuration config, KbHandle kb)
@@ -741,35 +814,22 @@ namespace GxMcp.Gateway
                 }
 
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                string workerPath = _config.GeneXus?.WorkerExecutable ?? string.Empty;
-                if (!Path.IsPathRooted(workerPath))
+                WorkerExecutableResolution res = ResolveWorkerExecutable(_config, baseDir);
+
+                if (res.ResolvedPath == null)
                 {
-                    workerPath = Path.Combine(baseDir, workerPath);
+                    // issue #112: enumerate every candidate so the operator can see exactly
+                    // what was checked — and that a broken npm/npx extraction (empty
+                    // publish/worker/) or a stale config value is the cause.
+                    throw new FileNotFoundException(
+                        "Worker NOT FOUND. Configured GeneXus.WorkerExecutable: '"
+                        + (string.IsNullOrWhiteSpace(res.ConfiguredPath) ? "(not set)" : res.ConfiguredPath)
+                        + "'. Locations checked: " + string.Join("; ", res.TriedPaths)
+                        + ". If this install came from npm/npx, the package extraction may be incomplete — fix with: "
+                        + "npm cache clean --force && npm uninstall -g genexus-mcp && npm install -g genexus-mcp@latest (or npx genexus-mcp@latest init).");
                 }
 
-                if (!File.Exists(workerPath))
-                {
-                    string[] devPaths = new[]
-                    {
-                        Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\..\..\src\GxMcp.Worker\bin\Debug\GxMcp.Worker.exe")),
-                        Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\src\GxMcp.Worker\bin\Debug\GxMcp.Worker.exe")),
-                        Path.Combine(baseDir, @"worker\GxMcp.Worker.exe")
-                    };
-
-                    foreach (var path in devPaths)
-                    {
-                        if (File.Exists(path))
-                        {
-                            workerPath = path;
-                            break;
-                        }
-                    }
-                }
-
-                if (!File.Exists(workerPath))
-                {
-                    throw new FileNotFoundException($"Worker NOT FOUND at {workerPath}");
-                }
+                string workerPath = res.ResolvedPath;
 
                 SpawnedExePath = workerPath;
                 try { SpawnedExeBuiltAtUtc = File.GetLastWriteTimeUtc(workerPath); } catch { SpawnedExeBuiltAtUtc = null; }
@@ -1139,8 +1199,17 @@ namespace GxMcp.Gateway
             if (_heapRecycleBytes <= 0) return false;
             if (_isStarting) return false;
             if (Volatile.Read(ref _queuedCommands) > 0 || Volatile.Read(ref _inFlightCommands) > 0) return false;
+            if (IsBuildActive()) return false;
             if (DateTime.UtcNow - _lastActivityUtc < HeapRecycleIdleGrace) return false;
             return wsBytes > 0 && wsBytes > _heapRecycleBytes;
+        }
+
+        // issue #113 — true while a background build recently announced itself via
+        // notifications/worker/build_active (heartbeat every 20s during a build).
+        private bool IsBuildActive()
+        {
+            long ticks = Volatile.Read(ref _lastBuildActiveUtcTicks);
+            return ticks != 0 && DateTime.UtcNow - new DateTime(ticks) < BuildActiveGraceWindow;
         }
 
         private bool ShouldStopForIdle()
@@ -1156,6 +1225,13 @@ namespace GxMcp.Gateway
             }
 
             if (_isStarting)
+            {
+                return false;
+            }
+
+            // A background build keeps the worker busy even with nothing in flight or
+            // queued — never idle-reap (or heap-recycle) mid-build. issue #113.
+            if (IsBuildActive())
             {
                 return false;
             }
@@ -1187,6 +1263,7 @@ namespace GxMcp.Gateway
                         // ShouldStopForIdle / ShouldRecycleForHeap from reaping the
                         // worker mid-build.
                         MarkActivity();
+                        Volatile.Write(ref _lastBuildActiveUtcTicks, DateTime.UtcNow.Ticks);
                     }
                     else if (string.Equals(method, "notifications/worker/persist_jobs_request", StringComparison.Ordinal))
                     {
@@ -1334,5 +1411,11 @@ namespace GxMcp.Gateway
             _lastWorkingSetBytes = workingSetBytes;
             _lastActivityUtc = lastActivityUtc;
         }
+
+        // issue #113 — seed the build-active signal and drive ShouldStopForIdle without
+        // a live process/pipe, mirroring the SetHeapProbeForTest pattern.
+        internal void MarkBuildActiveForTest(DateTime utcUtc) => Volatile.Write(ref _lastBuildActiveUtcTicks, utcUtc.Ticks);
+
+        internal bool ShouldStopForIdleForTest() => ShouldStopForIdle();
     }
 }

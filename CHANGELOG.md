@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v2.44.1 - 2026-08-21
+
+### Fixed
+
+- **A background build can no longer be killed by the worker's idle watchdog (issue #113).** While a build runs, the worker emits a `build_active` heartbeat every 20 seconds; the Gateway now treats a recent heartbeat as activity and refuses to idle-reap or heap-recycle the worker mid-build, no matter how short `Server.WorkerIdleTimeoutMinutes` is configured.
+- **A build whose worker dies mid-run now fails immediately instead of hanging for 30 minutes (issue #113).** The Gateway's background status poller used to loop until its hard cap when the worker process exited, leaving `wait_until_done` callers waiting until the MCP transport itself timed out. Three consecutive failed status polls now complete the job as failed with a "worker exited mid-build" message and a re-run hint.
+- **A missing worker binary is now diagnosed at the source (issue #112).** When `GeneXus.WorkerExecutable` in `config.json` doesn't exist, the Gateway logs it instead of silently falling back; the "Worker NOT FOUND" error lists every location checked plus the reinstall command, `genexus-mcp doctor` gained a `worker_binary` check, and the npm package verifies `publish/GxMcp.Gateway.exe` and `publish/worker/GxMcp.Worker.exe` right after install so an incomplete npx extraction fails loudly at install time.
+
 ## v2.44.0 - 2026-08-21
 
 ### Added

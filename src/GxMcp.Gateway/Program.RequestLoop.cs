@@ -1729,6 +1729,7 @@ namespace GxMcp.Gateway
                                     // Step 2: Poll worker Build/Status until status is terminal.
                                     // Terminal states from BuildTaskStatus: Succeeded | Failed | Error | Cancelled.
                                     JObject? finalStatus = null;
+                                    int failedPolls = 0;
                                     var hardCap = DateTime.UtcNow.AddMinutes(30);
                                     while (DateTime.UtcNow < hardCap)
                                     {
@@ -1763,6 +1764,30 @@ namespace GxMcp.Gateway
                                             env => env,
                                             (_, correlationId) => new JObject { ["error"] = "Status poll timeout", ["correlationId"] = correlationId },
                                             toolName: tName, toolArgs: tArgs, trackOperation: false);
+
+                                        // issue #113 — a dead worker must fail the job fast instead of
+                                        // looping until hardCap (30 min) with the caller still waiting
+                                        // on wait_until_done / transport. Any error envelope here means
+                                        // the poll didn't reach the worker (crashed/exited/pipe gone);
+                                        // a single miss is tolerated, consecutive misses are terminal.
+                                        if (statusEnv == null || statusEnv["error"] != null)
+                                        {
+                                            failedPolls++;
+                                            Log($"[AsyncBuild] job={job.Id} status poll failed ({failedPolls}/{BuildStatusPollPolicy.MaxConsecutiveFailures})"
+                                                + (statusEnv?["error"] != null ? $": {statusEnv["error"]}" : ": empty response"));
+                                            if (BuildStatusPollPolicy.ShouldAbort(failedPolls))
+                                            {
+                                                string abortMsg = "Worker process exited mid-build (no response to " + failedPolls
+                                                    + " consecutive status polls). The build did NOT complete — check the crash ledger via "
+                                                    + "genexus_whoami diagnostics, then re-run genexus_lifecycle action=build.";
+                                                finalStatus = new JObject { ["status"] = "Failed", ["taskId"] = taskId, ["error"] = abortMsg };
+                                                JobRegistry.Complete(job.Id, false, abortMsg, finalStatus);
+                                                Log($"[AsyncBuild] job={job.Id} aborted: worker exited mid-build after {failedPolls} failed status polls.");
+                                                return;
+                                            }
+                                            continue;
+                                        }
+                                        failedPolls = 0;
 
                                         finalStatus = (statusEnv?["result"] as JObject) ?? statusEnv;
                                         string? s = finalStatus?["status"]?.ToString() ?? finalStatus?["Status"]?.ToString();

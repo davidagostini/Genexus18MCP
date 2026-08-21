@@ -321,6 +321,26 @@ namespace GxMcp.Gateway
                     AddCheck("in_process_build_assembly", "warn", $"Genexus.MsBuild.Tasks.dll missing — build will fall back to MSBuild.exe spawn");
             }
 
+            // 4b. Worker binary — issue #112: a fresh npm/npx install can land with an empty
+            // publish/worker/ folder, and every KB tool call then fails with "Worker NOT
+            // FOUND". Surface it here with the exact remediation instead.
+            try
+            {
+                var res = WorkerProcess.ResolveWorkerExecutable(config ?? new Configuration());
+                if (res.ResolvedPath != null)
+                    AddCheck("worker_binary", "pass", $"GxMcp.Worker.exe present at {res.ResolvedPath}");
+                else
+                    AddCheck("worker_binary", "fail",
+                        "GxMcp.Worker.exe NOT found. Configured GeneXus.WorkerExecutable: '"
+                        + (string.IsNullOrWhiteSpace(res.ConfiguredPath) ? "(not set)" : res.ConfiguredPath)
+                        + "'. Locations checked: " + string.Join("; ", res.TriedPaths)
+                        + ". Fix an incomplete npm/npx extraction with: npm cache clean --force && npm uninstall -g genexus-mcp && npm install -g genexus-mcp@latest");
+            }
+            catch (Exception ex)
+            {
+                AddCheck("worker_binary", "warn", $"Worker binary probe failed: {ex.Message}");
+            }
+
             // 5. KB path(s).
             string? kbPath = config?.Environment?.KBPath;
             if (string.IsNullOrWhiteSpace(kbPath))

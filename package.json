@@ -1,6 +1,6 @@
 {
   "name": "genexus-mcp",
-  "version": "2.44.0",
+  "version": "2.44.1",
   "mcpName": "io.github.lennix1337/genexus",
   "description": "GeneXus 18 MCP server — read, edit, and analyze GeneXus knowledge base objects (transactions, web panels, procedures, SDTs) directly from Claude, Cursor, and other AI agents over the Model Context Protocol.",
   "keywords": [
@@ -32,7 +32,8 @@
   "scripts": {
     "test": "node --test cli/run.test.js",
     "lint": "eslint cli scripts eslint.config.js",
-    "prepack": "node scripts/clean-package.js"
+    "prepack": "node scripts/clean-package.js",
+    "postinstall": "node scripts/verify-install.js"
   },
   "bin": {
     "genexus-mcp": "cli/run.js"
