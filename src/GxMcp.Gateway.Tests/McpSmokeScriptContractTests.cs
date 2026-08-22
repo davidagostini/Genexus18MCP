@@ -77,8 +77,11 @@ namespace GxMcp.Gateway.Tests
 }}
 ");
 
-                string gatewayExe = Path.Combine(repoRoot, "src", "GxMcp.Gateway", "bin", "Debug", "net8.0-windows", "GxMcp.Gateway.exe");
-                Assert.True(File.Exists(gatewayExe), $"Gateway exe not built at {gatewayExe} — run dotnet build first.");
+                string gatewayExe = FindGatewayExe(repoRoot);
+                Assert.True(File.Exists(gatewayExe),
+                    "Gateway exe not found. Searched bin/Debug and .test-bin/gateway — " +
+                    "run 'dotnet build src/GxMcp.Gateway/GxMcp.Gateway.csproj' first.\n" +
+                    "Searched:\n" + gatewayExeCandidates(repoRoot));
 
                 using var proc = new Process
                 {
@@ -149,6 +152,23 @@ namespace GxMcp.Gateway.Tests
             int port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port;
             l.Stop();
             return port;
+        }
+
+        // Candidate exe locations: the standard build output and the coverage run's
+        // BaseOutputPath (scripts/coverage/collect.ps1 redirects to .test-bin/gateway).
+        private static System.Collections.Generic.IEnumerable<string> gatewayExeCandidates(string repoRoot)
+        {
+            yield return Path.Combine(repoRoot, "src", "GxMcp.Gateway", "bin", "Debug", "net8.0-windows", "GxMcp.Gateway.exe");
+            yield return Path.Combine(repoRoot, ".test-bin", "gateway", "Debug", "net8.0-windows", "GxMcp.Gateway.exe");
+        }
+
+        private static string FindGatewayExe(string repoRoot)
+        {
+            foreach (var candidate in gatewayExeCandidates(repoRoot))
+            {
+                if (File.Exists(candidate)) return candidate;
+            }
+            return string.Empty;
         }
 
         private static async System.Threading.Tasks.Task<bool> WaitForHttpAsync(int port, int timeoutSeconds)
