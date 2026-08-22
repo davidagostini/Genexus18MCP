@@ -12,6 +12,7 @@
 - **First-touch warmup now targets real code objects.** The background warmup picks its probe object from Transactions/Procedures instead of the alphabetically-first index entry, so it exercises the structure/source SDK paths that inspect/analyze actually hit.
 
 ### Changed
+- **Faster post-edit validation and build-status polls.** The `genexus_apply_pattern` validation poll now probes at 250ms for the first 2s before falling back to 1s — single-object validation builds typically land in 1-3s, cutting the common-case wait from ~1-4s to under 1s. The async build-status poller's first probe drops from 2s to 500ms so sync-fast builds surface immediately.
 - **Granular semantic-cache invalidation.** Mutations that target a single object (edit, delete, properties set/move, single-target writes) now drop only cached reads referencing that object; unrelated warm reads survive (~10x faster follow-up reads after writes). KB-wide mutations (rename across KB, import) still clear the whole cache.
 
 ## v2.44.1 - 2026-08-21

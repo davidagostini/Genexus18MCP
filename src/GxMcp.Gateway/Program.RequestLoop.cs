@@ -1761,6 +1761,7 @@ namespace GxMcp.Gateway
                                     // Terminal states from BuildTaskStatus: Succeeded | Failed | Error | Cancelled.
                                     JObject? finalStatus = null;
                                     int failedPolls = 0;
+                                    int pollCount = 0;
                                     var hardCap = DateTime.UtcNow.AddMinutes(30);
                                     while (DateTime.UtcNow < hardCap)
                                     {
@@ -1780,7 +1781,12 @@ namespace GxMcp.Gateway
                                             finalStatus = new JObject { ["status"] = "Cancelled", ["taskId"] = taskId };
                                             break;
                                         }
-                                        await Task.Delay(2000).ConfigureAwait(false);
+                                        // Adaptive poll: builds take minutes, so the 2s
+                                        // interval only matters at the tail — but a fast
+                                        // first probe (500ms) catches sync-fast builds that
+                                        // finish between Start and the first Status call.
+                                        await Task.Delay(pollCount == 0 ? 500 : 2000).ConfigureAwait(false);
+                                        pollCount++;
 
                                         var statusCmd = new JObject
                                         {
@@ -2361,10 +2367,13 @@ namespace GxMcp.Gateway
                             JObject terminal = null;
                             if (!string.IsNullOrEmpty(taskId))
                             {
-                                // Poll up to 180s (180 iterations × 1s sleep + RPC ms)
+                                // Poll up to 180s. Adaptive interval: most validation
+                                // builds of a single object finish in 1-3s, so poll fast
+                                // (250ms) for the first 2s and fall back to 1s — cuts the
+                                // common-case wait from ~1-4s to ~0.25-1s.
                                 for (int i = 0; i < 180 && vSw.ElapsedMilliseconds < 180000; i++)
                                 {
-                                    await Task.Delay(1000);
+                                    await Task.Delay(i < 8 ? 250 : 1000);
                                     var statusCmd = new JObject
                                     {
                                         ["module"] = "Build",
