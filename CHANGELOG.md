@@ -13,6 +13,7 @@
 
 ### Changed
 - **Faster post-edit validation and build-status polls.** The `genexus_apply_pattern` validation poll now probes at 250ms for the first 2s before falling back to 1s — single-object validation builds typically land in 1-3s, cutting the common-case wait from ~1-4s to under 1s. The async build-status poller's first probe drops from 2s to 500ms so sync-fast builds surface immediately.
+- **Faster visual-edit persistence retry.** The Procedure layout write-back verifier retried at a fixed 350ms per attempt (up to 2.1s of waiting); it now backs off adaptively (100/200/350/350/500/500ms), so edits whose persistence lands quickly confirm in under 600ms while slow cases still get the full retry window.
 - **Granular semantic-cache invalidation.** Mutations that target a single object (edit, delete, properties set/move, single-target writes) now drop only cached reads referencing that object; unrelated warm reads survive (~10x faster follow-up reads after writes). KB-wide mutations (rename across KB, import) still clear the whole cache.
 
 ## v2.44.1 - 2026-08-21

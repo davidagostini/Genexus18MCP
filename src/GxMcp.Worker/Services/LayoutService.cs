@@ -288,9 +288,13 @@ namespace GxMcp.Worker.Services
                     if (isProcedure)
                     {
                         // Reports can defer SDK persistence. Retry a few read-backs before failing.
-                        for (int attempt = 0; attempt < 6 && !match; attempt++)
+                        // Adaptive backoff: most persistence lands within ~350ms, so probe
+                        // fast first (100/200ms) and only fall back to 350ms — cuts the
+                        // common-case retry wait from up to 2.1s to under 600ms.
+                        int[] backoffMs = { 100, 200, 350, 350, 500, 500 };
+                        for (int attempt = 0; attempt < backoffMs.Length && !match; attempt++)
                         {
-                            System.Threading.Thread.Sleep(350);
+                            System.Threading.Thread.Sleep(backoffMs[attempt]);
                             var retryObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
                             var retryContext = LoadVisualContext(retryObject, target, VisualSurface.Any);
                             if (retryContext.Error != null) break;
