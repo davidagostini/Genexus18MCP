@@ -944,6 +944,118 @@ namespace GxMcp.Gateway
                     return BuildToolTextResponse(idToken, payload, isError, "genexus_worker_pool", args);
                 }
 
+                // genexus_connection_recover — gateway-side self-healing meta-tool.
+                // Diagnoses the connection/worker state and automatically applies the
+                // least-invasive recovery: healthy → no-op report; worker dead/wedged →
+                // kill + respawn with SDK-ready confirmation; stale cache → clear.
+                // Replaces the manual scripts/mcp_recover.ps1 flow for agent-driven use.
+                if (string.Equals(toolName, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase))
+                {
+                    JObject payload;
+                    bool isError = false;
+                    try
+                    {
+                        if (_workerPool == null) throw new InvalidOperationException("WorkerPool not initialised.");
+                        if (_activeConfig == null) throw new InvalidOperationException("No active configuration loaded.");
+
+                        bool force = args?["force"]?.ToObject<bool?>() == true;
+                        var openKbs = _workerPool.ListOpen();
+                        // Workers that died since their last call are dropped from
+                        // ListOpen (entry requires Worker != null) but remain in
+                        // ListKnown — include them so recover also re-opens KBs whose
+                        // worker silently disappeared, not just wedged live ones.
+                        var knownNotOpen = _workerPool.ListKnown()
+                            .Where(k => !openKbs.Any(o => string.Equals(o.NormalizedAlias, k.NormalizedAlias, StringComparison.OrdinalIgnoreCase)))
+                            .ToList();
+                        payload = new JObject();
+
+                        // 1. Diagnose current state.
+                        var diagnoses = new JArray();
+                        foreach (var kb in openKbs)
+                        {
+                            var entryState = "unknown";
+                            try
+                            {
+                                var whoamiProbe = await SendWorkerCommandAsync(
+                                    new JObject { ["module"] = "Ping", ["action"] = "Ping", ["client"] = "mcp" },
+                                    5000, "recover-ping timeout",
+                                    wr => wr,
+                                    (_, cid) => new JObject { ["__timeout"] = true },
+                                    toolName: "connection_recover_probe",
+                                    trackOperation: false);
+                                entryState = whoamiProbe?["__timeout"]?.ToObject<bool>() == true ? "unresponsive" : "responsive";
+                            }
+                            catch { entryState = "unreachable"; }
+                            diagnoses.Add(new JObject
+                            {
+                                ["alias"] = kb.Alias,
+                                ["state"] = entryState
+                            });
+                        }
+                        payload["diagnosis"] = diagnoses;
+
+                        var unresponsive = diagnoses.Where(d => d["state"]?.ToString() != "responsive").ToList();
+                        bool anyUnhealthy = force || unresponsive.Count > 0 || knownNotOpen.Count > 0;
+
+                        // 2. Recover only what's broken (or everything when force=true).
+                        if (!anyUnhealthy)
+                        {
+                            payload["status"] = "Healthy";
+                            payload["action"] = "none";
+                            payload["detail"] = "All workers responsive; no recovery needed.";
+                        }
+                        else
+                        {
+                            var targetsToRestore = openKbs
+                                .Where(k => force || unresponsive.Any(d =>
+                                    string.Equals(d["alias"]?.ToString(), k.Alias, StringComparison.OrdinalIgnoreCase)))
+                                .Concat(force ? knownNotOpen : knownNotOpen.Where(k => openKbs.Count == 0))
+                                .ToList();
+
+                            using (SuppressEagerRespawn())
+                            {
+                                _workerPool.StopAll(WorkerStopReason.Wedged);
+                            }
+                            _semanticCache.Clear();
+
+                            var restored = new JArray();
+                            var failed = new JArray();
+                            foreach (var handle in targetsToRestore)
+                            {
+                                try
+                                {
+                                    using var readyCts = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+                                    var replacement = await _workerPool.AcquireAsync(handle, readyCts.Token).ConfigureAwait(false);
+                                    bool ready = await McpRouter.AwaitWithHeartbeat(
+                                        replacement.SdkReadyTask, timeoutMs: 180_000,
+                                        progressToken: null, heartbeat: null,
+                                        toolName: "genexus_connection_recover").ConfigureAwait(false);
+                                    if (ready) restored.Add(handle.Alias);
+                                    else failed.Add(new JObject { ["alias"] = handle.Alias, ["reason"] = "sdkReadyTimeout" });
+                                }
+                                catch (Exception restoreEx)
+                                {
+                                    failed.Add(new JObject { ["alias"] = handle.Alias, ["reason"] = restoreEx.Message });
+                                }
+                            }
+
+                            payload["status"] = failed.Count == 0 ? "Recovered" : "PartialRecovery";
+                            payload["action"] = $"killed and respawned {(force ? "all" : "unresponsive")} workers; semantic cache cleared";
+                            payload["restoredWorkers"] = restored;
+                            payload["failedWorkers"] = failed;
+                            isError = failed.Count > 0;
+                        }
+
+                        BroadcastToolsListChanged("connection_recover");
+                    }
+                    catch (Exception ex)
+                    {
+                        isError = true;
+                        payload = new JObject { ["error"] = ex.Message, ["code"] = "RecoveryFailed" };
+                    }
+                    return BuildToolTextResponse(idToken, payload, isError, "genexus_connection_recover", args);
+                }
+
                 // Item 54: genexus_sandbox — gateway-side filesystem clone of a KB.
                 // No SDK touch; pure file copy under <configRoot>/sandboxes/<name>/.
                 // remove is idempotent. create on an existing target returns

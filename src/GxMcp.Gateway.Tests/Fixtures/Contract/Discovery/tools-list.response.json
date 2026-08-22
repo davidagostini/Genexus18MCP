@@ -516,6 +516,32 @@
     {
       "annotations": {
         "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Self-healing recovery for a broken MCP connection (connection closed, unresponsive worker). Probes every open worker, kills and respawns only the unhealthy ones (force=true targets all), confirms SDK-ready, and clears the semantic cache. Use when calls hang or return WorkerBusy.",
+      "inputSchema": {
+        "examples": [
+          {},
+          {
+            "force": true
+          }
+        ],
+        "properties": {
+          "force": {
+            "default": false,
+            "description": "Recover ALL workers, even responsive ones.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "genexus_connection_recover"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
         "idempotentHint": false,
         "openWorldHint": false,
         "readOnlyHint": false

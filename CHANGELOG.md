@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **`genexus_connection_recover` — self-healing recovery tool.** When tool calls hang, return `WorkerBusy` repeatedly, or the connection seems dead, the agent can now call this instead of asking the user to restart the AI client. It probes every open worker with a liveness check, kills and respawns only the unhealthy ones (force=true targets all), confirms each replacement is SDK-ready before returning, and clears the semantic cache so stale reads can't survive the recovery. Workers that silently died since their last call are re-opened even though they no longer appear in the open list.
+
 ## v2.45.1 - 2026-08-22
 
 ### Fixed
