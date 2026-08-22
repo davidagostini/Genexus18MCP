@@ -384,7 +384,23 @@ namespace GxMcp.Gateway
                                 return vo;
                             }));
 
-                        var invalidArgsPayload = new JObject
+                        // Terse mode: keep the violation list (that's the actionable part)
+                        // and drop the repeated hint/nextSteps scaffolding — an agent that
+                        // already saw one full InvalidArgs envelope doesn't need the
+                        // "call genexus_orient" pointer re-shipped on every retry.
+                        var invalidArgsPayload = TerseResponsesEnabled()
+                            ? new JObject
+                            {
+                                ["status"] = "error",
+                                ["error"] = new JObject
+                                {
+                                    ["code"] = "InvalidArgs",
+                                    ["message"] = $"Arguments for tool '{toolName}' failed schema validation.",
+                                    ["hint"] = hint,
+                                    ["violations"] = violationsArr
+                                }
+                            }
+                            : new JObject
                         {
                             ["status"] = "error",
                             ["error"] = new JObject

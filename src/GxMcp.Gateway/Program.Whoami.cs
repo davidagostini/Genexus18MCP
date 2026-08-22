@@ -993,6 +993,22 @@ namespace GxMcp.Gateway
             }
             else
             {
+                // Terse mode: drop the reference pointer block too — a terse deployment
+                // is one where the agent already knows the surface (~280 bytes saved).
+                if (Program.TerseResponsesEnabled())
+                {
+                    payload.Remove("reference");
+                    // Forensics/telemetry sugar that terse deployments don't need per call:
+                    // death history with recent entries + roll-up metrics summary
+                    // (~2.7KB combined). Status/pid stay in worker.status/pid.
+                    if (payload["worker"] is JObject w)
+                    {
+                        w.Remove("deaths");
+                        w.Remove("toolLatency");
+                    }
+                    payload.Remove("metricsSummary");
+                }
+
                 // Lean default: point at where the static reference lives instead of
                 // re-shipping it every call.
                 payload["reference"] = new JObject
