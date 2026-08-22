@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **`genexus-mcp doctor --mcp-smoke` no longer fails on a healthy server.** The smoke check omitted the `Accept: application/json, text/event-stream` header that the gateway requires on every POST, so it always got a 406 back and reported a false failure — masking real connection problems. Users hitting "connection closed" can now trust the smoke check to tell a healthy gateway from a dead one.
+
 ## v2.45.0 - 2026-08-22
 
 ### Added
