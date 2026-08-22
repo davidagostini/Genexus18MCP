@@ -1012,7 +1012,39 @@ namespace GxMcp.Gateway
                     payload.Remove("suggestedNext");
                     // Top-5 recently-changed with per-object metadata (~500B when set);
                     // genexus_list_objects sort=lastUpdate covers this on demand.
-                    if (payload["index"] is JObject idx) idx.Remove("recentlyChanged");
+                    if (payload["index"] is JObject idx)
+                    {
+                        idx.Remove("recentlyChanged");
+                        // Flush health + progress telemetry: doctor/debug data, not
+                        // per-turn state. status/totalObjects/lastIndexedAt stay.
+                        idx.Remove("flushHealth");
+                        if ((string?)idx["progress"] == null) idx.Remove("progress");
+                        if ((string?)idx["etaMs"]?.ToString() == "" && idx["etaMs"]?.Type == JTokenType.Null) idx.Remove("etaMs");
+                    }
+                    // Update block: only actionable when updateAvailable=true. When up
+                    // to date, keep a single boolean instead of the full registry dump.
+                    if (payload["update"] is JObject upd && upd["updateAvailable"]?.ToObject<bool>() != true)
+                    {
+                        payload["update"] = new JObject { ["currentVersion"] = upd["currentVersion"], ["updateAvailable"] = false };
+                    }
+                    // KB alias lists: openKbs/knownKbs/declaredKbs are the same alias
+                    // in the common single-KB case; openCount+active already say it all.
+                    if (payload["kb"] is JObject kb)
+                    {
+                        var open = kb["openKbs"] as JArray;
+                        var known = kb["knownKbs"] as JArray;
+                        var declared = kb["declaredKbs"] as JArray;
+                        bool allSame = open != null && known != null && declared != null
+                            && open.Count == known.Count && known.Count == declared.Count
+                            && open.ToString() == known.ToString() && known.ToString() == declared.ToString();
+                        if (allSame) { kb.Remove("openKbs"); kb.Remove("knownKbs"); }
+                        // selected/default echo active in the common case; drop when
+                        // equal, or when selected is null (default-KB path — active
+                        // already tells the agent which KB the session resolves to).
+                        string? sel = (string?)kb["selected"];
+                        if (sel == null || string.Equals(sel, (string?)kb["active"])) kb.Remove("selected");
+                        if (string.Equals((string?)kb["default"], (string?)kb["active"])) kb.Remove("default");
+                    }
                 }
 
                 // Lean default: point at where the static reference lives instead of

@@ -858,11 +858,24 @@ namespace GxMcp.Gateway
                         innerMeta.Remove("alternative_views");
                         innerMeta.Remove("aggregates");
                         innerMeta.Remove("enrichmentHint");
+                        innerMeta.Remove("autoInjected");
+                        innerMeta.Remove("autoInjectedType");
                         if (!innerMeta.Properties().Any()) obj.Remove("_meta");
                     }
                     // Static one-liner the agent reads once and never needs again
                     // (~160 bytes on every inspect).
                     obj.Remove("sourceReadHint");
+                    // Debug correlation GUID — only useful when pasting logs for support.
+                    obj.Remove("correlationId");
+                    // Name-resolution echoes: name/type are already top-level.
+                    obj.Remove("resolvedAs");
+                    obj.Remove("alsoMatches");
+                    // Prose that restates the structured payload (~110 bytes).
+                    obj.Remove("summary");
+                    // SDK-internal value, never actionable for the agent.
+                    if (obj["wwpMetadata"] is JObject wwp) wwp.Remove("masterPage");
+                    // Machine host\\user noise; lastUpdate (actionable) stays.
+                    if (obj["lifecycle"] is JObject lc) lc.Remove("lastModifiedBy");
                     return obj;
                 }
 
