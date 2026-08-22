@@ -116,6 +116,11 @@ namespace GxMcp.Gateway
                         ["module"] = "List",
                         ["action"] = "Objects",
                         ["target"] = string.Empty,
+                        // Prefer a real code object for the first-touch warm: Folders/Modules
+                        // (alphabetically first in the index) exercise almost no SDK path.
+                        // A Transaction or Procedure touches structure/source readers — the
+                        // paths inspect/analyze/read actually hit on the agent's first call.
+                        ["typeFilter"] = "Transaction,Procedure",
                         ["limit"] = 1,
                         ["offset"] = 0,
                         ["client"] = "mcp"

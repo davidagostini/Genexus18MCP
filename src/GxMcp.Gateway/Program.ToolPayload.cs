@@ -475,6 +475,8 @@ namespace GxMcp.Gateway
             new HashSet<string>(new[] { "name", "type", "path", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<string> CompactFieldsListObjects =
             new HashSet<string>(new[] { "name", "type", "path", "parentPath", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> CompactFieldsSearch =
+            new HashSet<string>(new[] { "name", "type", "description", "path", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<string> MinimalProjectionFields =
             new HashSet<string>(new[] { "name", "type", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
 
@@ -883,7 +885,8 @@ namespace GxMcp.Gateway
         private static bool ShouldProjectFieldsForTool(string toolName)
         {
             return string.Equals(toolName, "genexus_query", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(toolName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase);
+                   string.Equals(toolName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(toolName, "genexus_search", StringComparison.OrdinalIgnoreCase);
         }
 
         private static JObject BuildTotalsByType(JArray arr)
@@ -1044,6 +1047,15 @@ namespace GxMcp.Gateway
                 // signal that powers "what changed?" workflows and is cheap (~30b).
                 // createdAt/lastModifiedBy stay verbose-only at the worker.
                 return CompactFieldsListObjects;
+            }
+
+            if (string.Equals(toolName, "genexus_search", StringComparison.OrdinalIgnoreCase))
+            {
+                // genexus_search returns 50-item result pages with per-item type
+                // metadata (guid/length/decimals) that a scanning agent rarely needs.
+                // Same allowlist as query — name/type/description/path identify the hit;
+                // lastUpdate powers recency workflows. Explicit fields[] still wins.
+                return CompactFieldsSearch;
             }
 
             return null;

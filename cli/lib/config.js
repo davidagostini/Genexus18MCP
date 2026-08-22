@@ -5,7 +5,19 @@ const os = require('os');
 function generateConfig(gxPath, kbPath) {
     return {
         GeneXus: { InstallationPath: gxPath },
-        Server: { HttpPort: 5000, McpStdio: true, SessionIdleTimeoutMinutes: 10, WorkerIdleTimeoutMinutes: 5 },
+        Server: {
+            HttpPort: 5000,
+            McpStdio: true,
+            SessionIdleTimeoutMinutes: 10,
+            WorkerIdleTimeoutMinutes: 5,
+            // Lean + terse defaults: the MCP client is an LLM agent that reads
+            // content[0].text only. structuredContent duplicates the whole payload
+            // (+42-46% bytes) and next_legal_actions/_meta.tokens are UX sugar the
+            // agent doesn't need. Measured per-turn win; users who want the full
+            // MCP surface flip these back in config.json.
+            EmitStructuredContent: false,
+            TerseResponses: true
+        },
         Environment: { KBPath: kbPath }
     };
 }
