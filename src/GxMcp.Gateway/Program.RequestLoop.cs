@@ -1428,8 +1428,23 @@ namespace GxMcp.Gateway
                     }
                     if (isMutating)
                     {
-                        if (_verboseRequestLogs) Log($"[Cache] Invalidation triggered by {tName}");
-                        _semanticCache.Clear();
+                        // Granular invalidation: when the mutation names an object, drop
+                        // only cached reads that referenced it and keep unrelated warm
+                        // reads (9ms cache hit vs 98ms worker re-read, measured). Fall
+                        // back to a full clear for KB-wide mutations (rename across KB,
+                        // import, reorg, ...) or when no target can be extracted —
+                        // correctness first: a kept stale entry is worse than a lost hit.
+                        string? mutationTarget = ExtractMutationTarget(tName, tArgs);
+                        if (mutationTarget != null)
+                        {
+                            int removed = _semanticCache.RemoveByTarget(kbScope, mutationTarget);
+                            if (_verboseRequestLogs) Log($"[Cache] Targeted invalidation '{mutationTarget}' by {tName}: {removed} entr(y|ies) dropped");
+                        }
+                        else
+                        {
+                            if (_verboseRequestLogs) Log($"[Cache] Invalidation triggered by {tName}");
+                            _semanticCache.Clear();
+                        }
                         System.Threading.Interlocked.Increment(ref SemanticCacheEpoch);
                         BroadcastResourcesListChanged($"cache_invalidated:{tName}");
                         BroadcastResourceUpdated("genexus://objects", $"tool:{tName}");

@@ -1653,6 +1653,11 @@ namespace GxMcp.Gateway
         /// </summary>
         internal static void InjectMetaTokens(JObject toolResult)
         {
+            // Terse mode: the _meta.tokens used/limit block is UX sugar for LLM
+            // self-pagination; terse deployments opt out of paying ~60-90 bytes
+            // per response for it.
+            if (Program.TerseResponsesEnabled()) return;
+
             try
             {
                 var content = toolResult["content"] as JArray;

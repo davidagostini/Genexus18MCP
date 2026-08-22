@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -94,6 +95,13 @@ namespace GxMcp.Gateway
                         return;
                     }
 
+                    // Perf: pre-spawn the default KB's worker BEFORE any agent call so the
+                    // ~12s cold-start (SM warmup + SDK init + KB open — measured breakdown in
+                    // [COLD-START-BREAKDOWN]) is paid during gateway boot instead of on the
+                    // first KB-bound tool call. Best-effort: a failed spawn just logs; the
+                    // normal open path still works.
+                    await PrespawnDefaultKbWorkerAsync();
+
                     Log("[Warmup] Starting worker warmup sequence...");
                     BroadcastNotification("notifications/message", new
                     {
@@ -143,32 +151,7 @@ namespace GxMcp.Gateway
                     string? objectName = items?.FirstOrDefault()?["name"]?.ToString();
                     if (!string.IsNullOrWhiteSpace(objectName))
                     {
-                        var readCommand = new JObject
-                        {
-                            ["module"] = "Read",
-                            ["action"] = "ExtractSource",
-                            ["target"] = objectName,
-                            ["part"] = "Source",
-                            ["offset"] = 0,
-                            ["limit"] = 1,
-                            ["client"] = "mcp"
-                        };
-
-                        await SendWorkerCommandAsync(
-                            readCommand,
-                            30000,
-                            "Warmup read timeout",
-                            workerResponse => workerResponse,
-                            (_, correlationId) => new JObject
-                            {
-                                ["error"] = new JObject
-                                {
-                                    ["message"] = "Warmup read operation timed out.",
-                                    ["correlationId"] = correlationId
-                                }
-                            },
-                            toolName: "gateway_warmup_read",
-                            trackOperation: false);
+                        await WarmFirstTouchPathsAsync(objectName);
                     }
 
                     Log("[Warmup] Worker warmup finished.");
@@ -192,6 +175,75 @@ namespace GxMcp.Gateway
                     });
                 }
             });
+        }
+
+        // Pre-spawn the configured default KB's worker via the same AcquireAsync path the
+        // explicit `genexus_kb action=open` uses. Fire-and-forget from initialize; errors
+        // are swallowed (the regular resolve path re-tries on demand).
+        private static async Task PrespawnDefaultKbWorkerAsync()
+        {
+            try
+            {
+                string? defaultAlias = GetConfiguredDefaultKb();
+                var entry = (_activeConfig?.Environment?.KBs ?? new List<KbEntry>())
+                    .FirstOrDefault(k => string.Equals(k.Alias, defaultAlias, StringComparison.OrdinalIgnoreCase));
+                if (entry == null || _workerPool == null)
+                {
+                    Log("[Warmup] No default KB declared — skipping pre-spawn.");
+                    return;
+                }
+
+                var handle = new KbHandle(entry.Alias, entry.Path);
+                Log($"[Warmup] Pre-spawning worker for default KB '{entry.Alias}' ({entry.Path})");
+                await _workerPool.AcquireAsync(handle, CancellationToken.None);
+                Log($"[Warmup] Pre-spawn of '{entry.Alias}' completed.");
+            }
+            catch (Exception ex)
+            {
+                // Non-fatal: the first real call falls back to the standard open path.
+                Log("[Warmup] Default-KB pre-spawn skipped: " + ex.Message);
+            }
+        }
+
+        // First-touch penalty warmer. Measured ([TOOL-LATENCY], scratch gateway vs real KB):
+        // the FIRST call of each STA-heavy tool after a worker cold start pays a one-time
+        // JIT/SDK-deserialization cost (inspect: up to 3.8s; analyze linter/callers: 0.6s+)
+        // while every subsequent call returns in single-digit ms. Exercising those paths
+        // here — in the background, right after pre-spawn/index bootstrap — moves that cost
+        // out of the agent's turn entirely. Every sub-call is best-effort and individually
+        // guarded: a warm failure must never break the warmup sequence.
+        private static async Task WarmFirstTouchPathsAsync(string probeObjectName)
+        {
+            foreach (var (toolName, args) in new[]
+            {
+                ("inspect", new JObject { ["name"] = probeObjectName }),
+                ("analyze", new JObject { ["mode"] = "linter", ["target"] = probeObjectName }),
+                ("analyze", new JObject { ["mode"] = "callers", ["target"] = probeObjectName }),
+            })
+            {
+                try
+                {
+                    await SendWorkerCommandAsync(
+                        new JObject(args.Properties().Select(p => (JProperty)p).Cast<object>())
+                        {
+                            ["module"] = toolName,
+                            ["action"] = toolName == "inspect" ? "Inspect" : "Analyze",
+                            ["client"] = "mcp"
+                        },
+                        30000,
+                        $"Warmup {toolName} timeout",
+                        wr => wr,
+                        (_, correlationId) => new JObject(),
+                        toolName: $"gateway_warmup_{toolName}",
+                        trackOperation: false);
+                }
+                catch (Exception ex)
+                {
+                    Log($"[Warmup] {toolName} warm step skipped: {ex.Message}");
+                }
+            }
+
+            // The read path is already warmed by the legacy block above (ExtractSource).
         }
     }
 }

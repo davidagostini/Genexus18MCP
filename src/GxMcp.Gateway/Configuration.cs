@@ -331,6 +331,14 @@ namespace GxMcp.Gateway
         /// GXMCP_NO_STRUCTURED_CONTENT=1 without touching config files.
         /// </summary>
         public bool EmitStructuredContent { get; set; } = true;
+        /// <summary>
+        /// Terse mode: strip the per-response UX sugar the LLM does not strictly need —
+        /// `next_legal_actions`, `_meta.tokens` (the used/limit block), and SQL-dialect
+        /// nudges — and keep only the payload itself plus error hints. Saves ~200-600
+        /// bytes per response on top of EmitStructuredContent=false. Default: false
+        /// (full UX). Can be forced via GXMCP_TERSE=1 without touching config files.
+        /// </summary>
+        public bool TerseResponses { get; set; } = false;
     }
 
     public class LoggingConfig

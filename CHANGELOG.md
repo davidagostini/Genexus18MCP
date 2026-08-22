@@ -4,6 +4,12 @@
 
 ### Added
 - **Lean-response mode: drop `structuredContent` from tool results.** The MCP-standard `structuredContent` field duplicates the entire JSON payload that is already carried in `content[0].text`, adding 42-46% to every tool response's byte size (measured across `genexus_kb`, `genexus_list_objects`, and `genexus_search` against a real KB). Set `Server.EmitStructuredContent: false` in `config.json`, or the `GXMCP_NO_STRUCTURED_CONTENT=1` environment variable, to omit it — LLM clients read the text content, so nothing is lost for agent-driven sessions. Default remains `true` (protocol-compliant).
+- **Terse mode: strip per-response UX sugar.** `Server.TerseResponses: true` (or env `GXMCP_TERSE=1`) omits `next_legal_actions` and the `_meta.tokens` used/limit block from tool responses, keeping only the payload itself plus error hints. Stacks with lean mode for maximum per-turn savings.
+- **Automatic worker pre-spawn on startup.** The gateway now pre-spawns the default KB's worker during MCP initialize, so the measured 3.8-12s cold-start is paid at boot instead of on the agent's first KB-bound call. No configuration needed — it uses `Environment.DefaultKb`/`KBs[]`; a failed pre-spawn logs and falls back to the normal open path.
+- **First-touch warmup for STA-heavy tools.** After opening a KB, the background warmup now exercises `inspect`, `analyze` (linter + callers), and read paths — the first real call of each previously paid a one-time 0.6-3.8s JIT/SDK cost while every following call ran in single-digit milliseconds. That cost now lands in the warmup window instead of the agent's turn.
+
+### Changed
+- **Granular semantic-cache invalidation.** Mutations that target a single object (edit, delete, properties set/move, single-target writes) now drop only cached reads referencing that object; unrelated warm reads survive (~10x faster follow-up reads after writes). KB-wide mutations (rename across KB, import) still clear the whole cache.
 
 ## v2.44.1 - 2026-08-21
 

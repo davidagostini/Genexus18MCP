@@ -82,6 +82,40 @@ namespace GxMcp.Gateway
             _lastAccess.Clear();
         }
 
+        /// <summary>
+        /// Target-scoped invalidation: drop only entries whose cached args mention
+        /// <paramref name="targetObject"/>. A mutation on object X keeps every cached
+        /// read of object Y valid — measured on a real KB, a full Clear() after each
+        /// write threw away unrelated warm reads and forced a ~10x slower re-read
+        /// (9ms cache hit vs 98ms worker round-trip).
+        /// Keys are "{kbAlias}|{tool}:{args-json}", so a substring match on the args
+        /// JSON finds reads that referenced the target (name/target/targets fields).
+        /// Conservative by design: anything ambiguous should call <see cref="Clear"/>
+        /// instead. Returns the number of entries removed.
+        /// </summary>
+        public int RemoveByTarget(string kbScope, string targetObject)
+        {
+            if (string.IsNullOrWhiteSpace(targetObject)) return 0;
+
+            // Word-boundary-ish match on the quoted JSON value so "Cliente" does not
+            // match "ClienteId" / "MeuCliente" inside args JSON.
+            string needle = "\"" + targetObject + "\"";
+            int removed = 0;
+            foreach (var key in _entries.Keys.ToArray())
+            {
+                if (!key.StartsWith(kbScope + "|", StringComparison.Ordinal)) continue;
+                int argsStart = key.IndexOf(':', kbScope.Length + 2);
+                if (argsStart < 0) continue;
+                string argsJson = key.Substring(argsStart + 1);
+                if (argsJson.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0
+                    && RemoveEntry(key))
+                {
+                    removed++;
+                }
+            }
+            return removed;
+        }
+
         private bool IsExpired(string key)
         {
             if (!_lastAccess.TryGetValue(key, out var lastSeen)) return true;

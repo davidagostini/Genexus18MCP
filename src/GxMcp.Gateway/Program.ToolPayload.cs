@@ -220,6 +220,40 @@ namespace GxMcp.Gateway
             return new JValue(raw.Substring(0, 75000) + "... [TRUNCATED]");
         }
 
+        /// <summary>
+        /// Extracts the object name a mutating call targets, when the whole mutation is
+        /// scoped to that one object. Used for granular semantic-cache invalidation:
+        /// only cached reads referencing this target are dropped instead of the entire
+        /// store. Returns null (→ full Clear) for KB-wide mutations or unknown arg
+        /// shapes. Conservative: prefer returning null over a wrong name.
+        /// </summary>
+        internal static string? ExtractMutationTarget(string toolName, JObject? args)
+        {
+            if (args == null) return null;
+
+            // KB-wide / multi-object mutations must never be scoped to one target.
+            if (string.Equals(toolName, "genexus_rename_across_kb", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(toolName, "genexus_kb_import", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(toolName, "genexus_import_object", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            // Common single-target shapes across the tool surface.
+            string? name = args["name"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(name)) return name;
+            string? target = args["target"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(target)) return target;
+
+            // genexus_read-style arrays: only when exactly one target is present —
+            // a write against [A,B] invalidates both, so fall back to full clear.
+            if (args["targets"] is JArray arr && arr.Count == 1)
+            {
+                string? single = arr[0]?.ToString();
+                if (!string.IsNullOrWhiteSpace(single)) return single;
+            }
+
+            return null;
+        }
+
         // Semantic-cache invalidation gate: returns true when a tool call may
         // change KB object state, so DispatchCore can clear _semanticCache before
         // (and only before) a mutation. A MISS here means the next identical read
@@ -516,6 +550,17 @@ namespace GxMcp.Gateway
             return ActiveConfig?.Server?.EmitStructuredContent ?? true;
         }
 
+        // Terse mode: resolved per call like EmitStructuredContentEnabled. Env wins.
+        internal static bool TerseResponsesEnabled()
+        {
+            string? env = Environment.GetEnvironmentVariable("GXMCP_TERSE");
+            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return ActiveConfig?.Server?.TerseResponses ?? false;
+        }
+
         internal static JToken AttachKbContextMetadataToOwnedPayload(JToken payload, string kbAlias)
         {
             if (payload == null) throw new ArgumentNullException(nameof(payload));
@@ -797,6 +842,9 @@ namespace GxMcp.Gateway
             // clients that don't know about it ignore it.
             try
             {
+                // Terse mode: skip next_legal_actions injection entirely.
+                if (TerseResponsesEnabled()) return obj;
+
                 if (obj["next_legal_actions"] == null)
                 {
                     JArray? actions = NextLegalActionsBuilder.BuildFor(toolName, toolArgs, obj, isError);
