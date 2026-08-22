@@ -65,3 +65,12 @@ jobs:
       - name: LLM contract smoke
         shell: pwsh
         run: ./scripts/mcp_llm_contract_smoke.ps1
+
+      # Contract test: the gateway builds without the GeneXus SDK (net8.0-windows, no
+      # Artech refs), so this runs on CI. It launches a real gateway in-process and runs
+      # scripts/mcp_smoke.ps1 unmodified against it — pinning first-party diagnostic
+      # scripts to the gateway's HTTP protocol contract (the v2.38.0-v2.45.1 406 drift).
+      - name: MCP smoke script contract test
+        run: >
+          dotnet test src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj
+          --filter "FullyQualifiedName~McpSmokeScriptContract"
