@@ -221,6 +221,7 @@ namespace GxMcp.Gateway
         {
             foreach (var (toolName, args) in new[]
             {
+                ("read",     new JObject { ["targets"] = new JArray(probeObjectName), ["part"] = "Structure" }),
                 ("inspect", new JObject { ["name"] = probeObjectName }),
                 ("analyze", new JObject { ["mode"] = "linter", ["target"] = probeObjectName }),
                 ("analyze", new JObject { ["mode"] = "callers", ["target"] = probeObjectName }),
@@ -231,8 +232,13 @@ namespace GxMcp.Gateway
                     await SendWorkerCommandAsync(
                         new JObject(args.Properties().Select(p => (JProperty)p).Cast<object>())
                         {
-                            ["module"] = toolName,
-                            ["action"] = toolName == "inspect" ? "Inspect" : "Analyze",
+                            ["module"] = toolName == "read" ? "Read" : toolName,
+                            ["action"] = toolName switch
+                            {
+                                "read" => "ExtractSource",
+                                "inspect" => "Inspect",
+                                _ => "Analyze"
+                            },
                             ["client"] = "mcp"
                         },
                         30000,
@@ -247,8 +253,6 @@ namespace GxMcp.Gateway
                     Log($"[Warmup] {toolName} warm step skipped: {ex.Message}");
                 }
             }
-
-            // The read path is already warmed by the legacy block above (ExtractSource).
         }
     }
 }

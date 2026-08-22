@@ -1007,6 +1007,12 @@ namespace GxMcp.Gateway
                         w.Remove("toolLatency");
                     }
                     payload.Remove("metricsSummary");
+                    // Heuristic "what do I call next" triples — redundant for an agent
+                    // that already knows the surface (~450 bytes).
+                    payload.Remove("suggestedNext");
+                    // Top-5 recently-changed with per-object metadata (~500B when set);
+                    // genexus_list_objects sort=lastUpdate covers this on demand.
+                    if (payload["index"] is JObject idx) idx.Remove("recentlyChanged");
                 }
 
                 // Lean default: point at where the static reference lives instead of
@@ -1349,14 +1355,20 @@ namespace GxMcp.Gateway
                 {
                     ["status"] = wp.Pid.HasValue ? "running" : "stopped",
                     ["pid"] = wp.Pid,
-                    ["exePath"] = exe,
-                    ["exeSource"] = sourceLabel,
-                    ["builtAtUtc"] = builtAt?.ToString("o"),
-                    ["spawnMs"] = wp.SpawnMs,
-                    ["sdkInitMs"] = wp.SdkInitMs,
                     ["memoryMb"] = memoryMb,
                     ["uptimeMin"] = uptimeMin
                 };
+                // Terse mode: exePath/exeSource/builtAtUtc/spawnMs/sdkInitMs are
+                // install forensics for doctor-style debugging (~300 bytes), not
+                // per-turn data. reloadHint (actionable) is kept.
+                if (!TerseResponsesEnabled())
+                {
+                    workerBlock["exePath"] = exe;
+                    workerBlock["exeSource"] = sourceLabel;
+                    workerBlock["builtAtUtc"] = builtAt?.ToString("o");
+                    workerBlock["spawnMs"] = wp.SpawnMs;
+                    workerBlock["sdkInitMs"] = wp.SdkInitMs;
+                }
                 if (reloadHint != null) workerBlock["reloadHint"] = reloadHint;
 
                 // Durable death history (survives worker log rotation). Lets the agent —
