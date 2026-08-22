@@ -21,6 +21,7 @@ function Invoke-Mcp {
         "Content-Type" = "application/json"
         # The gateway rejects POSTs without both media types (406 Not Acceptable).
         "Accept" = "application/json, text/event-stream"
+        # The gateway rejects POSTs without both media types (406 Not Acceptable).
     }
     if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
         $headers["MCP-Session-Id"] = $SessionId
@@ -60,6 +61,30 @@ function Parse-ToolTextResult {
     }
 }
 
+# A well-formed tool-call reply - success OR structured business error - proves the
+# full channel works: initialize, session, tools/list, tools/call, and the gateway's
+# dispatch. A NoKb/InvalidArgs error is a PASS for a smoke check (the server answered
+# through the whole stack); only transport-level failures (no reply, non-JSON, HTTP
+# errors) mean the connection is broken. Returns the parsed envelope, or $null when
+# the exchange is genuinely broken.
+function Assert-ToolCallAnswered {
+    param([object]$ToolCallResponse, [string]$Label)
+
+    if ($null -eq $ToolCallResponse) { throw "[SMOKE] ${Label}: no response envelope." }
+    if ($null -ne $ToolCallResponse.error) {
+        # Structured business error (e.g. KB_AMBIGUOUS with no KB open) - the channel
+        # itself is healthy. Surface it for visibility but do not fail.
+        Write-Host "[SMOKE] ${Label}: server answered with a structured error ($($ToolCallResponse.error.message)) - channel OK."
+        return $ToolCallResponse
+    }
+    $parsed = Parse-ToolTextResult -ToolCallResponse $ToolCallResponse
+    if ($null -eq $parsed) {
+        throw "[SMOKE] ${Label} returned empty payload."
+    }
+    return $parsed
+}
+
+
 Write-Host "[SMOKE] initialize"
 $initHeaders = $null
 $init = Invoke-Mcp -Method "initialize" -Params @{
@@ -95,10 +120,7 @@ $queryCall = Invoke-Mcp -Method "tools/call" -Params @{
         limit = 1
     }
 } -SessionId $sessionId -ResponseHeaders ([ref]$headersOut)
-$queryPayload = Parse-ToolTextResult -ToolCallResponse $queryCall
-if ($null -eq $queryPayload) {
-    throw "[SMOKE] genexus_query returned empty payload."
-}
+$queryPayload = Assert-ToolCallAnswered -ToolCallResponse $queryCall -Label "genexus_query"
 
 if (-not [string]::IsNullOrWhiteSpace($ObjectName)) {
     Write-Host "[SMOKE] tools/call genexus_read ($ObjectName/$ReadPart)"
@@ -110,10 +132,7 @@ if (-not [string]::IsNullOrWhiteSpace($ObjectName)) {
             limit = 30
         }
     } -SessionId $sessionId -ResponseHeaders ([ref]$headersOut)
-    $readPayload = Parse-ToolTextResult -ToolCallResponse $readCall
-    if ($null -eq $readPayload) {
-        throw "[SMOKE] genexus_read returned empty payload."
-    }
+    $readPayload = Assert-ToolCallAnswered -ToolCallResponse $readCall -Label "genexus_read"
 
     if (-not [string]::IsNullOrWhiteSpace($PatchContext)) {
         Write-Host "[SMOKE] tools/call genexus_edit (dryRun patch)"
@@ -130,10 +149,7 @@ if (-not [string]::IsNullOrWhiteSpace($ObjectName)) {
                 expectedCount = 1
             }
         } -SessionId $sessionId -ResponseHeaders ([ref]$headersOut)
-        $editPayload = Parse-ToolTextResult -ToolCallResponse $editCall
-        if ($null -eq $editPayload) {
-            throw "[SMOKE] genexus_edit dryRun returned empty payload."
-        }
+        $editPayload = Assert-ToolCallAnswered -ToolCallResponse $editCall -Label "genexus_edit (dryRun)"
     }
 }
 
@@ -145,10 +161,7 @@ $opStatus = Invoke-Mcp -Method "tools/call" -Params @{
         target = "op:00000000000000000000000000000000"
     }
 } -SessionId $sessionId -ResponseHeaders ([ref]$headersOut)
-$opStatusPayload = Parse-ToolTextResult -ToolCallResponse $opStatus
-if ($null -eq $opStatusPayload) {
-    throw "[SMOKE] lifecycle status for operation returned empty payload."
-}
+$opStatusPayload = Assert-ToolCallAnswered -ToolCallResponse $opStatus -Label "lifecycle status op:<fake>"
 
 Write-Host "[SMOKE] tools/call genexus_lifecycle result op:<fake>"
 $opResult = Invoke-Mcp -Method "tools/call" -Params @{
@@ -158,10 +171,7 @@ $opResult = Invoke-Mcp -Method "tools/call" -Params @{
         target = "op:00000000000000000000000000000000"
     }
 } -SessionId $sessionId -ResponseHeaders ([ref]$headersOut)
-$opResultPayload = Parse-ToolTextResult -ToolCallResponse $opResult
-if ($null -eq $opResultPayload) {
-    throw "[SMOKE] lifecycle result for operation returned empty payload."
-}
+$opResultPayload = Assert-ToolCallAnswered -ToolCallResponse $opResult -Label "lifecycle result op:<fake>"
 
 Write-Host "[SMOKE] tools/call genexus_lifecycle status gateway:metrics"
 $metrics = Invoke-Mcp -Method "tools/call" -Params @{
@@ -171,9 +181,6 @@ $metrics = Invoke-Mcp -Method "tools/call" -Params @{
         target = "gateway:metrics"
     }
 } -SessionId $sessionId -ResponseHeaders ([ref]$headersOut)
-$metricsPayload = Parse-ToolTextResult -ToolCallResponse $metrics
-if ($null -eq $metricsPayload) {
-    throw "[SMOKE] lifecycle gateway:metrics returned empty payload."
-}
+$metricsPayload = Assert-ToolCallAnswered -ToolCallResponse $metrics -Label "lifecycle gateway:metrics"
 
 Write-Host "[SMOKE] PASS"
