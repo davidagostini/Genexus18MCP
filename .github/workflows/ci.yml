@@ -71,9 +71,6 @@ jobs:
       # Artech refs), so this runs on CI. It launches a real gateway in-process and runs
       # scripts/mcp_smoke.ps1 unmodified against it — pinning first-party diagnostic
       # scripts to the gateway's HTTP protocol contract (the v2.38.0-v2.45.1 406 drift).
-      - name: Build gateway for smoke contract test
-        run: dotnet build src/GxMcp.Gateway/GxMcp.Gateway.csproj -v:q
-
       - name: MCP smoke script contract test
         run: >
           dotnet test src/GxMcp.Gateway.Tests/GxMcp.Gateway.Tests.csproj
