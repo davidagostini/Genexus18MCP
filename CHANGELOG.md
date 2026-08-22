@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.45.0 - 2026-08-22
+
 ### Added
 - **Lean-response mode: drop `structuredContent` from tool results.** The MCP-standard `structuredContent` field duplicates the entire JSON payload that is already carried in `content[0].text`, adding 42-46% to every tool response's byte size (measured across `genexus_kb`, `genexus_list_objects`, and `genexus_search` against a real KB). Set `Server.EmitStructuredContent: false` in `config.json`, or the `GXMCP_NO_STRUCTURED_CONTENT=1` environment variable, to omit it — LLM clients read the text content, so nothing is lost for agent-driven sessions. Default remains `true` (protocol-compliant).
 - **Terse mode: strip per-response UX sugar.** `Server.TerseResponses: true` (or env `GXMCP_TERSE=1`) omits `next_legal_actions` and the `_meta.tokens` used/limit block from tool responses, keeping only the payload itself plus error hints. Stacks with lean mode for maximum per-turn savings. Also slims `genexus_whoami` (drops worker death history, tool-latency roll-up, metrics summary, install forensics, the reference pointer, `suggestedNext`, index `recentlyChanged`/`flushHealth`, the full update-registry dump when up to date, and redundant KB alias lists — 11KB → ~1.2KB measured), `InvalidArgs` error envelopes (drops the repeated `nextSteps` scaffolding; violations stay), the worker's inner `_meta` UX blocks (`suggested_next`, `alternative_views`, `aggregates`, `enrichmentHint`, `autoInjected*` — list_objects 3.8KB → 1.7KB measured), inspect's `sourceReadHint`, `summary`, name-resolution echoes (`resolvedAs`/`alsoMatches`), `correlationId`, `wwpMetadata.masterPage`, and `lifecycle.lastModifiedBy` (inspect 2.9KB → ~0.9KB measured).
