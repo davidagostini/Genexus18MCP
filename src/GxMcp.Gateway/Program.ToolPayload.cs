@@ -844,8 +844,27 @@ namespace GxMcp.Gateway
             // clients that don't know about it ignore it.
             try
             {
-                // Terse mode: skip next_legal_actions injection entirely.
-                if (TerseResponsesEnabled()) return obj;
+                // Terse mode: skip next_legal_actions injection entirely, and also strip
+                // the worker's per-response UX sugar from the inner _meta block
+                // (suggested_next / alternative_views / aggregates / enrichmentHint —
+                // measured ~420 bytes on list_objects, ~480 on query). The actionable
+                // fields (tokens hint stays out via InjectMetaTokens gate; match_quality
+                // and empty_reason are kept — they change how the agent reads results).
+                if (TerseResponsesEnabled())
+                {
+                    if (obj["_meta"] is JObject innerMeta)
+                    {
+                        innerMeta.Remove("suggested_next");
+                        innerMeta.Remove("alternative_views");
+                        innerMeta.Remove("aggregates");
+                        innerMeta.Remove("enrichmentHint");
+                        if (!innerMeta.Properties().Any()) obj.Remove("_meta");
+                    }
+                    // Static one-liner the agent reads once and never needs again
+                    // (~160 bytes on every inspect).
+                    obj.Remove("sourceReadHint");
+                    return obj;
+                }
 
                 if (obj["next_legal_actions"] == null)
                 {
