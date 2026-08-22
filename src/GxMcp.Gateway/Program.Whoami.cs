@@ -1048,13 +1048,17 @@ namespace GxMcp.Gateway
                 }
 
                 // Lean default: point at where the static reference lives instead of
-                // re-shipping it every call.
-                payload["reference"] = new JObject
+                // re-shipping it every call. Terse mode already removed this above;
+                // only re-add when NOT terse.
+                if (!Program.TerseResponsesEnabled())
                 {
-                    ["hint"] = "Call genexus_whoami(verbose=true) once for inline playbooks + skills catalog, or genexus_recipe / resources/list on demand. genexus_doctor gives a minimal connection+index health check.",
-                    ["playbooksVia"] = "genexus_whoami(verbose=true)",
-                    ["skillsVia"] = "resources/list"
-                };
+                    payload["reference"] = new JObject
+                    {
+                        ["hint"] = "Call genexus_whoami(verbose=true) once for inline playbooks + skills catalog, or genexus_recipe / resources/list on demand. genexus_doctor gives a minimal connection+index health check.",
+                        ["playbooksVia"] = "genexus_whoami(verbose=true)",
+                        ["skillsVia"] = "resources/list"
+                    };
+                }
             }
             return payload;
         }

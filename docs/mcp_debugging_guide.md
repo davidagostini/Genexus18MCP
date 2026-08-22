@@ -39,22 +39,13 @@ When launching the gateway as a stdio MCP server:
 
 ### Recover after a closed client transport
 
-If a client-owned STDIO process exits, the client may keep reporting
-`Transport closed` even though the Gateway HTTP endpoint is healthy. A dead
-STDIO stream cannot carry a command that repairs itself. Keep the existing
-conversation/history and use the out-of-band HTTP client:
-
-```powershell
-.\scripts\mcp_recover.ps1 `
-  -BaseUrl http://127.0.0.1:5000/mcp `
-  -Tool genexus_whoami
-```
-
-The script creates a fresh MCP session, discovers the live tool catalog, and
-blocks every tool not explicitly annotated read-only. After reviewing a
-mutating request, pass `-AllowWrite` to opt in. The Gateway must already be
-running at `BaseUrl`; process supervision remains the deployment's
-responsibility.
+If a client-owned STDIO process exits, the agent can self-heal without any
+script or client restart: call `genexus_connection_recover`. It probes every
+open worker, kills and respawns only the unhealthy ones (force=true targets
+all), confirms each replacement is SDK-ready, and clears the semantic cache.
+For out-of-band HTTP access from a terminal, any MCP client pointed at
+`http://127.0.0.1:5000/mcp` works — the gateway must already be running;
+process supervision remains the deployment's responsibility.
 
 ## Common failure modes
 

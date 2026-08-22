@@ -702,6 +702,29 @@ namespace GxMcp.Gateway
                                         (_activeConfig?.Environment?.KBs ?? new List<KbEntry>())
                                             .Select(k => new { alias = k.Alias, path = k.Path }))
                                 };
+                                // Terse mode: the list action is a health snapshot; strip
+                                // process telemetry (workingSet/pid/idle) and redundant
+                                // alias lists when every catalog says the same thing.
+                                if (Program.TerseResponsesEnabled() && payload["openKbs"] is JArray openArr)
+                                {
+                                    foreach (var item in openArr.OfType<JObject>())
+                                    {
+                                        item.Remove("workingSetBytes");
+                                        item.Remove("workingSetMB");
+                                        item.Remove("pid");
+                                        item.Remove("lastActivityUtc");
+                                        item.Remove("idleSeconds");
+                                    }
+                                    var known = payload["knownKbs"] as JArray;
+                                    var declared = payload["declaredKbs"] as JArray;
+                                    var declaredAliases = declared?.Select(d => d["alias"]?.ToString()).ToList();
+                                    bool knownMatches = known != null && declaredAliases != null
+                                        && known.Count == declaredAliases.Count
+                                        && known.Select(k => k["alias"]?.ToString()).OrderBy(x => x)
+                                            .SequenceEqual(declaredAliases.OrderBy(x => x));
+                                    if (knownMatches) payload.Remove("knownKbs");
+                                    if (openArr.Count == 0) payload.Remove("openKbs");
+                                }
                                 break;
                             case "set_default":
                             {
