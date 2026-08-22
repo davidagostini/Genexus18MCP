@@ -321,6 +321,16 @@ namespace GxMcp.Gateway
         /// Can be overridden via GXMCP_PROFILE environment variable. Default: all.
         /// </summary>
         public string ToolProfile { get; set; } = "all";
+        /// <summary>
+        /// Emit the MCP-standard `structuredContent` field on tool results. It duplicates
+        /// the entire JSON payload already serialized in `content[0].text`, roughly
+        /// doubling every tool response's byte size (measured: +54-60% across tools).
+        /// LLM clients read `content[0].text`; only structured-output consumers need this.
+        /// Default: true (protocol-compliant). Set false for lean responses — the biggest
+        /// single per-turn token/latency win available in the gateway. Can be forced via
+        /// GXMCP_NO_STRUCTURED_CONTENT=1 without touching config files.
+        /// </summary>
+        public bool EmitStructuredContent { get; set; } = true;
     }
 
     public class LoggingConfig

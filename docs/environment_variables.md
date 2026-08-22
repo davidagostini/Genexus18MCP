@@ -19,6 +19,7 @@ All are optional. Unset means the documented default applies.
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `GXMCP_HTTP_TOKEN` | Shared secret required on every `/mcp` HTTP request (`Authorization: Bearer <token>` or `X-GXMCP-Token`). Binding to a non-loopback address **requires** this — without it, non-loopback `/mcp` requests are refused. The default `127.0.0.1` bind with no token is unchanged. | unset (loopback-only, no auth) |
+| `GXMCP_NO_STRUCTURED_CONTENT` | Set to `1` (or `true`) to omit the MCP `structuredContent` field from tool results — it duplicates the whole payload already present in `content[0].text`, adding ~45% to each response's byte size. Equivalent config: `Server.EmitStructuredContent: false`. Env wins over config. | unset (structuredContent emitted) |
 
 ## AI-completion proxy (`genexus_ai_complete`)
 

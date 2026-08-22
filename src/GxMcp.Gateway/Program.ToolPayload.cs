@@ -493,11 +493,27 @@ namespace GxMcp.Gateway
             // MCP's structuredContent lets modern clients consume the JSON result
             // without reparsing the text content. Keep the text representation for
             // legacy clients and omit structuredContent on tool errors.
-            if (!isError && (axiPayload.Type == JTokenType.Object || axiPayload.Type == JTokenType.Array))
+            // Perf: structuredContent duplicates the whole payload (~+55% bytes per
+            // response, measured). Gated by Server.EmitStructuredContent / env
+            // GXMCP_NO_STRUCTURED_CONTENT so lean deployments can drop it.
+            if (!isError && EmitStructuredContentEnabled()
+                && (axiPayload.Type == JTokenType.Object || axiPayload.Type == JTokenType.Array))
             {
                 result["structuredContent"] = axiPayload;
             }
             return result;
+        }
+
+        // Resolved per call (cheap: one env lookup + one static field read) so a config
+        // reload or env change takes effect without restart. Env wins over config file.
+        internal static bool EmitStructuredContentEnabled()
+        {
+            string? env = Environment.GetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT");
+            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            return ActiveConfig?.Server?.EmitStructuredContent ?? true;
         }
 
         internal static JToken AttachKbContextMetadataToOwnedPayload(JToken payload, string kbAlias)

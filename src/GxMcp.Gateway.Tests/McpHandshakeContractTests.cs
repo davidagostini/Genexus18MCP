@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
@@ -175,9 +176,34 @@ namespace GxMcp.Gateway.Tests
             var result = response["result"] as JObject;
             Assert.NotNull(result);
             Assert.Equal("complete", result!["resultType"]?.ToString());
-            Assert.Equal("ok", result!["structuredContent"]?["status"]?.ToString());
+            Assert.Equal("ok", result["structuredContent"]?["status"]?.ToString());
             Assert.Equal("{\"status\":\"ok\",\"count\":1}",
                 result["content"]?[0]?["text"]?.ToString());
+        }
+
+        [Fact]
+        public void ToolResult_ShouldOmitStructuredContent_WhenDisabled()
+        {
+            Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", "1");
+            try
+            {
+                var response = Program.BuildToolTextResponse(
+                    new JValue("1"),
+                    new JObject { ["status"] = "ok", ["count"] = 1 },
+                    isError: false,
+                    toolName: "genexus_read");
+
+                var result = response["result"] as JObject;
+                Assert.NotNull(result);
+                // text content is always preserved — that's what LLM clients read.
+                Assert.Equal("{\"status\":\"ok\",\"count\":1}",
+                    result!["content"]?[0]?["text"]?.ToString());
+                Assert.Null(result["structuredContent"]);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", null);
+            }
         }
     }
 }

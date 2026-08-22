@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **Lean-response mode: drop `structuredContent` from tool results.** The MCP-standard `structuredContent` field duplicates the entire JSON payload that is already carried in `content[0].text`, adding 42-46% to every tool response's byte size (measured across `genexus_kb`, `genexus_list_objects`, and `genexus_search` against a real KB). Set `Server.EmitStructuredContent: false` in `config.json`, or the `GXMCP_NO_STRUCTURED_CONTENT=1` environment variable, to omit it — LLM clients read the text content, so nothing is lost for agent-driven sessions. Default remains `true` (protocol-compliant).
+
 ## v2.44.1 - 2026-08-21
 
 ### Fixed
