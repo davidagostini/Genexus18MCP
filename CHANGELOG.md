@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.46.0 - 2026-08-24
+
 ### Fixed
 - **Report Layout writes accepted again via `genexus_edit` / visual write paths.** The input validator rejected the `<Report>` root that `genexus_layout` itself emits for Procedure Report layouts, making every round-trip edit fail with "Visual writes currently require a valid GxMultiForm, BODY, HTML, Layout, or ReportPart XML document". `Report` is now an accepted root.
 
