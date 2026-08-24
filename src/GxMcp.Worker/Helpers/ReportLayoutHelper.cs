@@ -37,7 +37,7 @@ namespace GxMcp.Worker.Helpers
                 var bands = bandsProp.GetValue(layout, null) as System.Collections.IEnumerable;
                 if (bands == null) return null;
 
-                return GenerateVisualXmlFromBands(bands);
+                return GenerateVisualXmlFromBands(bands, layout);
             }
             catch (Exception ex)
             {
@@ -46,9 +46,81 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
-        private static string GenerateVisualXmlFromBands(System.Collections.IEnumerable bands)
+        // Visual-attribute -> SDK property for type-specific report controls. Projected
+        // only when the concrete control exposes the SDK property (see probe 2026-08:
+        // ReportLine has Direction/LineWidth/BorderStyle; ReportRectangle has per-side
+        // BorderStyle* + CornerRadius*; ReportImage has ImageReference; ReportAttribute
+        // has AttributeReference/RowExpression/ColExpression/FieldSpecifierString).
+        private static readonly KeyValuePair<string, string>[] TypeSpecificReportProperties =
+        {
+            new KeyValuePair<string, string>("Direction", "Direction"),
+            new KeyValuePair<string, string>("LineWidth", "LineWidth"),
+            new KeyValuePair<string, string>("BorderStyle", "BorderStyle"),
+            new KeyValuePair<string, string>("BorderStyleTop", "BorderStyleTop"),
+            new KeyValuePair<string, string>("BorderStyleRight", "BorderStyleRight"),
+            new KeyValuePair<string, string>("BorderStyleBottom", "BorderStyleBottom"),
+            new KeyValuePair<string, string>("BorderStyleLeft", "BorderStyleLeft"),
+            new KeyValuePair<string, string>("CornerRadiusTopLeft", "CornerRadiusTopLeft"),
+            new KeyValuePair<string, string>("CornerRadiusTopRight", "CornerRadiusTopRight"),
+            new KeyValuePair<string, string>("CornerRadiusBottomLeft", "CornerRadiusBottomLeft"),
+            new KeyValuePair<string, string>("CornerRadiusBottomRight", "CornerRadiusBottomRight"),
+            new KeyValuePair<string, string>("ImageReference", "ImageReference"),
+            new KeyValuePair<string, string>("AttributeReference", "AttributeReference"),
+            new KeyValuePair<string, string>("RowExpression", "RowExpression"),
+            new KeyValuePair<string, string>("ColExpression", "ColExpression"),
+            new KeyValuePair<string, string>("FieldSpecifierString", "FieldSpecifierString")
+        };
+
+        private static void AppendTypeSpecificProjection(XElement el, Type iType, object item, KeyValuePair<string, string>[] entries)
+        {
+            foreach (var entry in entries)
+            {
+                var prop = iType.GetProperty(entry.Value, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                if (prop == null) continue;
+                var pVal = prop.GetValue(item, null);
+                if (pVal == null) continue;
+
+                string serialized;
+                try
+                {
+                    if (entry.Key == "ImageReference")
+                    {
+                        // KBObjectReference serializes as XML element content; use its Name when available.
+                        serialized = pVal.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)?.GetValue(pVal, null)?.ToString();
+                        if (string.IsNullOrEmpty(serialized)) continue;
+                    }
+                    else
+                    {
+                        serialized = pVal.ToString();
+                        if (string.IsNullOrWhiteSpace(serialized)) continue;
+                    }
+                }
+                catch { continue; }
+
+                el.SetAttributeValue(entry.Key, serialized);
+            }
+        }
+
+        // ReportLayout page-setup properties, projected on the <Report> root element.
+        private static readonly KeyValuePair<string, string>[] PageSetupProperties =
+        {
+            new KeyValuePair<string, string>("PaperSize", "PaperSize"),
+            new KeyValuePair<string, string>("PaperOrientation", "PaperOrientation"),
+            new KeyValuePair<string, string>("PaperWidth", "PaperWidth"),
+            new KeyValuePair<string, string>("PaperHeight", "PaperHeight"),
+            new KeyValuePair<string, string>("RightMargin", "RightMargin"),
+            new KeyValuePair<string, string>("UsePrinterSettings", "UsePrinterSettings")
+        };
+
+        private static string GenerateVisualXmlFromBands(System.Collections.IEnumerable bands, object layout = null)
         {
             var root = new XElement("Report");
+
+            // Page-setup projection on the root (only when the layout exposes the prop).
+            if (layout != null)
+            {
+                AppendTypeSpecificProjection(root, layout.GetType(), layout, PageSetupProperties);
+            }
 
             foreach (var band in bands)
             {
@@ -91,9 +163,13 @@ namespace GxMcp.Worker.Helpers
                             { "BorderColor", "BorderColor" },
                             { "Alignment", "Alignment" },
                             { "WordWrap", "WordWrap" },
-                            { "Visible", "Visible" },
-                            { "Enabled", "Enabled" }
+                            { "Visible", "Visible" }
                         };
+
+                        // Type-specific report control properties (ReportLine, ReportRectangle,
+                        // ReportImage, ReportAttribute). Each entry is projected only when the
+                        // concrete control type actually exposes the SDK property.
+                        AppendTypeSpecificProjection(el, iType, item, TypeSpecificReportProperties);
 
                         foreach (var entry in map)
                         {
@@ -160,6 +236,30 @@ namespace GxMcp.Worker.Helpers
 
                 bool anyChange = false;
                 int appliedAssignments = 0;
+
+                // Page-setup attributes on the <Report> root are applied back to the
+                // layout object itself (PaperSize, PaperOrientation, margins, ...).
+                var rootXml = visualDoc.Root;
+                if (rootXml != null && string.Equals(rootXml.Name.LocalName, "Report", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var entry in PageSetupProperties)
+                    {
+                        var attr = rootXml.Attribute(entry.Key);
+                        if (attr == null) continue;
+                        if (!HasRootAttributeChanged(rootXml, baselineDoc, entry.Key)) continue;
+
+                        foreach (var sdkPropName in ResolveSdkPropertyCandidates(entry.Key))
+                        {
+                            if (TrySetProperty(layout, layout.GetType(), sdkPropName, attr.Value))
+                            {
+                                appliedAssignments++;
+                                anyChange = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 foreach (var elXml in visualDoc.Descendants("Control"))
                 {
                     var elName = elXml.Attribute("ControlName")?.Value ?? elXml.Attribute("Name")?.Value;
@@ -233,6 +333,137 @@ namespace GxMcp.Worker.Helpers
 
                                 anyChange = appliedAssignments > 0;
                             }
+                        }
+                    }
+                }
+
+                // New-control creation: controls present in the incoming XML but absent
+                // from the band are created by cloning an existing control of the same
+                // TypeName (or any control in the layout as a last resort), then applying
+                // the incoming attributes. This is what makes adding ReportLines to an
+                // empty PrintBlock work end-to-end.
+                MethodInfo addChild = null;
+                foreach (var bandObj in bandsList)
+                {
+                    string blockName = GetBandName(bandObj) ?? GetBandControlName(bandObj);
+                    var blockXml = visualDoc.Descendants("PrintBlock")
+                        .FirstOrDefault(b => string.Equals(
+                            b.Attribute("ControlName")?.Value ?? b.Attribute("Name")?.Value,
+                            blockName,
+                            StringComparison.OrdinalIgnoreCase));
+                    if (blockXml == null) continue;
+
+                    var items = GetCollection(bandObj, "Items", "Elements", "Controls", "Components");
+                    // Preferred mutator: collection Add; fallback: ReportBand.AddChild(ReportElement).
+                    var addMethod = items != null
+                        ? items.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                            .FirstOrDefault(m =>
+                                string.Equals(m.Name, "Add", StringComparison.OrdinalIgnoreCase) &&
+                                m.GetParameters().Length == 1)
+                        : null;
+                    if (addMethod == null)
+                    {
+                        addChild = bandObj.GetType().GetMethod("AddChild", BindingFlags.Public | BindingFlags.Instance)
+                            ?? bandObj.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                                .FirstOrDefault(m => string.Equals(m.Name, "AddControl", StringComparison.OrdinalIgnoreCase));
+                        if (addChild == null) continue;
+                    }
+
+                    var existingNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var item in items)
+                    {
+                        var t = item.GetType();
+                        string n = t.GetProperty("Name", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)?.GetValue(item, null)?.ToString();
+                        string c = t.GetProperty("ControlName", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)?.GetValue(item, null)?.ToString();
+                        if (!string.IsNullOrWhiteSpace(n)) existingNames.Add(n);
+                        if (!string.IsNullOrWhiteSpace(c)) existingNames.Add(c);
+                    }
+
+                    foreach (var elXml in blockXml.Elements("Control"))
+                    {
+                        var elName = elXml.Attribute("ControlName")?.Value ?? elXml.Attribute("Name")?.Value;
+                        if (string.IsNullOrEmpty(elName)) continue;
+
+                        bool alreadyExists = false;
+                        foreach (var item in items)
+                        {
+                            var iType = item.GetType();
+                            var currentName = iType.GetProperty("Name", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)?.GetValue(item, null)?.ToString();
+                            var currentControlName = iType.GetProperty("ControlName", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)?.GetValue(item, null)?.ToString();
+                            if (string.Equals(currentName, elName, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(currentControlName, elName, StringComparison.OrdinalIgnoreCase))
+                            {
+                                alreadyExists = true;
+                                break;
+                            }
+                        }
+                        if (alreadyExists) continue;
+
+                        object newControl = CreateBandControlClone(bandObj, bandsList, elXml.Attribute("TypeName")?.Value);
+                        if (newControl == null)
+                        {
+                            Logger.Warn($"ReportLayoutHelper.WriteLayout: cannot create new control '{elName}' — no clonable template control available.");
+                            continue;
+                        }
+
+                        var nType = newControl.GetType();
+                        bool named = TrySetProperty(newControl, nType, "Name", elName);
+                        named = TrySetProperty(newControl, nType, "ControlName", elName) || named;
+                        named = TrySetPropertyValueFallback(newControl, "Name", elName) || named;
+                        named = TrySetPropertyValueFallback(newControl, "ControlName", elName) || named;
+                        if (!named)
+                        {
+                            Logger.Warn($"ReportLayoutHelper.WriteLayout: unable to name new control '{elName}'.");
+                            continue;
+                        }
+
+                        // Apply geometry LAST: SDK setters like Direction can recompute the
+                        // control bounds, so Left/Top/Width/Height must be set after them or
+                        // the requested geometry gets overwritten by SDK defaults.
+                        foreach (var attr in elXml.Attributes()
+                                     .OrderBy(a => IsGeometryAttribute(a.Name.LocalName) ? 1 : 0))
+                        {
+                            string aName = attr.Name.LocalName;
+                            if (IsExcludedAttribute(aName)) continue;
+                            string rawValue = attr.Value;
+                            if (IsColorAttributeName(aName))
+                            {
+                                rawValue = NormalizeColorToken(rawValue);
+                            }
+
+                            bool applied = false;
+                            foreach (var sdkPropName in ResolveSdkPropertyCandidates(aName))
+                            {
+                                if (TrySetProperty(newControl, nType, sdkPropName, rawValue))
+                                {
+                                    applied = true;
+                                    break;
+                                }
+                            }
+                            if (!applied)
+                            {
+                                Logger.Warn($"ReportLayoutHelper.WriteLayout: new control '{elName}' attribute '{aName}' could not be mapped to a writable SDK property.");
+                            }
+                        }
+
+                        try
+                        {
+                            if (addMethod != null)
+                            {
+                                addMethod.Invoke(items, new[] { newControl });
+                            }
+                            else
+                            {
+                                addChild.Invoke(bandObj, new[] { newControl });
+                            }
+                            appliedAssignments++;
+                            anyChange = true;
+                            existingNames.Add(elName);
+                            Logger.Info($"ReportLayoutHelper.WriteLayout: created new control '{elName}' in print block '{blockName}'.");
+                        }
+                        catch (Exception addEx)
+                        {
+                            Logger.Warn($"ReportLayoutHelper.WriteLayout: failed to add new control '{elName}' to band '{blockName}': {addEx.Message}");
                         }
                     }
                 }
@@ -461,11 +692,72 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
+        public static bool DeletePrintBlock(KBObjectPart part, string printBlockName, bool persist = true)
+        {
+            if (part == null || string.IsNullOrWhiteSpace(printBlockName))
+            {
+                return false;
+            }
+
+            try
+            {
+                var layout = GetLayoutInstance(part);
+                if (layout == null) return false;
+                var bands = GetBandsList(layout);
+                if (bands == null || bands.Count == 0) return false;
+
+                object band = bands.FirstOrDefault(b =>
+                    string.Equals(GetBandName(b), printBlockName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(GetBandControlName(b), printBlockName, StringComparison.OrdinalIgnoreCase));
+                if (band == null) return false;
+
+                if (!TryRemoveBand(layout, band, bands.IndexOf(band)))
+                {
+                    Logger.Warn($"ReportLayoutHelper.DeletePrintBlock: no compatible RemoveBand/Remove mutator found for '{printBlockName}'.");
+                    return false;
+                }
+
+                TryMarkLayoutDirty(part, layout);
+
+                if (persist)
+                {
+                    if (!TryPersistPart(part, "DeletePrintBlock"))
+                    {
+                        return false;
+                    }
+                    var persistedBands = GetBandsList(GetLayoutInstance(part));
+                    bool exists = persistedBands != null && persistedBands.Any(b =>
+                        string.Equals(GetBandName(b), printBlockName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(GetBandControlName(b), printBlockName, StringComparison.OrdinalIgnoreCase));
+                    if (exists)
+                    {
+                        Logger.Warn($"ReportLayoutHelper.DeletePrintBlock: post-save verification failed for '{printBlockName}'.");
+                        return false;
+                    }
+                }
+                Logger.Info(persist
+                    ? $"ReportLayoutHelper.DeletePrintBlock: '{printBlockName}' persisted and verified."
+                    : $"ReportLayoutHelper.DeletePrintBlock: '{printBlockName}' staged in memory.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("ReportLayoutHelper.DeletePrintBlock Error: " + ex.Message);
+                return false;
+            }
+        }
+
         private static bool IsExcludedAttribute(string name)
         {
             string[] excluded = { "ControlName", "Name", "TypeName", "ControlSource" };
             return excluded.Contains(name, StringComparer.OrdinalIgnoreCase);
         }
+
+        private static bool IsGeometryAttribute(string name)
+            => string.Equals(name, "Left", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(name, "Top", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(name, "Width", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(name, "Height", StringComparison.OrdinalIgnoreCase);
 
         private static bool IsMatchingReportBand(object band, string blockName)
         {
@@ -523,6 +815,17 @@ namespace GxMcp.Worker.Helpers
             string firstName = first.Attribute("ControlName")?.Value ?? first.Attribute("Name")?.Value;
             string secondName = second.Attribute("ControlName")?.Value ?? second.Attribute("Name")?.Value;
             return string.Equals(firstName, secondName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasRootAttributeChanged(XElement incomingRoot, XDocument baselineDoc, string attributeName)
+        {
+            // Same baseline discipline as control attributes: without a baseline apply;
+            // with one, only send back what the caller actually changed.
+            if (incomingRoot == null) return false;
+            if (baselineDoc?.Root == null) return true;
+            var incoming = incomingRoot.Attribute(attributeName);
+            var baseline = baselineDoc.Root.Attribute(attributeName);
+            return baseline == null || !string.Equals(incoming?.Value, baseline.Value, StringComparison.Ordinal);
         }
 
         private static bool HasReportAttributeChanged(XElement incomingControl, XElement baselineControl, string attributeName)
@@ -612,6 +915,17 @@ namespace GxMcp.Worker.Helpers
             return null;
         }
 
+        // Type-specific report control attribute names accepted on writes. Kept as a
+        // set for O(1) lookup in ResolveSdkPropertyCandidates.
+        private static readonly HashSet<string> TypeSpecificWriteAttributeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Direction", "LineWidth", "BorderStyle",
+            "BorderStyleTop", "BorderStyleRight", "BorderStyleBottom", "BorderStyleLeft",
+            "CornerRadiusTopLeft", "CornerRadiusTopRight", "CornerRadiusBottomLeft", "CornerRadiusBottomRight",
+            "ImageReference", "AttributeReference", "RowExpression", "ColExpression", "FieldSpecifierString",
+            "PaperSize", "PaperOrientation", "PaperWidth", "PaperHeight", "RightMargin", "UsePrinterSettings"
+        };
+
         private static IEnumerable<string> ResolveSdkPropertyCandidates(string visualAttributeName)
         {
             if (string.Equals(visualAttributeName, "Caption", StringComparison.OrdinalIgnoreCase))
@@ -636,7 +950,64 @@ namespace GxMcp.Worker.Helpers
                 yield break;
             }
 
+            // Type-specific report control properties pass through by name — the
+            // per-type projection table in the reader uses identical names, and each
+            // concrete SDK control only exposes what it supports.
+            if (TypeSpecificWriteAttributeNames.Contains(visualAttributeName))
+            {
+                yield return visualAttributeName;
+                yield break;
+            }
+
             yield return visualAttributeName;
+        }
+
+        // Complex reference properties (KBObjectReference for ImageReference,
+        // AttributeVariableReference for AttributeReference) can't come from a plain
+        // string via ConvertValue. Build an instance and set its Name (and, when the
+        // type exposes it, the object Type) from the visual value.
+        private static bool IsComplexReferenceType(Type propertyType)
+        {
+            if (propertyType == null || propertyType == typeof(string)) return false;
+            var n = propertyType.Name;
+            return n.IndexOf("Reference", StringComparison.OrdinalIgnoreCase) >= 0 && !propertyType.IsEnum;
+        }
+
+        private static object BuildReferenceValue(string value, Type propertyType)
+        {
+            if (string.IsNullOrWhiteSpace(value) || propertyType == null) return null;
+            try
+            {
+                object instance = null;
+                foreach (var ctor in propertyType.GetConstructors())
+                {
+                    var pars = ctor.GetParameters();
+                    if (pars.Length == 0)
+                    {
+                        instance = Activator.CreateInstance(propertyType);
+                        break;
+                    }
+                    if (pars.Length == 1 && pars[0].ParameterType == typeof(string))
+                    {
+                        instance = Activator.CreateInstance(propertyType, value);
+                        break;
+                    }
+                }
+                if (instance == null) return null;
+
+                // String-ctor path already carries the name; name-prop path needs it set.
+                var nameProp = propertyType.GetProperty("Name", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                if (nameProp != null && nameProp.CanWrite && string.Equals(nameProp.GetValue(instance, null)?.ToString(), string.Empty, StringComparison.Ordinal))
+                {
+                    nameProp.SetValue(instance, value);
+                }
+                return instance;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"ReportLayoutHelper.BuildReferenceValue({propertyType.Name}, '{value}') failed: {ex.Message}");
+                return null;
+            }
         }
 
         private static bool TrySetProperty(object instance, Type instanceType, string sdkPropertyName, string rawValue)
@@ -653,6 +1024,10 @@ namespace GxMcp.Worker.Helpers
             if (prop != null && prop.CanWrite)
             {
                 object val = ConvertValue(normalizedForSdk, prop.PropertyType);
+                if (val == null && IsComplexReferenceType(prop.PropertyType))
+                {
+                    val = BuildReferenceValue(normalizedForSdk, prop.PropertyType);
+                }
                 if (val != null)
                 {
                     prop.SetValue(instance, val);
@@ -821,6 +1196,117 @@ namespace GxMcp.Worker.Helpers
             }
 
             return token;
+        }
+
+        // Creates a new report-band control by cloning an existing control: first one
+        // matching the requested TypeName (e.g. "ReportLine"), then any control in the
+        // same band, then any control anywhere in the layout. Returns null when the
+        // layout has no clonable control at all.
+        private static object CreateBandControlClone(object band, List<object> bands, string typeName)
+        {
+            object template = null;
+
+            if (!string.IsNullOrWhiteSpace(typeName))
+            {
+                var items = GetCollection(band, "Items", "Elements", "Controls", "Components");
+                if (items != null)
+                {
+                    foreach (var item in items)
+                    {
+                        if (string.Equals(item.GetType().Name, typeName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            template = item;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (template == null && band != null)
+            {
+                var items = GetCollection(band, "Items", "Elements", "Controls", "Components");
+                if (items != null) template = items.Cast<object>().FirstOrDefault();
+            }
+
+            if (template == null && bands != null)
+            {
+                foreach (var otherBand in bands)
+                {
+                    if (otherBand == null || ReferenceEquals(otherBand, band)) continue;
+                    var items = GetCollection(otherBand, "Items", "Elements", "Controls", "Components");
+                    if (items == null) continue;
+                    var sameType = string.IsNullOrWhiteSpace(typeName)
+                        ? null
+                        : items.Cast<object>().FirstOrDefault(c => string.Equals(c.GetType().Name, typeName, StringComparison.OrdinalIgnoreCase));
+                    template = sameType ?? items.Cast<object>().FirstOrDefault();
+                    if (template != null) break;
+                }
+            }
+
+            if (template == null)
+            {
+                // No template anywhere in the layout (e.g. every print block is empty).
+                // Fall back to constructing the control directly from its SDK type name
+                // (ReportLine, ReportRectangle, ReportLabel and ReportComponent all have a
+                // public parameterless constructor).
+                if (!string.IsNullOrWhiteSpace(typeName))
+                {
+                    try
+                    {
+                        var candidate = FindSdkControlType(typeName);
+                        if (candidate != null)
+                        {
+                            return Activator.CreateInstance(candidate);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warn($"ReportLayoutHelper.CreateBandControlClone: direct construction of '{typeName}' failed: {ex.Message}");
+                    }
+                }
+                return null;
+            }
+
+            try
+            {
+                // Prefer an independent instance; shallow clone can alias underlying SDK handles.
+                return Activator.CreateInstance(template.GetType()) ?? CloneControl(template);
+            }
+            catch
+            {
+                return CloneControl(template);
+            }
+        }
+
+        // Resolves an Artech.Genexus.Common report control type by its short name,
+        // searching the Layout namespace first (ReportLine/ReportRectangle/...).
+        private static Type FindSdkControlType(string typeName)
+        {
+            var loaded = AppDomain.CurrentDomain.GetAssemblies()
+                .Where(a => a.GetName().Name.StartsWith("Artech.Genexus", StringComparison.OrdinalIgnoreCase));
+            foreach (var asm in loaded)
+            {
+                var t = asm.GetType("Artech.Genexus.Common.Parts.Layout." + typeName);
+                if (t != null && !t.IsAbstract && !t.IsInterface) return t;
+                t = asm.GetTypes().FirstOrDefault(x => string.Equals(x.Name, typeName, StringComparison.OrdinalIgnoreCase)
+                                                       && !x.IsAbstract && !x.IsInterface
+                                                       && x.Namespace != null && x.Namespace.Contains("Parts.Layout"));
+                if (t != null) return t;
+            }
+            return null;
+        }
+
+        private static object CloneControl(object source)
+        {
+            try
+            {
+                var cloneMethod = typeof(object).GetMethod("MemberwiseClone", BindingFlags.Instance | BindingFlags.NonPublic);
+                return cloneMethod?.Invoke(source, null);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static bool TrySetPropertyValueFallback(object instance, string propertyName, string value)
@@ -1053,6 +1539,38 @@ namespace GxMcp.Worker.Helpers
         private static bool TryRemoveBand(object layout, object band, int indexHint)
         {
             if (layout == null || band == null) return false;
+
+            // ReportLayout (GeneXus 18) exposes only AddBand/InsertBand/ClearBands — no
+            // single-band remove. Strategy: ClearBands() then re-insert every band except
+            // the removed one, preserving order.
+            var clearBands = layout.GetType().GetMethod("ClearBands", BindingFlags.Public | BindingFlags.Instance);
+            var addBand = layout.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .FirstOrDefault(m =>
+                    string.Equals(m.Name, "AddBand", StringComparison.OrdinalIgnoreCase) &&
+                    m.GetParameters().Length == 1);
+            if (clearBands != null && addBand != null)
+            {
+                try
+                {
+                    // Capture the surviving bands BEFORE clearing: the layout's iterator may
+                    // be backed by the collection being cleared.
+                    var survivors = GetBandsList(layout)?
+                        .Where(b => !ReferenceEquals(b, band))
+                        .ToList();
+                    if (survivors == null) return false;
+
+                    clearBands.Invoke(layout, null);
+                    foreach (var survivor in survivors)
+                    {
+                        addBand.Invoke(layout, new[] { survivor });
+                    }
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("ReportLayoutHelper.TryRemoveBand ClearBands/re-add failed: " + ex.Message);
+                }
+            }
 
             var childrenProp = layout.GetType().GetProperty("Children", BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
             var children = childrenProp?.GetValue(layout, null);

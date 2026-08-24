@@ -942,6 +942,141 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        public string DeletePrintBlock(string target, string printBlockName)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(printBlockName))
+                {
+                    return Models.McpResponse.Err(
+                        code: "MissingArgument",
+                        message: "printBlockName is required.",
+                        hint: "Pass the name of the print block to remove, e.g. printBlockName=header.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists all print blocks in the report layout.")),
+                        target: target);
+                }
+
+                var obj = _objectService.FindObject(target);
+                if (obj == null)
+                {
+                    return Models.McpResponse.Err(
+                        code: "ObjectNotFound",
+                        message: "Object not found.",
+                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
+                        target: target);
+                }
+
+                var context = LoadVisualContext(obj, target, VisualSurface.Report);
+                if (context.Error != null) return context.Error;
+                if (context.VisualPart == null)
+                {
+                    return Models.McpResponse.Err(
+                        code: "ReportPartNotFound",
+                        message: "Report part not found.",
+                        hint: "This operation requires a Procedure with a report layout part; verify the target is a report-capable Procedure.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses which visual surfaces are present for this object.")),
+                        target: target);
+                }
+
+                var kb = _objectService.GetKbService().GetKB();
+                if (kb == null)
+                {
+                    return Models.McpResponse.Err(
+                        code: "KbNotOpened",
+                        message: "KB not opened.",
+                        hint: "Open a Knowledge Base before mutating the report layout.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Opens the configured Knowledge Base.")),
+                        retryAfterMs: 2000,
+                        target: target);
+                }
+
+                string sourceSnapshot = GetProcedureSourceSnapshot(obj);
+
+                using (var tx = kb.BeginTransaction())
+                {
+                    try
+                    {
+                        if (!ReportLayoutHelper.DeletePrintBlock(context.VisualPart, printBlockName, persist: false))
+                        {
+                            tx.Rollback();
+                            return Models.McpResponse.Err(
+                                code: "DeletePrintBlockFailed",
+                                message: "Delete print block failed: the SDK could not stage the removal of '" + printBlockName + "'.",
+                                hint: "Ensure the print block exists and is not protected (Header/Footer bands may be required by the report).",
+                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists existing print blocks.")),
+                                target: target);
+                        }
+
+                        if (!TryRemovePrintCommandFromSourceInMemory(obj, printBlockName, out string sourceSyncError))
+                        {
+                            TryRestoreProcedureSource(obj, sourceSnapshot);
+                            tx.Rollback();
+                            return Models.McpResponse.Err(
+                                code: "DeletePrintBlockSourceSyncFailed",
+                                message: "Delete print block source sync failed: " + sourceSyncError,
+                                hint: "The Procedure source could not be updated; the transaction was rolled back.",
+                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm current print blocks.")),
+                                target: target);
+                        }
+
+                        if (!TrySaveVisualPart(context.VisualPart, out string partSaveError))
+                        {
+                            TryRestoreProcedureSource(obj, sourceSnapshot);
+                            tx.Rollback();
+                            return Models.McpResponse.Err(
+                                code: "DeletePrintBlockPersistFailed",
+                                message: "Delete print block persistence failed: " + partSaveError,
+                                hint: "The SDK could not save the layout part; the transaction was rolled back.",
+                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm current print blocks.")),
+                                target: target);
+                        }
+
+                        obj.EnsureSave(true);
+                        tx.Commit();
+                    }
+                    catch
+                    {
+                        try { tx.Rollback(); } catch { }
+                        throw;
+                    }
+                }
+                _objectService.MarkReadCacheDirty(obj, "Layout");
+
+                // Cold read-back to prove the block is really gone from disk.
+                var refreshedObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? obj;
+                var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
+                bool stillThere = refreshed.Error == null && refreshed.Document != null && refreshed.Document.Descendants("PrintBlock")
+                    .Any(pb => string.Equals(Attr(pb, "Name"), printBlockName, StringComparison.OrdinalIgnoreCase) ||
+                               string.Equals(Attr(pb, "ControlName"), printBlockName, StringComparison.OrdinalIgnoreCase));
+                if (stillThere)
+                {
+                    return Models.McpResponse.Err(
+                        code: "DeletePrintBlockVerificationFailed",
+                        message: "Delete print block verification failed: '" + printBlockName + "' is still present after commit.",
+                        hint: "The transaction committed but the read-back still shows the block; open the Procedure in the IDE to inspect.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to see current print blocks.")),
+                        target: target);
+                }
+
+                return Models.McpResponse.Ok(target: target, code: "PrintBlockDeleted", result: new JObject
+                {
+                    ["name"] = obj.Name,
+                    ["operation"] = "DeletePrintBlock",
+                    ["printBlockName"] = printBlockName
+                });
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "DeletePrintBlockException",
+                    message: ex.Message,
+                    hint: "An unexpected exception occurred; retry or inspect the Procedure in the IDE.",
+                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                    target: target);
+            }
+        }
+
         public string InspectSurface(string target, int limit = 50)
         {
             try

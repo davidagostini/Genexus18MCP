@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+- **Report Layout writes accepted again via `genexus_edit` / visual write paths.** The input validator rejected the `<Report>` root that `genexus_layout` itself emits for Procedure Report layouts, making every round-trip edit fail with "Visual writes currently require a valid GxMultiForm, BODY, HTML, Layout, or ReportPart XML document". `Report` is now an accepted root.
+
+### Added
+- **Creating new controls in Report print blocks.** `ReportLayoutHelper.WriteLayout` only updated attributes of controls that already existed in a band, so adding controls to an empty print block (e.g. border `ReportLine`s) silently did nothing. Controls present in the incoming XML but absent from the band are now created — cloned from an existing control of the same type in the layout when possible — with all incoming geometry/style attributes applied and verified on save.
+- **Type-specific report control properties round-trip.** Report layouts are no longer projected lossily: `ReportLine` (Direction, LineWidth, BorderStyle), `ReportRectangle` (per-side BorderStyle*, CornerRadius*), `ReportImage` (ImageReference), and `ReportAttribute` (AttributeReference, Row/Col expressions, FieldSpecifier) properties now appear when reading a Report layout and are applied back on write.
+- **`genexus_layout action=delete_printblock`.** Removes a print block from a Procedure's report layout inside a transactional write that also removes the matching `print <block>` command from the Procedure Source and verifies on a cold read-back that the block is gone.
+- **Report page-setup read/write.** PaperSize, PaperOrientation, PaperWidth/PaperHeight, RightMargin, and UsePrinterSettings are now projected on the `<Report>` root element and applied back to the layout on write (only attributes actually changed vs. baseline).
+
 ## v2.45.2 - 2026-08-24
 
 ### Changed

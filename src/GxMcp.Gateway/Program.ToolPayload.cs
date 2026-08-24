@@ -376,7 +376,8 @@ namespace GxMcp.Gateway
                 return string.Equals(action, "set_property", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(action, "set_properties", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(action, "rename_printblock", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(action, "add_printblock", StringComparison.OrdinalIgnoreCase);
+                       string.Equals(action, "add_printblock", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "delete_printblock", StringComparison.OrdinalIgnoreCase);
             }
 
             if (string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))

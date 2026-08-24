@@ -110,10 +110,11 @@ namespace GxMcp.Worker.Helpers
                 && !string.Equals(rootName, "BODY", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(rootName, "HTML", StringComparison.OrdinalIgnoreCase)
                 && !string.Equals(rootName, "Layout", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(rootName, "ReportPart", StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(rootName, "ReportPart", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "Report", StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    string.Format("Visual writes currently require a valid GxMultiForm, BODY, HTML, Layout, or ReportPart XML document. Received root '{0}' for part '{1}'.", rootName, partName ?? "Layout"));
+                    string.Format("Visual writes currently require a valid GxMultiForm, BODY, HTML, Layout, ReportPart, or Report XML document. Received root '{0}' for part '{1}'.", rootName, partName ?? "Layout"));
             }
 
             return doc.ToString();

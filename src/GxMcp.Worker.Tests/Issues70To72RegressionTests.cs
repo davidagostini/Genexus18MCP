@@ -297,6 +297,11 @@ namespace GxMcp.Worker.Tests
 
         private static Artech.Architecture.Common.Objects.KBObjectPart CreateFakeLayoutPart(FakeReportLayout layout)
         {
+            return CreateFakeLayoutPartTyped(layout);
+        }
+
+        private static Artech.Architecture.Common.Objects.KBObjectPart CreateFakeLayoutPartTyped(object layout)
+        {
             var assemblyName = new AssemblyName("GxMcpWorkerTests.DynamicReportPart");
             var assembly = AppDomain.CurrentDomain.DefineDynamicAssembly(assemblyName, AssemblyBuilderAccess.Run);
             var module = assembly.DefineDynamicModule(assemblyName.Name);
@@ -349,6 +354,150 @@ namespace GxMcp.Worker.Tests
         {
             public string Name { get; set; }
             public IEnumerable<FakeReportControl> Controls { get; set; }
+        }
+
+        [Fact]
+        public void ReportLayout_WriteLayout_CreatesNewControlsInEmptyPrintBlock()
+        {
+            var layout = new FakeReportLayoutWithAdd
+            {
+                ReportBands = new[]
+                {
+                    new FakeReportBandWithItems
+                    {
+                        Name = "p_apto_lin_vazia",
+                        Items = new List<FakeReportControlFull>()
+                    },
+                    new FakeReportBandWithItems
+                    {
+                        Name = "p_apto_lin2",
+                        Items = new List<FakeReportControlFull>
+                        {
+                            new FakeReportControlFull { Name = "vline_left", X = 31, Y = 0, Width = 2, Height = 19 },
+                            new FakeReportControlFull { Name = "vline_right", X = 797, Y = 0, Width = 2, Height = 19 }
+                        }
+                    }
+                }
+            };
+            var part = CreateFakeLayoutPartTyped(layout);
+
+            const string incoming =
+                "<Report><PrintBlock Name=\"p_apto_lin_vazia\">" +
+                "<Control ControlName=\"vline_left\" TypeName=\"FakeReportControlFull\" Left=\"31\" Top=\"0\" Width=\"2\" Height=\"19\" />" +
+                "<Control ControlName=\"vline_right\" TypeName=\"FakeReportControlFull\" Left=\"797\" Top=\"0\" Width=\"2\" Height=\"19\" />" +
+                "</PrintBlock></Report>";
+
+            // The fake dynamic part can't complete a real SDK save, so we don't assert
+            // the boolean return here — what matters is that the new controls were
+            // created in the band's item collection with the requested geometry.
+            ReportLayoutHelper.WriteLayout(part, incoming, baselineXml: null);
+            var emptyBlock = layout.ReportBands.Cast<FakeReportBandWithItems>().Single(b => b.Name == "p_apto_lin_vazia");
+            Assert.Equal(2, emptyBlock.Items.Count);
+            var left = emptyBlock.Items.Single(c => c.Name == "vline_left");
+            var right = emptyBlock.Items.Single(c => c.Name == "vline_right");
+            Assert.Equal(31, left.X);
+            Assert.Equal(0, left.Y);
+            Assert.Equal(2, left.Width);
+            Assert.Equal(19, left.Height);
+            Assert.Equal(797, right.X);
+        }
+
+        private sealed class FakeReportLayoutWithAdd
+        {
+            public IEnumerable<FakeReportBandWithItems> ReportBands { get; set; }
+        }
+
+        private sealed class FakeReportBandWithItems
+        {
+            public string Name { get; set; }
+            public string ControlName => Name;
+            public List<FakeReportControlFull> Items { get; set; }
+        }
+
+        private class FakeReportControlFull
+        {
+            public string Name { get; set; }
+            public int X { get; set; }
+            public int Y { get; set; }
+            public int Width { get; set; }
+            public int Height { get; set; }
+        }
+
+        [Fact]
+        public void ReportLayout_WriteLayout_CreatesReportLineWithTypeSpecificProperties()
+        {
+            var layout = new FakeReportLayoutWithAdd
+            {
+                ReportBands = new[]
+                {
+                    new FakeReportBandWithItems
+                    {
+                        Name = "p_apto_lin_vazia",
+                        Items = new List<FakeReportControlFull>()
+                    },
+                    new FakeReportBandWithItems
+                    {
+                        Name = "template",
+                        Items = new List<FakeReportControlFull>
+                        {
+                            new FakeLineControl { Name = "tmpl_line", X = 0, Y = 0, Width = 2, Height = 19, Direction = "Vertical", LineWidth = 2 }
+                        }
+                    }
+                }
+            };
+            var part = CreateFakeLayoutPartTyped(layout);
+
+            const string incoming =
+                "<Report><PrintBlock Name=\"p_apto_lin_vazia\">" +
+                "<Control ControlName=\"border_left\" TypeName=\"FakeLineControl\" Left=\"31\" Top=\"0\" Width=\"2\" Height=\"19\" Direction=\"Vertical\" LineWidth=\"2\" />" +
+                "</PrintBlock></Report>";
+
+            ReportLayoutHelper.WriteLayout(part, incoming, baselineXml: null);
+
+            var block = layout.ReportBands.Cast<FakeReportBandWithItems>().Single(b => b.Name == "p_apto_lin_vazia");
+            var line = block.Items.OfType<FakeLineControl>().Single(c => c.Name == "border_left");
+            Assert.Equal(31, line.X);
+            Assert.Equal("Vertical", line.Direction);
+            Assert.Equal(2, line.LineWidth);
+        }
+
+        [Fact]
+        public void ReportLayout_WriteLayout_UpdatesExistingControlTypeSpecificProperties()
+        {
+            var layout = new FakeReportLayoutWithAdd
+            {
+                ReportBands = new[]
+                {
+                    new FakeReportBandWithItems
+                    {
+                        Name = "band1",
+                        Items = new List<FakeReportControlFull>
+                        {
+                            new FakeLineControl { Name = "ln", X = 10, Y = 5, Width = 2, Height = 19, Direction = "Horizontal", LineWidth = 1 }
+                        }
+                    }
+                }
+            };
+            var part = CreateFakeLayoutPartTyped(layout);
+
+            const string baseline =
+                "<Report><PrintBlock Name=\"band1\"><Control ControlName=\"ln\" Left=\"10\" Top=\"5\" Width=\"2\" Height=\"19\" Direction=\"Horizontal\" LineWidth=\"1\" /></PrintBlock></Report>";
+            const string incoming =
+                "<Report><PrintBlock Name=\"band1\"><Control ControlName=\"ln\" Left=\"10\" Top=\"5\" Width=\"2\" Height=\"19\" Direction=\"Vertical\" LineWidth=\"3\" /></PrintBlock></Report>";
+
+            ReportLayoutHelper.WriteLayout(part, incoming, baseline);
+
+            var line = layout.ReportBands.Cast<FakeReportBandWithItems>().Single(b => b.Name == "band1").Items.OfType<FakeLineControl>().Single();
+            Assert.Equal("Vertical", line.Direction);
+            Assert.Equal(3, line.LineWidth);
+            // Untouched geometry must not be replayed/reset.
+            Assert.Equal(10, line.X);
+        }
+
+        private sealed class FakeLineControl : FakeReportControlFull
+        {
+            public string Direction { get; set; }
+            public int LineWidth { get; set; }
         }
 
         private sealed class FakeReportControl

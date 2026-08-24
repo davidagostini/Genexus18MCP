@@ -1371,6 +1371,7 @@ namespace GxMcp.Gateway.Routers
                 "scan_mutators" => "ScanMutators",
                 "rename_printblock" => "RenamePrintBlock",
                 "add_printblock" => "AddPrintBlock",
+                "delete_printblock" => "DeletePrintBlock",
                 _ => null
             };
 

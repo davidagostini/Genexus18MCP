@@ -67,6 +67,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_layout", "set_properties")]
         [InlineData("genexus_layout", "rename_printblock")]
         [InlineData("genexus_layout", "add_printblock")]
+        [InlineData("genexus_layout", "delete_printblock")]
         [InlineData("genexus_gxserver", "commit")]
         [InlineData("genexus_gxserver", "update")]
         [InlineData("genexus_gxserver", "lock")]

@@ -1787,6 +1787,12 @@ namespace GxMcp.Worker.Services
                     args?["printBlockName"]?.ToString(),
                     args?["height"]?.ToObject<int?>());
             }
+            if (action == "DeletePrintBlock")
+            {
+                return _layoutService.DeletePrintBlock(
+                    target,
+                    args?["printBlockName"]?.ToString());
+            }
             return null;
         }
 

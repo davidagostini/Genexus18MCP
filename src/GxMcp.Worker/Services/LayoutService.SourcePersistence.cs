@@ -429,6 +429,42 @@ namespace GxMcp.Worker.Services
             return true;
         }
 
+        private bool TryRemovePrintCommandFromSourceInMemory(KBObject obj, string printBlockName, out string error)
+        {
+            error = null;
+            if (obj == null)
+            {
+                error = "Object was not available for source synchronization.";
+                return false;
+            }
+
+            var sourcePart = PartAccessor.GetPart(obj, "Source") as ISource;
+            if (sourcePart == null)
+            {
+                // No Source part to synchronize — nothing to remove.
+                return true;
+            }
+
+            string source = sourcePart.Source ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return true;
+            }
+
+            string pattern = @"(?im)^[ 	]*print[ 	]+" + Regex.Escape(printBlockName) + @"[ 	]*(?
+|$)";;
+            string updated = Regex.Replace(source, pattern, string.Empty);
+
+            if (string.Equals(updated, source, StringComparison.Ordinal))
+            {
+                // No print command referencing this block — acceptable.
+                return true;
+            }
+
+            sourcePart.Source = updated;
+            return true;
+        }
+
         private static string GetProcedureSourceSnapshot(KBObject obj)
         {
             var sourcePart = PartAccessor.GetPart(obj, "Source") as ISource;

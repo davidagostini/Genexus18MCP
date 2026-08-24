@@ -2214,7 +2214,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "SDK layout/WebForm ops: get_tree, set_property, find_controls, inspect_surface, scan_mutators. For object-level properties use genexus_properties; for object-level visual structure use genexus_structure get_visual.",
+      "description": "SDK layout/WebForm ops: get_tree, set_property, find_controls, inspect_surface, scan_mutators. Object properties: genexus_properties; visual structure: genexus_structure get_visual.",
       "inputSchema": {
         "examples": [
           {
@@ -2239,6 +2239,7 @@
               "scan_mutators",
               "rename_printblock",
               "add_printblock",
+              "delete_printblock",
               "list_controls",
               "design_system"
             ],
