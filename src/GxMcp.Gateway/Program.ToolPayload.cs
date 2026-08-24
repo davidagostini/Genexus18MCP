@@ -480,13 +480,13 @@ namespace GxMcp.Gateway
         private static readonly HashSet<string> MinimalProjectionFields =
             new HashSet<string>(new[] { "name", "type", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
 
-        internal static JObject BuildToolTextResponse(JToken? idToken, JToken payload, bool isError, string? toolName = null, JObject? toolArgs = null)
+        internal static JObject BuildToolTextResponse(JToken? idToken, JToken payload, bool isError, string? toolName = null, JObject? toolArgs = null, bool payloadOwned = false)
         {
             return new JObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = idToken?.DeepClone(),
-                ["result"] = BuildToolResultContent(payload, isError, toolName, toolArgs)
+                ["result"] = BuildToolResultContent(payload, isError, toolName, toolArgs, payloadOwned)
             };
         }
 
@@ -532,7 +532,7 @@ namespace GxMcp.Gateway
             // Perf: structuredContent duplicates the whole payload (~+55% bytes per
             // response, measured). Gated by Server.EmitStructuredContent / env
             // GXMCP_NO_STRUCTURED_CONTENT so lean deployments can drop it.
-            if (!isError && EmitStructuredContentEnabled()
+            if (!isError && EmitStructuredContentEnabledCached()
                 && (axiPayload.Type == JTokenType.Object || axiPayload.Type == JTokenType.Array))
             {
                 result["structuredContent"] = axiPayload;
@@ -552,7 +552,7 @@ namespace GxMcp.Gateway
             return ActiveConfig?.Server?.EmitStructuredContent ?? true;
         }
 
-        // Terse mode: resolved per call like EmitStructuredContentEnabled. Env wins.
+        // Resolved per call like EmitStructuredContentEnabled. Env wins.
         internal static bool TerseResponsesEnabled()
         {
             string? env = Environment.GetEnvironmentVariable("GXMCP_TERSE");
@@ -561,6 +561,78 @@ namespace GxMcp.Gateway
                 return true;
 
             return ActiveConfig?.Server?.TerseResponses ?? false;
+        }
+
+        // PERFORMANCE (perf-review round 3): short-TTL cache for the env-var probes the
+        // response path reads on every tool call (TerseResponsesEnabled runs 2-3x per
+        // request; GXMCP_LEGACY_TOOL_ALIASES once more). Environment.GetEnvironmentVariable
+        // is a Win32 call each time — a 5s TTL keeps config-change responsiveness while
+        // removing the per-request syscall cost. Env change still lands within one TTL;
+        // tests that flip these variables use SetEnvVarForTests below to bypass the cache.
+        private static readonly object _envGate = new();
+        private static DateTime _envCacheAt = DateTime.MinValue;
+        private static bool _terseCached;
+        private static bool _structuredContentCached;
+        private static bool _legacyAliasesDisabled;
+
+        internal static TimeSpan EnvProbeTtl { get; set; } = TimeSpan.FromSeconds(5);
+
+        private static void RefreshEnvProbeCache()
+        {
+            var now = DateTime.UtcNow;
+            lock (_envGate)
+            {
+                if (now - _envCacheAt < EnvProbeTtl) return;
+                _terseCached = ResolveTerseUncached();
+                _structuredContentCached = ResolveStructuredContentUncached();
+                _legacyAliasesDisabled = string.Equals(Environment.GetEnvironmentVariable("GXMCP_LEGACY_TOOL_ALIASES"), "0", StringComparison.Ordinal);
+                _envCacheAt = now;
+            }
+        }
+
+        private static bool ResolveTerseUncached()
+        {
+            string? env = Environment.GetEnvironmentVariable("GXMCP_TERSE");
+            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return ActiveConfig?.Server?.TerseResponses ?? false;
+        }
+
+        private static bool ResolveStructuredContentUncached()
+        {
+            string? env = Environment.GetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT");
+            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return ActiveConfig?.Server?.EmitStructuredContent ?? true;
+        }
+
+        internal static bool TerseResponsesEnabledCached()
+        {
+            RefreshEnvProbeCache();
+            lock (_envGate) return _terseCached;
+        }
+
+        internal static bool EmitStructuredContentEnabledCached()
+        {
+            RefreshEnvProbeCache();
+            lock (_envGate) return _structuredContentCached;
+        }
+
+        // Test hook: drop the probe cache so an env/config change is observed immediately.
+
+        // PERF round 3: GXMCP_LEGACY_TOOL_ALIASES probe (per tool call) behind the same
+        // short-TTL cache as the terse/structured-content flags. Default: aliases ON.
+        internal static bool LegacyToolAliasesDisabledCached()
+        {
+            RefreshEnvProbeCache();
+            lock (_envGate) return _legacyAliasesDisabled;
+        }
+
+        internal static void InvalidateEnvProbeCache()
+        {
+            lock (_envGate) _envCacheAt = DateTime.MinValue;
         }
 
         internal static JToken AttachKbContextMetadataToOwnedPayload(JToken payload, string kbAlias)
@@ -850,7 +922,7 @@ namespace GxMcp.Gateway
                 // measured ~420 bytes on list_objects, ~480 on query). The actionable
                 // fields (tokens hint stays out via InjectMetaTokens gate; match_quality
                 // and empty_reason are kept — they change how the agent reads results).
-                if (TerseResponsesEnabled())
+                if (TerseResponsesEnabledCached())
                 {
                     if (obj["_meta"] is JObject innerMeta)
                     {

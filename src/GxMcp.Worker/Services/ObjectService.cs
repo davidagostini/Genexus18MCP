@@ -2392,13 +2392,37 @@ namespace GxMcp.Worker.Services
 
                     if (matches.Count == 0)
                     {
-                        foreach (var kv in index.Objects)
+                        // PERFORMANCE (perf-review): resolve candidates through the
+                        // derived ByNameIndex multimap (name → storage keys) instead of
+                        // scanning every ~38k index entry. Same pattern SearchService's
+                        // usedby filter already uses. Falls back to the full scan only
+                        // when the index hasn't built ByNameIndex yet (LoadFromEntries
+                        // test seam / older in-memory indexes).
+                        if (index.ByNameIndex != null
+                            && index.ByNameIndex.TryGetValue(namePart, out var nameKeys))
                         {
-                            var entry = kv.Value;
-                            if (string.Equals(entry?.Name, namePart, StringComparison.OrdinalIgnoreCase) ||
-                                kv.Key.EndsWith(":" + namePart, StringComparison.OrdinalIgnoreCase))
+                            if (nameKeys != null)
                             {
-                                matches.Add(entry);
+                                lock (nameKeys)
+                                {
+                                    foreach (var key in nameKeys)
+                                    {
+                                        if (!index.Objects.TryGetValue(key, out var entry) || entry == null) continue;
+                                        matches.Add(entry);
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            foreach (var kv in index.Objects)
+                            {
+                                var entry = kv.Value;
+                                if (string.Equals(entry?.Name, namePart, StringComparison.OrdinalIgnoreCase) ||
+                                    kv.Key.EndsWith(":" + namePart, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    matches.Add(entry);
+                                }
                             }
                         }
                     }

@@ -18,6 +18,7 @@ namespace GxMcp.Worker.Services
     {
         private readonly IndexEntryEnricher _enricher;
         private readonly ConcurrentQueue<SearchIndex.IndexEntry> _queue = new ConcurrentQueue<SearchIndex.IndexEntry>();
+        private readonly ConcurrentDictionary<SearchIndex.IndexEntry, byte> _queued = new ConcurrentDictionary<SearchIndex.IndexEntry, byte>();
         private readonly object _enrichGate = new object();
         private int _pendingCount;
 
@@ -31,6 +32,12 @@ namespace GxMcp.Worker.Services
         public void Enqueue(SearchIndex.IndexEntry entry)
         {
             if (entry == null || entry.IsEnriched) return;
+            // PERFORMANCE (perf-review): dedup in-flight entries. During a lite pass +
+            // concurrent watcher saves the same un-enriched entry could be enqueued many
+            // times, and each duplicate re-ran the full SDK enrichment (GetReferences +
+            // textual scan). The _queued marker is removed on dequeue so failed
+            // enrichment stays re-enqueueable — same semantics, minus duplicate work.
+            if (!_queued.TryAdd(entry, 1)) return;
             _queue.Enqueue(entry);
             Interlocked.Increment(ref _pendingCount);
         }
@@ -51,6 +58,8 @@ namespace GxMcp.Worker.Services
                     _enricher.Enrich(entry);
                     Interlocked.Decrement(ref _pendingCount);
                 }
+                // Free the dedup marker so a later failed-enrichment requeue works.
+                _queued.TryRemove(entry, out _);
                 processed++;
                 if (onProgress != null)
                 {

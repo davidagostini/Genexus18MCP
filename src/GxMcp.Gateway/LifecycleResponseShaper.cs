@@ -27,6 +27,14 @@ namespace GxMcp.Gateway
             if (obj["Errors"] == null && obj["Warnings"] == null && obj["ErrorCount"] == null)
                 return rawJson;
 
+            return CompactObject(obj).ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        // PERFORMANCE (perf-review round 3): tree-based core shared with the gateway
+        // dispatch paths — callers holding an in-memory JObject skip the
+        // serialize→parse round-trip the string overload used to force.
+        public static JObject CompactObject(JObject obj)
+        {
             var errors = obj["Errors"] as JArray ?? new JArray();
             var warnings = obj["Warnings"] as JArray ?? new JArray();
             int errCount = obj["ErrorCount"]?.Value<int?>() ?? errors.Count;
@@ -153,7 +161,7 @@ namespace GxMcp.Gateway
             if (obj["ElapsedSeconds"] != null) compactObj["ElapsedSeconds"] = obj["ElapsedSeconds"];
             if (obj["_meta"] != null) compactObj["_meta"] = obj["_meta"];
 
-            return compactObj.ToString(Newtonsoft.Json.Formatting.None);
+            return compactObj;
         }
 
         /// <summary>

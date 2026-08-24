@@ -1451,6 +1451,11 @@ namespace GxMcp.Worker.Services
 
                 // Single O(N) pass bucketing entries into the shards we're about to write
                 // (clean shards are never even visited for bucketing, let alone written).
+                // PERF NOTE (perf-review round 2): a per-shard key registry was tried here
+                // to make this O(dirty) — reverted deliberately. A shard file REPLACES its
+                // previous contents, so any registry miss would silently DROP live entries
+                // from disk. ~38k FNV hashes costs ~2ms on a background thread; correctness
+                // wins.
                 var buckets = new Dictionary<int, Dictionary<string, SearchIndex.IndexEntry>>();
                 foreach (var id in idsToWrite) buckets[id] = new Dictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
                 if (idsToWrite.Count > 0)
@@ -1727,14 +1732,58 @@ namespace GxMcp.Worker.Services
             if (entry == null || string.IsNullOrEmpty(value)) return false;
             lock (entry)
             {
-                var current = get(entry) ?? new List<string>();
-                if (current.Contains(value, StringComparer.OrdinalIgnoreCase)) return false;
+                var current = get(entry);
+                // PERFORMANCE (perf-review): hub entries (popular Tables/SDTs referenced
+                // by hundreds of procedures) made each duplicate-check a linear
+                // List.Contains over a list holding thousands of names — and the check
+                // runs once per referencing caller during enrichment, O(k²) per hub.
+                // A per-entry companion HashSet (lazily built once the list passes a
+                // small threshold; invalidated when the published list instance changes
+                // or its count no longer matches) turns the duplicate check into O(1).
+                var cache = SeenFor(get);
+                HashSet<string> hashSet = null;
+                if (cache != null && cache.TryGetValue(entry, out hashSet)
+                    && (hashSet == null || hashSet.Count != (current?.Count ?? 0)))
+                {
+                    hashSet = null; // replaced/stale — rebuild below
+                }
+                if (hashSet == null && current != null && current.Count > 8)
+                {
+                    hashSet = new HashSet<string>(current, StringComparer.OrdinalIgnoreCase);
+                    cache.Remove(entry);
+                    cache.Add(entry, hashSet);
+                }
+                if (current == null) current = new List<string>();
+                if (hashSet != null)
+                {
+                    if (!hashSet.Add(value)) return false;
+                }
+                else if (current.Contains(value, StringComparer.OrdinalIgnoreCase)) return false;
                 var next = new List<string>(current.Count + 1);
                 next.AddRange(current);
                 next.Add(value);
                 set(entry, next);
                 return true;
             }
+        }
+
+        // One companion-set table per edge kind (Calls/Tables/CalledBy), keyed by the
+        // getter delegate identity so AddEdgeCow can find its cache without touching
+        // the entry model. Unknown getters return null → falls back to List.Contains.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SearchIndex.IndexEntry, HashSet<string>> _callsSeen = new();
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SearchIndex.IndexEntry, HashSet<string>> _tablesSeen = new();
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SearchIndex.IndexEntry, HashSet<string>> _calledBySeen = new();
+        private static readonly Func<SearchIndex.IndexEntry, List<string>> GetCallsFn = x => x.Calls;
+        private static readonly Func<SearchIndex.IndexEntry, List<string>> GetTablesFn = x => x.Tables;
+        private static readonly Func<SearchIndex.IndexEntry, List<string>> GetCalledByFn = x => x.CalledBy;
+
+        private static System.Runtime.CompilerServices.ConditionalWeakTable<SearchIndex.IndexEntry, HashSet<string>> SeenFor(
+            Func<SearchIndex.IndexEntry, List<string>> get)
+        {
+            if (ReferenceEquals(get, GetCallsFn)) return _callsSeen;
+            if (ReferenceEquals(get, GetTablesFn)) return _tablesSeen;
+            if (ReferenceEquals(get, GetCalledByFn)) return _calledBySeen;
+            return null;
         }
 
         internal static bool AddCallCow(SearchIndex.IndexEntry e, string name)
@@ -1927,11 +1976,34 @@ namespace GxMcp.Worker.Services
             var removedKeys = new List<string>();
             lock (_lock)
             {
-                var keysToRemove = index.Objects
-                    .Where(pair =>
-                        string.Equals(pair.Value.Type, type, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(pair.Value.Name, name, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
+                // PERFORMANCE (perf-review): resolve candidate keys through the
+                // ByNameIndex multimap instead of scanning all ~38k entries while
+                // holding _lock. Type filter still applies (a name can exist across
+                // types); the old full scan is kept as a fallback for indexes that
+                // haven't built the multimap yet.
+                List<KeyValuePair<string, SearchIndex.IndexEntry>> keysToRemove = null;
+                if (index.ByNameIndex != null && !string.IsNullOrEmpty(name)
+                    && index.ByNameIndex.TryGetValue(name, out var candidateKeys) && candidateKeys != null)
+                {
+                    keysToRemove = new List<KeyValuePair<string, SearchIndex.IndexEntry>>();
+                    lock (candidateKeys)
+                    {
+                        foreach (var key in candidateKeys)
+                        {
+                            if (!index.Objects.TryGetValue(key, out var entry) || entry == null) continue;
+                            if (string.Equals(entry.Type, type, StringComparison.OrdinalIgnoreCase))
+                                keysToRemove.Add(new KeyValuePair<string, SearchIndex.IndexEntry>(key, entry));
+                        }
+                    }
+                }
+                else
+                {
+                    keysToRemove = index.Objects
+                        .Where(pair =>
+                            string.Equals(pair.Value.Type, type, StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(pair.Value.Name, name, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                }
 
                 foreach (var pair in keysToRemove)
                 {

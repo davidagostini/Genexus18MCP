@@ -800,7 +800,7 @@ namespace GxMcp.Worker.Services
 
         public static JObject BuildItemForTest(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
         {
-            return BuildItemInternal(name, type, description, parent, module, path, parentPath, null, verbose, default(DateTime), default(DateTime), null);
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, null, verbose, default(DateTime), default(DateTime), null, IsLegacyPerfProfile());
         }
 
         // v2.6.8: lifecycle metadata projection helper. Returns null when both date
@@ -808,7 +808,7 @@ namespace GxMcp.Worker.Services
         // to skip the field entirely vs. emit a sentinel.
         public static JObject BuildItemForTest(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose, DateTime lastUpdate, DateTime createdAt, string lastModifiedBy)
         {
-            return BuildItemInternal(name, type, description, parent, module, path, parentPath, null, verbose, lastUpdate, createdAt, lastModifiedBy);
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, null, verbose, lastUpdate, createdAt, lastModifiedBy, IsLegacyPerfProfile());
         }
 
         // Test helper: allows tests to call BuildPagedResponse with mocked data
@@ -819,21 +819,28 @@ namespace GxMcp.Worker.Services
             return svc.BuildPagedResponseInternal(items, total, offset, pageSize);
         }
 
-        private JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose = false, DateTime lastUpdate = default(DateTime), DateTime createdAt = default(DateTime), string lastModifiedBy = null)
+        private static JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose = false, DateTime lastUpdate = default(DateTime), DateTime createdAt = default(DateTime), string lastModifiedBy = null)
         {
-            return BuildItemInternal(name, type, description, parent, module, path, parentPath, parentFolderPath, verbose, lastUpdate, createdAt, lastModifiedBy);
+            // PERFORMANCE (perf-review): resolve the legacy-profile flag once per page
+            // instead of once per item — BuildItemInternal runs for every row of every
+            // list_objects response, and each Environment.GetEnvironmentVariable call
+            // plus string compare per row was pure waste (200 rows = 200 env lookups).
+            bool legacyMode = IsLegacyPerfProfile();
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, parentFolderPath, verbose, lastUpdate, createdAt, lastModifiedBy, legacyMode);
         }
 
-        private static JObject BuildItemInternal(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose, DateTime lastUpdate, DateTime createdAt, string lastModifiedBy)
+        internal static bool IsLegacyPerfProfile()
+        {
+            string perfProfile = Environment.GetEnvironmentVariable("MCP_PERF_PROFILE");
+            return !string.IsNullOrWhiteSpace(perfProfile) &&
+                   string.Equals(perfProfile, "legacy", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static JObject BuildItemInternal(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose, DateTime lastUpdate, DateTime createdAt, string lastModifiedBy, bool isLegacyMode = false)
         {
             var item = new JObject();
             item["name"] = name;
             item["type"] = type;
-
-            // Check if we're in legacy mode (MCP_PERF_PROFILE=legacy means V1Enabled=false)
-            string perfProfile = Environment.GetEnvironmentVariable("MCP_PERF_PROFILE");
-            bool isLegacyMode = !string.IsNullOrWhiteSpace(perfProfile) &&
-                               string.Equals(perfProfile, "legacy", StringComparison.OrdinalIgnoreCase);
 
             // In legacy mode, always return full shape for backward compatibility
             if (isLegacyMode || verbose)

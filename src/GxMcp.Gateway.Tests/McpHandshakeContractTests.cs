@@ -167,6 +167,10 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void ToolResult_ShouldExposeStructuredContentAlongsideText()
         {
+            // PERF round 3: sibling tests flip GXMCP_NO_STRUCTURED_CONTENT and the probe
+            // result is TTL-cached — reset so this test sees the default (enabled).
+            Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", null);
+            Program.InvalidateEnvProbeCache();
             var response = Program.BuildToolTextResponse(
                 new JValue("1"),
                 new JObject { ["status"] = "ok", ["count"] = 1 },
@@ -185,6 +189,9 @@ namespace GxMcp.Gateway.Tests
         public void ToolResult_ShouldOmitStructuredContent_WhenDisabled()
         {
             Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", "1");
+            // PERF round 3: the env probe is TTL-cached; drop the cache so the
+            // freshly-set variable is observed immediately.
+            Program.InvalidateEnvProbeCache();
             try
             {
                 var response = Program.BuildToolTextResponse(

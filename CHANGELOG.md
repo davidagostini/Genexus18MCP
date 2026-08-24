@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v2.45.2 - 2026-08-24
+
+### Changed
+- **Faster object resolution on large KBs.** `genexus_search` and target-name lookups no longer scan the whole in-memory index when the typed probes miss — candidates are resolved through the name→objects multimap that already exists, turning a ~38k-entry linear scan into a direct lookup. Falls back to the old scan transparently when the derived index isn't built yet.
+- **Less per-row overhead in `genexus_list_objects`.** The legacy-compatibility profile flag is now read once per page instead of once per result row, removing hundreds of environment lookups from every large listing.
+- **Cheaper object deletion on the index.** Removing an object from the search index resolves its storage key through the name multimap instead of filtering every indexed entry while holding the index lock, so watcher-driven deletions no longer block concurrent searches for a full-index pass.
+- **Less duplicated enrichment work.** The background enrichment queue now skips entries that are already queued instead of re-running their full SDK reference-graph work per duplicate, and duplicate detection on heavily-referenced hub objects (popular tables/SDTs) uses a hash set instead of a linear scan of thousands of accumulated edges.
+- **Leaner per-request response path in the gateway.** Gateway-built tool responses no longer deep-clone the whole payload tree just to attach KB metadata; lifecycle status compaction works directly on the in-memory JSON instead of serializing and re-parsing it (up to three full passes saved per poll); and the per-call feature-flag environment probes (`GXMCP_TERSE`, `GXMCP_NO_STRUCTURED_CONTENT`, `GXMCP_LEGACY_TOOL_ALIASES`) are cached behind a short TTL instead of hitting Win32 environment lookups multiple times per request.
+
+### Fixed
+- **npm package missing `scripts/verify-install.js` on publish (issue #114).** The `postinstall` script introduced in v2.44.1 to verify worker/gateway binary presence failed on fresh `npm install -g` / `npx` invocations because `scripts/verify-install.js` was not declared in `package.json`'s `files` array and was omitted from the published npm tarballs. Added `scripts/verify-install.js` to `package.json` `files` and added a contract test ensuring all declared bin and postinstall script files are packaged.
+
 ### Added
 - **`genexus_connection_recover` — self-healing recovery tool.** When tool calls hang, return `WorkerBusy` repeatedly, or the connection seems dead, the agent can now call this instead of asking the user to restart the AI client. It probes every open worker with a liveness check, kills and respawns only the unhealthy ones (force=true targets all), confirms each replacement is SDK-ready before returning, and clears the semantic cache so stale reads can't survive the recovery. Workers that silently died since their last call are re-opened even though they no longer appear in the open list.
 

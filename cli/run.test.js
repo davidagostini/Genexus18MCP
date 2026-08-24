@@ -1065,3 +1065,34 @@ test('gateway passthrough remains intact when no AXI subcommand is used', () => 
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
+
+test('npm package contains all bin, postinstall and required runtime files', () => {
+    const pkgPath = path.join(__dirname, '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+
+    if (typeof pkg.bin === 'string') {
+        assert.ok(fs.existsSync(path.join(__dirname, '..', pkg.bin)), `bin file ${pkg.bin} must exist`);
+    } else if (typeof pkg.bin === 'object' && pkg.bin !== null) {
+        for (const [name, binRel] of Object.entries(pkg.bin)) {
+            assert.ok(fs.existsSync(path.join(__dirname, '..', binRel)), `bin entry ${name} (${binRel}) must exist`);
+        }
+    }
+
+    if (pkg.scripts && pkg.scripts.postinstall) {
+        const match = pkg.scripts.postinstall.match(/node\s+([\w./\\-]+)/);
+        if (match) {
+            const scriptRel = match[1];
+            assert.ok(fs.existsSync(path.join(__dirname, '..', scriptRel)), `postinstall script ${scriptRel} must exist on disk`);
+
+            const normalizedTarget = scriptRel.replace(/\\/g, '/');
+            const isCovered = (pkg.files || []).some((pattern) => {
+                const normalizedPat = pattern.replace(/\\/g, '/');
+                return normalizedTarget === normalizedPat || normalizedTarget.startsWith(normalizedPat.endsWith('/') ? normalizedPat : normalizedPat + '/');
+            });
+            assert.ok(
+                isCovered,
+                `postinstall target '${scriptRel}' must be included in package.json files array so it is shipped in the npm tarball (regression for #114)`
+            );
+        }
+    }
+});

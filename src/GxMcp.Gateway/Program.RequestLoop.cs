@@ -340,7 +340,7 @@ namespace GxMcp.Gateway
                 // downstream) so every code path sees the post-rewrite name and args.
                 // Default ON; opt out with GXMCP_LEGACY_TOOL_ALIASES=0.
                 if (!string.IsNullOrEmpty(toolName)
-                    && Environment.GetEnvironmentVariable("GXMCP_LEGACY_TOOL_ALIASES") != "0"
+                    && !Program.LegacyToolAliasesDisabledCached()
                     && McpRouter.TryRewriteLegacyTool(toolName, args, out var rewrittenName, out var rewrittenArgs))
                 {
                     toolName = rewrittenName;
@@ -388,7 +388,7 @@ namespace GxMcp.Gateway
                         // and drop the repeated hint/nextSteps scaffolding — an agent that
                         // already saw one full InvalidArgs envelope doesn't need the
                         // "call genexus_orient" pointer re-shipped on every retry.
-                        var invalidArgsPayload = TerseResponsesEnabled()
+                        var invalidArgsPayload = TerseResponsesEnabledCached()
                             ? new JObject
                             {
                                 ["status"] = "error",
@@ -421,7 +421,7 @@ namespace GxMcp.Gateway
                             }
                         };
 
-                        return BuildToolTextResponse(idToken, invalidArgsPayload, isError: true, toolName: toolName, toolArgs: args);
+                        return BuildToolTextResponse(idToken, invalidArgsPayload, isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
                     }
                 }
 
@@ -622,7 +622,7 @@ namespace GxMcp.Gateway
                         int lastN = args?["last"]?.ToObject<int?>() ?? 10;
                         JObject historyPayload = _operationTracker?.BuildExecutionHistory(targetName, lastN)
                             ?? new JObject { ["status"] = "Unwired", ["code"] = "TrackerUnavailable", ["runs"] = new JArray() };
-                        return BuildToolTextResponse(idToken, historyPayload, isError: false, toolName: "genexus_telemetry", toolArgs: args);
+                        return BuildToolTextResponse(idToken, historyPayload, isError: false, toolName: "genexus_telemetry", toolArgs: args, payloadOwned: true);
                     }
                     if (telAction == "watch_event")
                     {
@@ -631,7 +631,7 @@ namespace GxMcp.Gateway
                         int watchLast = args?["last"]?.ToObject<int?>() ?? 10;
                         JObject watchPayload = _operationTracker?.BuildWatchEvent(watchTarget, watchEvent, watchLast)
                             ?? new JObject { ["status"] = "Unwired", ["code"] = "TrackerUnavailable", ["runs"] = new JArray() };
-                        return BuildToolTextResponse(idToken, watchPayload, isError: false, toolName: "genexus_telemetry", toolArgs: args);
+                        return BuildToolTextResponse(idToken, watchPayload, isError: false, toolName: "genexus_telemetry", toolArgs: args, payloadOwned: true);
                     }
                     // Any other action falls through to OperationsRouter ConvertTelemetryUmbrella.
                 }
@@ -705,7 +705,7 @@ namespace GxMcp.Gateway
                                 // Terse mode: the list action is a health snapshot; strip
                                 // process telemetry (workingSet/pid/idle) and redundant
                                 // alias lists when every catalog says the same thing.
-                                if (Program.TerseResponsesEnabled() && payload["openKbs"] is JArray openArr)
+                                if (TerseResponsesEnabledCached() && payload["openKbs"] is JArray openArr)
                                 {
                                     foreach (var item in openArr.OfType<JObject>())
                                     {
@@ -828,7 +828,7 @@ namespace GxMcp.Gateway
                                             ["code"] = "KbInvalidPath",
                                             ["path"] = path
                                         };
-                                        return BuildToolTextResponse(idToken, payload, isError, "genexus_kb", args);
+                                        return BuildToolTextResponse(idToken, payload, isError, "genexus_kb", args, payloadOwned: true);
                                     }
 
                                     handleToOpen = new KbHandle(finalAlias, path!);
@@ -964,7 +964,7 @@ namespace GxMcp.Gateway
                         isError = true;
                         payload = new JObject { ["error"] = ex.Message, ["code"] = "BadRequest" };
                     }
-                    return BuildToolTextResponse(idToken, payload, isError, "genexus_worker_pool", args);
+                    return BuildToolTextResponse(idToken, payload, isError, "genexus_worker_pool", args, payloadOwned: true);
                 }
 
                 // genexus_connection_recover — gateway-side self-healing meta-tool.
@@ -1076,7 +1076,7 @@ namespace GxMcp.Gateway
                         isError = true;
                         payload = new JObject { ["error"] = ex.Message, ["code"] = "RecoveryFailed" };
                     }
-                    return BuildToolTextResponse(idToken, payload, isError, "genexus_connection_recover", args);
+                    return BuildToolTextResponse(idToken, payload, isError, "genexus_connection_recover", args, payloadOwned: true);
                 }
 
                 // Item 54: genexus_sandbox — gateway-side filesystem clone of a KB.
@@ -1142,7 +1142,7 @@ namespace GxMcp.Gateway
                                         ["path"] = targetPath,
                                         ["hint"] = "Pass overwrite=true to replace, or action=remove first."
                                     };
-                                    return BuildToolTextResponse(idToken, payload, false, "genexus_sandbox", args);
+                                    return BuildToolTextResponse(idToken, payload, false, "genexus_sandbox", args, payloadOwned: true);
                                 }
                                 try { System.IO.Directory.Delete(targetPath, true); }
                                 catch (Exception ex) { throw new InvalidOperationException($"Failed to remove existing sandbox before overwrite: {ex.Message}"); }
@@ -1173,7 +1173,7 @@ namespace GxMcp.Gateway
                         isError = true;
                         payload = new JObject { ["error"] = ex.Message, ["code"] = "BadRequest" };
                     }
-                    return BuildToolTextResponse(idToken, payload, isError, "genexus_sandbox", args);
+                    return BuildToolTextResponse(idToken, payload, isError, "genexus_sandbox", args, payloadOwned: true);
                 }
 
                 // Item 55: genexus_kb_diff — gateway-side object-index diff between two
@@ -1201,7 +1201,7 @@ namespace GxMcp.Gateway
                         isError = true;
                         payload = new JObject { ["error"] = ex.Message, ["code"] = "BadRequest" };
                     }
-                    return BuildToolTextResponse(idToken, payload, isError, "genexus_kb_diff", args);
+                    return BuildToolTextResponse(idToken, payload, isError, "genexus_kb_diff", args, payloadOwned: true);
                 }
 
                 // Item 56: genexus_kb_import — limited filesystem-level copy of an
@@ -1253,7 +1253,7 @@ namespace GxMcp.Gateway
                                 ["error"] = "kb_import requires an open active KB. Open one via genexus_kb action=open."
                             };
                             isError = true;
-                            return BuildToolTextResponse(idToken, payload, isError, "genexus_kb_import", args);
+                            return BuildToolTextResponse(idToken, payload, isError, "genexus_kb_import", args, payloadOwned: true);
                         }
                         if (string.Equals(System.IO.Path.GetFullPath(sourcePath), System.IO.Path.GetFullPath(targetPath), StringComparison.OrdinalIgnoreCase))
                             throw new ArgumentException("source and target KB resolve to the same path.");
@@ -1264,7 +1264,7 @@ namespace GxMcp.Gateway
                         isError = true;
                         payload = new JObject { ["error"] = ex.Message, ["code"] = "BadRequest" };
                     }
-                    return BuildToolTextResponse(idToken, payload, isError, "genexus_kb_import", args);
+                    return BuildToolTextResponse(idToken, payload, isError, "genexus_kb_import", args, payloadOwned: true);
                 }
 
                 if (string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
@@ -1291,7 +1291,8 @@ namespace GxMcp.Gateway
                                 opPayload,
                                 isError: string.Equals(opPayload["status"]?.ToString(), "NotFound", StringComparison.OrdinalIgnoreCase),
                                 toolName: "genexus_lifecycle",
-                                toolArgs: args);
+                                toolArgs: args,
+                                payloadOwned: true);
                         }
                     }
 
@@ -1363,7 +1364,7 @@ namespace GxMcp.Gateway
                                 ["reReadRequired"] = ok && cancellingJob?.Kind?.StartsWith("edit/", StringComparison.OrdinalIgnoreCase) == true,
                                 ["message"] = cancelMsg
                             };
-                            return BuildToolTextResponse(idToken, jp, isError: !ok, toolName: "genexus_lifecycle", toolArgs: args);
+                            return BuildToolTextResponse(idToken, jp, isError: !ok, toolName: "genexus_lifecycle", toolArgs: args, payloadOwned: true);
                         }
                     }
 
@@ -1444,7 +1445,7 @@ namespace GxMcp.Gateway
                                 ? "Operation reached terminal Cancelled state. The worker was recycled when it was still executing the non-preemptible SDK call; re-read the target before another write."
                                 : "Operation not found in tracker (may have completed and been pruned, or never existed)."
                         };
-                        return BuildToolTextResponse(idToken, cancelPayload, isError: !existed, toolName: "genexus_lifecycle", toolArgs: args);
+                        return BuildToolTextResponse(idToken, cancelPayload, isError: !existed, toolName: "genexus_lifecycle", toolArgs: args, payloadOwned: true);
                     }
 
                     if (string.Equals(lifecycleAction, "status", StringComparison.OrdinalIgnoreCase) &&
@@ -1536,8 +1537,7 @@ namespace GxMcp.Gateway
                                     && LifecycleResponseShaper.ShouldCompact(args)
                                     && pollResult["result"] is JObject innerResult)
                                 {
-                                    var compactJson = LifecycleResponseShaper.Compact(innerResult.ToString(Formatting.None), compact: true);
-                                    try { pollResult["result"] = JObject.Parse(compactJson); }
+                                    try { pollResult["result"] = LifecycleResponseShaper.CompactObject(innerResult); } // perf: no serialize→parse round-trip
                                     catch { /* shaper passthrough on non-JSON */ }
                                 }
                                 return BuildToolTextResponse(idToken, pollResult, isError: isError, toolName: "genexus_lifecycle", toolArgs: args);
@@ -2039,8 +2039,7 @@ namespace GxMcp.Gateway
                                     && LifecycleResponseShaper.ShouldCompact(tArgs)
                                     && pollResult["result"] is JObject innerResult2)
                                 {
-                                    var compactJson = LifecycleResponseShaper.Compact(innerResult2.ToString(Formatting.None), compact: true);
-                                    try { pollResult["result"] = JObject.Parse(compactJson); }
+                                    try { pollResult["result"] = LifecycleResponseShaper.CompactObject(innerResult2); } // perf: no serialize→parse round-trip
                                     catch { /* shaper passthrough on non-JSON */ }
                                 }
                                 return BuildToolResultContent(pollResult, isErr, tName, tArgs);
@@ -2346,9 +2345,10 @@ namespace GxMcp.Gateway
                                 && finalResult is JObject lifecycleObj
                                 && LifecycleResponseShaper.ShouldCompact(tArgs))
                             {
-                                var compactJson = LifecycleResponseShaper.Compact(lifecycleObj.ToString(Formatting.None), compact: true);
-                                try { finalResult = JObject.Parse(compactJson); }
-                                catch { /* shaper passed through non-JSON; keep original */ }
+                                // perf: tree-based compact, no serialize→parse round-trip.
+                                // The old code wrapped a parse failure; CompactObject works on
+                                // an already-parsed JObject and cannot throw for JSON reasons.
+                                finalResult = LifecycleResponseShaper.CompactObject(lifecycleObj);
                             }
 
                             // The worker envelope has no further consumers after this callback.
