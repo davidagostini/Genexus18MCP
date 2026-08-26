@@ -702,7 +702,7 @@
             "type": "boolean"
           },
           "rules": {
-            "description": "object_atomic: rule lines (e.g. \"Parm(in:&Id);\").",
+            "description": "object_atomic: rule lines (e.g. \"Parm(in:&Id);\"). Send actual line breaks; literal backslash sequences \\r\\n, \\n, or \\r are rejected before the first save.",
             "items": {
               "type": "string"
             },
@@ -713,7 +713,7 @@
             "type": "boolean"
           },
           "source": {
-            "description": "object_atomic: Source part text.",
+            "description": "object_atomic: Source part text. Send actual line breaks; literal backslash sequences \\r\\n, \\n, or \\r are rejected before the first save.",
             "type": "string"
           },
           "spec": {
@@ -1195,7 +1195,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Edit object part. name or targets (exclusive). mode: full|patch|ops. dryRun first. async=true returns an operationId for lifecycle polling. For WWP edit host's PatternInstance NOT the parent WebForm (gets overwritten on reapply). Uncertain about a property/method/event? → resources/read uri=genexus://kb/skills/navigation (or gam-integrated-security / sd-panel-mobile / webpanel-events) first.",
+      "description": "Edit object part. name or targets (exclusive). mode: full|patch|ops. dryRun first. async=true returns an operationId for lifecycle polling. Text payloads for Source/Rules/Events/Code must contain real line breaks; literal backslash sequences \\r\\n, \\n, or \\r are rejected before persistence with LiteralLineBreaksDetected. For WWP edit host's PatternInstance NOT the parent WebForm (gets overwritten on reapply). Uncertain about a property/method/event? → resources/read uri=genexus://kb/skills/navigation (or gam-integrated-security / sd-panel-mobile / webpanel-events) first.",
       "inputSchema": {
         "examples": [
           {
@@ -1236,7 +1236,7 @@
             "type": "string"
           },
           "context": {
-            "description": "Exact existing text to find (Replace) or anchor after (Insert_After). Required for both.",
+            "description": "Exact existing text to find (Replace) or anchor after (Insert_After). Required for both. For text parts, send real line breaks; literal backslash sequences \\r\\n, \\n, or \\r are rejected before persistence.",
             "type": "string"
           },
           "dryRun": {
@@ -1307,7 +1307,7 @@
             "type": "string"
           },
           "parts": {
-            "description": "Multi-part edit on a single object. Each item: {part, content, mode?}. Saves the object once atomically.",
+            "description": "Multi-part edit on a single object. Each item: {part, content, mode?}. Saves the object once atomically. Text content must use real line breaks; literal backslash sequences \\r\\n, \\n, or \\r are rejected before persistence.",
             "items": {
               "properties": {
                 "content": {

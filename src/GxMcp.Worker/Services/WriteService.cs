@@ -902,6 +902,8 @@ namespace GxMcp.Worker.Services
 
         public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false)
         {
+            partName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+
             // Friction 2026-05-22 fix: hold the per-target lock around the
             // ENTIRE write pipeline (snapshot + internal write + wrap). This is
             // the canonical writer — PatchService, BulkWrite, and the JObject
@@ -1107,6 +1109,16 @@ namespace GxMcp.Worker.Services
                             }
                         } catch { /* Not base64, use as is */ }
                     }
+                }
+
+                // Validate the text after optional Base64 decoding, before object
+                // lookup, snapshots, transactions, or any SDK mutation. This also
+                // protects the explicit encoding=base64 path from double-encoded
+                // line breaks.
+                if (TextPayloadGuard.AppliesToPart(partName))
+                {
+                    string literalLineBreakError = TextPayloadGuard.BuildWriteError(target, partName, "content", decodedCode);
+                    if (literalLineBreakError != null) return literalLineBreakError;
                 }
 
                 Logger.Info(string.Format("[DEBUG-SAVE] Request received for {0} (Part: {1}, Code Length: {2})", target, partName, decodedCode?.Length ?? 0));

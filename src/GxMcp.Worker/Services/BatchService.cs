@@ -44,6 +44,16 @@ namespace GxMcp.Worker.Services
 
                 if (allDirect && changes.Count > 1)
                 {
+                    foreach (var change in changes)
+                    {
+                        string partName = change["part"]?.ToString() ?? "Source";
+                        if (!TextPayloadGuard.AppliesToPart(partName)) continue;
+
+                        string literalLineBreakError = TextPayloadGuard.BuildWriteError(
+                            target, partName, "content", change["content"]?.ToString());
+                        if (literalLineBreakError != null) return literalLineBreakError;
+                    }
+
                     var obj = _objectService.FindObject(target);
                     if (obj != null)
                     {
@@ -157,6 +167,15 @@ namespace GxMcp.Worker.Services
             }
             else if (action == "Commit")
             {
+                // Preflight every buffered source before the first write. This keeps a
+                // malformed item from being reported as committed after the shared
+                // text guard correctly refused its persistence.
+                foreach (var item in _buffer)
+                {
+                    string literalLineBreakError = TextPayloadGuard.BuildWriteError(item.Name, "Source", "content", item.Code);
+                    if (literalLineBreakError != null) return literalLineBreakError;
+                }
+
                 int count = 0;
                 foreach (var item in _buffer)
                 {

@@ -141,7 +141,10 @@ namespace GxMcp.Gateway.Tests
             //   2026-08-20 (batch properties & multi-part edit): 21700 → 21900 for
             //   genexus_edit parts array and genexus_properties properties map
             //   enabling single-pass atomic persistence. Measured ~21744; ~156 headroom.
-            Assert.True(approxTokens < 21900, $"tool_definitions.json is ~{approxTokens} tokens; budget 21900.");
+            //   2026-08-26 (literal line-break write guard): 21900 → 22200 for
+            //   the explicit real-line-break contract on full/patch/atomic text writes.
+            //   Measured ~22059; ~141 headroom.
+            Assert.True(approxTokens < 22200, $"tool_definitions.json is ~{approxTokens} tokens; budget 22200.");
         }
     }
 }

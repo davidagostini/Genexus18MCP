@@ -151,6 +151,14 @@ namespace GxMcp.Worker.Services
 
         public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false, string verifyMode = null, string baseVersion = null, bool rollbackOnFailure = false, bool autoInjectVariables = false)
         {
+            string guardedPartName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+            partName = guardedPartName;
+            if (TextPayloadGuard.AppliesToPart(guardedPartName))
+            {
+                string literalLineBreakError = TextPayloadGuard.BuildWriteError(target, guardedPartName, "content", content);
+                if (literalLineBreakError != null) return literalLineBreakError;
+            }
+
             // Friction 2026-05-22: capture entry timestamp so a NoMatch we see at
             // the end can be cross-checked against WriteService.WasTargetWrittenSince
             // — if the file changed while this patch was queued/running, the context

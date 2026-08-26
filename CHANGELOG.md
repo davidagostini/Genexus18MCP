@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v2.46.2 - 2026-08-26
+
+### Fixed
+- **Text writes now reject literal line-break escape sequences before persistence.** A shared preflight guard covers full edits, patches, atomic authoring, batch writes, and the legacy scaffold path, returning `LiteralLineBreaksDetected` with the affected field and sequence instead of allowing a whole GeneXus part to become one `//` comment. The discovery schema budget was raised from 21,900 to 22,200 tokens to document the contract.
+
 ## v2.46.1 - 2026-08-26
 
 ### Fixed

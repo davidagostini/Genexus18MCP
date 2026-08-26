@@ -58,7 +58,10 @@ namespace GxMcp.Worker.Services
                     if (sourcePart != null)
                     {
                         string codeParams = (properties != null && properties["code"] != null) ? properties["code"].ToString() : "";
-                        sourcePart.Source = "// Template created by MCP\r\n" + codeParams;
+                        string literalLineBreakError = TextPayloadGuard.BuildWriteError(name, "Source", "properties.code", codeParams);
+                        if (literalLineBreakError != null) return literalLineBreakError;
+                        string source = "// Template created by MCP\r\n" + codeParams;
+                        sourcePart.Source = source;
                     }
                 }
                 

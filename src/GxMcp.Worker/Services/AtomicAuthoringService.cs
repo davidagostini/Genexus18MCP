@@ -207,6 +207,8 @@ namespace GxMcp.Worker.Services
         private JArray Preflight(JObject args)
         {
             var errors = new JArray();
+            AddTextPreflightDiagnostic(errors, args?["name"]?.ToString(), "rules", JoinText(args?["rules"]));
+            AddTextPreflightDiagnostic(errors, args?["name"]?.ToString(), "source", JoinText(args?["source"]));
             foreach (JObject variable in (args?["variables"] as JArray ?? new JArray()).OfType<JObject>())
             {
                 string typeName = (variable["basedOn"] ?? variable["typeName"])?.ToString();
@@ -224,6 +226,17 @@ namespace GxMcp.Worker.Services
                 }
             }
             return errors;
+        }
+
+        private static void AddTextPreflightDiagnostic(JArray errors, string objectName, string member, string text)
+        {
+            var fieldError = TextPayloadGuard.BuildFieldError(member, text);
+            if (fieldError == null) return;
+
+            var diagnostic = Diagnostic(TextPayloadGuard.ErrorCode, objectName, member, TextPayloadGuard.BuildMessage(member));
+            diagnostic["literalSequences"] = fieldError["literalSequences"]?.DeepClone();
+            diagnostic["hasActualLineBreaks"] = fieldError["hasActualLineBreaks"];
+            errors.Add(diagnostic);
         }
 
         private JObject CaptureSnapshot(string name, string type, JObject args)

@@ -232,6 +232,11 @@ namespace GxMcp.Worker.Services
             if (!string.IsNullOrWhiteSpace(parmLine)) rules.Add(parmLine);
             spec.RulesText = string.Join(Environment.NewLine, rules);
 
+            var rulesTextError = TextPayloadGuard.BuildFieldError("rules", spec.RulesText);
+            if (rulesTextError != null) spec.Errors.Add(rulesTextError);
+            var sourceTextError = TextPayloadGuard.BuildFieldError("source", spec.Source);
+            if (sourceTextError != null) spec.Errors.Add(sourceTextError);
+
             if (string.IsNullOrWhiteSpace(spec.Type))
                 spec.Errors.Add(new JObject { ["field"] = "type", ["errors"] = new JArray("type is required (e.g. Procedure, Transaction, WebPanel).") });
             if (string.IsNullOrWhiteSpace(spec.Name))
