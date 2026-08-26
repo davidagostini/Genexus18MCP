@@ -11,8 +11,15 @@ namespace GxMcp.Gateway
         public const int DefaultMaxBytes = 220_000; // ~55k tokens
 
         private readonly int _maxBytes;
+        private readonly Action<string> _log;
 
-        public ResponseSizeGuard(int maxBytes = DefaultMaxBytes) => _maxBytes = maxBytes;
+        public ResponseSizeGuard(int maxBytes = DefaultMaxBytes) : this(maxBytes, Program.Log) { }
+
+        internal ResponseSizeGuard(int maxBytes, Action<string> log)
+        {
+            _maxBytes = maxBytes;
+            _log = log;
+        }
 
         public (JObject result, bool truncated) Apply(JObject payload, string toolName, JObject? args)
         {
@@ -35,7 +42,7 @@ namespace GxMcp.Gateway
                 }
             };
 
-            Program.Log($"[Gateway] OVERSIZE tool={toolName} size={size}");
+            _log($"[Gateway] OVERSIZE tool={toolName} size={size}");
             return (sentinel, true);
         }
 
