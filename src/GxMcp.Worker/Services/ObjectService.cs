@@ -1277,6 +1277,127 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // issue #116: DataSelector structure (Parameters, Conditions, Orders, DefinedBy)
+        // cannot be cloned through the textual DSL path. Clone it natively via the SDK
+        // object model (and XML deserialization fallback). Returns a McpResponse JSON
+        // envelope on success, or null when not applicable.
+        public string CloneDataSelectorStructurePart(string sourceName, string targetName)
+        {
+            try
+            {
+                var srcObj = FindObject(sourceName) as DataSelector;
+                var tgtObj = FindObject(targetName) as DataSelector;
+                if (srcObj == null || tgtObj == null) return null;
+
+                var srcPart = srcObj.DataSelectorStructure ?? srcObj.Parts.Get<DataSelectorStructurePart>();
+                var tgtPart = tgtObj.DataSelectorStructure ?? tgtObj.Parts.Get<DataSelectorStructurePart>();
+                if (srcPart == null || tgtPart == null) return null;
+
+                bool xmlRoundTripped = false;
+                try
+                {
+                    string xml = srcPart.SerializeToXml();
+                    if (!string.IsNullOrWhiteSpace(xml) && !IsEmptyPropertiesXml(xml))
+                    {
+                        tgtPart.DeserializeFromXml(xml);
+                        xmlRoundTripped = true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("CloneDataSelectorStructurePart: XML deserialization fallback: " + ex.Message);
+                }
+
+                int parametersCopied = 0;
+                int conditionsCopied = 0;
+                int ordersCopied = 0;
+
+                if (tgtPart.Root == null)
+                {
+                    try { tgtPart.Root = new DataSelectorLevel(tgtPart); } catch { }
+                }
+
+                // Parameters fallback if XML deserialization didn't populate parameters
+                try
+                {
+                    if (srcPart.Parameters != null && srcPart.Parameters.Count > 0 && (tgtPart.Parameters == null || tgtPart.Parameters.Count == 0))
+                    {
+                        dynamic dParams = tgtPart.Parameters;
+                        foreach (dynamic p in srcPart.Parameters)
+                        {
+                            try
+                            {
+                                if (p != null)
+                                {
+                                    dParams.Add(p);
+                                    parametersCopied++;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    else if (tgtPart.Parameters != null)
+                    {
+                        parametersCopied = tgtPart.Parameters.Count;
+                    }
+                }
+                catch { }
+
+                // Conditions fallback if XML deserialization didn't populate conditions
+                try
+                {
+                    var tgtConds = tgtPart.GetConditions();
+                    int existingConds = tgtConds != null ? tgtConds.Count() : 0;
+                    if (existingConds == 0)
+                    {
+                        var srcConditions = srcPart.GetConditions() ?? Enumerable.Empty<DataSelectorCondition>();
+                        foreach (var cond in srcConditions)
+                        {
+                            string expr = cond.Source?.Source ?? cond.ToString();
+                            if (!string.IsNullOrWhiteSpace(expr))
+                            {
+                                tgtPart.Root.AddCondition(expr);
+                                conditionsCopied++;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        conditionsCopied = existingConds;
+                    }
+                }
+                catch { }
+
+                // Orders fallback
+                try
+                {
+                    var tgtOrders = tgtPart.GetOrders();
+                    ordersCopied = tgtOrders != null ? tgtOrders.Count() : 0;
+                }
+                catch { }
+
+                tgtObj.Save();
+
+                try { var idx = _kbService?.GetIndexCache(); if (idx != null) idx.UpdateEntry(tgtObj); }
+                catch (Exception ex) { Logger.Error("CloneDataSelectorStructurePart: index UpdateEntry failed for " + targetName + ": " + ex.Message); }
+
+                var result = new JObject
+                {
+                    ["part"] = "DataSelectorStructure",
+                    ["clonedVia"] = xmlRoundTripped ? "xml+objectModel" : "objectModel",
+                    ["parametersCopied"] = parametersCopied,
+                    ["conditionsCopied"] = conditionsCopied,
+                    ["ordersCopied"] = ordersCopied
+                };
+                return McpResponse.Ok(target: targetName, code: "Success", result: result);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("CloneDataSelectorStructurePart failed for " + targetName + ": " + (ex.InnerException?.Message ?? ex.Message));
+                return null;
+            }
+        }
+
         // Remove every item currently under an SDT structure node (used to drop the create-time seed).
         private static void ClearSdtItems(dynamic node)
         {

@@ -314,6 +314,15 @@ namespace GxMcp.Worker.Structure
                 return null;
             }
 
+            if (part.Type == DesignSystemTokensPartGuid)
+            {
+                return "Tokens";
+            }
+            if (part.Type == DesignSystemStylesPartGuid)
+            {
+                return "Styles";
+            }
+
             if (part is ISource)
             {
                 var sourceName = part.TypeDescriptor?.Name;

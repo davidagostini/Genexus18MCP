@@ -383,11 +383,15 @@ namespace GxMcp.Worker.Services
             // case we fall through to the text path below.
             bool isStructureAlias = partName != null &&
                 (partName.Equals("SDTStructure", StringComparison.OrdinalIgnoreCase) ||
+                 partName.Equals("DataSelectorStructure", StringComparison.OrdinalIgnoreCase) ||
                  partName.Equals("Structure", StringComparison.OrdinalIgnoreCase));
             if (isStructureAlias)
             {
                 string native = _objects.CloneSdtStructurePart(sourceName, newName);
                 if (native != null) return native;
+
+                string dsNative = _objects.CloneDataSelectorStructurePart(sourceName, newName);
+                if (dsNative != null) return dsNative;
             }
 
             // Read source-part as text, write to new object via the same

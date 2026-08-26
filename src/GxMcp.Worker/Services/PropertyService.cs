@@ -143,6 +143,22 @@ namespace GxMcp.Worker.Services
                     return SetDataProviderOutputSdt(obj, target, value);
                 }
 
+                // issue #117: Domain assignment on Attribute/Domain/Variable routes through
+                // DomainBasedOn. Validate domain existence up front if non-empty.
+                if (string.IsNullOrEmpty(controlName) && IsDomainPropertyName(propName) && !string.IsNullOrWhiteSpace(value))
+                {
+                    var domCheck = _objectService.FindObject(value.Trim(), "Domain");
+                    if (domCheck == null)
+                    {
+                        return Models.McpResponse.Err(
+                            code: "DomainNotFound",
+                            message: $"Cannot set {propName}: no Domain named '{value}' was found in the Knowledge Base.",
+                            hint: "Pass the name of an existing Domain (or an empty value to clear).",
+                            nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", new JObject { ["type"] = "Domain", ["query"] = value }, "Lists Domains matching the name.")),
+                            target: target);
+                    }
+                }
+
                 dynamic container = obj;
                 if (!string.IsNullOrEmpty(controlName))
                 {
@@ -338,6 +354,16 @@ namespace GxMcp.Worker.Services
                     }
                     catch { /* fall through to the bag read */ }
                 }
+                // issue #117: Domain assignment on Attribute/Domain/Variable routes through DomainBasedOn
+                if (IsDomainPropertyName(propName))
+                {
+                    try
+                    {
+                        string domName = DomainPropertyApplier.GetDomainBasedOnName((object)container);
+                        persisted = domName ?? string.Empty;
+                    }
+                    catch { }
+                }
                 if (persisted == null) persisted = TryReadPropertyString(container, propName);
                 if (persisted == null) return null; // unverifiable
 
@@ -380,6 +406,16 @@ namespace GxMcp.Worker.Services
         {
             try
             {
+                if (IsDomainPropertyName(propName))
+                {
+                    try
+                    {
+                        string domName = DomainPropertyApplier.GetDomainBasedOnName((object)container);
+                        if (domName != null) return domName;
+                    }
+                    catch { }
+                }
+
                 dynamic existing = null;
                 try { existing = container.Properties?[propName]; } catch { }
                 if (existing == null)
@@ -541,6 +577,33 @@ namespace GxMcp.Worker.Services
                 return;
             }
 
+            // issue #117: Domain assignment on Attribute/Domain/Variable routes through DomainBasedOn
+            if (IsDomainPropertyName(propName))
+            {
+                if (!string.IsNullOrWhiteSpace(rawValue))
+                {
+                    object domainObj = null;
+                    try
+                    {
+                        if (obj?.Model != null)
+                        {
+                            var qName = new Artech.Architecture.Common.Objects.QualifiedName(rawValue.Trim());
+                            domainObj = Artech.Genexus.Common.Objects.Domain.Get(obj.Model, qName);
+                        }
+                    }
+                    catch { }
+                    if (domainObj != null)
+                    {
+                        if (DomainPropertyApplier.ApplyDomainBasedOn((object)container, domainObj)) return;
+                        if (AttributeTypeApplier.ApplyDomain((object)container, domainObj)) return;
+                    }
+                }
+                else
+                {
+                    if (DomainPropertyApplier.ClearDomainBasedOn((object)container)) return;
+                }
+            }
+
             // 1) Try a coerced typed value via SetPropertyValue(string, object).
             object coerced;
             if (TryCoercePropertyValue(container, propName, rawValue, out coerced))
@@ -590,6 +653,16 @@ namespace GxMcp.Worker.Services
             return propName.Equals("ALLOWNULL", StringComparison.OrdinalIgnoreCase)
                 || propName.Equals("Nullable", StringComparison.OrdinalIgnoreCase)
                 || propName.Equals("IsNullable", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool IsDomainPropertyName(string propName)
+        {
+            if (string.IsNullOrEmpty(propName)) return false;
+            string norm = propName.Trim();
+            return norm.Equals("Domain", StringComparison.OrdinalIgnoreCase)
+                || norm.Equals("DomainBasedOn", StringComparison.OrdinalIgnoreCase)
+                || norm.Equals("BasedOn", StringComparison.OrdinalIgnoreCase)
+                || norm.Equals("DomainDefinition", StringComparison.OrdinalIgnoreCase);
         }
 
         // TableAttribute.IsNullableValue: False=0, True=1, Compatible=2. Accepts the

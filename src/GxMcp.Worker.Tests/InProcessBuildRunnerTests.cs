@@ -206,6 +206,26 @@ namespace GxMcp.Worker.Tests
             bool resolved = InProcessBuildRunner.TryResolveTypes(out error);
             Assert.True(resolved, "Expected Genexus.MsBuild.Tasks types to resolve: " + error);
         }
+
+        [Fact]
+        public void ResolveTargetKBObject_returns_null_on_null_or_empty_model_or_target()
+        {
+            Assert.Null(InProcessBuildRunner.ResolveTargetKBObject(null, "Customer"));
+            Assert.Null(InProcessBuildRunner.ResolveTargetKBObject(new object(), null));
+            Assert.Null(InProcessBuildRunner.ResolveTargetKBObject(new object(), "  "));
+        }
+
+        [Fact]
+        public void ResolveTargetKBObject_handles_type_prefix_and_guid_without_throwing()
+        {
+            // Dummy model object
+            var dummyModel = new object();
+            var resType = InProcessBuildRunner.ResolveTargetKBObject(dummyModel, "Transaction:Customer");
+            Assert.Null(resType);
+
+            var resGuid = InProcessBuildRunner.ResolveTargetKBObject(dummyModel, Guid.NewGuid().ToString());
+            Assert.Null(resGuid);
+        }
     }
 
     public sealed class FakeSpecifyOneOnlyTask

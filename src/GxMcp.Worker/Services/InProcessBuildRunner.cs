@@ -487,15 +487,11 @@ namespace GxMcp.Worker.Services
                     targetModel = designModel;
                 }
 
-                var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                    .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
-                if (getMi == null) { Logger.Warn("[BUILD-INPROCESS] ExecuteCompileOnly: ObjectNameHelper.Get not found"); return false; }
-
-                // ObjectNameHelper.Get(targetModel, name) — same as the MSBuild Compile task does.
-                object kbObject = getMi.Invoke(null, new object[] { targetModel, objectName });
+                // Object resolution via ResolveTargetKBObject (supports homonym disambiguation and Type:Name qualification).
+                object kbObject = ResolveTargetKBObject(targetModel, objectName) ?? ResolveTargetKBObject(designModel, objectName);
                 if (kbObject == null)
                 {
-                    Logger.Warn("[BUILD-INPROCESS] ExecuteCompileOnly: object '" + objectName + "' not found in target model");
+                    Logger.Warn("[BUILD-INPROCESS] ExecuteCompileOnly: object '" + objectName + "' not found in target model or design model");
                     return false;
                 }
                 var keyProp = kbObject.GetType().GetProperty("Key", BindingFlags.Public | BindingFlags.Instance);
@@ -586,7 +582,7 @@ namespace GxMcp.Worker.Services
 
                 foreach (var name in objectNames)
                 {
-                    object kbObject = getMi.Invoke(null, new object[] { designModel, name });
+                    object kbObject = ResolveTargetKBObject(designModel, name);
                     if (kbObject == null)
                     {
                         // BuildOne treats an unresolved name as `return true` (no-op). To preserve
@@ -623,10 +619,8 @@ namespace GxMcp.Worker.Services
                 }
                 object workingSet = workingSetCtor.Invoke(new object[] { designModel });
 
-                // BuildOptions = ContinueOnError | BuildProcess | BuildCalled (matches BuildOne).
-                // Composed as the enum's underlying int and cast back to the enum type.
-                int rawOpts = 0xE0 /*ContinueOnError*/ | 0x3800 /*BuildProcess*/ | 0x1 /*BuildCalled*/;
-                object buildOptions = Enum.ToObject(_typeBuildOptions, rawOpts);
+                // BuildOptions(ContinueOnError | BuildProcess | BuildCalled)
+                object buildOptions = Enum.ToObject(_typeBuildOptions, 0x01 | 0x04 | 0x08);
 
                 using (var cts = new CancellationTokenSource())
                 {
@@ -663,7 +657,7 @@ namespace GxMcp.Worker.Services
             try
             {
                 if (_miBuildWithTheseOnly == null || _typeDevelopmentWorkingSet == null
-                    || _typeObjectNameHelper == null || _typeGenexusBLServices == null)
+                    || _typeGenexusBLServices == null)
                 {
                     Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: required types not resolved");
                     return BatchOutcome.NotApplicable;
@@ -674,14 +668,6 @@ namespace GxMcp.Worker.Services
                 if (designModel == null)
                 {
                     Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: KB.DesignModel not found");
-                    return BatchOutcome.NotApplicable;
-                }
-
-                var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                    .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
-                if (getMi == null)
-                {
-                    Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: ObjectNameHelper.Get(model,string) not found");
                     return BatchOutcome.NotApplicable;
                 }
 
@@ -699,7 +685,7 @@ namespace GxMcp.Worker.Services
 
                 foreach (var name in objectNames)
                 {
-                    object kbObject = getMi.Invoke(null, new object[] { designModel, name });
+                    object kbObject = ResolveTargetKBObject(designModel, name);
                     if (kbObject == null)
                     {
                         lineSink("[BUILD-INPROCESS] batch: object '" + name + "' not found in DesignModel — skipping.", false);
@@ -769,9 +755,16 @@ namespace GxMcp.Worker.Services
                     Logger.Error("[BUILD-INPROCESS] BuildOne type not loaded");
                     return false;
                 }
+                string cleanName = objectName;
+                if (!string.IsNullOrEmpty(cleanName))
+                {
+                    int c = cleanName.IndexOf(':');
+                    if (c > 0) cleanName = cleanName.Substring(c + 1).Trim();
+                }
+
                 object task = Activator.CreateInstance(typeBuildOne);
                 SetProp(task, "KB", kbHandle);
-                SetProp(task, "ObjectName", objectName);
+                SetProp(task, "ObjectName", cleanName);
                 SetProp(task, "ForceRebuild", false);
                 SetProp(task, "BuildCalled", buildCalled);
                 SetProp(task, "Output", "IDE");
@@ -798,10 +791,10 @@ namespace GxMcp.Worker.Services
 
         /// <summary>
         /// Bug #3: count how many requested target names resolve to a KBObject via
-        /// ObjectNameHelper.Get(DesignModel, name) — the exact lookup BuildOne/BuildBatch
-        /// use. Returns -1 when resolution can't be determined (missing type / DesignModel /
-        /// Get method) so the caller does NOT gate and preserves legacy behavior. Otherwise
-        /// returns the resolved count and reports unresolved names via <paramref name="unresolved"/>.
+        /// ResolveTargetKBObject (homonym-safe and Type:Name capable). Returns -1 when resolution
+        /// can't be determined (missing type / DesignModel) so the caller does NOT gate and
+        /// preserves legacy behavior. Otherwise returns the resolved count and reports
+        /// unresolved names via <paramref name="unresolved"/>.
         /// </summary>
         private static int CountResolvableTargets(object kbHandle, List<string> names, out List<string> unresolved)
         {
@@ -809,19 +802,15 @@ namespace GxMcp.Worker.Services
             try
             {
                 if (names == null || names.Count == 0) return -1;
-                if (_typeObjectNameHelper == null) return -1;
                 var designModelProp = kbHandle?.GetType().GetProperty("DesignModel", BindingFlags.Public | BindingFlags.Instance);
                 object designModel = designModelProp?.GetValue(kbHandle);
                 if (designModel == null) return -1;
-                var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                    .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
-                if (getMi == null) return -1;
 
                 int resolved = 0;
                 foreach (var name in names)
                 {
                     object kbObject = null;
-                    try { kbObject = getMi.Invoke(null, new object[] { designModel, name }); }
+                    try { kbObject = ResolveTargetKBObject(designModel, name); }
                     catch { return -1; } // resolution itself threw — don't gate on a partial answer
                     if (kbObject == null) unresolved.Add(name);
                     else resolved++;
@@ -833,6 +822,187 @@ namespace GxMcp.Worker.Services
                 unresolved = new List<string>();
                 return -1;
             }
+        }
+
+        /// <summary>
+        /// Issue #115: Resolves a build target to a KBObject in the specified model.
+        /// Supports:
+        /// 1. Type:Name qualification (e.g. "Transaction:SampleEntity", "Table:SampleEntity")
+        /// 2. Guid string ("{...}" or raw Guid)
+        /// 3. ObjectNameHelper.Get(model, name)
+        /// 4. Disambiguation of Table homonyms: when ObjectNameHelper.Get returns a Table or null,
+        ///    probes primary logic objects (Transaction, Procedure, WebPanel, SDPanel, SDT, DataProvider, DataSelector)
+        ///    before falling back to Table.
+        /// </summary>
+        internal static object ResolveTargetKBObject(object model, string target)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(target)) return null;
+
+            string simpleName = target.Trim();
+            string typeName = null;
+            int colon = simpleName.IndexOf(':');
+            if (colon > 0)
+            {
+                typeName = simpleName.Substring(0, colon).Trim();
+                simpleName = simpleName.Substring(colon + 1).Trim();
+            }
+
+            // 1. Guid resolution
+            if (Guid.TryParse(simpleName, out Guid guid))
+            {
+                try
+                {
+                    var objectsProp = model.GetType().GetProperty("Objects", BindingFlags.Public | BindingFlags.Instance);
+                    object objects = objectsProp?.GetValue(model);
+                    if (objects != null)
+                    {
+                        var getGuidMi = objects.GetType().GetMethod("Get", new[] { typeof(Guid) });
+                        if (getGuidMi != null)
+                        {
+                            object hit = getGuidMi.Invoke(objects, new object[] { guid });
+                            if (hit != null) return hit;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 2. Explicit Type qualification
+            if (!string.IsNullOrEmpty(typeName))
+            {
+                object typedHit = TryResolveTypedKBObject(model, typeName, simpleName);
+                if (typedHit != null) return typedHit;
+            }
+
+            // 3. ObjectNameHelper.Get(model, simpleName)
+            if (_typeObjectNameHelper != null)
+            {
+                try
+                {
+                    var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                        .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
+                    if (getMi != null)
+                    {
+                        object hit = getMi.Invoke(null, new object[] { model, simpleName });
+                        if (hit != null)
+                        {
+                            string desc = null;
+                            try
+                            {
+                                var tdProp = hit.GetType().GetProperty("TypeDescriptor", BindingFlags.Public | BindingFlags.Instance);
+                                object td = tdProp?.GetValue(hit);
+                                var nameProp = td?.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance);
+                                desc = nameProp?.GetValue(td) as string;
+                            }
+                            catch { }
+
+                            // If not a Table, return it directly
+                            if (!string.Equals(desc, "Table", StringComparison.OrdinalIgnoreCase))
+                            {
+                                return hit;
+                            }
+
+                            // If it is a Table, check if a Transaction shares this name (homonym)
+                            object trnHit = TryResolveTypedKBObject(model, "Transaction", simpleName);
+                            if (trnHit != null) return trnHit;
+                            return hit;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 4. Probe candidates in priority order (primary logic types first)
+            string[] candidateTypes = { "Transaction", "Procedure", "WebPanel", "SDPanel", "SDT", "DataProvider", "DataSelector", "Domain", "Table" };
+            foreach (var cand in candidateTypes)
+            {
+                object candHit = TryResolveTypedKBObject(model, cand, simpleName);
+                if (candHit != null) return candHit;
+            }
+
+            return null;
+        }
+
+        private static object TryResolveTypedKBObject(object model, string typeName, string name)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(name)) return null;
+            try
+            {
+                var modelObj = model as Artech.Architecture.Common.Objects.KBModel;
+                if (modelObj == null)
+                {
+                    var designProp = model.GetType().GetProperty("DesignModel", BindingFlags.Public | BindingFlags.Instance);
+                    modelObj = (designProp?.GetValue(model) as Artech.Architecture.Common.Objects.KBModel);
+                }
+
+                if (modelObj != null)
+                {
+                    var qName = new Artech.Architecture.Common.Objects.QualifiedName(name);
+                    string norm = (typeName ?? "").Trim();
+
+                    // 1. Direct typed lookups for primary logic types
+                    if (norm.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.Transaction.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("Procedure", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.Procedure.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("WebPanel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.WebPanel.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("DataProvider", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.DataProvider.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("DataSelector", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.DataSelector.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("Domain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.Domain.Get(modelObj, qName); } catch { }
+                    }
+
+                    // 2. Lookup across all objects via modelObj.Objects.GetByName
+                    try
+                    {
+                        var matches = modelObj.Objects.GetByName(null, null, name);
+                        if (matches != null)
+                        {
+                            object tableFallback = null;
+                            foreach (Artech.Architecture.Common.Objects.KBObject o in matches)
+                            {
+                                if (o == null) continue;
+                                string oType = o.TypeDescriptor?.Name ?? o.GetType().Name;
+                                if (!string.IsNullOrEmpty(norm))
+                                {
+                                    if (string.Equals(oType, norm, StringComparison.OrdinalIgnoreCase))
+                                        return o;
+                                }
+                                else
+                                {
+                                    // If untyped, prefer non-Table objects over Table
+                                    if (string.Equals(oType, "Table", StringComparison.OrdinalIgnoreCase) || o is Artech.Genexus.Common.Objects.Table)
+                                    {
+                                        if (tableFallback == null) tableFallback = o;
+                                    }
+                                    else
+                                    {
+                                        return o;
+                                    }
+                                }
+                            }
+                            if (tableFallback != null) return tableFallback;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return null;
         }
 
         private static bool EnsureTypesLoaded()

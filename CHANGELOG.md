@@ -3,7 +3,11 @@
 ## Unreleased
 
 ### Fixed
-- **`save_as` no longer leaves a partial WebPanel when a part cannot be cloned (issue #118).** Explicitly empty or unsupported parts remain non-fatal skips, but a real part-write failure now stops the clone, removes the incomplete target automatically, and reports whether cleanup succeeded.
+- **`save_as` no longer leaves a partial WebPanel when a part cannot be cloned (issue #118).** Explicitly empty or unsupported parts remain non-fatal skips, but a real part-write failure now stops the clone, removes the incomplete target automatically, and reports whether cleanup succeeded. (PR [#120](https://github.com/lennix1337/Genexus18MCP/pull/120)).
+- **`save_as` on Design System objects (DSO) now clones both Tokens and Styles parts (issue #119).** `PartAccessor.GetDisplayPartName` now maps `DesignSystemTokensPartGuid` to `"Tokens"` and `DesignSystemStylesPartGuid` to `"Styles"` so both source parts are discovered and copied instead of colliding on `"Source"`.
+- **`save_as` on DataSelector objects preserves structure, conditions, and parameters (issue #116).** DataSelector structure parts cannot be round-tripped as plain source text; `ObjectService.CloneDataSelectorStructurePart` now copies parameters, conditions, orders, and defined-by attributes natively via the SDK object model with XML deserialization fallback.
+- **`genexus_properties` persists and verifies Domain assignments on Attributes and Variables (issue #117).** Setting `Domain`, `DomainBasedOn`, or `BasedOn` now validates that the target Domain exists, applies the assignment via `DomainPropertyApplier.ApplyDomainBasedOn`, and confirms persistence by inspecting the object's `DomainBasedOn` link during post-save verification.
+- **In-process build resolves targets when a Transaction and Table share the same name (issue #115).** `InProcessBuildRunner.ResolveTargetKBObject` disambiguates homonyms by prioritizing primary logic objects (Transactions, Procedures, WebPanels, etc.) over auto-generated Tables and adds support for `Type:Name` qualifiers (e.g. `Transaction:Customer`) and GUIDs.
 
 ## v2.46.0 - 2026-08-24
 

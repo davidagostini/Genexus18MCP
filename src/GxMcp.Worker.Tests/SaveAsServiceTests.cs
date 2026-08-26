@@ -316,5 +316,39 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("error", json["status"]?.ToString());
             Assert.Equal("usage_error", json["error"]?["code"]?.ToString());
         }
+
+        [Fact]
+        public void DesignSystem_ClonesBothTokensAndStylesParts()
+        {
+            var cloner = ClonerWith("DsoSrc", "DesignSystem", "Documentation", "Tokens", "Styles");
+            var svc = new SaveAsService(cloner);
+
+            var args = new JObject { ["name"] = "DsoSrc", ["newName"] = "DsoCopy", ["type"] = "DesignSystem" };
+            var json = JObject.Parse(svc.SaveAs(args));
+
+            Assert.Equal("ok", json["status"]?.ToString());
+            var partsCloned = (JArray)json["result"]?["created"]?["partsCloned"];
+            Assert.NotNull(partsCloned);
+            Assert.Contains("Tokens", partsCloned.Values<string>());
+            Assert.Contains("Styles", partsCloned.Values<string>());
+            Assert.Contains(("DsoSrc", "DsoCopy", "Tokens"), cloner.Clones);
+            Assert.Contains(("DsoSrc", "DsoCopy", "Styles"), cloner.Clones);
+        }
+
+        [Fact]
+        public void DataSelector_ClonesStructurePart()
+        {
+            var cloner = ClonerWith("SelectorSrc", "DataSelector", "Documentation", "DataSelectorStructure");
+            var svc = new SaveAsService(cloner);
+
+            var args = new JObject { ["name"] = "SelectorSrc", ["newName"] = "SelectorCopy", ["type"] = "DataSelector" };
+            var json = JObject.Parse(svc.SaveAs(args));
+
+            Assert.Equal("ok", json["status"]?.ToString());
+            var partsCloned = (JArray)json["result"]?["created"]?["partsCloned"];
+            Assert.NotNull(partsCloned);
+            Assert.Contains("DataSelectorStructure", partsCloned.Values<string>());
+            Assert.Contains(("SelectorSrc", "SelectorCopy", "DataSelectorStructure"), cloner.Clones);
+        }
     }
 }
