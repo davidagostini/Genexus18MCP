@@ -2214,7 +2214,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "SDK layout/WebForm ops: get_tree, set_property, find_controls, inspect_surface, scan_mutators. Object properties: genexus_properties; visual structure: genexus_structure get_visual.",
+      "description": "Layout/WebForm: get_tree, set_property, find_controls, inspect_surface, scan_mutators. Properties: genexus_properties; structure: genexus_structure get_visual.",
       "inputSchema": {
         "examples": [
           {

@@ -38,6 +38,9 @@ namespace GxMcp.Worker.Services
             /// <summary>Clone a single part's content from source → target. Returns Success/Error envelope JSON.</summary>
             string ClonePart(string sourceName, string newName, string partName, string typeFilter);
 
+            /// <summary>Remove an incomplete target after a clone failure. Returns Success/Error envelope JSON.</summary>
+            string DeleteTarget(string newName, string typeFilter);
+
             /// <summary>Return the WorkWithPlus pattern instance bound to the source, or null when none.</summary>
             PatternInstanceDescriptor FindWwpInstance(string sourceName);
 
@@ -138,7 +141,7 @@ namespace GxMcp.Worker.Services
             //      clear "where it stopped" + undo hint envelope. ----
             var completedSteps = new JArray();
             var partsCloned = new JArray();
-            var partsFailed = new JArray();
+            var partsSkipped = new JArray();
 
             // Step 1: create empty target object of the same type.
             string createResult = _cloner.CreateObject(src.Type, newName);
@@ -148,29 +151,31 @@ namespace GxMcp.Worker.Services
             }
             completedSteps.Add("create:" + newName);
 
-            // Step 2: clone each part. A single part failing must NOT abort the clone — the
-            // available-parts list is a superset that can include parts inapplicable to this
-            // object type (e.g. "Layout" on a Procedure), and one such failure used to stop the
-            // loop before the important parts (Variables carrying a working &HttpClient) were ever
-            // cloned. Skip the failing part, record it, and keep going (issue #45).
+            // Step 2: clone each part. Explicitly unsupported/empty parts are skipped (issue #45),
+            // but a real write failure means the target is not a functional clone. Roll it back
+            // immediately instead of returning SavedAs over a partial object (issue #118).
             foreach (var part in (src.Parts ?? new List<string>()))
             {
                 string r = _cloner.ClonePart(sourceName, newName, part, typeFilter);
+                if (IsSkipped(r))
+                {
+                    partsSkipped.Add(new JObject { ["part"] = part, ["detail"] = SafeParseOrString(r) });
+                    continue;
+                }
                 if (!IsSuccess(r))
                 {
-                    partsFailed.Add(new JObject { ["part"] = part, ["detail"] = SafeParseOrString(r) });
-                    continue;
+                    return RollbackFailedClone(sourceName, newName, src.Type, completedSteps,
+                        partsCloned, partsSkipped, part, r);
                 }
                 completedSteps.Add("clonePart:" + part);
                 partsCloned.Add(part);
             }
 
-            // Only a total failure to clone anything is fatal — otherwise a partial clone is a
-            // usable result (the agent gets partsCloned + partsFailed and can retry specific parts).
+            // An object with no cloned part is not a clone. Remove the empty target too.
             if (partsCloned.Count == 0)
             {
-                return Partial(sourceName, newName, completedSteps, "clonePart:<all>",
-                    partsFailed.Count > 0 ? partsFailed.First.ToString() : "No cloneable parts on source.");
+                return RollbackFailedClone(sourceName, newName, src.Type, completedSteps,
+                    partsCloned, partsSkipped, "<all>", "No cloneable parts on source.");
             }
 
             // Step 3: optionally clone the WWP pattern instance.
@@ -204,9 +209,53 @@ namespace GxMcp.Worker.Services
                     ["partsCloned"] = partsCloned
                 }
             };
-            if (partsFailed.Count > 0) ((JObject)payload["created"])["partsSkipped"] = partsFailed;
+            if (partsSkipped.Count > 0) ((JObject)payload["created"])["partsSkipped"] = partsSkipped;
             if (patternBlock != null) payload["patternInstance"] = patternBlock;
             return McpResponse.Ok(target: newName, code: "SavedAs", result: payload);
+        }
+
+        private string RollbackFailedClone(string sourceName, string newName, string type,
+            JArray completedSteps, JArray partsCloned, JArray partsSkipped, string failedPart, string innerResult)
+        {
+            string cleanupResult;
+            try { cleanupResult = _cloner.DeleteTarget(newName, type); }
+            catch (Exception ex) { cleanupResult = ex.Message; }
+            bool removed = IsSuccess(cleanupResult);
+
+            var nextSteps = new JArray();
+            if (!removed)
+            {
+                nextSteps.Add(McpResponse.NextStep("genexus_delete_object",
+                    new JObject { ["name"] = newName, ["type"] = type, ["confirm"] = true },
+                    "Remove the incomplete clone before retrying."));
+            }
+
+            return McpResponse.Err(
+                code: removed ? "SaveAsPartFailed" : "PartialFailure",
+                message: removed
+                    ? "Save-as failed while cloning part '" + failedPart + "'; the incomplete target was removed."
+                    : "Save-as failed while cloning part '" + failedPart + "', and automatic cleanup also failed.",
+                hint: removed
+                    ? "Fix the source-part validation error and retry; no partial target remains."
+                    : "Delete the incomplete target before retrying.",
+                nextSteps: nextSteps,
+                target: newName,
+                extra: new JObject
+                {
+                    ["sourceName"] = sourceName,
+                    ["newName"] = newName,
+                    ["completedSteps"] = completedSteps,
+                    ["partsCloned"] = partsCloned,
+                    ["partsSkipped"] = partsSkipped,
+                    ["failedPart"] = failedPart,
+                    ["detail"] = SafeParseOrString(innerResult),
+                    ["cleanup"] = new JObject
+                    {
+                        ["attempted"] = true,
+                        ["removed"] = removed,
+                        ["detail"] = SafeParseOrString(cleanupResult)
+                    }
+                });
         }
 
         private static string Partial(string sourceName, string newName, JArray completedSteps, string failedStep, string innerResult)
@@ -252,6 +301,18 @@ namespace GxMcp.Worker.Services
                 if (string.Equals(status, "Success", StringComparison.OrdinalIgnoreCase)) return true;
                 // Some services return no status on success and only set "error" on failure.
                 return j["error"] == null && j["code"] == null;
+            }
+            catch { return false; }
+        }
+
+        private static bool IsSkipped(string envelope)
+        {
+            if (!IsSuccess(envelope)) return false;
+            try
+            {
+                var j = JObject.Parse(envelope);
+                return string.Equals(j["code"]?.ToString(), "Skipped", StringComparison.OrdinalIgnoreCase)
+                    || (j["result"]?["skipped"]?.ToObject<bool?>() ?? false);
             }
             catch { return false; }
         }
@@ -345,6 +406,11 @@ namespace GxMcp.Worker.Services
 
             string code = srcToken.ToString();
             return _writes.WriteObject(newName, partName, code);
+        }
+
+        public string DeleteTarget(string newName, string typeFilter)
+        {
+            return _objects.DeleteObject(newName, typeFilter, confirm: true);
         }
 
         public SaveAsService.PatternInstanceDescriptor FindWwpInstance(string sourceName)

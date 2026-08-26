@@ -10,7 +10,7 @@ namespace GxMcp.Worker.Tests
     // exercised behind IFastIncrementalDecision; these tests cover the wiring
     // through BuildService + the default heuristic via a fake implementation
     // injected with SetFastIncrementalDecision.
-    public class FastIncrementalDecisionTests
+    public class FastIncrementalDecisionTests : BuildServiceTestBase
     {
         private sealed class FakeFastIncrementalDecision : IFastIncrementalDecision
         {

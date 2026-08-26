@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **`save_as` no longer leaves a partial WebPanel when a part cannot be cloned (issue #118).** Explicitly empty or unsupported parts remain non-fatal skips, but a real part-write failure now stops the clone, removes the incomplete target automatically, and reports whether cleanup succeeded.
+
 ## v2.46.0 - 2026-08-24
 
 ### Fixed

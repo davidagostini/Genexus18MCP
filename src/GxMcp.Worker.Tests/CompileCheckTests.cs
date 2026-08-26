@@ -9,7 +9,7 @@ namespace GxMcp.Worker.Tests
     // callers, routed through the targeted BuildOne path (skips the DeveloperMenu regen).
     // These tests exercise the synchronous "Accepted" envelope — the background build
     // itself needs a live KB, but caller expansion + the guard resolve up front.
-    public class CompileCheckTests
+    public class CompileCheckTests : BuildServiceTestBase
     {
         [Fact]
         public void CompileCheck_NoTarget_ReturnsNeedsTargetError()

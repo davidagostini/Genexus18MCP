@@ -24,10 +24,13 @@ namespace GxMcp.Worker.Tests
             public List<(string type, string name)> Creates { get; } = new List<(string, string)>();
             public List<(string source, string target, string part)> Clones { get; }
                 = new List<(string, string, string)>();
+            public List<(string name, string type)> Deletes { get; } = new List<(string, string)>();
             public List<(string name, string pattern)> Applies { get; } = new List<(string, string)>();
 
             public string FailOnPart { get; set; }
+            public string SkipOnPart { get; set; }
             public bool FailOnCreate { get; set; }
+            public bool FailOnDelete { get; set; }
 
             public SaveAsService.SourceDescriptor FindSource(string name, string typeFilter)
             {
@@ -52,6 +55,18 @@ namespace GxMcp.Worker.Tests
                 if (FailOnPart != null &&
                     string.Equals(FailOnPart, partName, StringComparison.OrdinalIgnoreCase))
                     return "{\"status\":\"Error\",\"error\":\"part write blew up\"}";
+                if (SkipOnPart != null &&
+                    string.Equals(SkipOnPart, partName, StringComparison.OrdinalIgnoreCase))
+                    return "{\"status\":\"ok\",\"code\":\"Skipped\",\"result\":{\"skipped\":true}}";
+                return "{\"status\":\"Success\"}";
+            }
+
+            public string DeleteTarget(string newName, string typeFilter)
+            {
+                Deletes.Add((newName, typeFilter));
+                if (FailOnDelete)
+                    return "{\"status\":\"Error\",\"error\":\"delete blew up\"}";
+                Existing.Remove(newName);
                 return "{\"status\":\"Success\"}";
             }
 
@@ -226,14 +241,14 @@ namespace GxMcp.Worker.Tests
             Assert.Empty(cloner.Applies);
         }
 
-        // issue #45: a single inapplicable/failing part (e.g. "Layout" on a Procedure) must NOT
+        // issue #45: a single inapplicable/empty part (e.g. "Layout" on a Procedure) must NOT
         // abort the clone before the important parts (Variables) are copied. The failing part is
         // skipped and reported under created.partsSkipped; the clone still succeeds.
         [Fact]
-        public void PartFailure_NonFatal_SkipsPartAndClonesTheRest()
+        public void ExplicitlySkippedPart_NonFatal_ClonesTheRest()
         {
             var cloner = ClonerWith("ProcA", "Procedure", "Source", "Layout", "Variables");
-            cloner.FailOnPart = "Layout";
+            cloner.SkipOnPart = "Layout";
             var svc = new SaveAsService(cloner);
 
             var args = new JObject { ["name"] = "ProcA", ["newName"] = "ProcACopy" };
@@ -247,22 +262,46 @@ namespace GxMcp.Worker.Tests
             var skipped = (JArray)json["result"]?["created"]?["partsSkipped"];
             Assert.NotNull(skipped);
             Assert.Contains(skipped, t => t["part"]?.ToString() == "Layout");
+            Assert.Empty(cloner.Deletes);
         }
 
-        // When NOTHING clones (every part fails), the clone is a genuine failure with an undo hint.
+        // issue #118: a real part-write failure must remove the incomplete target instead of
+        // returning SavedAs over a broken WebPanel.
         [Fact]
-        public void AllPartsFail_ReturnsPartialFailureWithUndoHint()
+        public void PartFailure_RemovesIncompleteTargetAndReturnsError()
         {
-            var cloner = ClonerWith("ProcA", "Procedure", "Source");
-            cloner.FailOnPart = "Source";
+            var cloner = ClonerWith("PanelA", "WebPanel", "WebForm", "Events");
+            cloner.FailOnPart = "Events";
             var svc = new SaveAsService(cloner);
 
-            var args = new JObject { ["name"] = "ProcA", ["newName"] = "ProcACopy" };
+            var args = new JObject { ["name"] = "PanelA", ["newName"] = "PanelACopy" };
             var json = JObject.Parse(svc.SaveAs(args));
 
             Assert.Equal("error", json["status"]?.ToString());
+            Assert.Equal("SaveAsPartFailed", json["error"]?["code"]?.ToString());
+            Assert.True(json["cleanup"]?["removed"]?.ToObject<bool>() ?? false);
+            Assert.DoesNotContain("PanelACopy", cloner.Existing);
+            Assert.Single(cloner.Deletes);
+            Assert.Equal("PanelACopy", cloner.Deletes[0].name);
+        }
+
+        [Fact]
+        public void CleanupFailure_ReportsPartialFailureWithDeleteStep()
+        {
+            var cloner = ClonerWith("PanelA", "WebPanel", "Events");
+            cloner.FailOnPart = "Events";
+            cloner.FailOnDelete = true;
+            var svc = new SaveAsService(cloner);
+
+            var json = JObject.Parse(svc.SaveAs(new JObject
+            {
+                ["name"] = "PanelA",
+                ["newName"] = "PanelACopy"
+            }));
+
             Assert.Equal("PartialFailure", json["error"]?["code"]?.ToString());
-            Assert.Contains("genexus_delete_object", json["error"]?["hint"]?.ToString() ?? "");
+            Assert.False(json["cleanup"]?["removed"]?.ToObject<bool>() ?? true);
+            Assert.Equal("genexus_delete_object", json["error"]?["nextSteps"]?[0]?["tool"]?.ToString());
         }
 
         [Fact]

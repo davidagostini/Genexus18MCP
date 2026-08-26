@@ -1,3 +1,9 @@
+using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Reflection;
+using System.Threading;
+using GxMcp.Worker.Services;
 using Xunit;
 
 // v2.6.9 — Worker tests share enough process-global state (Console.Error
@@ -25,4 +31,38 @@ namespace GxMcp.Worker.Tests
 
     [CollectionDefinition("InProcessSdkReflection", DisableParallelization = true)]
     public class InProcessSdkReflectionCollection { }
+
+    // BuildService starts background work and stores it in process-global registries.
+    // Coverage instrumentation can keep that work alive into the next test even though
+    // the suite itself is serial. Keep build-oriented test classes isolated from it.
+    public abstract class BuildServiceTestBase : IDisposable
+    {
+        protected BuildServiceTestBase() => ResetBuildState();
+
+        public void Dispose()
+        {
+            var timer = Stopwatch.StartNew();
+            while (InFlight().Count > 0 && timer.Elapsed < TimeSpan.FromSeconds(3))
+                Thread.Sleep(10);
+            ResetBuildState();
+        }
+
+        private static void ResetBuildState()
+        {
+            Tasks().Clear();
+            InFlight().Clear();
+        }
+
+        private static ConcurrentDictionary<string, BuildService.BuildTaskStatus> Tasks()
+            => Registry("_tasks");
+
+        private static ConcurrentDictionary<string, BuildService.BuildTaskStatus> InFlight()
+            => Registry("_inFlightBuilds");
+
+        private static ConcurrentDictionary<string, BuildService.BuildTaskStatus> Registry(string name)
+        {
+            var field = typeof(BuildService).GetField(name, BindingFlags.Static | BindingFlags.NonPublic);
+            return (ConcurrentDictionary<string, BuildService.BuildTaskStatus>)field.GetValue(null);
+        }
+    }
 }
