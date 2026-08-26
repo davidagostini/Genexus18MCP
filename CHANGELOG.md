@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.46.1 - 2026-08-26
+
 ### Fixed
 - **`save_as` no longer leaves a partial WebPanel when a part cannot be cloned (issue #118).** Explicitly empty or unsupported parts remain non-fatal skips, but a real part-write failure now stops the clone, removes the incomplete target automatically, and reports whether cleanup succeeded. (PR [#120](https://github.com/lennix1337/Genexus18MCP/pull/120)).
 - **`save_as` on Design System objects (DSO) now clones both Tokens and Styles parts (issue #119).** `PartAccessor.GetDisplayPartName` now maps `DesignSystemTokensPartGuid` to `"Tokens"` and `DesignSystemStylesPartGuid` to `"Styles"` so both source parts are discovered and copied instead of colliding on `"Source"`.
