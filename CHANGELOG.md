@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.47.0 - 2026-08-27
+
 ### Added
 - **`McpMiddlewarePipeline` for Gateway Request Processing (Pass 2 Architectural Candidate 1).** Decomposed the monolithic gateway request loop into an extensible, unit-testable pipeline (`IMcpMiddleware`) isolating schema validation, auto-typing, idempotency, semantic caching, and response compaction.
 - **Unified `QueryGrammar` & Tokenization (Pass 2 Architectural Candidate 2).** Extracted an authoritative query parser and canonical type alias resolver (`NormalizeType`, `IsTypeMatch`, prefix extraction for `type:`, `parent:`, `usedby:`, `metadata:`) shared across `SearchService`, `ListService`, and `SourceSearchService`.
