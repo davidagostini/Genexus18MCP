@@ -54,6 +54,9 @@ namespace GxMcp.Gateway
             };
         }
 
+        public int Count => _pending.Count;
+        public System.Collections.Generic.IReadOnlyCollection<RecoveryRequirement> Pending => _pending.Values.ToList();
+
         private static string Key(string kbAlias, string target)
             => kbAlias.Trim().ToLowerInvariant() + "|" + target.Trim().ToLowerInvariant();
     }

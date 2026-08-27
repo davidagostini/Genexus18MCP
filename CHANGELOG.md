@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+- **`McpMiddlewarePipeline` for Gateway Request Processing (Pass 2 Architectural Candidate 1).** Decomposed the monolithic gateway request loop into an extensible, unit-testable pipeline (`IMcpMiddleware`) isolating schema validation, auto-typing, idempotency, semantic caching, and response compaction.
+- **Unified `QueryGrammar` & Tokenization (Pass 2 Architectural Candidate 2).** Extracted an authoritative query parser and canonical type alias resolver (`NormalizeType`, `IsTypeMatch`, prefix extraction for `type:`, `parent:`, `usedby:`, `metadata:`) shared across `SearchService`, `ListService`, and `SourceSearchService`.
+- **Polymorphic `IVisualSurfaceAdapter` for UI & Layout (Pass 2 Architectural Candidate 3).** Established a unified visual surface abstraction bridging WebForms, Procedure Reports, and Design System Objects (`WebFormSurfaceAdapter`, `ReportLayoutSurfaceAdapter`).
+- **`MultiObjectUnitOfWork` for Atomic Refactoring (Pass 2 Architectural Candidate 4).** Added multi-object transaction management in `RefactorService` with in-memory staging, dry-run diffing, and automated rollback across all modified caller objects upon intermediate failure.
+- **`DiagnosticAndHealingEngine` (Pass 2 Architectural Candidate 5).** Unified watchdog health probing, crash ledger forensics, mutation fencing analysis, and automated remediation routines for Gateway and Worker self-healing.
+- **`CommandHandlerRegistry` for Worker modular command resolution (Architectural Candidate 3).** Replaced monolithic eager command dispatch with a lazy registry pattern supporting direct canonical tool name resolution (`genexus_*`) and typed `CommandContext` execution.
+- **Authoritative `MutationEngine` (Architectural Candidate 2).** Consolidated object modifications into a unified pipeline managing preflight checks, optimistic concurrency guards, dry-run simulation, SDK COM transactions, snapshot persistence, and automated rollback compensation.
+- **Declarative Gateway Tool Dispatch Seam (Architectural Candidate 1).** Streamlined `McpRouter.ConvertToolCall` to forward canonical tools defined in `tool_definitions.json` directly to the Worker's command registry, preventing schema drift and parameter-dropping bugs while bypassing shallow router boilerplate.
+- **Unified `CompilationPipeline` (Architectural Candidate 4).** Encapsulated compilation, in-process specification, MSBuild execution, process tree management, and structured compiler diagnostic parsing behind a cohesive lifecycle module.
+- **Consolidated `ObjectInspectionModule` (Architectural Candidate 5).** Unified object reading, multi-part extraction, summaries, and 360-degree context extraction into a tiered inspection engine (`Summary`, `Source`, `Parts`, `Full`, `Context360`).
+
 ## v2.46.2 - 2026-08-26
 
 ### Fixed

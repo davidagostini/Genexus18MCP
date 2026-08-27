@@ -13,6 +13,10 @@ namespace GxMcp.Worker.Services
         private static CommandDispatcher _instance;
         private static readonly object _lock = new object();
 
+        private readonly CommandHandlerRegistry _registry;
+        private readonly MutationEngine _mutationEngine;
+        private readonly CompilationPipeline _compilationPipeline;
+        private readonly ObjectInspectionModule _objectInspectionModule;
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
         private readonly IndexCacheService _indexCacheService;
@@ -304,7 +308,36 @@ namespace GxMcp.Worker.Services
             _objectService.SetPatternAnalysisService(_patternAnalysisService);
             _linterService.SetWriteService(_writeService);
 
+            _mutationEngine = new MutationEngine(_writeService, _patchService, _objectService);
+            _compilationPipeline = new CompilationPipeline(_buildService, _kbService);
+            _objectInspectionModule = new ObjectInspectionModule(_objectService, _analyzeService, _kbService, _batchService);
             _commandTable = BuildCommandTable();
+            _registry = BuildCommandHandlerRegistry();
+        }
+
+        private CommandHandlerRegistry BuildCommandHandlerRegistry()
+        {
+            var registry = new CommandHandlerRegistry();
+
+            // Direct canonical tool registrations
+            registry.RegisterTool("genexus_read", ctx => _objectInspectionModule.Inspect(ctx.Target ?? ctx.ArgStr("name"), InspectionDepth.Source, ctx.Args));
+            registry.RegisterTool("genexus_edit", ctx => _mutationEngine.Mutate(ctx.ArgStr("mode", "xml"), ctx.Target ?? ctx.ArgStr("name"), ctx.Args, ctx.Payload ?? ctx.ArgStr("content")));
+            registry.RegisterTool("genexus_tutorial", ctx => _tutorialService.GetStep(ctx.ArgInt("step") ?? 1));
+            registry.RegisterTool("genexus_orient", ctx => _orientService.Welcome());
+            registry.RegisterTool("genexus_doctor", ctx => _doctorService.Diagnose());
+            registry.RegisterTool("genexus_what_if", ctx => _whatIfService.Simulate(ctx.Args?["change"] as JObject));
+            registry.RegisterTool("genexus_reverse_pattern", ctx => _reversePatternService.Infer(ctx.Args?["source"] as JArray));
+            registry.RegisterTool("genexus_time_travel", ctx => _timeTravelService.Recover(ctx.Target ?? ctx.ArgStr("name"), ctx.ArgStr("at")));
+            registry.RegisterTool("genexus_ai_complete", ctx => _aiCompleteService.Complete(ctx.ArgStr("name"), ctx.ArgStr("part"), ctx.ArgStr("context"), ctx.ArgInt("maxTokens") ?? 200).ToString(Newtonsoft.Json.Formatting.None));
+            registry.RegisterTool("genexus_voice", ctx => _voiceIntentService.Map(ctx.ArgStr("transcript")).ToString(Newtonsoft.Json.Formatting.None));
+            registry.RegisterTool("genexus_auto_test", ctx => _autoTestService.Generate(ctx.ArgStr("path")));
+            registry.RegisterTool("genexus_multi_agent_lock", ctx => Handle_MultiAgentLock(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_sd_panel", ctx => Handle_SdPanel(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_data_view", ctx => Handle_DataView(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_generator_reference", ctx => Handle_GeneratorReference(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_wwp", ctx => Handle_WwpAction(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+
+            return registry;
         }
 
         public static CommandDispatcher Instance
@@ -592,6 +625,16 @@ namespace GxMcp.Worker.Services
                 using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(commandCancelToken, out _))
                 using (GxMcp.Worker.Helpers.ProgressContext.Use(progressToken))
                 {
+                    string toolName = request["tool"]?.ToString()
+                        ?? request["name"]?.ToString()
+                        ?? (request["params"] as JObject)?["name"]?.ToString();
+
+                    var ctx = new CommandContext(request, method, action, target, payload, args, toolName);
+                    if (_registry != null && _registry.TryDispatch(ctx, out var regResult))
+                    {
+                        return regResult;
+                    }
+
                     // Dispatch-table lookup (Plan 005): replaces the former switch(method) with
                     // ~83 cases. Each entry routes to the exact same handler with the exact same
                     // args as before; a null result means "no matching action for this method"

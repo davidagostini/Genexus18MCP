@@ -1262,10 +1262,28 @@ namespace GxMcp.Gateway
                 }
             }
 
+            if (RemovedToolsRegistry.Map.ContainsKey(toolName)) return null;
+
             foreach (var router in _routers)
             {
                 var converted = router.ConvertToolCall(toolName, args);
                 if (converted != null) return converted;
+            }
+
+            // Direct declarative tool dispatch seam (Candidate 1 deepening)
+            // Forwards canonical tools declared in tool_definitions.json directly to Worker CommandHandlerRegistry.
+            bool isDeclared = _toolDefinitions != null && _toolDefinitions.Any(t => string.Equals(t["name"]?.ToString(), toolName, StringComparison.OrdinalIgnoreCase));
+            if (isDeclared)
+            {
+                return new
+                {
+                    tool = toolName,
+                    method = toolName,
+                    action = args?["action"]?.ToString() ?? args?["mode"]?.ToString() ?? args?["step"]?.ToString(),
+                    target = args?["target"]?.ToString() ?? args?["name"]?.ToString() ?? args?["object"]?.ToString() ?? args?["kb"]?.ToString(),
+                    payload = args?["payload"]?.ToString() ?? args?["content"]?.ToString() ?? args?["source"]?.ToString() ?? args?["code"]?.ToString(),
+                    @params = args ?? new JObject()
+                };
             }
 
             return null;
