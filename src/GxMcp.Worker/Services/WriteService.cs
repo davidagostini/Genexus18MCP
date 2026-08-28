@@ -1605,9 +1605,9 @@ namespace GxMcp.Worker.Services
                             Logger.Debug("[DEBUG-SAVE] SDK Checkout skipped: " + coEx.Message);
                         }
 
-                        // 3. Save Part (CRITICAL: Save the part explicitly first)
+                        // 3. Save Part (CRITICAL: save only the requested part)
                         failureStage = "part_save";
-                        Logger.Info(string.Format("[DEBUG-SAVE] Invoking part.Save() for {0}...", part.TypeDescriptor?.Name));
+                        Logger.Info(string.Format("[DEBUG-SAVE] Invoking part persistence for {0}...", part.TypeDescriptor?.Name));
                         bool skippedPartSave = false;
                         if (!partOnly && (preferFastSourceSave || WritePolicy.IsLogicalSourcePart(partName)) &&
                             part is global::Artech.Architecture.Common.Objects.ISource)
@@ -1621,14 +1621,20 @@ namespace GxMcp.Worker.Services
                             try {
                                 if (partOnly)
                                 {
-                                    var onSavingMethod = part.GetType().GetMethod(
-                                        "OnSavingEnviromentChange",
-                                        BindingFlags.Public | BindingFlags.Instance);
-                                    onSavingMethod?.Invoke(part, null);
-                                    Logger.Debug("[DEBUG-SAVE] Part-only OnSavingEnviromentChange() invoked.");
+                                    if (!TryDirectPartSaveWithParent(part, obj, decodedCode))
+                                    {
+                                        if (!TryForcePartSave(part))
+                                        {
+                                            part.Save();
+                                            Logger.Info("[DEBUG-SAVE] Part-only Save() fallback completed.");
+                                        }
+                                    }
                                 }
-                                part.Save();
-                                Logger.Info("[DEBUG-SAVE] part.Save() completed.");
+                                else
+                                {
+                                    part.Save();
+                                    Logger.Info("[DEBUG-SAVE] part.Save() completed.");
+                                }
                             } catch (Exception exPart) {
                                 string partMsgs = GetSdkMessagesSafe(part);
                                 lastSdkMessages = partMsgs;
@@ -1836,6 +1842,188 @@ namespace GxMcp.Worker.Services
                 // obj may not have been bound yet (exception before FindObject).
                 return BuildEnrichedSaveError(null, ex, null, target, partName).ToString();
             }
+        }
+
+        /// <summary>
+        /// Save exactly one part while bypassing the SDK's unchanged-mode short circuit.
+        /// KBObject.Save() is deliberately not used here: for WebPanel it can enumerate and
+        /// serialize every part, which is precisely the data-loss path this partial writer
+        /// must avoid. The preference object is passed to the inherited Entity.Save method
+        /// through reflection because that overload is internal in the GeneXus SDK.
+        /// </summary>
+        private static bool TryForcePartSave(global::Artech.Architecture.Common.Objects.KBObjectPart part)
+        {
+            if (part == null) return false;
+
+            try
+            {
+                var preferences = new global::Artech.Architecture.Common.Objects.KBObjectSavePreferences
+                {
+                    ForceSave = true,
+                    ForceSaveDefaultParts = false,
+                    SkipValidation = true,
+                    SkipChecksum = true,
+                    UpdateCrossReference = false,
+                    UpdateParentModels = false,
+                    AllowUpdateHeader = true
+                };
+
+                MethodInfo saveWithPreferences = null;
+                for (var type = part.GetType(); type != null && type != typeof(object); type = type.BaseType)
+                {
+                    saveWithPreferences = type.GetMethods(
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                        .FirstOrDefault(method =>
+                            method.Name == "Save" &&
+                            method.GetParameters().Length == 1 &&
+                            method.GetParameters()[0].ParameterType.IsInstanceOfType(preferences));
+                    if (saveWithPreferences != null) break;
+                }
+
+                if (saveWithPreferences == null)
+                {
+                    Logger.Debug("[DEBUG-SAVE] Part-only Save(preferences) overload not found.");
+                    return false;
+                }
+
+                saveWithPreferences.Invoke(part, new object[] { preferences });
+                Logger.Info("[DEBUG-SAVE] Part-only Save(ForceSave=true, ForceSaveDefaultParts=false) completed.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                var inner = ex.InnerException ?? ex;
+                Logger.Warn("[DEBUG-SAVE] Part-only Save(preferences) failed: " + inner.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Invoke the SDK's two-entity persistence primitive with exactly the changed part and
+        /// its owner. This updates the parent composition pointer without calling the owner's
+        /// public Save/EnsureSave path or enumerating its other parts.
+        /// </summary>
+        private static bool TryDirectPartSaveWithParent(
+            global::Artech.Architecture.Common.Objects.KBObjectPart part,
+            global::Artech.Architecture.Common.Objects.KBObject owner,
+            string sourceContent)
+        {
+            if (part == null || owner == null) return false;
+
+            try
+            {
+                if (part is global::Artech.Architecture.Common.Objects.ISource sourcePart)
+                {
+                    sourcePart.Source = sourceContent ?? string.Empty;
+                }
+
+                Type entityManagerType = FindLoadedType("Artech.Layers.BL.EntityManager")
+                    ?? FindLoadedType("Artech.Udm.Framework.EntityManager");
+
+                if (entityManagerType == null)
+                {
+                    Logger.Debug("[DEBUG-SAVE] Part-only SaveWithParent skipped: EntityManager unavailable.");
+                    return false;
+                }
+
+                MethodInfo saveWithParent = entityManagerType.GetMethods(
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance)
+                    .Where(method => method.Name == "SaveWithParent")
+                    .Where(method => method.GetParameters().Length >= 2 && method.GetParameters().Length <= 3)
+                    .FirstOrDefault(method =>
+                    {
+                        var parameters = method.GetParameters();
+                        return parameters[0].ParameterType.IsInstanceOfType(part)
+                            && parameters[1].ParameterType.IsInstanceOfType(owner);
+                    });
+
+                if (saveWithParent == null)
+                {
+                    Logger.Debug("[DEBUG-SAVE] Part-only SaveWithParent skipped: matching overload unavailable.");
+                    return false;
+                }
+
+                object manager = null;
+                if (!saveWithParent.IsStatic)
+                {
+                    var instanceProperty = entityManagerType.GetProperty("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    if (instanceProperty != null) manager = instanceProperty.GetValue(null, null);
+                    if (manager == null)
+                    {
+                        var instanceField = entityManagerType.GetField("Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                            ?? entityManagerType.GetField("_instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                            ?? entityManagerType.GetField("m_Instance", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                        if (instanceField != null) manager = instanceField.GetValue(null);
+                    }
+                    if (manager == null)
+                    {
+                        Logger.Debug("[DEBUG-SAVE] Part-only SaveWithParent skipped: EntityManager instance unavailable.");
+                        return false;
+                    }
+                }
+
+                var parametersForCall = saveWithParent.GetParameters();
+                var callArgs = new object[parametersForCall.Length];
+                callArgs[0] = part;
+                callArgs[1] = owner;
+                for (int i = 2; i < parametersForCall.Length; i++)
+                {
+                    var parameterType = parametersForCall[i].ParameterType;
+                    if (parameterType.Name.Contains("Preferences"))
+                    {
+                        var preferences = Activator.CreateInstance(parameterType);
+                        SetPreferenceBool(preferences, "ForceSave", true);
+                        SetPreferenceBool(preferences, "ForceSaveDefaultParts", false);
+                        SetPreferenceBool(preferences, "SkipValidation", true);
+                        SetPreferenceBool(preferences, "SkipChecksum", true);
+                        callArgs[i] = preferences;
+                    }
+                    else
+                    {
+                        callArgs[i] = parameterType.IsValueType ? Activator.CreateInstance(parameterType) : null;
+                    }
+                }
+
+                Logger.Info("[DEBUG-SAVE] Invoking EntityManager.SaveWithParent for the Events part only.");
+                saveWithParent.Invoke(manager, callArgs);
+                Logger.Info("[DEBUG-SAVE] Part-only SaveWithParent(part, owner) completed; sibling enumeration bypassed.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                var inner = ex.InnerException ?? ex;
+                Logger.Warn("[DEBUG-SAVE] Part-only SaveWithParent failed: " + inner.Message);
+                return false;
+            }
+        }
+
+        private static Type FindLoadedType(string fullName)
+        {
+            if (string.IsNullOrWhiteSpace(fullName)) return null;
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    var type = assembly.GetType(fullName, throwOnError: false, ignoreCase: false);
+                    if (type != null) return type;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private static void SetPreferenceBool(object preferences, string propertyName, bool value)
+        {
+            if (preferences == null) return;
+            try
+            {
+                var property = preferences.GetType().GetProperty(
+                    propertyName,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (property != null && property.CanWrite && property.PropertyType == typeof(bool))
+                    property.SetValue(preferences, value, null);
+            }
+            catch { }
         }
 
         // Friction-report #2: when the bare-error catches fire (outside the transaction's own
