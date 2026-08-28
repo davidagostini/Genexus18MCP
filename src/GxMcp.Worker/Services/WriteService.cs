@@ -1617,6 +1617,14 @@ namespace GxMcp.Worker.Services
                         else
                         {
                             try {
+                                if (partOnly)
+                                {
+                                    var onSavingMethod = part.GetType().GetMethod(
+                                        "OnSavingEnviromentChange",
+                                        BindingFlags.Public | BindingFlags.Instance);
+                                    onSavingMethod?.Invoke(part, null);
+                                    Logger.Debug("[DEBUG-SAVE] Part-only OnSavingEnviromentChange() invoked.");
+                                }
                                 part.Save();
                                 Logger.Info("[DEBUG-SAVE] part.Save() completed.");
                             } catch (Exception exPart) {
