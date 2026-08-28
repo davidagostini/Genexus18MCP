@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.48.0 - 2026-08-28
+
 ### Added
 - **Unified `NavigationReport` In-Memory Domain Engine (Architectural Candidate 2).** Introduced a strongly-typed `NavigationReport` domain model (`NavigationLevel`, `NavigationFilter`) encapsulating `.nvg.xml` navigation discovery, disk snapshotting, and direct in-memory SQL statement projection. Eliminates legacy intermediate JSON string serialization and re-parsing between `NavigationService`, `NavigationSqlService`, and `NavigationViewService`.
 - **Deep `VariableService` & Type Resolution Engine (Architectural Candidate 4).** Consolidated variable CRUD operations, two-tier type resolution (`VariableTypeResolver`), framework-managed protections, and source auto-declaration heuristics into a cohesive `VariableService` interface (`IVariableService`).
