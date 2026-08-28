@@ -1523,11 +1523,13 @@ namespace GxMcp.Worker.Services
                         Logger.Debug("[DEBUG-SAVE] Part property '" + pDirtyProp.Name + "' set to TRUE");
                     }
 
-                    // Mark Header Object as Dirty (Essential for Save)
+                    // Mark Header Object as Dirty so the SDK records the changed part.
+                    // Part-only persistence still stops at part.Save(); it never calls
+                    // obj.EnsureSave(), which would serialize the complete WebPanel.
                     var oType = obj.GetType();
                     var oDirtyProp = oType.GetProperty("Dirty", BindingFlags.Public | BindingFlags.Instance)
                                   ?? oType.GetProperty("IsDirty", BindingFlags.Public | BindingFlags.Instance);
-                    if (!partOnly && oDirtyProp != null) {
+                    if (oDirtyProp != null) {
                         oDirtyProp.SetValue(obj, true);
                         Logger.Debug("[DEBUG-SAVE] Object property '" + oDirtyProp.Name + "' set to TRUE");
                     }
