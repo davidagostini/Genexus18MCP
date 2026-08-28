@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- **WebPanel Events patch persistence.** `genexus_edit` `mode=patch` now saves
+  WebPanel `Events` through the native `ISource` part transaction without
+  serializing or saving the whole WebPanel. Exact post-save re-read/rollback
+  stays scoped to that part, and compressed `.bak.gz` edit snapshots are
+  restored as their recorded part instead of being parsed as `PatternInstance`.
+
 ## v2.47.0 - 2026-08-27
 
 ### Added

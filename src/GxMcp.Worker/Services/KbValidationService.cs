@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
@@ -198,6 +199,54 @@ namespace GxMcp.Worker.Services
                         message: "target and snapshotPath are required.",
                         hint: "Use the snapshots-list action to find available paths.",
                         target: target);
+
+                // EditSnapshotStore entries are UTF-8 text (and may be gzip-compressed),
+                // whereas PatternSnapshotStore entries are XML. Never send an edit backup
+                // such as <guid>-Events-<timestamp>.bak.gz to PatternInstance: that was the
+                // source of the 0x1F/PatternInvalidXml failure during Events recovery.
+                if (snapshotPath.EndsWith(".bak", StringComparison.OrdinalIgnoreCase)
+                    || snapshotPath.EndsWith(".bak.gz", StringComparison.OrdinalIgnoreCase))
+                {
+                    var obj = _objectService.FindObject(target);
+                    if (obj == null)
+                        return McpResponse.Err(
+                            code: "ObjectNotFound",
+                            message: "Object not found.",
+                            hint: "Use type=<...> to disambiguate if multiple objects share the name.",
+                            nextSteps: new JArray(McpResponse.NextStep(
+                                tool: "genexus_list_objects",
+                                args: new JObject(),
+                                why: "Lists objects so you can find the correct name and type.")),
+                            target: target);
+
+                    string kbPath = null;
+                    try { kbPath = _objectService.GetKbService().GetKbPath(); } catch { }
+                    string root = EditSnapshotStore.ResolveRoot(kbPath);
+                    string requestedPath = Path.GetFullPath(snapshotPath);
+                    var entry = EditSnapshotStore.ListForGuid(root, obj.Guid.ToString())
+                        .FirstOrDefault(e => string.Equals(Path.GetFullPath(e.Path), requestedPath, StringComparison.OrdinalIgnoreCase));
+                    if (entry == null || string.IsNullOrWhiteSpace(entry.Part))
+                        return McpResponse.Err(
+                            code: "EditSnapshotNotFound",
+                            message: "The requested edit snapshot is not registered for this object.",
+                            hint: "Use snapshots-list to select an edit snapshot path for the target object.",
+                            target: target);
+
+                    string content = EditSnapshotStore.ReadSnapshot(entry.Path);
+                    if (content == null)
+                        return McpResponse.Err(code: "SnapshotReadFailed", message: "File exists but could not be decoded: " + entry.Path, target: target);
+
+                    string typeFilter = obj.TypeDescriptor?.Name;
+                    bool eventsPartOnly = string.Equals(entry.Part, "Events", StringComparison.OrdinalIgnoreCase);
+                    return writeService.WriteObject(
+                        target,
+                        entry.Part,
+                        content,
+                        typeFilter,
+                        autoValidate: false,
+                        autoInjectVariables: false,
+                        partOnly: eventsPartOnly);
+                }
 
                 var xml = PatternSnapshotStore.ReadSnapshot(snapshotPath);
                 if (string.IsNullOrEmpty(xml))

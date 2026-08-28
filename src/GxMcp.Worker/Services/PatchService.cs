@@ -722,14 +722,13 @@ namespace GxMcp.Worker.Services
                             extra: new JObject { ["baseVersion"] = baseVersion, ["currentVersion"] = currentVersion });
                 }
 
-                // 3. Write Back (re-normalize to CRLF for GeneXus)
+                // 3. Write Back (re-normalize to CRLF for GeneXus). Events is a logical
+                // ISource part on WebPanel; route it through the part-only boundary so the
+                // SDK does not serialize/save the whole WebPanel.
                 string finalCode = updatedSource.Replace("\n", Environment.NewLine);
                 var writeStopwatch = Stopwatch.StartNew();
-                // Do not use the object-only fast path for textual patches. On GX18 U16,
-                // obj.Save() can advance the object's version and leave the changed ISource
-                // only in the live SDK instance. The full path saves the part explicitly and
-                // commits the object transaction, matching mode=full persistence semantics.
-                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: autoInjectVariables);
+                bool eventsPartOnly = string.Equals(partName, "Events", StringComparison.OrdinalIgnoreCase);
+                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: autoInjectVariables, partOnly: eventsPartOnly);
                 writeStopwatch.Stop();
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
                 JObject writePayload = ParseWriteResult(writeResult);
@@ -806,7 +805,7 @@ namespace GxMcp.Worker.Services
                         // requested and the fresh pre-write snapshot is available.
                         if (PatchPersistenceReceipt.ShouldRollback(persistedMatches, rollbackOnFailure) && originalSource != null)
                         {
-                            string rollbackResult = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
+                            string rollbackResult = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false, partOnly: eventsPartOnly);
                             JObject rollbackPayload = ParseWriteResult(rollbackResult);
                             // WriteService's legacy verifier may call a durable rollback
                             // WriteNotPersisted solely because it applies a different text

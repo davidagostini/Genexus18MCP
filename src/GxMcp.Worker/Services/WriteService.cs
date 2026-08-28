@@ -900,7 +900,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false)
+        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false, bool partOnly = false)
         {
             partName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
 
@@ -953,7 +953,7 @@ namespace GxMcp.Worker.Services
             string raw;
             try
             {
-                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64, strictVerify);
+                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64, strictVerify, partOnly);
             }
             finally
             {
@@ -1073,7 +1073,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true)
+        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool partOnly = false)
         {
             try
             {
@@ -1401,6 +1401,22 @@ namespace GxMcp.Worker.Services
                     );
                 }
 
+                // A partial source write is deliberately narrower than the normal object
+                // writer: it is valid only for an ISource logical part. In particular, this
+                // guard prevents a caller from routing PatternInstance/WebForm XML through
+                // the Events-only persistence boundary.
+                if (partOnly && (!(part is global::Artech.Architecture.Common.Objects.ISource)
+                    || !WritePolicy.IsLogicalSourcePart(partName)))
+                {
+                    return CreateWriteError(
+                        "Partial source save requires a logical ISource part",
+                        target,
+                        partName,
+                        "The part-only persistence path does not serialize PatternInstance, WebForm, or other non-textual parts.",
+                        obj,
+                        code: "PartialSourcePartUnsupported");
+                }
+
                 // Issue #24 — skip the no-change short-circuit when a prior write to this
                 // part persisted empty. The in-memory Source still holds the content the
                 // SDK dropped, so it would falsely compare equal to the incoming code and
@@ -1511,7 +1527,7 @@ namespace GxMcp.Worker.Services
                     var oType = obj.GetType();
                     var oDirtyProp = oType.GetProperty("Dirty", BindingFlags.Public | BindingFlags.Instance)
                                   ?? oType.GetProperty("IsDirty", BindingFlags.Public | BindingFlags.Instance);
-                    if (oDirtyProp != null) {
+                    if (!partOnly && oDirtyProp != null) {
                         oDirtyProp.SetValue(obj, true);
                         Logger.Debug("[DEBUG-SAVE] Object property '" + oDirtyProp.Name + "' set to TRUE");
                     }
@@ -1520,7 +1536,7 @@ namespace GxMcp.Worker.Services
                 // 3. PERSISTENCE SEQUENCE
                 try
                 {
-                    EnsurePersistenceWarmup();
+                    if (!partOnly) EnsurePersistenceWarmup();
 
                     if (preferFastSourceSave &&
                         part is global::Artech.Architecture.Common.Objects.ISource &&
@@ -1591,7 +1607,7 @@ namespace GxMcp.Worker.Services
                         failureStage = "part_save";
                         Logger.Info(string.Format("[DEBUG-SAVE] Invoking part.Save() for {0}...", part.TypeDescriptor?.Name));
                         bool skippedPartSave = false;
-                        if ((preferFastSourceSave || WritePolicy.IsLogicalSourcePart(partName)) &&
+                        if (!partOnly && (preferFastSourceSave || WritePolicy.IsLogicalSourcePart(partName)) &&
                             part is global::Artech.Architecture.Common.Objects.ISource)
                         {
                             skippedPartSave = true;
@@ -1634,17 +1650,26 @@ namespace GxMcp.Worker.Services
                             throw new Exception($"Part save reported errors: {checkMsgs}");
                         }
 
-                        // 4. Save Object (Unified approach)
+                        // 4. Save Object (Unified approach). A part-only source patch stops
+                        // here: calling EnsureSave would re-serialize the WebPanel and can
+                        // overwrite unrelated Events bytes on GeneXus 18 U16.
                         try 
                         {
-                            failureStage = "object_save";
-                            Logger.Info($"[DEBUG-SAVE] Invoking obj.EnsureSave(check: {autoValidate.ToString().ToLowerInvariant()})...");
-                            // PatchService deliberately passes autoValidate=false: a best-effort
-                            // source patch must not run a full-object Validate pass and block the
-                            // single STA worker on unrelated legacy errors. The previous hardcoded
-                            // true made the public validation mode ineffective.
-                            obj.EnsureSave(autoValidate);
-                            Logger.Info($"[DEBUG-SAVE] obj.EnsureSave({autoValidate.ToString().ToLowerInvariant()}) completed.");
+                            if (!partOnly)
+                            {
+                                failureStage = "object_save";
+                                Logger.Info($"[DEBUG-SAVE] Invoking obj.EnsureSave(check: {autoValidate.ToString().ToLowerInvariant()})...");
+                                // PatchService deliberately passes autoValidate=false: a best-effort
+                                // source patch must not run a full-object Validate pass and block the
+                                // single STA worker on unrelated legacy errors. The previous hardcoded
+                                // true made the public validation mode ineffective.
+                                obj.EnsureSave(autoValidate);
+                                Logger.Info($"[DEBUG-SAVE] obj.EnsureSave({autoValidate.ToString().ToLowerInvariant()}) completed.");
+                            }
+                            else
+                            {
+                                Logger.Info($"[DEBUG-SAVE] Part-only persistence: skipping obj.EnsureSave() for {target}/{partName}.");
+                            }
                         }
                         catch (Exception ex) when (autoValidate && (ex.Message.Contains("Validation failed") || ex.Message.Contains("Save failed")))
                         {
@@ -1705,18 +1730,21 @@ namespace GxMcp.Worker.Services
                     // background queue inside SdkGate — not a raw Task.Run pool thread,
                     // which would race concurrent SDK activity (see SdkGate.cs invariant
                     // and the matching pattern in IndexCacheService.UpdateEntry's enrich step).
-                    var objToIndex = obj;
-                    Program.EnqueueBackground(() => {
-                        try {
-                            using (SdkGate.Enter())
-                            {
-                                _objectService.GetKbService().GetIndexCache().UpdateEntry(objToIndex);
-                            }
-                        } catch (Exception ex) { Logger.Error("[DEBUG-SAVE] Background Index update failed: " + ex.Message); }
-                    });
+                    if (!partOnly)
+                    {
+                        var objToIndex = obj;
+                        Program.EnqueueBackground(() => {
+                            try {
+                                using (SdkGate.Enter())
+                                {
+                                    _objectService.GetKbService().GetIndexCache().UpdateEntry(objToIndex);
+                                }
+                            } catch (Exception ex) { Logger.Error("[DEBUG-SAVE] Background Index update failed: " + ex.Message); }
+                        });
+                    }
                     
                     // Final persistence with debounce to avoid sync commit on every write.
-                    ScheduleFlush();
+                    if (!partOnly) ScheduleFlush();
 
                     Logger.Info("[DEBUG-SAVE] SAVE & COMMIT COMPLETE.");
                     _objectService.MarkReadCacheDirty(obj, partName);
@@ -1766,6 +1794,11 @@ namespace GxMcp.Worker.Services
                     var writeWarnings = new JArray();
                     if (explicitBase64 || usedBase64Sniff)
                         writeResult["decodedBase64"] = true;
+                    if (partOnly)
+                    {
+                        writeResult["persistencePath"] = "part_save_only";
+                        writeResult["objectSave"] = false;
+                    }
                     if (!string.Equals(retryStrategy, "standard", StringComparison.Ordinal))
                     {
                         writeResult["retryStrategy"] = retryStrategy;
