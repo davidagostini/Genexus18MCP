@@ -27,6 +27,7 @@ namespace GxMcp.Worker.Services
         private readonly RefactorService _refactorService;
         private readonly BatchService _batchService;
         private readonly ForgeService _forgeService;
+        private readonly VariableService _variableService;
         private readonly ValidationService _validationService;
         private readonly TestService _testService;
         private readonly SearchService _searchService;
@@ -200,6 +201,7 @@ namespace GxMcp.Worker.Services
             _dataInsightService = new DataInsightService(_kbService, _objectService, _navigationService, _patternAnalysisService);
             _databaseInfoService = new DatabaseInfoService(_kbService);
             _writeService = new WriteService(_objectService);
+            _variableService = new VariableService(_objectService, _writeService);
             _wwpActionService = new WwpActionService(_objectService, _patternAnalysisService, _writeService);
             _refactorService = new RefactorService(_kbService, _objectService, _indexCacheService, _writeService, _patternAnalysisService);
             _patchService = new PatchService(_objectService, _writeService, _patternAnalysisService);

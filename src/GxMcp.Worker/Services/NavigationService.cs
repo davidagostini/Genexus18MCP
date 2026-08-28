@@ -8,9 +8,15 @@ using System.Xml.Linq;
 using System.Xml;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
+using GxMcp.Worker.Models;
 
 namespace GxMcp.Worker.Services
 {
+    /// <summary>
+    /// Deep domain engine for GeneXus object navigation analysis.
+    /// Encapsulates .nvg.xml discovery, in-memory domain modeling (<see cref="NavigationReport"/>),
+    /// on-disk snapshot caching, and direct SQL generation.
+    /// </summary>
     public class NavigationService
     {
         private readonly KbService _kbService;
@@ -20,7 +26,10 @@ namespace GxMcp.Worker.Services
             _kbService = kbService;
         }
 
-        public string GetNavigation(string targetName)
+        /// <summary>
+        /// Loads and parses the navigation report for the specified target object into a strongly-typed domain model.
+        /// </summary>
+        public NavigationReport GetReport(string targetName)
         {
             try
             {
@@ -28,7 +37,10 @@ namespace GxMcp.Worker.Services
                 Logger.Info($"GetNavigation START: {targetName}");
 
                 string nvgPath = FindNavigationFile(targetName);
-                if (nvgPath == null) return "{\"status\":\"Error\",\"message\": \"Navigation report not found for '" + targetName + "'. Make sure the object is specified.\"}";
+                if (nvgPath == null)
+                {
+                    return NavigationReport.Error(targetName, $"Navigation report not found for '{targetName}'. Make sure the object is specified.");
+                }
 
                 Logger.Info($"GetNavigation file resolved for {targetName}: {nvgPath}");
 
@@ -43,97 +55,194 @@ namespace GxMcp.Worker.Services
 
                 XDocument doc = LoadNavigationDocument(nvgPath, xmlSettings, targetName);
 
-                var result = new JObject();
-                result["name"] = targetName;
-                
-                var levels = new JArray();
+                var report = new NavigationReport
+                {
+                    TargetName = targetName,
+                    Status = "OK"
+                };
+
                 foreach (var level in doc.Descendants("Level"))
                 {
-                    var levelObj = new JObject();
-                    levelObj["number"] = (int?)level.Element("LevelNumber");
-                    levelObj["type"] = level.Element("LevelType")?.Value;
-                    levelObj["line"] = (int?)level.Element("LevelBeginRow");
-                    
+                    var levelObj = new NavigationLevel
+                    {
+                        Number = (int?)level.Element("LevelNumber"),
+                        Type = level.Element("LevelType")?.Value,
+                        Line = (int?)level.Element("LevelBeginRow"),
+                        Index = level.Element("IndexName")?.Value
+                    };
+
                     var baseTable = level.Element("BaseTable")?.Element("Table");
                     if (baseTable != null)
                     {
-                        levelObj["baseTable"] = baseTable.Element("TableName")?.Value;
-                        levelObj["baseTableDescription"] = baseTable.Element("Description")?.Value;
+                        levelObj.BaseTable = baseTable.Element("TableName")?.Value;
+                        levelObj.BaseTableDescription = baseTable.Element("Description")?.Value;
                     }
 
-                    levelObj["index"] = level.Element("IndexName")?.Value;
-                    
-                    var order = new JArray();
                     var orderEl = level.Element("Order");
                     if (orderEl != null)
                     {
                         foreach (var att in orderEl.Elements("Attribute"))
-                            order.Add(att.Element("AttriName")?.Value);
+                        {
+                            string attrName = att.Element("AttriName")?.Value;
+                            if (!string.IsNullOrEmpty(attrName)) levelObj.Order.Add(attrName);
+                        }
                     }
-                    levelObj["order"] = order;
 
                     var optWhere = level.Element("OptimizedWhere");
                     bool hasOptimization = optWhere != null && optWhere.Elements().Any();
-                    levelObj["isOptimized"] = hasOptimization;
+                    levelObj.IsOptimized = hasOptimization;
 
-                    var filters = new JArray();
                     if (optWhere != null)
                     {
                         foreach (var f in optWhere.Elements())
                         {
-                            var fObj = new JObject();
-                            fObj["element"] = f.Name.LocalName;
-                            // OptimizedWhere children typically wrap an attribute name + comparison + variable/value
-                            // We surface the raw inner text plus element name; downstream consumers can parse.
-                            fObj["expression"] = f.Value?.Trim();
-                            // Try to surface common sub-elements explicitly when present
-                            var attrEl = f.Element("Attribute");
-                            if (attrEl != null) fObj["attribute"] = attrEl.Value?.Trim();
-                            var opEl = f.Element("Operator");
-                            if (opEl != null) fObj["op"] = opEl.Value?.Trim();
-                            var valEl = f.Element("Value");
-                            if (valEl != null) fObj["value"] = valEl.Value?.Trim();
-                            filters.Add(fObj);
+                            var fObj = new NavigationFilter
+                            {
+                                Element = f.Name.LocalName,
+                                Expression = f.Value?.Trim(),
+                                Attribute = f.Element("Attribute")?.Value?.Trim(),
+                                Op = f.Element("Operator")?.Value?.Trim(),
+                                Value = f.Element("Value")?.Value?.Trim()
+                            };
+                            levelObj.Filters.Add(fObj);
                         }
                     }
-                    levelObj["filters"] = filters;
 
-                    levels.Add(levelObj);
+                    report.Levels.Add(levelObj);
                 }
 
-                result["levels"] = levels;
-
-                var warnings = new JArray();
                 foreach (var w in doc.Descendants("Warning"))
-                    warnings.Add(w.Element("Message")?.Value);
-                result["warnings"] = warnings;
-
-                // Empty-levels envelope: without a status hint the caller can't tell
-                // "no For Each / data-bound code in this object" from "the analysis
-                // failed silently". Set status accordingly.
-                if (levels.Count == 0)
                 {
-                    result["status"] = "NoNavigationBlocks";
-                    result["hint"] = "Object has no For Each / data-bound navigation blocks. Use mode=summary or mode=data_context for variable/call analysis.";
-                }
-                else
-                {
-                    result["status"] = "OK";
+                    string msg = w.Element("Message")?.Value;
+                    if (!string.IsNullOrEmpty(msg)) report.Warnings.Add(msg);
                 }
 
-                Logger.Info($"GetNavigation SUCCESS: {targetName} in {sw.ElapsedMilliseconds}ms levels={levels.Count}");
-                return result.ToString();
+                if (report.Levels.Count == 0)
+                {
+                    report.Status = "NoNavigationBlocks";
+                    report.Hint = "Object has no For Each / data-bound navigation blocks. Use mode=summary or mode=data_context for variable/call analysis.";
+                }
+
+                Logger.Info($"GetNavigation SUCCESS: {targetName} in {sw.ElapsedMilliseconds}ms levels={report.Levels.Count}");
+                return report;
             }
             catch (Exception ex)
             {
                 Logger.Error($"GetNavigation ERROR for {targetName}: {ex.Message}");
-                return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return NavigationReport.Error(targetName, CommandDispatcher.EscapeJsonString(ex.Message));
             }
+        }
+
+        /// <summary>
+        /// JSON-string representation of navigation analysis for MCP protocol compatibility.
+        /// </summary>
+        public string GetNavigation(string targetName)
+        {
+            var report = GetReport(targetName);
+            return report.ToJson().ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        /// <summary>
+        /// Wave-3: View Navigation / View Last Navigation parity with disk caching.
+        /// </summary>
+        public string View(string name, bool latest)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return new JObject { ["error"] = "Missing 'name'." }.ToString(Newtonsoft.Json.Formatting.None);
+
+            string kbPath = null;
+            try { kbPath = _kbService?.GetKbPath(); } catch { }
+            string cacheDir = ResolveCacheDir(kbPath, name);
+
+            if (latest && cacheDir != null && Directory.Exists(cacheDir))
+            {
+                try
+                {
+                    var files = Directory.GetFiles(cacheDir, "*.txt")
+                        .OrderByDescending(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    if (files.Count > 0)
+                    {
+                        string latestPath = files[0];
+                        string cachedContent = File.ReadAllText(latestPath);
+                        return new JObject
+                        {
+                            ["name"] = name,
+                            ["fromCache"] = true,
+                            ["cachePath"] = latestPath,
+                            ["navigation"] = TryParseEmbed(cachedContent)
+                        }.ToString(Newtonsoft.Json.Formatting.None);
+                    }
+                }
+                catch { }
+            }
+
+            var report = GetReport(name);
+            if (report.IsError)
+            {
+                return new JObject { ["error"] = report.Message ?? "Navigation returned no payload.", ["code"] = "NoNavigation" }
+                    .ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            string raw = report.ToJson().ToString(Newtonsoft.Json.Formatting.None);
+
+            string savedPath = null;
+            try
+            {
+                if (cacheDir != null)
+                {
+                    Directory.CreateDirectory(cacheDir);
+                    string stamp = DateTime.UtcNow.ToString("yyyyMMddTHHmmssZ");
+                    savedPath = Path.Combine(cacheDir, stamp + ".txt");
+                    File.WriteAllText(savedPath, raw);
+                }
+            }
+            catch { savedPath = null; }
+
+            return new JObject
+            {
+                ["name"] = name,
+                ["fromCache"] = false,
+                ["cachePath"] = savedPath ?? string.Empty,
+                ["navigation"] = report.ToJson()
+            }.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        private static string ResolveCacheDir(string kbPath, string objectName)
+        {
+            if (string.IsNullOrWhiteSpace(kbPath) || string.IsNullOrWhiteSpace(objectName)) return null;
+            try
+            {
+                string root = Directory.Exists(kbPath) ? kbPath : Path.GetDirectoryName(kbPath);
+                if (string.IsNullOrEmpty(root)) return null;
+                string sanitized = SanitizeName(objectName);
+                return Path.Combine(root, ".gx", "navigation-cache", sanitized);
+            }
+            catch { return null; }
+        }
+
+        private static string SanitizeName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return "unknown";
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new StringBuilder(name.Length);
+            foreach (char c in name)
+                sb.Append(invalid.Contains(c) ? '_' : c);
+            return sb.ToString();
+        }
+
+        private static JToken TryParseEmbed(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return new JObject();
+            try { return JToken.Parse(raw); }
+            catch { return JToken.FromObject(raw); }
         }
 
         private string FindNavigationFile(string targetName)
         {
-            var kb = _kbService.GetKB();
+            if (string.IsNullOrWhiteSpace(targetName)) return null;
+            var kb = _kbService?.GetKB();
             if (kb == null) return null;
 
             string kbPath = kb.Location;

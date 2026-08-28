@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Xunit;
 
 namespace GxMcp.Gateway.Tests
@@ -39,6 +40,24 @@ namespace GxMcp.Gateway.Tests
             Assert.False(store.Initialize("session-a", "order"));
 
             Assert.Equal("customer", store.Get("session-a"));
+        }
+
+        [Fact]
+        public void StdioSession_ImmuneToIdleTimeout()
+        {
+            var store = new SessionKbContextStore(TimeSpan.FromMilliseconds(50));
+            store.Set("stdio", "core-kb");
+            Thread.Sleep(70);
+
+            Assert.Equal("core-kb", store.Get("stdio"));
+        }
+
+        [Fact]
+        public void Set_InvalidArguments_ThrowsArgumentException()
+        {
+            var store = new SessionKbContextStore(TimeSpan.FromMinutes(10));
+            Assert.Throws<ArgumentException>(() => store.Set("", "kb"));
+            Assert.Throws<ArgumentException>(() => store.Set("session-1", ""));
         }
     }
 }

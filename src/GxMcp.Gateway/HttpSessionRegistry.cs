@@ -7,7 +7,7 @@ namespace GxMcp.Gateway
 {
     internal sealed class HttpSessionRegistry
     {
-        private readonly ConcurrentDictionary<string, HttpSessionState> _sessions = new ConcurrentDictionary<string, HttpSessionState>();
+        private readonly ConcurrentDictionary<string, HttpSessionState> _sessions = new ConcurrentDictionary<string, HttpSessionState>(StringComparer.OrdinalIgnoreCase);
         private readonly TimeSpan _sessionIdleTimeout;
         private readonly int _maxQueuedMessagesPerSession;
 
@@ -102,6 +102,7 @@ namespace GxMcp.Gateway
         public string ProtocolVersion { get; set; } = McpRouter.SupportedProtocolVersion;
         public DateTime CreatedUtc { get; set; }
         public DateTime LastSeenUtc { get; set; }
+        public string? ActiveKbAlias { get; set; }
         public Queue<string> PendingMessages { get; } = new Queue<string>();
     }
 }

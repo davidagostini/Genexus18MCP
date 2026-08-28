@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- **Unified `NavigationReport` In-Memory Domain Engine (Architectural Candidate 2).** Introduced a strongly-typed `NavigationReport` domain model (`NavigationLevel`, `NavigationFilter`) encapsulating `.nvg.xml` navigation discovery, disk snapshotting, and direct in-memory SQL statement projection. Eliminates legacy intermediate JSON string serialization and re-parsing between `NavigationService`, `NavigationSqlService`, and `NavigationViewService`.
+- **Deep `VariableService` & Type Resolution Engine (Architectural Candidate 4).** Consolidated variable CRUD operations, two-tier type resolution (`VariableTypeResolver`), framework-managed protections, and source auto-declaration heuristics into a cohesive `VariableService` interface (`IVariableService`).
+- **Synchronized Session & KB Context Registry (Architectural Candidate 5).** Enhanced `HttpSessionRegistry` and `SessionKbContextStore` with case-insensitive session matching, timeout immunity for stdio harnesses, and unified session state tracking.
+- **Declarative Gateway Tool Dispatch Seam (Architectural Candidate 1).** Streamlined declarative dispatch in `McpRouter.ConvertToolCall` targeting canonical tool definitions directly.
+- **Pattern Engine Adapter & WorkWithPlus Isolation (Architectural Candidate 3).** Decoupled Pattern and WorkWithPlus application workflows behind `IPatternEngineAdapter` and `PatternService` with mockable test harnesses.
+
 ## v2.47.0 - 2026-08-27
 
 ### Added
