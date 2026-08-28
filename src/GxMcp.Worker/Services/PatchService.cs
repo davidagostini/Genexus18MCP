@@ -267,7 +267,7 @@ namespace GxMcp.Worker.Services
                 }
 
                 if (!string.IsNullOrWhiteSpace(baseVersion) &&
-                    !string.Equals(baseVersion, snapshotVersion, StringComparison.Ordinal))
+                    !VersionsMatchForSourcePatch(baseVersion, snapshotVersion, partName))
                 {
                     return Models.McpResponse.Err(
                         code: "VersionConflict",
@@ -714,7 +714,7 @@ namespace GxMcp.Worker.Services
                 if (!string.IsNullOrWhiteSpace(baseVersion))
                 {
                     string currentVersion = ReadFreshVersionToken(target, partName, typeFilter);
-                    if (!string.Equals(baseVersion, currentVersion, StringComparison.Ordinal))
+                    if (!VersionsMatchForSourcePatch(baseVersion, currentVersion, partName))
                         return Models.McpResponse.Err(
                             code: "VersionConflict",
                             message: "The object changed while the patch was being prepared; no write was attempted.",
@@ -1207,6 +1207,30 @@ namespace GxMcp.Worker.Services
             }
 
             return entry.Source;
+        }
+
+        // GeneXus 18 U16 can re-render an ISource part with a different module
+        // qualification while the object LastUpdate remains unchanged. The read
+        // token keeps the content fingerprint as evidence, but optimistic
+        // concurrency for a patch must use the stable object portion when that
+        // renderer-only difference is the only delta.
+        private static bool VersionsMatchForSourcePatch(string expected, string actual, string partName)
+        {
+            if (string.Equals(expected, actual, StringComparison.Ordinal)) return true;
+            if (string.IsNullOrWhiteSpace(expected) || string.IsNullOrWhiteSpace(actual)) return false;
+            if (!string.Equals(partName, "Events", StringComparison.OrdinalIgnoreCase)) return false;
+            return string.Equals(StripContentFingerprint(expected), StripContentFingerprint(actual), StringComparison.Ordinal);
+        }
+
+        private static string StripContentFingerprint(string token)
+        {
+            int separator = token.LastIndexOf(':');
+            if (separator < 0 || token.Length - separator - 1 != 64) return token;
+            for (int i = separator + 1; i < token.Length; i++)
+            {
+                if (!Uri.IsHexDigit(token[i])) return token;
+            }
+            return token.Substring(0, separator);
         }
 
         private static void UpdateCachedSource(string cacheKey, string source, string versionToken = null)
