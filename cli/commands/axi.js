@@ -27,7 +27,8 @@ const {
     switchActiveKb,
     isPathLikelyAppLockerBlocked,
     normalizeExePath,
-    readClientCommandEntry
+    readClientCommandEntry,
+    DEFAULT_MCP_SERVER_NAME
 } = require('../lib/config');
 
 function resolveClientIds(options) {
@@ -1154,6 +1155,9 @@ async function handleLayout(subcommand, options, ctx) {
 
 function buildInteractiveInitHelp(patchResult) {
     const help = [];
+    if (patchResult.failed && patchResult.failed.some((f) => f.reason && f.reason.includes('third-party or HTTP MCP server'))) {
+        help.push('A collision with an existing MCP server (e.g. official GeneXus MCP) was detected. Re-run init with --server-name=<customName> (e.g. --server-name Gx18byLennix) or pass --force.');
+    }
     if (patchResult.patched.length === 0) {
         help.push('Set `GX_CONFIG_PATH` in your MCP client env to the generated config path.');
     } else if (process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
@@ -1228,8 +1232,10 @@ async function runInteractiveInit(ctx) {
         }
 
         const created = createConfigFile(finalKb, finalGx);
+        const serverName = ctx.options && ctx.options.serverName ? ctx.options.serverName : DEFAULT_MCP_SERVER_NAME;
+        const force = Boolean(ctx.options && ctx.options.force);
         const patchResult = selectedIds.length
-            ? patchClientConfig(created.targetConfigPath, { ids: selectedIds, onlyExisting: false })
+            ? patchClientConfig(created.targetConfigPath, { ids: selectedIds, onlyExisting: false, serverName, force })
             : { patched: [], failed: [], skipped: [] };
 
         return {
@@ -1405,7 +1411,9 @@ async function handleInit(options, ctx) {
             }
             patchResult = patchClientConfig(created.targetConfigPath, {
                 ids,
-                onlyExisting: !options.allClients
+                onlyExisting: !options.allClients,
+                serverName: options.serverName || DEFAULT_MCP_SERVER_NAME,
+                force: options.force
             });
         }
 
@@ -1422,6 +1430,10 @@ async function handleInit(options, ctx) {
         }
 
         const help = [];
+        if (patchResult.failed.some((f) => f.reason && f.reason.includes('third-party or HTTP MCP server'))) {
+            help.push('A collision with an existing MCP server (e.g. official GeneXus MCP) was detected on one or more clients.');
+            help.push('Re-run init with --server-name=<customName> (e.g. --server-name Gx18byLennix), pass --force, or pass --no-write-clients.');
+        }
         if (patchResult.patched.length === 0 && shouldWriteClients) {
             help.push('No installed AI client config was found to patch. Pass --all-clients to write configs for all known clients, or register manually.');
             help.push(`For a GLOBAL (all-projects) registration that does not depend on the current directory, point your client at this config via the GX_CONFIG_PATH env var, e.g.: claude mcp add genexus -e GX_CONFIG_PATH="${created.targetConfigPath}" -- <launcher>`);
@@ -1752,19 +1764,20 @@ async function handleUninstall(options, ctx) {
 
 async function handleClients(subcommand, options, ctx) {
     const sub = subcommand || 'list';
+    const serverName = options.serverName || DEFAULT_MCP_SERVER_NAME;
 
     if (sub === 'list') {
-        const rows = clientsStatus();
+        const rows = clientsStatus({ serverName });
         const installedCount = rows.filter((r) => r.installed).length;
         const registeredCount = rows.filter((r) => r.registered).length;
         const help = [];
         const installedUnregistered = rows.filter((r) => r.installed && !r.registered && r.writeSupported);
         if (installedUnregistered.length > 0) {
-            help.push(`Register installed-but-unregistered agents: genexus-mcp clients add --clients ${installedUnregistered.map((r) => r.id).join(',')}`);
+            help.push(`Register installed-but-unregistered agents: genexus-mcp clients add --clients ${installedUnregistered.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
         }
         const stale = rows.filter((r) => r.commandStale);
         if (stale.length > 0) {
-            help.push(`These clients point at a missing gateway exe (will fail to connect) — re-register: genexus-mcp clients add --clients ${stale.map((r) => r.id).join(',')}`);
+            help.push(`These clients point at a missing gateway exe (will fail to connect) — re-register: genexus-mcp clients add --clients ${stale.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
         }
         for (const r of rows) {
             if (r.installed && !r.writeSupported && r.note) help.push(`${r.name}: ${r.note}`);
@@ -1774,7 +1787,7 @@ async function handleClients(subcommand, options, ctx) {
             envelope: {
                 ok: {
                     clients: rows,
-                    summary: { total: rows.length, installed: installedCount, registered: registeredCount }
+                    summary: { total: rows.length, installed: installedCount, registered: registeredCount, serverName }
                 },
                 help
             }
@@ -1808,7 +1821,12 @@ async function handleClients(subcommand, options, ctx) {
             let patch;
             try {
                 // Explicit add: write even if install markers are absent (the user asked for it).
-                patch = patchClientConfig(configPath, { ids, onlyExisting: false });
+                patch = patchClientConfig(configPath, {
+                    ids,
+                    onlyExisting: false,
+                    serverName,
+                    force: options.force
+                });
             } catch (err) {
                 return {
                     exitCode: ctx.EXIT_CODES.ERROR,
@@ -1820,11 +1838,16 @@ async function handleClients(subcommand, options, ctx) {
             }
             const help = [];
             if (patch.patched.length > 0) help.push('Restart the affected AI client(s) to load the new MCP config.');
-            if (patch.failed.length > 0) help.push('Some clients failed (see meta.failedClients).');
+            if (patch.failed.some((f) => f.reason && f.reason.includes('third-party or HTTP MCP server'))) {
+                help.push('A collision with an existing MCP server (e.g. official GeneXus MCP) was detected.');
+                help.push('Use --server-name=<customName> (e.g. --server-name Gx18byLennix) or pass --force.');
+            } else if (patch.failed.length > 0) {
+                help.push('Some clients failed (see meta.failedClients).');
+            }
             return {
                 exitCode: ctx.EXIT_CODES.OK,
                 envelope: {
-                    ok: { action: 'clients.add', configPath, patchedClients: patch.patched, patchedCount: patch.patched.length },
+                    ok: { action: 'clients.add', configPath, serverName, patchedClients: patch.patched, patchedCount: patch.patched.length },
                     help,
                     meta: { failedClients: patch.failed, skippedClients: patch.skipped }
                 }
@@ -1832,13 +1855,16 @@ async function handleClients(subcommand, options, ctx) {
         }
 
         // remove
-        const unpatch = unpatchClientConfig(ids ? { ids } : {});
+        const unpatch = unpatchClientConfig({
+            ...(ids ? { ids } : {}),
+            serverName
+        });
         const help = [];
         if (unpatch.removed.length > 0) help.push('Restart the affected AI client(s) to drop the stale MCP connection.');
         return {
             exitCode: ctx.EXIT_CODES.OK,
             envelope: {
-                ok: { action: 'clients.remove', removedClients: unpatch.removed, removedCount: unpatch.removed.length },
+                ok: { action: 'clients.remove', serverName, removedClients: unpatch.removed, removedCount: unpatch.removed.length },
                 help,
                 meta: { skippedClients: unpatch.skipped, failedClients: unpatch.failed }
             }
@@ -2009,10 +2035,11 @@ function commandHelpMap() {
             examples: ['genexus-mcp config show', 'genexus-mcp config show --full --format json']
         },
         init: {
-            usage: 'genexus-mcp init [--kb <path>] [--gx <path>] [--no-write-clients] [--clients <csv>] [--all-clients] [--no-smoke] [--warm] [--format ...] OR genexus-mcp init --interactive',
+            usage: 'genexus-mcp init [--kb <path>] [--gx <path>] [--server-name <name>] [--force] [--no-write-clients] [--clients <csv>] [--all-clients] [--no-smoke] [--warm] [--format ...] OR genexus-mcp init --interactive',
             examples: [
                 'genexus-mcp init   # zero-config: auto-discovers GX + KB, and registers detected AI clients',
                 'genexus-mcp init --kb "C:\\KBs\\MyKB" --gx "C:\\Program Files (x86)\\GeneXus\\GeneXus18"',
+                'genexus-mcp init --server-name Gx18byLennix   # register with custom MCP server key (coexists with official GeneXus MCP)',
                 'genexus-mcp init --interactive   # prompts per detected agent (Claude Desktop/Code, Gemini CLI, Cursor, Codex CLI, OpenCode, ...)',
                 'genexus-mcp init --kb <path> --gx <path> --clients claude-code,gemini-cli,cursor   # register only these',
                 'genexus-mcp init --kb <path> --gx <path> --no-write-clients   # write config.json only; register clients yourself',
@@ -2038,12 +2065,14 @@ function commandHelpMap() {
             ]
         },
         clients: {
-            usage: 'genexus-mcp clients [list] [--format ...] OR genexus-mcp clients add --clients <csv> OR genexus-mcp clients remove [--clients <csv>]',
+            usage: 'genexus-mcp clients [list] [--server-name <name>] [--format ...] OR genexus-mcp clients add --clients <csv> [--server-name <name>] [--force] OR genexus-mcp clients remove [--clients <csv>] [--server-name <name>]',
             examples: [
                 'genexus-mcp clients              # show every AI agent: installed? registered? where?',
                 'genexus-mcp clients --format json',
                 'genexus-mcp clients add --clients antigravity,vscode',
-                'genexus-mcp clients remove --clients cursor'
+                'genexus-mcp clients add --clients cursor --server-name Gx18byLennix',
+                'genexus-mcp clients remove --clients cursor',
+                'genexus-mcp clients remove --clients cursor --server-name Gx18byLennix'
             ]
         },
         llm: {

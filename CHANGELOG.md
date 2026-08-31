@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v2.49.0 - 2026-08-31
+
+### Added
+- **Default MCP server name changed to `genexus18mcp`.** To eliminate naming collisions with GeneXus's official MCP server (which registers as `genexus`), the default server identifier across all AI clients (Cursor, VS Code, OpenCode, Codex CLI, Claude Desktop, Antigravity) is now `genexus18mcp`.
+- **`--server-name <name>` support.** Added `--server-name` flag to `genexus-mcp init`, `clients add`, `clients list`, and `clients remove` to configure any arbitrary server identifier (e.g. `Gx18byLennix`) and enable seamless multi-MCP coexistence in all supported formats (`mcpServers`, `servers`, `mcp.servers`, and TOML `[mcp_servers]`).
+- **`--force` override flag.** Added `--force` flag to explicitly overwrite existing foreign or custom MCP server configurations when replacing an entry is desired.
+
+### Fixed
+- **Third-party / HTTP MCP collision protection (Issue #121).** Client auto-registration now distinguishes our own local stdio / npx launcher entries from external/official HTTP/SSE/remote MCP server definitions. Attempting to overwrite an existing third-party entry without `--force` is rejected with `MCP_SERVER_COLLISION` and diagnostic guidance instead of silently clobbering the foreign server.
+  Thanks to [@antoniojosedev](https://github.com/antoniojosedev) for reporting and investigating the collision with the official GeneXus MCP server — see Issue [#121](https://github.com/lennix1337/Genexus18MCP/issues/121).
+
 ## v2.48.0 - 2026-08-28
 
 ### Added

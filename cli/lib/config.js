@@ -453,6 +453,57 @@ function getLauncher() {
         : { command: process.platform === 'win32' ? 'npx.cmd' : 'npx', args: ['-y', 'genexus-mcp@latest'] };
 }
 
+const DEFAULT_MCP_SERVER_NAME = 'genexus18mcp';
+
+function escapeRegex(str) {
+    return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Detect whether an MCP server entry belongs to a third-party or official MCP
+// server (e.g. official GeneXus MCP over HTTP, or another tool).
+function isThirdPartyMcpEntry(entry) {
+    if (!entry || typeof entry !== 'object') return false;
+    // Explicit HTTP / SSE / remote URLs are third-party / official GeneXus MCP servers
+    if (entry.url || entry.type === 'http' || entry.type === 'sse' || entry.type === 'remote') {
+        return true;
+    }
+    // Environment markers written by genexus-mcp
+    const env = entry.env || entry.environment;
+    if (env && typeof env === 'object') {
+        if (env.GX_CONFIG_PATH || env.GX_PATH || env.GENEXUS_MCP_GATEWAY_EXE) {
+            return false;
+        }
+    }
+    // Command string or args mentioning genexus-mcp / GxMcp.Gateway / start_mcp.bat
+    if (typeof entry.command === 'string') {
+        if (/(^|[\\/])(genexus-mcp(\.cmd)?|GxMcp\.Gateway(\.exe)?|start_mcp\.bat)$/i.test(entry.command)) {
+            return false;
+        }
+        if (/(^|[\\/])(npx|npx\.cmd)$/i.test(entry.command) && (!entry.args || entry.args.length === 0)) {
+            return false;
+        }
+    }
+    if (Array.isArray(entry.args) && entry.args.some((a) => typeof a === 'string' && /genexus-mcp/i.test(a))) {
+        return false;
+    }
+    if (Array.isArray(entry.command)) {
+        if (entry.command.some((a) => typeof a === 'string' && /(genexus-mcp|GxMcp\.Gateway|start_mcp\.bat)/i.test(a))) {
+            return false;
+        }
+        if (entry.command.length === 1 && /(^|[\\/])(npx|npx\.cmd)$/i.test(entry.command[0])) {
+            return false;
+        }
+    }
+    // Any other custom command without our markers is third-party
+    return true;
+}
+
+function isOurMcpEntry(entry, key) {
+    if (!entry || typeof entry !== 'object') return false;
+    if (key === 'genexus18' || key === 'genexus18mcp') return true;
+    return !isThirdPartyMcpEntry(entry);
+}
+
 // Antigravity (Google's agentic IDE) ships its MCP config under ~/.gemini.
 // The newer unified location (shared across Antigravity CLI / IDE / SDK) is
 // ~/.gemini/config/mcp_config.json; the older IDE-specific one is
@@ -664,24 +715,29 @@ function clientCommandHealth(entry) {
 // is genexus registered, where, what launcher command it points at, and whether
 // that command is stale. Backs the `genexus-mcp clients` command.
 function clientsStatus(opts = {}) {
+    const serverName = opts.serverName || DEFAULT_MCP_SERVER_NAME;
     const targets = filterClientTargets(getClientConfigTargets(), {
         ids: opts.ids,
         platform: process.platform
     });
     return targets.map((client) => {
         const det = detectClientInstalled(client);
-        const entry = readClientCommandEntry(client);
+        const entry = readClientCommandEntry(client, serverName);
         const health = clientCommandHealth(entry);
+        const isThirdParty = entry && !isOurMcpEntry(entry.raw || entry, serverName);
         return {
             id: client.id,
             name: client.name,
             installed: det.installed,
             registered: entry !== null,
+            serverName,
+            isThirdParty: Boolean(isThirdParty),
             writeSupported: client.writeSupported !== false,
             configPath: client.path,
             command: entry && entry.command ? entry.command : null,
+            url: entry && entry.url ? entry.url : null,
             commandStale: health.stale,
-            commandStaleReason: health.reason,
+            commandStaleReason: health.reason || (isThirdParty ? 'configured as third-party / HTTP MCP server (e.g. official GeneXus MCP)' : null),
             detectedAt: det.markerHit || (det.hasConfig ? client.path : null),
             note: client.writeSupported === false ? (client.manualNote || null) : null
         };
@@ -713,6 +769,8 @@ function patchClientConfig(targetConfigPath, opts = {}) {
         throw err;
     }
 
+    const serverName = opts.serverName || DEFAULT_MCP_SERVER_NAME;
+    const force = Boolean(opts.force);
     const launcher = getLauncher();
     const onlyExisting = opts.onlyExisting !== false;
     const candidates = filterClientTargets(getClientConfigTargets(), {
@@ -742,11 +800,11 @@ function patchClientConfig(targetConfigPath, opts = {}) {
         }
         try {
             fs.mkdirSync(path.dirname(client.path), { recursive: true });
-            applyClientEntry(client, launcher, targetConfigPath);
+            applyClientEntry(client, launcher, targetConfigPath, { serverName, force });
             // Read-back: confirm the entry is actually present and the file still
             // parses, so a silently-corrupted write is reported as a failure.
-            if (!readClientCommandEntry(client)) {
-                throw new Error('post-write verification failed (genexus entry not found after write)');
+            if (!readClientCommandEntry(client, serverName)) {
+                throw new Error(`post-write verification failed (${serverName} entry not found after write)`);
             }
             patched.push(client.name);
         } catch (err) {
@@ -758,6 +816,7 @@ function patchClientConfig(targetConfigPath, opts = {}) {
 }
 
 function unpatchClientConfig(opts = {}) {
+    const serverName = opts.serverName || DEFAULT_MCP_SERVER_NAME;
     const targets = filterClientTargets(getClientConfigTargets(), {
         ids: opts.ids,
         onlyExisting: true,
@@ -774,9 +833,9 @@ function unpatchClientConfig(opts = {}) {
             continue;
         }
         try {
-            const wasRemoved = removeClientEntry(client);
+            const wasRemoved = removeClientEntry(client, { serverName });
             if (wasRemoved) removed.push(client.name);
-            else skipped.push({ client: client.name, reason: 'no genexus entry' });
+            else skipped.push({ client: client.name, reason: `no ${serverName} entry` });
         } catch (err) {
             failed.push({ client: client.name, reason: err && err.message ? err.message : 'Unknown error' });
         }
@@ -785,59 +844,79 @@ function unpatchClientConfig(opts = {}) {
     return { removed, skipped, failed };
 }
 
-function applyClientEntry(client, launcher, targetConfigPath) {
+function applyClientEntry(client, launcher, targetConfigPath, opts = {}) {
     switch (client.format) {
         case 'mcpServers':
-            return applyMcpServersJson(client.path, launcher, targetConfigPath);
+            return applyMcpServersJson(client.path, launcher, targetConfigPath, opts);
         case 'opencode':
-            return applyOpenCodeJson(client.path, launcher, targetConfigPath);
+            return applyOpenCodeJson(client.path, launcher, targetConfigPath, opts);
         case 'codex-toml':
-            return applyCodexToml(client.path, launcher, targetConfigPath);
+            return applyCodexToml(client.path, launcher, targetConfigPath, opts);
         case 'vscode-servers':
-            return applyVsCodeServersJson(client.path, launcher, targetConfigPath);
+            return applyVsCodeServersJson(client.path, launcher, targetConfigPath, opts);
         default:
             throw new Error(`Unknown client format: ${client.format}`);
     }
 }
 
-function removeClientEntry(client) {
+function removeClientEntry(client, opts = {}) {
     switch (client.format) {
         case 'mcpServers':
-            return removeMcpServersJson(client.path);
+            return removeMcpServersJson(client.path, opts);
         case 'opencode':
-            return removeOpenCodeJson(client.path);
+            return removeOpenCodeJson(client.path, opts);
         case 'codex-toml':
-            return removeCodexToml(client.path);
+            return removeCodexToml(client.path, opts);
         case 'vscode-servers':
-            return removeVsCodeServersJson(client.path);
+            return removeVsCodeServersJson(client.path, opts);
         default:
             throw new Error(`Unknown client format: ${client.format}`);
     }
 }
 
-function applyMcpServersJson(filePath, launcher, targetConfigPath) {
+function applyMcpServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false } = {}) {
     const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     cfgObj.mcpServers = cfgObj.mcpServers || {};
-    cfgObj.mcpServers.genexus = { ...launcher, env: { GX_CONFIG_PATH: targetConfigPath } };
-    // Drop the legacy `genexus18` key from older build-from-source installs so the
-    // user isn't left with two duplicate servers (and colliding tool names).
-    if (cfgObj.mcpServers.genexus18) delete cfgObj.mcpServers.genexus18;
+    const existing = cfgObj.mcpServers[serverName];
+    if (existing && !force && isThirdPartyMcpEntry(existing)) {
+        const err = new Error(`Existing '${serverName}' entry is a third-party or HTTP MCP server (e.g. official GeneXus MCP). Refusing to overwrite. Use --server-name=<customName> (e.g. --server-name Gx18byLennix) or --no-write-clients.`);
+        err.code = 'MCP_SERVER_COLLISION';
+        throw err;
+    }
+    cfgObj.mcpServers[serverName] = { ...launcher, env: { GX_CONFIG_PATH: targetConfigPath } };
+    // If registering default genexus18mcp, clean up legacy genexus/genexus18 entries only if they are not foreign HTTP servers
+    if (serverName === DEFAULT_MCP_SERVER_NAME) {
+        if (cfgObj.mcpServers.genexus && !isThirdPartyMcpEntry(cfgObj.mcpServers.genexus)) {
+            delete cfgObj.mcpServers.genexus;
+        }
+        if (cfgObj.mcpServers.genexus18 && !isThirdPartyMcpEntry(cfgObj.mcpServers.genexus18)) {
+            delete cfgObj.mcpServers.genexus18;
+        }
+    } else if (serverName === 'genexus') {
+        if (cfgObj.mcpServers.genexus18 && !isThirdPartyMcpEntry(cfgObj.mcpServers.genexus18)) {
+            delete cfgObj.mcpServers.genexus18;
+        }
+    }
     writeClientJson(filePath, cfgObj);
 }
 
-function removeMcpServersJson(filePath) {
+function removeMcpServersJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME } = {}) {
     const parsed = readJsonFileSafe(filePath);
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     if (!cfgObj.mcpServers) return false;
-    // Remove the current key plus the legacy `genexus18` key written by older
-    // versions of the build-from-source install.ps1, so uninstall fully cleans up
-    // regardless of which installer wrote the entry.
     let removedAny = false;
-    for (const key of ['genexus', 'genexus18']) {
-        if (cfgObj.mcpServers[key]) {
+    const keysToRemove = serverName === DEFAULT_MCP_SERVER_NAME
+        ? [DEFAULT_MCP_SERVER_NAME, 'genexus', 'genexus18']
+        : (serverName === 'genexus' ? ['genexus', 'genexus18'] : [serverName]);
+    for (const key of keysToRemove) {
+        const entry = cfgObj.mcpServers[key];
+        if (entry) {
+            if (key === 'genexus' && (entry.url || entry.type === 'http' || entry.type === 'sse' || entry.type === 'remote')) {
+                continue;
+            }
             delete cfgObj.mcpServers[key];
             removedAny = true;
         }
@@ -849,29 +928,50 @@ function removeMcpServersJson(filePath) {
 
 // VS Code native MCP lives in User\mcp.json and uses a top-level `servers` map
 // with `type: "stdio"` (distinct from the `mcpServers` shape Claude/Cursor use).
-function applyVsCodeServersJson(filePath, launcher, targetConfigPath) {
+function applyVsCodeServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false } = {}) {
     const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     cfgObj.servers = cfgObj.servers || {};
-    cfgObj.servers.genexus = {
+    const existing = cfgObj.servers[serverName];
+    if (existing && !force && isThirdPartyMcpEntry(existing)) {
+        const err = new Error(`Existing '${serverName}' entry is a third-party or HTTP MCP server (e.g. official GeneXus MCP). Refusing to overwrite. Use --server-name=<customName> (e.g. --server-name Gx18byLennix) or --no-write-clients.`);
+        err.code = 'MCP_SERVER_COLLISION';
+        throw err;
+    }
+    cfgObj.servers[serverName] = {
         type: 'stdio',
         ...launcher,
         env: { GX_CONFIG_PATH: targetConfigPath }
     };
-    // Drop the legacy `genexus18` key written by older build-from-source installs.
-    if (cfgObj.servers.genexus18) delete cfgObj.servers.genexus18;
+    if (serverName === DEFAULT_MCP_SERVER_NAME) {
+        if (cfgObj.servers.genexus && !isThirdPartyMcpEntry(cfgObj.servers.genexus)) {
+            delete cfgObj.servers.genexus;
+        }
+        if (cfgObj.servers.genexus18 && !isThirdPartyMcpEntry(cfgObj.servers.genexus18)) {
+            delete cfgObj.servers.genexus18;
+        }
+    } else if (serverName === 'genexus' && cfgObj.servers.genexus18 && !isThirdPartyMcpEntry(cfgObj.servers.genexus18)) {
+        delete cfgObj.servers.genexus18;
+    }
     writeClientJson(filePath, cfgObj);
 }
 
-function removeVsCodeServersJson(filePath) {
+function removeVsCodeServersJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME } = {}) {
     const parsed = readJsonFileSafe(filePath);
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     if (!cfgObj.servers) return false;
     let removedAny = false;
-    for (const key of ['genexus', 'genexus18']) {
-        if (cfgObj.servers[key]) {
+    const keysToRemove = serverName === DEFAULT_MCP_SERVER_NAME
+        ? [DEFAULT_MCP_SERVER_NAME, 'genexus', 'genexus18']
+        : (serverName === 'genexus' ? ['genexus', 'genexus18'] : [serverName]);
+    for (const key of keysToRemove) {
+        const entry = cfgObj.servers[key];
+        if (entry) {
+            if (key === 'genexus' && (entry.url || entry.type === 'http' || entry.type === 'sse' || entry.type === 'remote')) {
+                continue;
+            }
             delete cfgObj.servers[key];
             removedAny = true;
         }
@@ -898,7 +998,7 @@ function getOpenCodeMcpContainer(cfgObj) {
     };
 }
 
-function applyOpenCodeJson(filePath, launcher, targetConfigPath) {
+function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false } = {}) {
     const parsed = fs.existsSync(filePath) ? readJsonFileSafe(filePath) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
@@ -906,37 +1006,67 @@ function applyOpenCodeJson(filePath, launcher, targetConfigPath) {
     // absent (new file or a config that never had one) without clobbering a custom one.
     if (!cfgObj.$schema) cfgObj.$schema = 'https://opencode.ai/config.json';
     const { mcp, servers, nested } = getOpenCodeMcpContainer(cfgObj);
-    servers.genexus = {
+    const existing = servers[serverName] || (nested ? mcp[serverName] : null);
+    if (existing && !force && isThirdPartyMcpEntry(existing)) {
+        const err = new Error(`Existing '${serverName}' entry is a third-party or HTTP MCP server (e.g. official GeneXus MCP). Refusing to overwrite. Use --server-name=<customName> (e.g. --server-name Gx18byLennix) or --no-write-clients.`);
+        err.code = 'MCP_SERVER_COLLISION';
+        throw err;
+    }
+    servers[serverName] = {
         type: 'local',
         command: [launcher.command, ...(launcher.args || [])],
         environment: { GX_CONFIG_PATH: targetConfigPath },
         ...(nested ? { disabled: false } : { enabled: true })
     };
-    if (servers.genexus18) delete servers.genexus18;
+    if (serverName === DEFAULT_MCP_SERVER_NAME) {
+        if (servers.genexus && !isThirdPartyMcpEntry(servers.genexus)) delete servers.genexus;
+        if (servers.genexus18 && !isThirdPartyMcpEntry(servers.genexus18)) delete servers.genexus18;
+    } else if (serverName === 'genexus' && servers.genexus18 && !isThirdPartyMcpEntry(servers.genexus18)) {
+        delete servers.genexus18;
+    }
     // If a config was migrated manually and contains both shapes, leave unrelated
     // servers alone but remove our duplicate legacy entry.
     if (nested) {
-        if (mcp.genexus) delete mcp.genexus;
-        if (mcp.genexus18) delete mcp.genexus18;
+        if (serverName === DEFAULT_MCP_SERVER_NAME) {
+            if (mcp[DEFAULT_MCP_SERVER_NAME] && !isThirdPartyMcpEntry(mcp[DEFAULT_MCP_SERVER_NAME])) delete mcp[DEFAULT_MCP_SERVER_NAME];
+            if (mcp.genexus && !isThirdPartyMcpEntry(mcp.genexus)) delete mcp.genexus;
+            if (mcp.genexus18 && !isThirdPartyMcpEntry(mcp.genexus18)) delete mcp.genexus18;
+        } else if (serverName === 'genexus') {
+            if (mcp.genexus && !isThirdPartyMcpEntry(mcp.genexus)) delete mcp.genexus;
+            if (mcp.genexus18 && !isThirdPartyMcpEntry(mcp.genexus18)) delete mcp.genexus18;
+        } else {
+            if (mcp[serverName] && !isThirdPartyMcpEntry(mcp[serverName])) delete mcp[serverName];
+        }
     }
     writeClientJson(filePath, cfgObj);
 }
 
-function removeOpenCodeJson(filePath) {
+function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME } = {}) {
     const parsed = readJsonFileSafe(filePath);
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     if (!cfgObj.mcp || typeof cfgObj.mcp !== 'object') return false;
     let removedAny = false;
-    for (const key of ['genexus', 'genexus18']) {
-        if (cfgObj.mcp[key]) {
+    const keysToRemove = serverName === DEFAULT_MCP_SERVER_NAME
+        ? [DEFAULT_MCP_SERVER_NAME, 'genexus', 'genexus18']
+        : (serverName === 'genexus' ? ['genexus', 'genexus18'] : [serverName]);
+    for (const key of keysToRemove) {
+        const entry = cfgObj.mcp[key];
+        if (entry) {
+            if (key === 'genexus' && (entry.url || entry.type === 'http' || entry.type === 'sse' || entry.type === 'remote')) {
+                continue;
+            }
             delete cfgObj.mcp[key];
             removedAny = true;
         }
     }
     if (cfgObj.mcp.servers && typeof cfgObj.mcp.servers === 'object' && !Array.isArray(cfgObj.mcp.servers)) {
-        for (const key of ['genexus', 'genexus18']) {
-            if (cfgObj.mcp.servers[key]) {
+        for (const key of keysToRemove) {
+            const entry = cfgObj.mcp.servers[key];
+            if (entry) {
+                if (key === 'genexus' && (entry.url || entry.type === 'http' || entry.type === 'sse' || entry.type === 'remote')) {
+                    continue;
+                }
                 delete cfgObj.mcp.servers[key];
                 removedAny = true;
             }
@@ -947,45 +1077,40 @@ function removeOpenCodeJson(filePath) {
     return true;
 }
 
-// Codex CLI uses TOML. We do a minimal text-merge: strip any existing
-// [mcp_servers.genexus*] blocks and append fresh ones. Brittle on hand-edited
-// files that put other keys after our blocks without a blank line, but
-// adequate for the typical machine-managed config.
-function applyCodexToml(filePath, launcher, targetConfigPath) {
-    let existing = '';
-    if (fs.existsSync(filePath)) existing = fs.readFileSync(filePath, 'utf8');
-    const stripped = stripCodexGenexusBlocks(existing);
-    const args = launcher.args || [];
-    const lines = [];
-    if (stripped.length && !stripped.endsWith('\n')) lines.push('');
-    if (stripped.length) lines.push('');
-    lines.push('[mcp_servers.genexus]');
-    lines.push(`command = ${tomlString(launcher.command)}`);
-    lines.push(`args = [${args.map(tomlString).join(', ')}]`);
-    lines.push('');
-    lines.push('[mcp_servers.genexus.env]');
-    lines.push(`GX_CONFIG_PATH = ${tomlString(targetConfigPath)}`);
-    lines.push('');
-    writeClientText(filePath, stripped + lines.join('\n'));
+function extractCodexTomlEntry(content, serverName = DEFAULT_MCP_SERVER_NAME) {
+    if (!content) return null;
+    const escaped = escapeRegex(serverName);
+    const blockRe = new RegExp(`\\[mcp_servers\\.${escaped}\\]([\\s\\S]*?)(?=\\n\\[|$)`);
+    const m = content.match(blockRe);
+    if (!m) return null;
+    const cmdMatch = m[1].match(/^\s*command\s*=\s*"((?:[^"\\]|\\.)*)"/m);
+    const urlMatch = m[1].match(/^\s*url\s*=\s*"((?:[^"\\]|\\.)*)"/m);
+    const argsMatch = m[1].match(/^\s*args\s*=\s*\[([\s\S]*?)\]/m);
+    const envMatch = content.match(new RegExp(`\\[mcp_servers\\.${escaped}\\.env\\][\\s\\S]*?GX_CONFIG_PATH\\s*=\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+    const command = cmdMatch ? cmdMatch[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"') : null;
+    const url = urlMatch ? urlMatch[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"') : null;
+    let args = [];
+    if (argsMatch && argsMatch[1]) {
+        const rawArgs = argsMatch[1].match(/"((?:[^"\\]|\\.)*)"/g);
+        if (rawArgs) {
+            args = rawArgs.map((a) => a.slice(1, -1).replace(/\\\\/g, '\\').replace(/\\"/g, '"'));
+        }
+    }
+    const gxConfig = envMatch ? envMatch[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"') : null;
+    return {
+        command,
+        args,
+        url,
+        env: gxConfig ? { GX_CONFIG_PATH: gxConfig } : null
+    };
 }
 
-function removeCodexToml(filePath) {
-    if (!fs.existsSync(filePath)) return false;
-    const existing = fs.readFileSync(filePath, 'utf8');
-    const stripped = stripCodexGenexusBlocks(existing);
-    if (stripped === existing) return false;
-    writeClientText(filePath, stripped);
-    return true;
-}
-
-function stripCodexGenexusBlocks(content) {
-    // Walk line-by-line so values like `args = []` don't confuse the parser.
-    // A section ends at the next line that starts a [section] header (top-level
-    // tables and arrays of tables only — must begin at column 0).
+function stripCodexServerBlocks(content, serverName) {
+    if (!content) return '';
     const lines = content.split('\n');
     const out = [];
     const headerRe = /^\[\[?[A-Za-z0-9_."'-]+/;
-    const ourRe = /^\[\[?mcp_servers\.genexus(\.[A-Za-z0-9_."'-]+)?\]\]?\s*$/;
+    const ourRe = new RegExp(`^\\[\\[?mcp_servers\\.${escapeRegex(serverName)}(\\.[A-Za-z0-9_."'-]+)?\\]\\]?\\s*$`);
     let inOurs = false;
     for (const line of lines) {
         if (headerRe.test(line)) {
@@ -995,8 +1120,75 @@ function stripCodexGenexusBlocks(content) {
         if (inOurs) continue;
         out.push(line);
     }
-    // Collapse 3+ trailing blank lines we may have left behind.
     return out.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+// Codex CLI uses TOML. We do a minimal text-merge: strip any existing
+// [mcp_servers.genexus*] blocks and append fresh ones. Brittle on hand-edited
+// files that put other keys after our blocks without a blank line, but
+// adequate for the typical machine-managed config.
+function applyCodexToml(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false } = {}) {
+    let existing = '';
+    if (fs.existsSync(filePath)) existing = fs.readFileSync(filePath, 'utf8');
+    const existingEntry = extractCodexTomlEntry(existing, serverName);
+    if (existingEntry && !force && isThirdPartyMcpEntry(existingEntry)) {
+        const err = new Error(`Existing '${serverName}' entry is a third-party or HTTP MCP server (e.g. official GeneXus MCP). Refusing to overwrite. Use --server-name=<customName> (e.g. --server-name Gx18byLennix) or --no-write-clients.`);
+        err.code = 'MCP_SERVER_COLLISION';
+        throw err;
+    }
+    let stripped = stripCodexServerBlocks(existing, serverName);
+    if (serverName === DEFAULT_MCP_SERVER_NAME) {
+        const legacyGx = extractCodexTomlEntry(stripped, 'genexus');
+        if (legacyGx && !isThirdPartyMcpEntry(legacyGx)) {
+            stripped = stripCodexServerBlocks(stripped, 'genexus');
+        }
+        const legacyGx18 = extractCodexTomlEntry(stripped, 'genexus18');
+        if (legacyGx18 && !isThirdPartyMcpEntry(legacyGx18)) {
+            stripped = stripCodexServerBlocks(stripped, 'genexus18');
+        }
+    } else if (serverName === 'genexus') {
+        const legacyEntry = extractCodexTomlEntry(stripped, 'genexus18');
+        if (legacyEntry && !isThirdPartyMcpEntry(legacyEntry)) {
+            stripped = stripCodexServerBlocks(stripped, 'genexus18');
+        }
+    }
+    const args = launcher.args || [];
+    const lines = [];
+    if (stripped.length && !stripped.endsWith('\n')) lines.push('');
+    if (stripped.length) lines.push('');
+    lines.push(`[mcp_servers.${serverName}]`);
+    lines.push(`command = ${tomlString(launcher.command)}`);
+    lines.push(`args = [${args.map(tomlString).join(', ')}]`);
+    lines.push('');
+    lines.push(`[mcp_servers.${serverName}.env]`);
+    lines.push(`GX_CONFIG_PATH = ${tomlString(targetConfigPath)}`);
+    lines.push('');
+    writeClientText(filePath, stripped + lines.join('\n'));
+}
+
+function removeCodexToml(filePath, { serverName = DEFAULT_MCP_SERVER_NAME } = {}) {
+    if (!fs.existsSync(filePath)) return false;
+    const existing = fs.readFileSync(filePath, 'utf8');
+    const keysToRemove = serverName === DEFAULT_MCP_SERVER_NAME
+        ? [DEFAULT_MCP_SERVER_NAME, 'genexus', 'genexus18']
+        : (serverName === 'genexus' ? ['genexus', 'genexus18'] : [serverName]);
+    let stripped = existing;
+    for (const key of keysToRemove) {
+        const entry = extractCodexTomlEntry(stripped, key);
+        if (entry) {
+            if (key === 'genexus' && (entry.url || entry.type === 'http' || entry.type === 'sse' || entry.type === 'remote')) {
+                continue;
+            }
+            stripped = stripCodexServerBlocks(stripped, key);
+        }
+    }
+    if (stripped === existing) return false;
+    writeClientText(filePath, stripped);
+    return true;
+}
+
+function stripCodexGenexusBlocks(content) {
+    return stripCodexServerBlocks(content, 'genexus');
 }
 
 function tomlString(value) {
@@ -1029,41 +1221,94 @@ function normalizeExePath(p) {
     return s;
 }
 
-function readClientCommandEntry(client) {
+function readClientCommandEntry(client, serverName = DEFAULT_MCP_SERVER_NAME) {
     if (client.writeSupported === false) return null;
     if (!fs.existsSync(client.path)) return null;
     try {
         if (client.format === 'mcpServers') {
             const parsed = readJsonFileSafe(client.path);
             if (!parsed || typeof parsed !== 'object') return null;
-            const entry = parsed.mcpServers && parsed.mcpServers.genexus;
+            let entry = parsed.mcpServers && parsed.mcpServers[serverName];
+            if (!entry && serverName === DEFAULT_MCP_SERVER_NAME) {
+                const legacyGx = parsed.mcpServers && parsed.mcpServers.genexus;
+                if (legacyGx && !isThirdPartyMcpEntry(legacyGx)) entry = legacyGx;
+                else if (parsed.mcpServers && parsed.mcpServers.genexus18) entry = parsed.mcpServers.genexus18;
+            }
             if (!entry) return null;
-            return { command: entry.command || null, args: Array.isArray(entry.args) ? entry.args : [] };
+            return {
+                command: entry.command || null,
+                args: Array.isArray(entry.args) ? entry.args : [],
+                url: entry.url || null,
+                type: entry.type || null,
+                env: entry.env || null,
+                raw: entry
+            };
         }
         if (client.format === 'opencode') {
             const parsed = readJsonFileSafe(client.path);
             if (!parsed || typeof parsed !== 'object') return null;
-            const entry = parsed.mcp?.servers?.genexus || parsed.mcp?.genexus;
-            if (!entry || !Array.isArray(entry.command) || entry.command.length === 0) return null;
-            return { command: entry.command[0], args: entry.command.slice(1) };
+            let entry = parsed.mcp?.servers?.[serverName] || parsed.mcp?.[serverName];
+            if (!entry && serverName === DEFAULT_MCP_SERVER_NAME) {
+                const legacyGx = parsed.mcp?.servers?.genexus || parsed.mcp?.genexus;
+                if (legacyGx && !isThirdPartyMcpEntry(legacyGx)) entry = legacyGx;
+                else entry = parsed.mcp?.servers?.genexus18 || parsed.mcp?.genexus18;
+            }
+            if (!entry) return null;
+            if (Array.isArray(entry.command) && entry.command.length > 0) {
+                return {
+                    command: entry.command[0],
+                    args: entry.command.slice(1),
+                    url: entry.url || null,
+                    type: entry.type || null,
+                    environment: entry.environment || null,
+                    raw: entry
+                };
+            }
+            return {
+                command: null,
+                args: [],
+                url: entry.url || null,
+                type: entry.type || null,
+                environment: entry.environment || null,
+                raw: entry
+            };
         }
         if (client.format === 'vscode-servers') {
             const parsed = readJsonFileSafe(client.path);
             if (!parsed || typeof parsed !== 'object') return null;
-            const entry = parsed.servers && parsed.servers.genexus;
+            let entry = parsed.servers && parsed.servers[serverName];
+            if (!entry && serverName === DEFAULT_MCP_SERVER_NAME) {
+                const legacyGx = parsed.servers && parsed.servers.genexus;
+                if (legacyGx && !isThirdPartyMcpEntry(legacyGx)) entry = legacyGx;
+                else if (parsed.servers && parsed.servers.genexus18) entry = parsed.servers.genexus18;
+            }
             if (!entry) return null;
-            return { command: entry.command || null, args: Array.isArray(entry.args) ? entry.args : [] };
+            return {
+                command: entry.command || null,
+                args: Array.isArray(entry.args) ? entry.args : [],
+                url: entry.url || null,
+                type: entry.type || null,
+                env: entry.env || null,
+                raw: entry
+            };
         }
         if (client.format === 'codex-toml') {
             const raw = fs.readFileSync(client.path, 'utf8');
-            // Minimal extraction: find [mcp_servers.genexus] block and pull command = "..."
-            const blockRe = /\[mcp_servers\.genexus\]([\s\S]*?)(?=\n\[|$)/;
-            const m = raw.match(blockRe);
-            if (!m) return null;
-            const cmdMatch = m[1].match(/^\s*command\s*=\s*"((?:[^"\\]|\\.)*)"/m);
-            if (!cmdMatch) return null;
-            const command = cmdMatch[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"');
-            return { command, args: [] };
+            let entry = extractCodexTomlEntry(raw, serverName);
+            if (!entry && serverName === DEFAULT_MCP_SERVER_NAME) {
+                const legacyGx = extractCodexTomlEntry(raw, 'genexus');
+                if (legacyGx && !isThirdPartyMcpEntry(legacyGx)) entry = legacyGx;
+                else entry = extractCodexTomlEntry(raw, 'genexus18');
+            }
+            if (!entry) return null;
+            return {
+                command: entry.command || null,
+                args: entry.args || [],
+                url: entry.url || null,
+                type: entry.type || null,
+                env: entry.env || null,
+                raw: entry
+            };
         }
     } catch {
         return null;
@@ -1274,5 +1519,7 @@ module.exports = {
     applyLauncherConfigOrExit,
     isPathLikelyAppLockerBlocked,
     normalizeExePath,
-    readClientCommandEntry
+    readClientCommandEntry,
+    isOurMcpEntry,
+    DEFAULT_MCP_SERVER_NAME
 };

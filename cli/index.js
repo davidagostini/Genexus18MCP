@@ -43,6 +43,8 @@ const GLOBAL_DEFAULTS = {
     writeClients: false,
     clients: null,
     allClients: false,
+    serverName: null,
+    force: false,
     mcpSmoke: false,
     dump: false,
     noSmoke: false,
@@ -206,6 +208,22 @@ function parseArgs(argv) {
             }
             case 'all-clients':
                 result.options.allClients = true;
+                break;
+            case 'server-name': {
+                const val = takeValue();
+                if (val) {
+                    if (!/^[a-zA-Z0-9_-]+$/.test(val)) {
+                        result.unknownFlags.push(`--server-name must be alphanumeric (letters, digits, _, -), got: "${val}"`);
+                    } else {
+                        result.options.serverName = val;
+                    }
+                } else {
+                    result.unknownFlags.push('--server-name requires a value');
+                }
+                break;
+            }
+            case 'force':
+                result.options.force = true;
                 break;
             case 'action': {
                 const val = takeValue();

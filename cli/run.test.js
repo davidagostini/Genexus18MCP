@@ -757,7 +757,7 @@ test('clients add registers a client into a sandbox home with backup + atomic wr
     assert.ok(parsed.ok.patchedClients.includes('Cursor'));
 
     const written = JSON.parse(fs.readFileSync(cursorCfg, 'utf8'));
-    assert.ok(written.mcpServers.genexus, 'genexus entry should be written');
+    assert.ok(written.mcpServers.genexus18mcp, 'genexus18mcp entry should be written');
     assert.ok(written.mcpServers.other, 'pre-existing entries preserved');
 
     const baks = fs.readdirSync(path.dirname(cursorCfg)).filter((f) => f.includes('.bak'));
@@ -784,7 +784,7 @@ test('clients add tolerates a JSONC (commented) VS Code mcp.json', () => {
     assert.ok(parsed.ok.patchedClients.includes('VS Code'), 'VS Code should be patched despite comments');
 
     const written = JSON.parse(fs.readFileSync(vscodeCfg, 'utf8'));
-    assert.ok(written.servers.genexus, 'genexus server entry written');
+    assert.ok(written.servers.genexus18mcp, 'genexus18mcp server entry written');
     assert.ok(written.servers.foo, 'pre-existing server preserved');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -806,12 +806,12 @@ test('clients add preserves OpenCode 1.x direct mcp shape', () => {
     });
     assert.equal(res.status, 0);
     const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
-    assert.ok(written.mcp.genexus, 'direct OpenCode entry should be written');
-    assert.equal(written.mcp.genexus.enabled, true);
-    assert.equal(written.mcp.genexus.disabled, undefined);
+    assert.ok(written.mcp.genexus18mcp, 'direct OpenCode entry should be written');
+    assert.equal(written.mcp.genexus18mcp.enabled, true);
+    assert.equal(written.mcp.genexus18mcp.disabled, undefined);
     assert.ok(written.mcp.other, 'unrelated direct MCP server should be preserved');
     assert.equal(written.mcp.servers, undefined);
-    assert.deepEqual(written.mcp.genexus.environment, { GX_CONFIG_PATH: cfgPath });
+    assert.deepEqual(written.mcp.genexus18mcp.environment, { GX_CONFIG_PATH: cfgPath });
 
     const listed = runCli(['clients', '--format', 'json'], { env });
     assert.equal(listed.status, 0);
@@ -837,12 +837,12 @@ test('clients add preserves OpenCode v2 nested mcp.servers shape', () => {
     });
     assert.equal(res.status, 0);
     const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
-    assert.ok(written.mcp.servers.genexus, 'nested OpenCode entry should be written');
-    assert.equal(written.mcp.servers.genexus.disabled, false);
-    assert.equal(written.mcp.servers.genexus.enabled, undefined);
+    assert.ok(written.mcp.servers.genexus18mcp, 'nested OpenCode entry should be written');
+    assert.equal(written.mcp.servers.genexus18mcp.disabled, false);
+    assert.equal(written.mcp.servers.genexus18mcp.enabled, undefined);
     assert.ok(written.mcp.servers.other, 'unrelated nested MCP server should be preserved');
-    assert.equal(written.mcp.genexus, undefined);
-    assert.deepEqual(written.mcp.servers.genexus.environment, { GX_CONFIG_PATH: cfgPath });
+    assert.equal(written.mcp.genexus18mcp, undefined);
+    assert.deepEqual(written.mcp.servers.genexus18mcp.environment, { GX_CONFIG_PATH: cfgPath });
 
     const listed = runCli(['clients', '--format', 'json'], { env });
     assert.equal(listed.status, 0);
@@ -877,7 +877,7 @@ test('init auto-registers detected OpenCode in either config layout', () => {
             assert.ok(parsed.meta.patchedClients.includes('OpenCode (CLI)'));
 
             const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
-            const entry = label === 'nested' ? written.mcp.servers.genexus : written.mcp.genexus;
+            const entry = label === 'nested' ? written.mcp.servers.genexus18mcp : written.mcp.genexus18mcp;
             assert.ok(entry, `${label} OpenCode entry should be present after init`);
             assert.deepEqual(entry.environment, { GX_CONFIG_PATH: path.join(kbDir, 'config.json') });
             assert.ok(label === 'nested' ? written.mcp.servers.other : written.mcp.other);
@@ -903,7 +903,7 @@ test('clients add replaces a legacy genexus18 entry instead of duplicating it', 
     assert.equal(res.status, 0);
 
     const written = JSON.parse(fs.readFileSync(cursorCfg, 'utf8'));
-    assert.ok(written.mcpServers.genexus, 'new genexus entry present');
+    assert.ok(written.mcpServers.genexus18mcp, 'new genexus18mcp entry present');
     assert.equal(written.mcpServers.genexus18, undefined, 'legacy genexus18 removed (no duplicate)');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -916,7 +916,7 @@ test('clients list flags a registered command pointing at a missing launcher as 
     fs.mkdirSync(path.dirname(cursorCfg), { recursive: true });
     // A non-.exe launcher (.bat) that no longer exists must also be flagged stale.
     const missing = path.join(tempRoot, 'gone', 'start_mcp.bat');
-    fs.writeFileSync(cursorCfg, JSON.stringify({ mcpServers: { genexus: { command: missing, args: [] } } }, null, 2));
+    fs.writeFileSync(cursorCfg, JSON.stringify({ mcpServers: { genexus18mcp: { command: missing, args: [] } } }, null, 2));
 
     const res = runCli(['clients', '--format', 'json'], { env });
     assert.equal(res.status, 0);
@@ -964,7 +964,7 @@ test('clients remove drops the genexus entry (sandbox home)', () => {
     const env = sandboxHomeEnv(tempRoot);
     const cursorCfg = path.join(tempRoot, '.cursor', 'mcp.json');
     fs.mkdirSync(path.dirname(cursorCfg), { recursive: true });
-    fs.writeFileSync(cursorCfg, JSON.stringify({ mcpServers: { genexus: { command: 'npx' }, genexus18: { command: 'old' } } }, null, 2));
+    fs.writeFileSync(cursorCfg, JSON.stringify({ mcpServers: { genexus18mcp: { command: 'npx' }, genexus18: { command: 'old' } } }, null, 2));
 
     const res = runCli(['clients', 'remove', '--clients', 'cursor', '--format', 'json'], { env });
     assert.equal(res.status, 0);
@@ -972,7 +972,7 @@ test('clients remove drops the genexus entry (sandbox home)', () => {
     assert.ok(parsed.ok.removedClients.includes('Cursor'));
 
     const written = JSON.parse(fs.readFileSync(cursorCfg, 'utf8'));
-    assert.equal(written.mcpServers.genexus, undefined, 'genexus removed');
+    assert.equal(written.mcpServers.genexus18mcp, undefined, 'genexus18mcp removed');
     assert.equal(written.mcpServers.genexus18, undefined, 'legacy genexus18 also removed');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -987,9 +987,11 @@ test('clients remove drops both OpenCode config shapes and legacy key', () => {
         mcp: {
             genexus: { type: 'local', command: ['old'] },
             genexus18: { type: 'local', command: ['older'] },
+            genexus18mcp: { type: 'local', command: ['latest'] },
             servers: {
                 genexus: { type: 'local', command: ['nested'] },
                 genexus18: { type: 'local', command: ['nested-old'] },
+                genexus18mcp: { type: 'local', command: ['nested-latest'] },
                 other: { type: 'local', command: ['other'] }
             }
         }
@@ -1000,8 +1002,10 @@ test('clients remove drops both OpenCode config shapes and legacy key', () => {
     const written = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
     assert.equal(written.mcp.genexus, undefined);
     assert.equal(written.mcp.genexus18, undefined);
+    assert.equal(written.mcp.genexus18mcp, undefined);
     assert.equal(written.mcp.servers.genexus, undefined);
     assert.equal(written.mcp.servers.genexus18, undefined);
+    assert.equal(written.mcp.servers.genexus18mcp, undefined);
     assert.ok(written.mcp.servers.other, 'unrelated nested MCP server should be preserved');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1095,4 +1099,147 @@ test('npm package contains all bin, postinstall and required runtime files', () 
             );
         }
     }
+});
+
+test('isOurMcpEntry identifies third-party / HTTP servers vs our own entry', () => {
+    const { isOurMcpEntry } = require('./lib/config');
+
+    // Official / third-party MCP servers
+    assert.equal(isOurMcpEntry({ url: 'http://localhost:8001/mcp' }), false);
+    assert.equal(isOurMcpEntry({ type: 'http', url: 'https://example.com/mcp' }), false);
+    assert.equal(isOurMcpEntry({ type: 'sse', url: 'http://127.0.0.1:8000/sse' }), false);
+    assert.equal(isOurMcpEntry({ command: 'node', args: ['some-other-server.js'] }), false);
+
+    // Our entries
+    assert.equal(isOurMcpEntry({ command: 'npx.cmd', args: ['-y', 'genexus-mcp@latest'] }), true);
+    assert.equal(isOurMcpEntry({ command: 'C:\\path\\start_mcp.bat' }), true);
+    assert.equal(isOurMcpEntry({ command: 'C:\\bin\\GxMcp.Gateway.exe' }), true);
+    assert.equal(isOurMcpEntry({ command: 'node', env: { GX_CONFIG_PATH: 'C:\\kb\\config.json' } }), true);
+    assert.equal(isOurMcpEntry({ url: 'http://custom' }, 'genexus18mcp'), true);
+});
+
+test('clients add refuses to overwrite a third-party HTTP MCP server without --force', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-collision-'));
+    const env = sandboxHomeEnv(tempRoot);
+    const cfgPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+
+    // Pre-existing official GeneXus MCP entry under genexus18mcp
+    const cursorCfg = path.join(tempRoot, '.cursor', 'mcp.json');
+    fs.mkdirSync(path.dirname(cursorCfg), { recursive: true });
+    fs.writeFileSync(cursorCfg, JSON.stringify({
+        mcpServers: {
+            genexus18mcp: { url: 'http://localhost:8001/mcp', type: 'http' }
+        }
+    }, null, 2));
+
+    const res = runCli(['clients', 'add', '--clients', 'cursor', '--format', 'json'], {
+        env: { ...env, GX_CONFIG_PATH: cfgPath }
+    });
+    assert.equal(res.status, 0);
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(parsed.ok.patchedClients.length, 0);
+    assert.equal(parsed.meta.failedClients.length, 1);
+    assert.match(parsed.meta.failedClients[0].reason, /third-party or HTTP MCP server/);
+
+    // Ensure the original HTTP server was NOT modified or deleted
+    const after = JSON.parse(fs.readFileSync(cursorCfg, 'utf8'));
+    assert.equal(after.mcpServers.genexus18mcp.url, 'http://localhost:8001/mcp');
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('clients add with --force overwrites an existing third-party entry', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-force-'));
+    const env = sandboxHomeEnv(tempRoot);
+    const cfgPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+
+    const cursorCfg = path.join(tempRoot, '.cursor', 'mcp.json');
+    fs.mkdirSync(path.dirname(cursorCfg), { recursive: true });
+    fs.writeFileSync(cursorCfg, JSON.stringify({
+        mcpServers: {
+            genexus18mcp: { url: 'http://localhost:8001/mcp', type: 'http' }
+        }
+    }, null, 2));
+
+    const res = runCli(['clients', 'add', '--clients', 'cursor', '--force', '--format', 'json'], {
+        env: { ...env, GX_CONFIG_PATH: cfgPath }
+    });
+    assert.equal(res.status, 0);
+    const parsed = JSON.parse(res.stdout);
+    assert.ok(parsed.ok.patchedClients.includes('Cursor'));
+
+    const after = JSON.parse(fs.readFileSync(cursorCfg, 'utf8'));
+    assert.equal(after.mcpServers.genexus18mcp.url, undefined);
+    assert.ok(after.mcpServers.genexus18mcp.command);
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('clients add supports custom --server-name across all formats for multi-MCP coexistence', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-custom-name-'));
+    const env = sandboxHomeEnv(tempRoot);
+    const cfgPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+
+    // 1. mcpServers (Cursor)
+    const cursorCfg = path.join(tempRoot, '.cursor', 'mcp.json');
+    fs.mkdirSync(path.dirname(cursorCfg), { recursive: true });
+    fs.writeFileSync(cursorCfg, JSON.stringify({
+        mcpServers: { genexus: { url: 'http://localhost:8001/mcp' } }
+    }, null, 2));
+
+    // 2. VS Code servers
+    const vscodeCfg = path.join(env.APPDATA, 'Code', 'User', 'mcp.json');
+    fs.mkdirSync(path.dirname(vscodeCfg), { recursive: true });
+    fs.writeFileSync(vscodeCfg, JSON.stringify({
+        servers: { genexus: { url: 'http://localhost:8001/mcp' } }
+    }, null, 2));
+
+    // 3. OpenCode nested
+    const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+    fs.mkdirSync(path.dirname(openCodeCfg), { recursive: true });
+    fs.writeFileSync(openCodeCfg, JSON.stringify({
+        mcp: { servers: { genexus: { url: 'http://localhost:8001/mcp' } } }
+    }, null, 2));
+
+    // 4. Codex TOML
+    const codexCfg = path.join(tempRoot, '.codex', 'config.toml');
+    fs.mkdirSync(path.dirname(codexCfg), { recursive: true });
+    fs.writeFileSync(codexCfg, '[mcp_servers.genexus]\nurl = "http://localhost:8001/mcp"\n');
+
+    const res = runCli(['clients', 'add', '--clients', 'cursor,vscode,opencode,codex-cli', '--server-name', 'Gx18byLennix', '--format', 'json'], {
+        env: { ...env, GX_CONFIG_PATH: cfgPath }
+    });
+    assert.equal(res.status, 0);
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(parsed.ok.patchedCount, 4);
+
+    // Assert both coexist side-by-side
+    const cursorWritten = JSON.parse(fs.readFileSync(cursorCfg, 'utf8'));
+    assert.equal(cursorWritten.mcpServers.genexus.url, 'http://localhost:8001/mcp');
+    assert.ok(cursorWritten.mcpServers.Gx18byLennix);
+
+    const vsCodeWritten = JSON.parse(fs.readFileSync(vscodeCfg, 'utf8'));
+    assert.equal(vsCodeWritten.servers.genexus.url, 'http://localhost:8001/mcp');
+    assert.ok(vsCodeWritten.servers.Gx18byLennix);
+
+    const openCodeWritten = JSON.parse(fs.readFileSync(openCodeCfg, 'utf8'));
+    assert.equal(openCodeWritten.mcp.servers.genexus.url, 'http://localhost:8001/mcp');
+    assert.ok(openCodeWritten.mcp.servers.Gx18byLennix);
+
+    const codexWritten = fs.readFileSync(codexCfg, 'utf8');
+    assert.ok(codexWritten.includes('[mcp_servers.genexus]'));
+    assert.ok(codexWritten.includes('[mcp_servers.Gx18byLennix]'));
+
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('clients add rejects invalid --server-name characters with usage error', () => {
+    const res = runCli(['clients', 'add', '--clients', 'cursor', '--server-name', 'bad name with spaces!', '--format', 'json']);
+    assert.equal(res.status, 2);
+    const parsed = JSON.parse(res.stdout);
+    assert.equal(parsed.error.code, 'usage_error');
+    assert.match(parsed.error.message, /alphanumeric/);
 });
