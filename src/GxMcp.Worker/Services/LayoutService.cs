@@ -1444,27 +1444,12 @@ namespace GxMcp.Worker.Services
                 return true;
             }
 
-            // The report SDK often serializes colors as nested "Color [ ... ]" descriptors.
-            if (string.Equals(propertyName, "ForeColor", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(propertyName, "BackColor", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(propertyName, "BorderColor", StringComparison.OrdinalIgnoreCase))
+            // The report SDK often serializes colors as nested "Color [ ... ]" descriptors or RGB tokens.
+            if (ColorHelper.IsColorAttributeName(propertyName))
             {
-                string expectedLeaf = ExtractColorLeafToken(normalizedExpected);
-                string actualLeaf = ExtractColorLeafToken(normalizedActual);
-                if (!string.IsNullOrWhiteSpace(expectedLeaf) &&
-                    !string.IsNullOrWhiteSpace(actualLeaf) &&
-                    string.Equals(expectedLeaf, actualLeaf, StringComparison.OrdinalIgnoreCase))
+                if (ColorHelper.IsColorEquivalent(normalizedExpected, normalizedActual))
                 {
                     return true;
-                }
-
-                if (TryParseColorToken(normalizedExpected, out var expectedColor) &&
-                    TryParseColorToken(normalizedActual, out var actualColor))
-                {
-                    if (expectedColor.ToArgb() == actualColor.ToArgb())
-                    {
-                        return true;
-                    }
                 }
 
                 if (normalizedActual.IndexOf(normalizedExpected, StringComparison.OrdinalIgnoreCase) >= 0)
@@ -1477,69 +1462,10 @@ namespace GxMcp.Worker.Services
         }
 
         private static string ExtractColorLeafToken(string raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
-
-            string token = raw.Trim();
-            if (token.StartsWith("'", StringComparison.Ordinal) &&
-                token.EndsWith("'", StringComparison.Ordinal) &&
-                token.Length > 1)
-            {
-                token = token.Substring(1, token.Length - 2).Trim();
-            }
-
-            var matches = Regex.Matches(token, @"\[(?<name>[^\[\]]+)\]");
-            if (matches.Count > 0)
-            {
-                for (int i = matches.Count - 1; i >= 0; i--)
-                {
-                    string candidate = matches[i].Groups["name"].Value.Trim();
-                    if (!string.Equals(candidate, "Color", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return candidate;
-                    }
-                }
-            }
-
-            return token;
-        }
+            => ColorHelper.ExtractColorLeafToken(raw);
 
         private static bool TryParseColorToken(string raw, out System.Drawing.Color color)
-        {
-            color = System.Drawing.Color.Empty;
-            if (string.IsNullOrWhiteSpace(raw)) return false;
-
-            string token = ExtractColorLeafToken(raw);
-            if (string.IsNullOrWhiteSpace(token)) return false;
-
-            if (string.Equals(token, "Transparent", StringComparison.OrdinalIgnoreCase))
-            {
-                color = System.Drawing.Color.Transparent;
-                return true;
-            }
-
-            var rgbMatch = Regex.Match(token, @"^\s*(\d{1,3})\s*;\s*(\d{1,3})\s*;\s*(\d{1,3})\s*\|?\s*$");
-            if (rgbMatch.Success &&
-                int.TryParse(rgbMatch.Groups[1].Value, out int r) &&
-                int.TryParse(rgbMatch.Groups[2].Value, out int g) &&
-                int.TryParse(rgbMatch.Groups[3].Value, out int b))
-            {
-                r = Math.Max(0, Math.Min(255, r));
-                g = Math.Max(0, Math.Min(255, g));
-                b = Math.Max(0, Math.Min(255, b));
-                color = System.Drawing.Color.FromArgb(r, g, b);
-                return true;
-            }
-
-            var named = System.Drawing.Color.FromName(token);
-            if (named.IsKnownColor || named.IsNamedColor || named.IsSystemColor)
-            {
-                color = named;
-                return true;
-            }
-
-            return false;
-        }
+            => ColorHelper.TryParseColor(raw, out color);
 
 
 

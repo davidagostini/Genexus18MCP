@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v2.49.1 - 2026-08-31
+
+### Fixed
+- **Report layout rectangle `BackColor`/`ForeColor` persistence and corruption fix (Issue #122).**
+  - **Robust Color Token Parsing (`ColorHelper`):** Resolved an issue where custom/unnamed rectangle colors serializing via .NET `Color.ToString()` (e.g. `Color [A=255, R=144, G=238, B=144]`) failed regex parsing in `ReportLayoutHelper.ReadLayout`, causing raw string descriptors to leak into the editable XML and convert to solid black (`#000000` / integer 0) on subsequent writes or dynamic property assignments. Added exhaustive color token parsing supporting .NET format, GeneXus RGB tokens (`R; G; B|`), comma RGB (`R, G, B`), CSS `rgb(...)`/`rgba(...)`, hex (`#RGB`, `#RGBA`, `#RRGGBB`, `#AARRGGBB`), and named colors.
+  - **Untouched Control Preservation (`baselineXml`):** Fixed `WebFormXmlHelper.ApplyEditableXml` and `WriteService.VisualWrite` to propagate `baselineXml` to `ReportLayoutHelper.WriteLayout`. Untouched controls across separate print blocks are no longer treated as modified, preventing untouched rectangles in other print blocks from turning black when editing a different print block or text control.
+  - **Color Attribute Equivalence in Write Verification:** Updated `XmlEquivalence.ElementsEqual` and `LayoutService.IsPersistedValueMatch` to perform semantic color equivalence on color attributes (`BackColor`, `ForeColor`, `BorderColor`), preventing false-positive write verification mismatches and accidental rollbacks when requested colors normalize to GeneXus canonical tokens.
+  - See Issue [#122](https://github.com/lennix1337/Genexus18MCP/issues/122).
+
+
 ## v2.49.0 - 2026-08-31
 
 ### Added

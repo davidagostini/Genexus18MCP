@@ -179,9 +179,9 @@ namespace GxMcp.Worker.Helpers
                             if (pVal != null)
                             {
                                 var serialized = pVal.ToString();
-                                if (IsColorAttributeName(entry.Key))
+                                if (ColorHelper.IsColorAttributeName(entry.Key))
                                 {
-                                    serialized = NormalizeColorToken(serialized);
+                                    serialized = ColorHelper.NormalizeColorToken(serialized);
                                 }
                                 el.SetAttributeValue(entry.Key, serialized);
                             }
@@ -292,9 +292,9 @@ namespace GxMcp.Worker.Helpers
                                     if (IsExcludedAttribute(aName)) continue;
                                     if (!HasReportAttributeChanged(elXml, baselineEl, aName)) continue;
                                     string rawValue = attr.Value;
-                                    if (IsColorAttributeName(aName))
+                                    if (ColorHelper.IsColorAttributeName(aName))
                                     {
-                                        rawValue = NormalizeColorToken(rawValue);
+                                        rawValue = ColorHelper.NormalizeColorToken(rawValue);
                                     }
 
                                     bool assignmentApplied = false;
@@ -426,9 +426,9 @@ namespace GxMcp.Worker.Helpers
                             string aName = attr.Name.LocalName;
                             if (IsExcludedAttribute(aName)) continue;
                             string rawValue = attr.Value;
-                            if (IsColorAttributeName(aName))
+                            if (ColorHelper.IsColorAttributeName(aName))
                             {
-                                rawValue = NormalizeColorToken(rawValue);
+                                rawValue = ColorHelper.NormalizeColorToken(rawValue);
                             }
 
                             bool applied = false;
@@ -904,7 +904,7 @@ namespace GxMcp.Worker.Helpers
             {
                 try
                 {
-                    if (TryParseColor(value, out var parsedColor))
+                    if (ColorHelper.TryParseColor(value, out var parsedColor))
                     {
                         return parsedColor;
                     }
@@ -1016,8 +1016,8 @@ namespace GxMcp.Worker.Helpers
             {
                 return false;
             }
-            string normalizedForSdk = IsColorAttributeName(sdkPropertyName)
-                ? NormalizeColorTokenForSdkWrite(rawValue)
+            string normalizedForSdk = ColorHelper.IsColorAttributeName(sdkPropertyName)
+                ? ColorHelper.NormalizeColorTokenForSdkWrite(rawValue)
                 : rawValue;
 
             var prop = instanceType.GetProperty(sdkPropertyName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
@@ -1036,6 +1036,12 @@ namespace GxMcp.Worker.Helpers
             }
 
             // Fallback for controls that expose dynamic property setters instead of writable CLR properties.
+            object dynamicValue = normalizedForSdk;
+            if (ColorHelper.IsColorAttributeName(sdkPropertyName) && ColorHelper.TryParseColor(rawValue, out var dynamicColor))
+            {
+                dynamicValue = dynamicColor;
+            }
+
             var setPropertyValue = instanceType.GetMethod(
                 "SetPropertyValue",
                 BindingFlags.Public | BindingFlags.Instance,
@@ -1045,7 +1051,7 @@ namespace GxMcp.Worker.Helpers
 
             if (setPropertyValue != null)
             {
-                setPropertyValue.Invoke(instance, new object[] { sdkPropertyName, normalizedForSdk });
+                setPropertyValue.Invoke(instance, new object[] { sdkPropertyName, dynamicValue });
                 return true;
             }
 
@@ -1065,138 +1071,20 @@ namespace GxMcp.Worker.Helpers
             return false;
         }
 
-        private static bool IsColorAttributeName(string attributeName)
-        {
-            return string.Equals(attributeName, "ForeColor", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(attributeName, "BackColor", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(attributeName, "BorderColor", StringComparison.OrdinalIgnoreCase);
-        }
+        internal static bool IsColorAttributeName(string attributeName)
+            => ColorHelper.IsColorAttributeName(attributeName);
 
-        private static bool TryParseColor(string raw, out System.Drawing.Color color)
-        {
-            color = System.Drawing.Color.Empty;
-            if (string.IsNullOrWhiteSpace(raw)) return false;
+        internal static bool TryParseColor(string raw, out System.Drawing.Color color)
+            => ColorHelper.TryParseColor(raw, out color);
 
-            string token = ExtractColorLeafToken(raw);
-            if (string.IsNullOrWhiteSpace(token)) return false;
+        internal static string NormalizeColorToken(string raw)
+            => ColorHelper.NormalizeColorToken(raw);
 
-            if (string.Equals(token, "Transparent", StringComparison.OrdinalIgnoreCase))
-            {
-                color = System.Drawing.Color.Transparent;
-                return true;
-            }
+        internal static string NormalizeColorTokenForSdkWrite(string raw)
+            => ColorHelper.NormalizeColorTokenForSdkWrite(raw);
 
-            var rgbMatch = System.Text.RegularExpressions.Regex.Match(
-                token,
-                @"^\s*(\d{1,3})\s*[,;]\s*(\d{1,3})\s*[,;]\s*(\d{1,3})\s*\|?\s*$");
-            if (rgbMatch.Success)
-            {
-                if (int.TryParse(rgbMatch.Groups[1].Value, out int r) &&
-                    int.TryParse(rgbMatch.Groups[2].Value, out int g) &&
-                    int.TryParse(rgbMatch.Groups[3].Value, out int b))
-                {
-                    r = Math.Max(0, Math.Min(255, r));
-                    g = Math.Max(0, Math.Min(255, g));
-                    b = Math.Max(0, Math.Min(255, b));
-                    color = System.Drawing.Color.FromArgb(r, g, b);
-                    return true;
-                }
-            }
-
-            var named = System.Drawing.Color.FromName(token);
-            if (named.IsKnownColor || named.IsNamedColor || named.IsSystemColor)
-            {
-                color = named;
-                return true;
-            }
-
-            return false;
-        }
-
-        private static string NormalizeColorToken(string raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return raw;
-            if (!TryParseColor(raw, out var color))
-            {
-                return raw.Trim();
-            }
-
-            if (color.A == 0 && string.Equals(ExtractColorLeafToken(raw), "Transparent", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Transparent";
-            }
-
-            // GeneXus color editor interoperates well with this canonical RGB token form.
-            return $"{color.R}; {color.G}; {color.B}|";
-        }
-
-        private static string NormalizeColorTokenForSdkWrite(string raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return raw;
-
-            string token = ExtractColorLeafToken(raw);
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                return raw.Trim();
-            }
-
-            // Prevent recursive wrapping like Color[Color[...]] when SDK stores string-based colors.
-            if (string.Equals(token, "Transparent", StringComparison.OrdinalIgnoreCase))
-            {
-                return "Transparent";
-            }
-
-            // Prefer named color when possible to keep GX palette semantics stable.
-            var known = System.Drawing.Color.FromName(token);
-            if (known.IsKnownColor || known.IsNamedColor || known.IsSystemColor)
-            {
-                return known.Name;
-            }
-
-            var rgbMatch = System.Text.RegularExpressions.Regex.Match(
-                token,
-                @"^\s*(\d{1,3})\s*;\s*(\d{1,3})\s*;\s*(\d{1,3})\s*\|?\s*$");
-            if (rgbMatch.Success)
-            {
-                if (int.TryParse(rgbMatch.Groups[1].Value, out int r) &&
-                    int.TryParse(rgbMatch.Groups[2].Value, out int g) &&
-                    int.TryParse(rgbMatch.Groups[3].Value, out int b))
-                {
-                    r = Math.Max(0, Math.Min(255, r));
-                    g = Math.Max(0, Math.Min(255, g));
-                    b = Math.Max(0, Math.Min(255, b));
-                    return $"{r}; {g}; {b}|";
-                }
-            }
-
-            return token;
-        }
-
-        private static string ExtractColorLeafToken(string raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
-
-            string token = raw.Trim();
-            if (token.StartsWith("'", StringComparison.Ordinal) && token.EndsWith("'", StringComparison.Ordinal) && token.Length > 1)
-            {
-                token = token.Substring(1, token.Length - 2).Trim();
-            }
-
-            var matches = System.Text.RegularExpressions.Regex.Matches(token, @"\[(?<name>[^\[\]]+)\]");
-            if (matches.Count > 0)
-            {
-                for (int i = matches.Count - 1; i >= 0; i--)
-                {
-                    string candidate = matches[i].Groups["name"].Value.Trim();
-                    if (!string.Equals(candidate, "Color", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return candidate;
-                    }
-                }
-            }
-
-            return token;
-        }
+        internal static string ExtractColorLeafToken(string raw)
+            => ColorHelper.ExtractColorLeafToken(raw);
 
         // Creates a new report-band control by cloning an existing control: first one
         // matching the requested TypeName (e.g. "ReportLine"), then any control in the
@@ -1376,12 +1264,9 @@ namespace GxMcp.Worker.Helpers
 
             if (string.Equals(currentValue, rawValue, StringComparison.Ordinal)) return true;
 
-            if (IsColorAttributeName(aName) || IsColorAttributeName(sdkPropName))
+            if (ColorHelper.IsColorAttributeName(aName) || ColorHelper.IsColorAttributeName(sdkPropName))
             {
-                if (TryParseColor(currentValue, out var c1) && TryParseColor(rawValue, out var c2))
-                {
-                    return c1.ToArgb() == c2.ToArgb();
-                }
+                return ColorHelper.IsColorEquivalent(currentValue, rawValue);
             }
 
             if (IsGeometryAttributeName(aName) || IsGeometryAttributeName(sdkPropName))

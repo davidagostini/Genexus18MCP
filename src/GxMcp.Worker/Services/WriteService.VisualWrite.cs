@@ -195,9 +195,10 @@ namespace GxMcp.Worker.Services
                 Logger.Debug("[GOTCHA-PREVIEW] scan failed: " + scanEx.Message);
             }
 
+            string currentXml = null;
             try
             {
-                string currentXml = WebFormXmlHelper.ReadEditableXml(obj);
+                currentXml = WebFormXmlHelper.ReadEditableXml(obj);
                 currentFormType = TryExtractFormType(currentXml);
                 incomingFormType = TryExtractFormType(normalizedInput);
                 if (XmlEquivalence.AreEquivalent(currentXml, normalizedInput, out _))
@@ -261,7 +262,7 @@ namespace GxMcp.Worker.Services
             {
                 try
                 {
-                    WebFormXmlHelper.ApplyEditableXml(webFormPart, normalizedInput);
+                    WebFormXmlHelper.ApplyEditableXml(webFormPart, normalizedInput, baselineXml: currentXml);
 
                     // ── DIAGNOSTIC: byte-level state RIGHT BEFORE obj.Save ────────────────
                     Helpers.WebFormSaveDiagnostics.DumpState(webFormPart, obj, "BEFORE-SAVE");

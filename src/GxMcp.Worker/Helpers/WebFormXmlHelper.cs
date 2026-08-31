@@ -120,7 +120,7 @@ namespace GxMcp.Worker.Helpers
             return doc.ToString();
         }
 
-        public static void ApplyEditableXml(KBObjectPart part, string xml)
+        public static void ApplyEditableXml(KBObjectPart part, string xml, string baselineXml = null)
         {
             if (part == null)
             {
@@ -132,7 +132,7 @@ namespace GxMcp.Worker.Helpers
             // ELITE: Support ReportPart persistence
             if (ReportLayoutHelper.IsReportPart(part) != null)
             {
-                if (!ReportLayoutHelper.WriteLayout(part, normalized))
+                if (!ReportLayoutHelper.WriteLayout(part, normalized, baselineXml))
                 {
                     throw new InvalidOperationException("Failed to write Report layout via reflection.");
                 }

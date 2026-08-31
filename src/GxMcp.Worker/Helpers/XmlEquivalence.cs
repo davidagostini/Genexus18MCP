@@ -210,6 +210,12 @@ namespace GxMcp.Worker.Helpers
                     {
                         continue;
                     }
+                    // Issue #122: Color attribute equivalence (e.g. BackColor="144; 238; 144|" vs "144, 238, 144" or "#90EE90")
+                    if (ColorHelper.IsColorAttributeName(ax[i].Name.LocalName) &&
+                        ColorHelper.IsColorEquivalent(ax[i].Value, ay[i].Value))
+                    {
+                        continue;
+                    }
                     diff = "Attribute '" + ax[i].Name + "' differs at " + path + x.Name
                            + ": '" + Truncate(ax[i].Value) + "' vs '" + Truncate(ay[i].Value) + "'";
                     structured = new XmlEquivalenceDiff { Path = path + x.Name, ElementName = x.Name.LocalName, Summary = diff, LeftAttributes = lNames, RightAttributes = rNames };
