@@ -36,6 +36,7 @@ When launching the gateway as a stdio MCP server:
 - stdout must remain reserved for protocol messages
 - logs belong on stderr
 - the process must stay idle without printing banner text
+- the npm wrapper persists failed stdio launches at `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt`
 
 ### Recover after a closed client transport
 

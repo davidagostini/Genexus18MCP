@@ -84,6 +84,13 @@ What you'll see (takes ~30 seconds first time, faster on re-runs):
 4. Prints a JSON snippet at the end — keep it in case you need to configure a client manually.
 5. Finishes with `🎉 You are all set!`.
 
+On Windows, Antigravity is registered with the gateway executable bundled in the
+current npm package when that artifact is available, so it skips the npx bootstrap
+chain on every MCP handshake. That path follows the package in the npx cache; after
+an upgrade, run `npx genexus-mcp@latest clients add --clients antigravity` again if
+`genexus-mcp clients` reports a stale launcher. Other clients keep the `npx genexus-mcp@latest`
+launcher unless you use the fixed-path installer below.
+
 ### Step 2 — Register the MCP in your AI client
 
 Step 1 auto-registers every supported client it detects, including Claude Desktop, Claude Code, Cursor, Antigravity, Gemini CLI, OpenCode, Codex CLI, and VS Code. If yours wasn't detected, copy the JSON snippet from Step 1 into your client's MCP config manually. See the [client setup guide](TROUBLESHOOTING.md#client-setup) if unsure where that file lives.
@@ -205,7 +212,7 @@ Auto-detected and auto-configured by the installer:
 | Claude Desktop | ✅ | Restart required after install |
 | Claude Code (CLI) | ✅ | Reload session |
 | Cursor | ✅ | Restart required |
-| Antigravity | ✅ | Restart required; detected even before its MCP config exists |
+| Antigravity | ✅ | Direct packaged gateway; restart required; detected even before its MCP config exists |
 | Gemini CLI | ✅ | — |
 | OpenCode (CLI) | ✅ | Reads both direct and nested MCP layouts; restart required |
 | Codex CLI | ✅ | Writes `~/.codex/config.toml` |
@@ -229,6 +236,14 @@ Most install issues fall into a handful of buckets — see **[TROUBLESHOOTING.md
 - KB build errors / locked artifacts
 - Port 5000 already in use
 - Permissions on `%LOCALAPPDATA%\GenexusMCP\`
+- Antigravity only shows `exit status 1` / `0xffffffff` with no useful stderr
+
+When a stdio launcher fails before the client can retain stderr, the wrapper writes
+the last failure to `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt`. It contains
+the UTC timestamp, exit code, and bounded stderr tail. `genexus-mcp doctor` reports the
+same path when a previous failure is present. Read it before changing the install or
+using a global npm install; if the Antigravity launcher is stale, re-register it with
+`npx genexus-mcp@latest clients add --clients antigravity`.
 
 Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) with the output of `npx genexus-mcp doctor --mcp-smoke`.
 

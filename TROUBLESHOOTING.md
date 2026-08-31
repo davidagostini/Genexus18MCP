@@ -2,7 +2,7 @@
 
 Common issues when installing or running the GeneXus MCP server, and how to fix them.
 
-> **First step for any issue:** run `npx genexus-mcp doctor --mcp-smoke` and read the output. It checks GeneXus path, KB path, worker availability, .NET runtimes, and runs a protocol smoke test. Most problems are diagnosed by that one command.
+> **First step for any issue:** run `npx genexus-mcp doctor --mcp-smoke` and read the output. It checks GeneXus path, KB path, worker availability, .NET runtimes, and runs a protocol smoke test. If an stdio client only reports an exit code, also read `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt`.
 
 ---
 
@@ -33,15 +33,17 @@ The folder you passed isn't a GeneXus KB.
 npx genexus-mcp@latest init --kb "C:\KBs\YourKB"
 ```
 
-### Installer succeeds, but `npx` is slow on every launch
+### Installer succeeds, but an npm bootstrap launcher is slow on every launch
 
-`npx` re-resolves the package each call. To skip that, install globally:
+`npx` resolves the package for clients that use the npm launcher. Antigravity skips
+that bootstrap when the packaged gateway executable is available. For every client,
+use the fixed-path installer when you need a stable executable path:
 
-```bash
-npm install -g genexus-mcp
+```pwsh
+iex (irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1)
 ```
 
-Then your client can invoke `genexus-mcp` directly instead of `npx genexus-mcp`.
+The fixed-path installer registers the gateway directly and avoids the npx cache.
 
 ---
 
@@ -60,7 +62,7 @@ The installer prints a JSON block. It must appear in your client's MCP config. W
 | **Claude Desktop** | `%APPDATA%\Claude\claude_desktop_config.json` |
 | **Claude Code** | `%USERPROFILE%\.claude.json` (or run `claude mcp list`) |
 | **Cursor** | Settings → MCP → check the `mcpServers` block |
-| **Antigravity** | App settings → MCP servers |
+| **Antigravity** | `%USERPROFILE%\.gemini\config\mcp_config.json` (or `%USERPROFILE%\.gemini\antigravity\mcp_config.json`) |
 
 The relevant block looks like:
 
@@ -75,7 +77,7 @@ The relevant block looks like:
 }
 ```
 
-> ⚠️ On Windows, the command **must** be `npx.cmd`, not `npx`. Plain `npx` fails because clients launch processes without a shell.
+> ⚠️ On Windows, clients using the npm launcher must use `npx.cmd`, not `npx`. Plain `npx` fails because clients launch processes without a shell. Antigravity normally receives a direct `GxMcp.Gateway.exe` path from `init`.
 
 ### Step 2 — Fully restart the client
 
@@ -88,6 +90,24 @@ The relevant block looks like:
 - **Cursor**: Output panel → "MCP" channel
 
 Look for `genexus-mcp` startup messages or errors.
+
+### Antigravity only shows `exit status 1` or `0xffffffff`
+
+The Antigravity Language Server may discard the child process stderr. Read the
+launcher breadcrumb from PowerShell:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\GenexusMCP\logs\last-stdio-error.txt"
+```
+
+The file is written by the npm wrapper for missing executables, spawn failures, and
+non-zero gateway exits. It includes the UTC timestamp, exit code, and the last 64 KiB
+of stderr. If `genexus-mcp clients` reports Antigravity's launcher as stale, refresh
+the package path with:
+
+```powershell
+npx genexus-mcp@latest clients add --clients antigravity
+```
 
 ### Step 4 — Verify the gateway can start standalone
 
@@ -214,7 +234,7 @@ For `ForeColor`, `BackColor`, `BorderColor`, send values as palette names (`Blac
 
 If none of the above helps:
 
-1. Run `npx genexus-mcp doctor --mcp-smoke > diagnostic.txt 2>&1`
+1. Run `npx genexus-mcp doctor --mcp-smoke > diagnostic.txt 2>&1` and include `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt` when the client only reports an exit code.
 2. Reproduce the issue with `claude --debug` (or your client's equivalent) to capture MCP traffic.
 3. [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) and attach `diagnostic.txt` + the client log excerpt. Include:
    - GeneXus 18 version (Help → About in the IDE)

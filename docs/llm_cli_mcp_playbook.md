@@ -44,6 +44,22 @@ Recommended flags:
 - `--full` only when needed.
 - `--quiet` in automation contexts.
 
+## Stdio startup failures
+
+If an MCP client reports only `exit status 1` or `0xffffffff`, inspect the wrapper's
+last-failure breadcrumb on Windows:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\GenexusMCP\logs\last-stdio-error.txt"
+```
+
+It contains the UTC timestamp, exit code, and a bounded stderr tail from the gateway
+bootstrap. For Antigravity, `init` and `clients add --clients antigravity` use the
+current package's gateway executable directly when available; if `genexus-mcp clients`
+marks that path stale, re-register it with `npx genexus-mcp@latest clients add --clients antigravity`.
+Do not infer an npx incompatibility or switch to a global npm install before reading
+this file.
+
 ## MCP Contract (LLM-facing)
 
 For `tools/call`, parse `result.content[0].text` as JSON.

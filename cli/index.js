@@ -28,6 +28,7 @@ const {
     commandHelpMap
 } = require('./commands/axi');
 const { startBackgroundUpdateCheck, handleUpdate } = require('./lib/update-check');
+const { createStderrTail, writeLastStdioError } = require('./lib/stdio-diagnostics');
 
 const EXIT_CODES = {
     OK: 0,
@@ -350,49 +351,91 @@ function writeAppLockerHint(stderr, gatewayExePath) {
 }
 
 async function launchGateway(passthroughArgs, options) {
+    const stderrTail = createStderrTail();
+    const launcherStderr = {
+        write(chunk) {
+            stderrTail.append(chunk);
+            if (!options.quiet) process.stderr.write(chunk);
+            return true;
+        }
+    };
+    const recordStdioFailure = ({ gatewayExePath, exitCode = null, signal = null, error = null } = {}) => {
+        const logPath = writeLastStdioError({
+            gatewayExePath,
+            exitCode,
+            signal,
+            error,
+            stderrTail: stderrTail.toString()
+        });
+        if (logPath && !options.quiet) {
+            process.stderr.write(`[genexus-mcp] Last stdio error saved to ${logPath}\n`);
+        }
+    };
+
     const setup = applyLauncherConfigOrExit({
         cwd: process.cwd(),
-        stderr: process.stderr,
+        stderr: launcherStderr,
         quiet: options.quiet
     });
 
     if (!setup.ok) {
+        recordStdioFailure({ gatewayExePath: getGatewayExePath(), exitCode: EXIT_CODES.ERROR, error: 'Launcher setup failed.' });
         return EXIT_CODES.ERROR;
     }
 
     const gatewayExePath = getGatewayExePath();
     if (!require('fs').existsSync(gatewayExePath)) {
-        if (!options.quiet) {
-            process.stderr.write(`[genexus-mcp] ERROR: Gateway executable not found at ${gatewayExePath}\n`);
-        }
+        const message = `[genexus-mcp] ERROR: Gateway executable not found at ${gatewayExePath}`;
+        launcherStderr.write(`${message}\n`);
+        recordStdioFailure({ gatewayExePath, exitCode: EXIT_CODES.ERROR, error: 'Gateway executable not found.' });
         return EXIT_CODES.ERROR;
     }
 
     return await new Promise((resolve) => {
-        const child = spawn(gatewayExePath, passthroughArgs, {
-            stdio: 'inherit',
-            env: process.env,
-            windowsHide: true
-        });
+        let settled = false;
+        const finish = (code) => {
+            if (settled) return;
+            settled = true;
+            resolve(code);
+        };
+        const handleSpawnError = (err) => {
+            const message = `[genexus-mcp] ERROR: Failed to start gateway process: ${err.message}`;
+            launcherStderr.write(`${message}\n`);
+            const code = err && (err.code || err.errno);
+            const accessDenied = code === 'EACCES' || code === 'EPERM' || /access is denied|access denied|acesso negado/i.test(err.message || '');
+            if (accessDenied) writeAppLockerHint(launcherStderr, gatewayExePath);
+            recordStdioFailure({ gatewayExePath, error: err.message || 'Failed to start gateway process.' });
+            finish(EXIT_CODES.ERROR);
+        };
 
-        child.on('error', (err) => {
-            if (!options.quiet) {
-                process.stderr.write(`[genexus-mcp] ERROR: Failed to start gateway process: ${err.message}\n`);
-                const code = err && (err.code || err.errno);
-                const accessDenied = code === 'EACCES' || code === 'EPERM' || /access is denied|access denied|acesso negado/i.test(err.message || '');
-                if (accessDenied) {
-                    writeAppLockerHint(process.stderr, gatewayExePath);
-                }
-            }
-            resolve(EXIT_CODES.ERROR);
-        });
+        let child;
+        try {
+            child = spawn(gatewayExePath, passthroughArgs, {
+                // Keep stdout attached to the MCP protocol and tee stderr so a
+                // failed bootstrap remains available after a client drops it.
+                stdio: ['inherit', 'inherit', 'pipe'],
+                env: process.env,
+                windowsHide: true
+            });
+        } catch (err) {
+            handleSpawnError(err);
+            return;
+        }
 
-        child.on('exit', (code, signal) => {
-            if (signal) {
-                resolve(EXIT_CODES.ERROR);
-                return;
+        if (child.stderr) {
+            child.stderr.on('data', (chunk) => {
+                stderrTail.append(chunk);
+                process.stderr.write(chunk);
+            });
+        }
+
+        child.once('error', handleSpawnError);
+
+        child.once('close', (code, signal) => {
+            if (signal || code !== 0) {
+                recordStdioFailure({ gatewayExePath, exitCode: code, signal });
             }
-            resolve(code || EXIT_CODES.OK);
+            finish(signal ? EXIT_CODES.ERROR : (code === null || code === undefined ? EXIT_CODES.ERROR : code));
         });
     });
 }

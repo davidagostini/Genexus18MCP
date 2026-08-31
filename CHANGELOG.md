@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v2.49.2 - 2026-08-31
+
+### Fixed
+
+- **Antigravity stdio bootstrap diagnostics (Issue #123).** `init` and `clients add --clients antigravity` now use the packaged gateway executable directly when available, avoiding the repeated npx bootstrap chain; stale package-cache paths are surfaced by `genexus-mcp clients`. The stdio wrapper also tees gateway stderr into `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt` on spawn failures and non-zero exits, so clients that hide child stderr leave an actionable timestamp, exit code, and bounded error tail.
+
+### Internal
+
+- **CLI quality gates.** `npm run lint` now rejects warnings, and the unused Codex launcher helper was removed so the baseline is warning-free.
+- **Agent workflow references.** Detailed SDK/release guidance now lives in focused documents, and `npm run test:one -- "<pattern>"` provides a supported single-test loop without duplicating npm scripts.
+
 ## v2.49.1 - 2026-08-31
 
 ### Fixed

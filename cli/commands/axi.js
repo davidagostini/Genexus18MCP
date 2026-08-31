@@ -30,6 +30,7 @@ const {
     readClientCommandEntry,
     DEFAULT_MCP_SERVER_NAME
 } = require('../lib/config');
+const { getStdioErrorLogPath } = require('../lib/stdio-diagnostics');
 
 function resolveClientIds(options) {
     if (!options || !options.clients) return null;
@@ -656,6 +657,8 @@ async function handleDoctor(options, ctx) {
     const toolDefPath = getToolDefinitionsPath();
     const toolDefsExists = fs.existsSync(toolDefPath);
     const gatewayExePath = getGatewayExePath();
+    const stdioErrorLogPath = getStdioErrorLogPath();
+    const stdioErrorLogExists = !!(stdioErrorLogPath && fs.existsSync(stdioErrorLogPath));
 
     let toolCount = 0;
     if (toolDefsExists) {
@@ -678,6 +681,13 @@ async function handleDoctor(options, ctx) {
     const checks = [
         { id: 'config_file', status: data.configFound ? 'pass' : 'fail', detail: data.configFound ? 'GX config file was found.' : 'GX config file is missing.' },
         { id: 'gateway_exe', status: data.gatewayExeFound ? 'pass' : 'fail', detail: data.gatewayExeFound ? 'Gateway executable is available.' : 'Gateway executable is missing.' },
+        {
+            id: 'stdio_error_log',
+            status: stdioErrorLogExists ? 'warn' : 'pass',
+            detail: stdioErrorLogExists
+                ? `Previous stdio launcher failure recorded at ${stdioErrorLogPath}. Read this file for the last exit code and stderr tail.`
+                : `Stdio launcher error log: ${stdioErrorLogPath || 'not available on this platform'}.`
+        },
         {
             id: 'gateway_exe_path_safety',
             status: riskyZone ? 'warn' : 'pass',
@@ -1153,6 +1163,18 @@ async function handleLayout(subcommand, options, ctx) {
     };
 }
 
+function buildClientLauncherHelp(patchResult) {
+    const help = [];
+    const patched = patchResult && Array.isArray(patchResult.patched) ? patchResult.patched : [];
+    if (patched.includes('Antigravity') && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
+        help.push('Antigravity uses the gateway executable bundled with this npm package when available; re-run `npx genexus-mcp@latest clients add --clients antigravity` after an upgrade if its package path is stale.');
+    }
+    if (patched.length > 0 && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
+        help.push('Windows launcher paths may resolve under the npm cache and be blocked by AppLocker/SRP. Use scripts/install.ps1 for a stable whitelisted path.');
+    }
+    return help;
+}
+
 function buildInteractiveInitHelp(patchResult) {
     const help = [];
     if (patchResult.failed && patchResult.failed.some((f) => f.reason && f.reason.includes('third-party or HTTP MCP server'))) {
@@ -1160,9 +1182,8 @@ function buildInteractiveInitHelp(patchResult) {
     }
     if (patchResult.patched.length === 0) {
         help.push('Set `GX_CONFIG_PATH` in your MCP client env to the generated config path.');
-    } else if (process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
-        help.push('Windows + corporate AppLocker: the npx launcher resolves the gateway from %LOCALAPPDATA%\\npm-cache, which is commonly blocked. If clients fail with "Failed to connect" / Access denied, reinstall to a whitelisted path via scripts/install.ps1.');
     }
+    help.push(...buildClientLauncherHelp(patchResult));
     return help;
 }
 
@@ -1440,9 +1461,7 @@ async function handleInit(options, ctx) {
         } else if (patchResult.patched.length === 0 && !shouldWriteClients) {
             help.push('Client patching was skipped (--no-write-clients). Register manually, or set GX_CONFIG_PATH to this config for global use.');
         }
-        if (patchResult.patched.length > 0 && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
-            help.push('Windows + corporate AppLocker: the npx launcher resolves the gateway from %LOCALAPPDATA%\\npm-cache, which is commonly blocked. If clients fail with "Failed to connect" / Access denied, reinstall to a whitelisted path via scripts/install.ps1.');
-        }
+        help.push(...buildClientLauncherHelp(patchResult));
         if (verification.summary.fail > 0) {
             const failedIds = verification.checks
                 .filter((c) => c.status === 'fail')

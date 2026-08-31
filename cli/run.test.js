@@ -6,7 +6,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const { renderOutput } = require('./lib/output');
 const { compareSemver, detectInstallMethod, upgradePlanFor } = require('./lib/update-check');
-const { detectClientInstalled, readJsonFileSafe } = require('./lib/config');
+const { detectClientInstalled, readJsonFileSafe, getLauncher } = require('./lib/config');
 
 const cliPath = path.join(__dirname, 'run.js');
 const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
@@ -639,15 +639,69 @@ test('toon output key ordering is stable', () => {
 });
 
 test('quiet flag suppresses launcher stderr noise', () => {
-    const result = runCli(['--quiet'], {
-        env: {
-            GX_CONFIG_PATH: '',
-            GENEXUS_MCP_GATEWAY_EXE: 'C:\\missing\\nope.exe'
-        }
-    });
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-quiet-'));
+    try {
+        const result = runCli(['--quiet'], {
+            env: {
+                GX_CONFIG_PATH: '',
+                GENEXUS_MCP_GATEWAY_EXE: 'C:\\missing\\nope.exe',
+                LOCALAPPDATA: tempRoot
+            }
+        });
 
-    assert.equal(result.status, 1);
-    assert.equal(result.stderr.trim(), '');
+        assert.equal(result.status, 1);
+        assert.equal(result.stderr.trim(), '');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('stdio launcher writes a breadcrumb when the gateway is missing before spawn', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-stdio-missing-'));
+    try {
+        const configPath = path.join(tempRoot, 'config.json');
+        fs.writeFileSync(configPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        const missingGateway = path.join(tempRoot, 'missing', 'GxMcp.Gateway.exe');
+        const result = runCli([], {
+            env: {
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: missingGateway,
+                LOCALAPPDATA: tempRoot
+            }
+        });
+
+        assert.equal(result.status, 1);
+        const logPath = path.join(tempRoot, 'GenexusMCP', 'logs', 'last-stdio-error.txt');
+        assert.equal(fs.existsSync(logPath), true, 'pre-spawn failure should leave a diagnostic file');
+        const log = fs.readFileSync(logPath, 'utf8');
+        assert.match(log, /timestampUtc:/);
+        assert.match(log, /exitCode: 1/);
+        assert.match(log, /Gateway executable not found/);
+        assert.match(log, /missing[\\/]GxMcp\.Gateway\.exe/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('doctor surfaces the stdio error breadcrumb when one exists', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-stdio-'));
+    try {
+        const logPath = path.join(tempRoot, 'GenexusMCP', 'logs', 'last-stdio-error.txt');
+        fs.mkdirSync(path.dirname(logPath), { recursive: true });
+        fs.writeFileSync(logPath, 'timestampUtc: 2026-08-31T00:00:00.000Z\nexitCode: 1\n');
+
+        const result = runCli(['doctor', '--format', 'json'], {
+            env: { ...sandboxHomeEnv(tempRoot), LOCALAPPDATA: tempRoot }
+        });
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        const check = parsed.ok.checks.find((row) => row.id === 'stdio_error_log');
+        assert.ok(check);
+        assert.equal(check.status, 'warn');
+        assert.ok(check.detail.includes(logPath));
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('update --help returns usage entry', () => {
@@ -735,6 +789,92 @@ test('clients list returns structured status with summary', () => {
     assert.ok(row, 'antigravity should be listed');
     assert.equal(typeof row.installed, 'boolean');
     assert.equal(typeof row.registered, 'boolean');
+});
+
+test('getLauncher prefers the packaged gateway for Antigravity only', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-launcher-'));
+    const gatewayPath = path.join(tempRoot, 'publish', 'GxMcp.Gateway.exe');
+    const previous = process.env.GENEXUS_MCP_GATEWAY_EXE;
+    delete process.env.GENEXUS_MCP_GATEWAY_EXE;
+    try {
+        fs.mkdirSync(path.dirname(gatewayPath), { recursive: true });
+        fs.writeFileSync(gatewayPath, 'gateway');
+
+        assert.deepEqual(getLauncher({ preferDirectGateway: true }, gatewayPath), {
+            command: gatewayPath,
+            args: []
+        });
+        assert.deepEqual(getLauncher({ preferDirectGateway: false }, gatewayPath), {
+            command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
+            args: ['-y', 'genexus-mcp@latest']
+        });
+    } finally {
+        if (previous === undefined) delete process.env.GENEXUS_MCP_GATEWAY_EXE;
+        else process.env.GENEXUS_MCP_GATEWAY_EXE = previous;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('clients add selects a direct gateway for Antigravity and npx for other clients', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-client-launchers-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const cfgPath = path.join(tempRoot, 'config.json');
+        fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        const result = runCli(['clients', 'add', '--clients', 'antigravity,cursor', '--format', 'json'], {
+            env: { ...env, GX_CONFIG_PATH: cfgPath, GENEXUS_MCP_GATEWAY_EXE: '' }
+        });
+        assert.equal(result.status, 0);
+
+        const antigravityPath = path.join(tempRoot, '.gemini', 'antigravity', 'mcp_config.json');
+        const cursorPath = path.join(tempRoot, '.cursor', 'mcp.json');
+        const antigravity = JSON.parse(fs.readFileSync(antigravityPath, 'utf8')).mcpServers.genexus18mcp;
+        const cursor = JSON.parse(fs.readFileSync(cursorPath, 'utf8')).mcpServers.genexus18mcp;
+        const packagedGateway = path.join(__dirname, '..', 'publish', 'GxMcp.Gateway.exe');
+
+        assert.equal(cursor.command, 'npx.cmd');
+        assert.deepEqual(cursor.args, ['-y', 'genexus-mcp@latest']);
+        if (fs.existsSync(packagedGateway)) {
+            assert.equal(antigravity.command, packagedGateway);
+            assert.deepEqual(antigravity.args, []);
+        } else {
+            assert.equal(antigravity.command, 'npx.cmd', 'source checkouts without publish artifacts retain the fallback');
+        }
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('clients add uses the unified Antigravity config when it already exists', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-antigravity-unified-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const configPath = path.join(tempRoot, 'config.json');
+        const unifiedPath = path.join(tempRoot, '.gemini', 'config', 'mcp_config.json');
+        fs.writeFileSync(configPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        fs.mkdirSync(path.dirname(unifiedPath), { recursive: true });
+        fs.writeFileSync(unifiedPath, JSON.stringify({ mcpServers: { unrelated: { command: 'keep-me' } } }));
+
+        const result = runCli(['clients', 'add', '--clients', 'antigravity', '--format', 'json'], {
+            env: { ...env, GX_CONFIG_PATH: configPath, GENEXUS_MCP_GATEWAY_EXE: '' }
+        });
+        assert.equal(result.status, 0);
+
+        const written = JSON.parse(fs.readFileSync(unifiedPath, 'utf8'));
+        const entry = written.mcpServers.genexus18mcp;
+        const packagedGateway = path.join(__dirname, '..', 'publish', 'GxMcp.Gateway.exe');
+        assert.ok(written.mcpServers.unrelated);
+        if (fs.existsSync(packagedGateway)) {
+            assert.equal(entry.command, packagedGateway);
+            assert.deepEqual(entry.args, []);
+        } else {
+            assert.equal(entry.command, 'npx.cmd');
+            assert.deepEqual(entry.args, ['-y', 'genexus-mcp@latest']);
+        }
+        assert.equal(fs.existsSync(path.join(tempRoot, '.gemini', 'antigravity', 'mcp_config.json')), false);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('clients add registers a client into a sandbox home with backup + atomic write', () => {
@@ -929,6 +1069,36 @@ test('clients list flags a registered command pointing at a missing launcher as 
     fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
+test('clients list marks an Antigravity launcher from an old package cache as stale', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-antigravity-stale-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const currentGateway = path.join(tempRoot, 'current', 'GxMcp.Gateway.exe');
+        const oldGateway = path.join(tempRoot, 'old-cache', 'GxMcp.Gateway.exe');
+        fs.mkdirSync(path.dirname(currentGateway), { recursive: true });
+        fs.mkdirSync(path.dirname(oldGateway), { recursive: true });
+        fs.writeFileSync(currentGateway, 'current');
+        fs.writeFileSync(oldGateway, 'old');
+
+        const antigravityCfg = path.join(tempRoot, '.gemini', 'antigravity', 'mcp_config.json');
+        fs.mkdirSync(path.dirname(antigravityCfg), { recursive: true });
+        fs.writeFileSync(antigravityCfg, JSON.stringify({
+            mcpServers: { genexus18mcp: { command: oldGateway, args: [] } }
+        }, null, 2));
+
+        const result = runCli(['clients', '--format', 'json'], {
+            env: { ...env, GENEXUS_MCP_GATEWAY_EXE: currentGateway }
+        });
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        const antigravity = parsed.ok.clients.find((client) => client.id === 'antigravity');
+        assert.equal(antigravity.commandStale, true);
+        assert.match(antigravity.commandStaleReason, /different package gateway/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('readJsonFileSafe parses JSONC without corrupting string values containing commas', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-jsonc2-'));
     const f = path.join(tempRoot, 'mcp.json');
@@ -1047,6 +1217,11 @@ test('upgradePlanFor encodes the per-method upgrade strategy', () => {
     const fixed = upgradePlanFor('fixed-path', 'latest');
     assert.equal(fixed.auto, false);
     assert.equal(fixed.applyCommand, null, 'fixed-path has no npm apply; uses the installer');
+
+    const direct = upgradePlanFor('package-direct', 'latest');
+    assert.equal(direct.auto, false);
+    assert.equal(direct.applyCommand, null);
+    assert.ok(direct.steps.join(' ').includes('clients add --clients antigravity'));
 });
 
 test('gateway passthrough remains intact when no AXI subcommand is used', () => {
@@ -1068,6 +1243,36 @@ test('gateway passthrough remains intact when no AXI subcommand is used', () => 
     assert.ok(result.stdout.includes('gateway:hello,world'));
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('stdio launcher persists the last child stderr when the gateway exits non-zero', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-stdio-crash-'));
+    try {
+        const configPath = path.join(tempRoot, 'config.json');
+        const fakeGateway = path.join(tempRoot, 'fake-gateway.js');
+        fs.writeFileSync(configPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        fs.writeFileSync(fakeGateway, 'process.stderr.write("gateway bootstrap failed\\nsecond line\\n"); process.exit(7);');
+
+        const result = runCli([fakeGateway], {
+            env: {
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: process.execPath,
+                LOCALAPPDATA: tempRoot
+            }
+        });
+
+        assert.equal(result.status, 7);
+        assert.match(result.stderr, /gateway bootstrap failed/);
+        const logPath = path.join(tempRoot, 'GenexusMCP', 'logs', 'last-stdio-error.txt');
+        assert.equal(fs.existsSync(logPath), true, 'child crash should leave a diagnostic file');
+        const log = fs.readFileSync(logPath, 'utf8');
+        assert.match(log, /timestampUtc:/);
+        assert.match(log, /exitCode: 7/);
+        assert.match(log, /gateway bootstrap failed/);
+        assert.match(log, /second line/);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('npm package contains all bin, postinstall and required runtime files', () => {
@@ -1098,6 +1303,17 @@ test('npm package contains all bin, postinstall and required runtime files', () 
                 `postinstall target '${scriptRel}' must be included in package.json files array so it is shipped in the npm tarball (regression for #114)`
             );
         }
+    }
+
+    const requiredFiles = ['cli/lib/stdio-diagnostics.js', 'scripts/test-one.js'];
+    for (const relative of requiredFiles) {
+        assert.ok(fs.existsSync(path.join(__dirname, '..', relative)), `runtime file ${relative} must exist on disk`);
+        const normalized = relative.replace(/\\/g, '/');
+        const covered = (pkg.files || []).some((pattern) => {
+            const normalizedPattern = pattern.replace(/\\/g, '/');
+            return normalized === normalizedPattern || normalized.startsWith(normalizedPattern.endsWith('/') ? normalizedPattern : `${normalizedPattern}/`);
+        });
+        assert.ok(covered, `runtime file '${relative}' must be included by package.json files`);
     }
 });
 

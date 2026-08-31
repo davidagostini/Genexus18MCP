@@ -444,13 +444,21 @@ function createConfigFile(kbPath, gxPath) {
     };
 }
 
-function getLauncher() {
+function getLauncher(client = null, gatewayExePath = getGatewayExePath()) {
     // Set by scripts/install.ps1 for fixed-path corporate installs — clients
     // launch the gateway exe directly instead of resolving via the npx cache.
     const directExe = process.env.GENEXUS_MCP_GATEWAY_EXE;
-    return directExe
-        ? { command: directExe, args: [] }
-        : { command: process.platform === 'win32' ? 'npx.cmd' : 'npx', args: ['-y', 'genexus-mcp@latest'] };
+    if (directExe) return { command: directExe, args: [] };
+
+    // Antigravity does not retain child stderr in its Language Server logs. When
+    // the packaged gateway is available, point it directly at that executable so
+    // each MCP handshake skips the npx bootstrap chain. The fallback keeps
+    // source-tree development and incomplete packages on the existing npx path.
+    if (client && client.preferDirectGateway && fs.existsSync(gatewayExePath)) {
+        return { command: gatewayExePath, args: [] };
+    }
+
+    return { command: process.platform === 'win32' ? 'npx.cmd' : 'npx', args: ['-y', 'genexus-mcp@latest'] };
 }
 
 const DEFAULT_MCP_SERVER_NAME = 'genexus18mcp';
@@ -576,6 +584,9 @@ function getClientConfigTargets() {
             name: 'Antigravity',
             format: 'mcpServers',
             path: resolveAntigravityConfigPath(home),
+            // The npm package includes the gateway exe. Prefer it for this client
+            // because Antigravity hides the stderr of an npx child when startup fails.
+            preferDirectGateway: true,
             // Unambiguous Antigravity markers only. ~/.gemini/config is NOT a
             // marker — gemini-cli can create ~/.gemini, and we'd false-positive;
             // it's still used as the write path (resolveAntigravityConfigPath)
@@ -699,7 +710,7 @@ function listSupportedClientIds() {
 // by an explicit path (a separator in the command) that no longer exists on disk
 // is the classic "Failed to connect / still on old version" cause after an
 // install dir moved or was cleaned — covers .exe, .bat, .cmd, .sh, extensionless.
-function clientCommandHealth(entry) {
+function clientCommandHealth(entry, client = null) {
     if (!entry || !entry.command) return { stale: false, reason: null };
     const cmd = String(entry.command);
     if (/(^|[\\/])(npx|npx\.cmd|node|node\.exe|genexus-mcp|genexus-mcp\.cmd)$/i.test(cmd)) {
@@ -707,6 +718,12 @@ function clientCommandHealth(entry) {
     }
     if (/[\\/]/.test(cmd) && !fs.existsSync(cmd)) {
         return { stale: true, reason: 'configured launcher does not exist on disk' };
+    }
+    if (client && client.preferDirectGateway && /GxMcp\.Gateway\.exe$/i.test(cmd)) {
+        const currentPackageGateway = getGatewayExePath();
+        if (fs.existsSync(currentPackageGateway) && normalizeExePath(cmd) !== normalizeExePath(currentPackageGateway)) {
+            return { stale: true, reason: 'configured launcher points at a different package gateway; re-register the client' };
+        }
     }
     return { stale: false, reason: null };
 }
@@ -723,7 +740,7 @@ function clientsStatus(opts = {}) {
     return targets.map((client) => {
         const det = detectClientInstalled(client);
         const entry = readClientCommandEntry(client, serverName);
-        const health = clientCommandHealth(entry);
+        const health = clientCommandHealth(entry, client);
         const isThirdParty = entry && !isOurMcpEntry(entry.raw || entry, serverName);
         return {
             id: client.id,
@@ -771,7 +788,6 @@ function patchClientConfig(targetConfigPath, opts = {}) {
 
     const serverName = opts.serverName || DEFAULT_MCP_SERVER_NAME;
     const force = Boolean(opts.force);
-    const launcher = getLauncher();
     const onlyExisting = opts.onlyExisting !== false;
     const candidates = filterClientTargets(getClientConfigTargets(), {
         ids: opts.ids,
@@ -800,7 +816,7 @@ function patchClientConfig(targetConfigPath, opts = {}) {
         }
         try {
             fs.mkdirSync(path.dirname(client.path), { recursive: true });
-            applyClientEntry(client, launcher, targetConfigPath, { serverName, force });
+            applyClientEntry(client, getLauncher(client), targetConfigPath, { serverName, force });
             // Read-back: confirm the entry is actually present and the file still
             // parses, so a silently-corrupted write is reported as a failure.
             if (!readClientCommandEntry(client, serverName)) {
@@ -1187,10 +1203,6 @@ function removeCodexToml(filePath, { serverName = DEFAULT_MCP_SERVER_NAME } = {}
     return true;
 }
 
-function stripCodexGenexusBlocks(content) {
-    return stripCodexServerBlocks(content, 'genexus');
-}
-
 function tomlString(value) {
     const s = String(value);
     return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
@@ -1519,6 +1531,7 @@ module.exports = {
     applyLauncherConfigOrExit,
     isPathLikelyAppLockerBlocked,
     normalizeExePath,
+    getLauncher,
     readClientCommandEntry,
     isOurMcpEntry,
     DEFAULT_MCP_SERVER_NAME

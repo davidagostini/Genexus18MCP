@@ -224,7 +224,7 @@ function detectInstallMethod() {
     if (process.env.GENEXUS_MCP_GATEWAY_EXE) {
         return { method: 'fixed-path', detail: process.env.GENEXUS_MCP_GATEWAY_EXE, evidence: [] };
     }
-    const counts = { 'npx-latest': 0, 'npm-global': 0, 'fixed-path': 0 };
+    const counts = { 'npx-latest': 0, 'npm-global': 0, 'fixed-path': 0, 'package-direct': 0 };
     const evidence = [];
     try {
         for (const c of clientsStatus()) {
@@ -233,6 +233,7 @@ function detectInstallMethod() {
             let m;
             if (/(^|[\\/])npx(\.cmd)?$/i.test(cmd)) m = 'npx-latest';
             else if (/(^|[\\/])genexus-mcp(\.cmd)?$/i.test(cmd)) m = 'npm-global';
+            else if (c.id === 'antigravity' && /GxMcp\.Gateway\.exe$/i.test(cmd)) m = 'package-direct';
             else if (/[\\/]/.test(cmd)) m = 'fixed-path';
             else m = 'npm-global';
             counts[m] = (counts[m] || 0) + 1;
@@ -276,6 +277,20 @@ function upgradePlanFor(method, channel) {
                 'Then fully restart your AI client.'
             ],
             applyCommand: null, // self-stage is a future enhancement; installer is the path
+            restartRequired: true
+        };
+    }
+    if (method === 'package-direct') {
+        const tag = channel && channel !== 'latest' ? `@${channel}` : '@latest';
+        return {
+            method,
+            auto: false,
+            steps: [
+                'Antigravity launches the gateway executable bundled with the npm package, so each MCP handshake skips npx.',
+                `Refresh its pinned package path with: npx -y ${NPM_PACKAGE}${tag} clients add --clients antigravity`,
+                'Then fully restart Antigravity.'
+            ],
+            applyCommand: null,
             restartRequired: true
         };
     }
@@ -383,7 +398,11 @@ async function handleUpdate(options, ctx) {
                 source: result.source || null,
                 installMethod: install.method,
                 autoUpdates: plan.auto,
-                installCommand: plan.applyCommand ? `${plan.applyCommand.exe} ${plan.applyCommand.args.join(' ')}` : INSTALL_ONE_LINER,
+                installCommand: plan.applyCommand
+                    ? `${plan.applyCommand.exe} ${plan.applyCommand.args.join(' ')}`
+                    : (install.method === 'package-direct'
+                        ? `npx -y ${NPM_PACKAGE}${channel && channel !== 'latest' ? `@${channel}` : '@latest'} clients add --clients antigravity`
+                        : INSTALL_ONE_LINER),
                 applied,
                 fetched: true,
                 clientDrift: mismatches
