@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
@@ -27,14 +27,18 @@ namespace GxMcp.Worker.Services
         private readonly AnalyzeService _analyzeService;
         private readonly KbService _kbService;
         private readonly BatchService _batchService;
+        private readonly IObjectReader _objectReader;
 
-        public ObjectInspectionModule(ObjectService objectService, AnalyzeService analyzeService, KbService kbService, BatchService batchService = null)
+        public ObjectInspectionModule(ObjectService objectService, AnalyzeService analyzeService, KbService kbService, BatchService batchService = null, IObjectReader objectReader = null)
         {
             _objectService = objectService ?? throw new ArgumentNullException(nameof(objectService));
             _analyzeService = analyzeService;
             _kbService = kbService;
             _batchService = batchService;
+            _objectReader = objectReader ?? new ObjectReader(objectService, batchService);
         }
+
+        public IObjectReader Reader => _objectReader;
 
         public string Inspect(string target, InspectionDepth depth, JObject args = null)
         {
@@ -43,12 +47,14 @@ namespace GxMcp.Worker.Services
             // Multi-object batch read support (e.g. genexus_read targets=[...])
             if (args["targets"] is JArray targetsArr && targetsArr.Count > 0)
             {
-                if (_batchService != null)
+                string partFilter = args["part"]?.ToString() ?? "Source";
+                var partsArr = args["parts"] as JArray;
+                return _objectReader.Read(new ObjectReadRequest
                 {
-                    string partFilter = args["part"]?.ToString() ?? "Source";
-                    var partsArr = args["parts"] as JArray;
-                    return _batchService.BatchRead(targetsArr, partFilter, partsArr);
-                }
+                    BatchTargets = targetsArr,
+                    PartName = partFilter,
+                    RequestedParts = partsArr?.Select(p => p.ToString())
+                });
             }
 
             if (string.IsNullOrWhiteSpace(target))
@@ -59,22 +65,32 @@ namespace GxMcp.Worker.Services
             switch (depth)
             {
                 case InspectionDepth.Full:
-                    return _objectService.ReadFullObject(target, typeFilter);
+                    return _objectReader.Read(new ObjectReadRequest
+                    {
+                        Target = target,
+                        FullObject = true,
+                        TypeFilter = typeFilter
+                    });
 
                 case InspectionDepth.Parts:
                     var partsTok = args["parts"] as JArray;
                     var requestedParts = partsTok?.Select(p => p.ToString()) ?? Enumerable.Empty<string>();
-                    return _objectService.ReadObjectSourceParts(target, requestedParts, typeFilter);
+                    return _objectReader.Read(new ObjectReadRequest
+                    {
+                        Target = target,
+                        RequestedParts = requestedParts,
+                        TypeFilter = typeFilter
+                    });
 
                 case InspectionDepth.Summary:
                     return _analyzeService != null
                         ? _analyzeService.Analyze(target, typeFilter)
-                        : _objectService.ReadFullObject(target, typeFilter);
+                        : _objectReader.Read(new ObjectReadRequest { Target = target, FullObject = true, TypeFilter = typeFilter });
 
                 case InspectionDepth.Context360:
                     return _analyzeService != null
                         ? _analyzeService.Get360Context(target, typeFilter)
-                        : _objectService.ReadFullObject(target, typeFilter);
+                        : _objectReader.Read(new ObjectReadRequest { Target = target, FullObject = true, TypeFilter = typeFilter });
 
                 case InspectionDepth.Source:
                 default:
@@ -83,7 +99,16 @@ namespace GxMcp.Worker.Services
                     int? limit = args["limit"]?.ToObject<int?>();
                     string format = args["format"]?.ToString() ?? "mcp";
                     bool raw = args["raw"]?.ToObject<bool?>() ?? false;
-                    return _objectService.ReadObjectSource(target, part, offset, limit, format, raw, typeFilter);
+                    return _objectReader.Read(new ObjectReadRequest
+                    {
+                        Target = target,
+                        PartName = part,
+                        Offset = offset,
+                        Limit = limit,
+                        ClientFormat = format,
+                        Minimize = raw,
+                        TypeFilter = typeFilter
+                    });
             }
         }
     }

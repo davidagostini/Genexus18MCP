@@ -27,12 +27,16 @@ namespace GxMcp.Worker.Services
     {
         private readonly ObjectService _objectService;
         private readonly WriteService _writeService;
+        private readonly ITypeBindingEngine _bindingEngine;
 
-        public VariableService(ObjectService objectService, WriteService writeService)
+        public VariableService(ObjectService objectService, WriteService writeService, ITypeBindingEngine bindingEngine = null)
         {
             _objectService = objectService;
             _writeService = writeService;
+            _bindingEngine = bindingEngine ?? new TypeBindingEngine();
         }
+
+        public ITypeBindingEngine BindingEngine => _bindingEngine;
 
         public TypeResolution ResolveType(string typeSpec)
         {

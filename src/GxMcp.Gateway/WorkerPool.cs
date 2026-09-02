@@ -20,7 +20,7 @@ namespace GxMcp.Gateway
         }
     }
 
-    public sealed class WorkerPool
+    public sealed class WorkerPool : IWorkerSupervisor
     {
         private readonly Configuration _config;
         private readonly ConcurrentDictionary<string, Entry> _entries =
@@ -88,6 +88,11 @@ namespace GxMcp.Gateway
         // worker is currently alive. Callers resolve aliases against this so a momentarily
         // down worker doesn't make its KB "Unknown"; AcquireAsync then respawns on demand.
         public IReadOnlyList<KbHandle> ListKnown() => _known.Values.ToArray();
+
+        public void RegisterKnown(KbHandle handle)
+        {
+            if (handle != null) _known[handle.NormalizedAlias] = handle;
+        }
 
         // issue #26 P1: true when a worker for this alias is in the middle of spawning
         // (or a planned drain-and-replace is in progress). whoami uses this to report an

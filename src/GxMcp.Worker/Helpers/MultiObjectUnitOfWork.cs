@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
@@ -25,11 +25,21 @@ namespace GxMcp.Worker.Helpers
         private readonly List<StagedObjectMutation> _staged = new List<StagedObjectMutation>();
         private readonly WriteService _writeService;
         private readonly ObjectService _objectService;
+        private readonly IMutationEngine _mutationEngine;
+
+        public MultiObjectUnitOfWork(IMutationEngine mutationEngine)
+        {
+            _mutationEngine = mutationEngine ?? throw new ArgumentNullException(nameof(mutationEngine));
+        }
 
         public MultiObjectUnitOfWork(WriteService writeService, ObjectService objectService)
         {
             _writeService = writeService;
             _objectService = objectService;
+            if (writeService != null)
+            {
+                _mutationEngine = new MutationEngine(writeService, null, objectService);
+            }
         }
 
         public void Stage(string target, string part, string originalContent, string modifiedContent)
@@ -78,6 +88,33 @@ namespace GxMcp.Worker.Helpers
         {
             errors = new List<string>();
             if (_staged.Count == 0) return true;
+
+            if (_mutationEngine != null)
+            {
+                var targets = new JArray();
+                foreach (var m in _staged)
+                {
+                    targets.Add(new JObject
+                    {
+                        ["target"] = m.Target,
+                        ["part"] = m.Part,
+                        ["content"] = m.ModifiedContent
+                    });
+                }
+                var req = new MutationRequest
+                {
+                    Targets = targets,
+                    RollbackOnFailure = true
+                };
+                var res = _mutationEngine.Execute(req);
+                if (!res.Success)
+                {
+                    errors.Add(res.ErrorMessage ?? "Multi-object mutation failed");
+                    return false;
+                }
+                foreach (var m in _staged) m.Applied = true;
+                return true;
+            }
 
             if (_writeService == null)
             {

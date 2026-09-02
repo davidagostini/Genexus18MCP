@@ -1889,70 +1889,7 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Build(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "Status")
-            {
-                // v2.6.6 Stream F: event-driven long-poll. When `wait` is 0/absent
-                // GetStatusWait short-circuits to the legacy GetStatus shape; >0
-                // blocks on the per-task StateChangeSignal up to 300s.
-                int wait = args?["wait"]?.ToObject<int?>() ?? 0;
-                string since = args?["since"]?.ToString();
-                return _buildService.GetStatusWait(
-                    target,
-                    wait,
-                    since,
-                    args?["page"]?.ToObject<int?>() ?? 1,
-                    args?["pageSize"]?.ToObject<int?>() ?? 50,
-                    args?["compact"]?.ToObject<bool?>() ?? false);
-            }
-            if (action == "Result") return _buildService.GetResult(
-                target,
-                args?["page"]?.ToObject<int?>() ?? 1,
-                args?["pageSize"]?.ToObject<int?>() ?? 50);
-            if (action == "Cancel") return _buildService.Cancel(target);
-
-            string requestedEnv = args?["environment"]?.ToString() ?? request?["environment"]?.ToString();
-            if (!string.IsNullOrWhiteSpace(requestedEnv))
-            {
-                _kbService.SetActiveEnvironment(requestedEnv);
-            }
-
-            bool buildDryRun = (request["dryRun"]?.ToObject<bool?>() ?? false) || (args?["dryRun"]?.ToObject<bool?>() ?? false);
-            if (buildDryRun)
-            {
-                var includeCallees = args?["includeCallees"]?.ToString();
-                if (string.IsNullOrWhiteSpace(includeCallees)) includeCallees = "transitive";
-                var cap = args?["buildPlanCap"]?.ToObject<int?>() ?? 200;
-                return _buildService.BuildDryRun(action, target, includeCallees, cap);
-            }
-
-            // issue #28 item 12: spec-check only (Spec+Gen, no Compile/deploy).
-            if (action == "Specify") return _buildService.Specify(target);
-            // mode=compile_check: spec+gen+compile the target(s) + transitive callers,
-            // skipping the KB-wide DeveloperMenu regen (the dominant build-all cost).
-            if (action == "CompileCheck") return _buildService.CompileCheck(
-                target,
-                args?["buildPlanCap"]?.ToObject<int?>() ?? 200,
-                // callers=false → target-only check (no caller expansion), so a base
-                // transaction doesn't drag its whole caller closure. Default true.
-                includeCallers: args?["callers"]?.ToObject<bool?>() ?? true,
-                callerCap: args?["callerCap"]?.ToObject<int?>() ?? 0);
-            // Item 43 (friction 2026-05-22) — DDL diff/preview pre-reorg.
-            if (action == "ReorgPreview") return _buildService.ReorgPreview(target);
-            {
-                // v2.3.8 (Task 5.2): forward includeCallees + buildPlanCap from gateway.
-                var includeCallees = args?["includeCallees"]?.ToString();
-                var cap = args?["buildPlanCap"]?.ToObject<int?>() ?? 200;
-                if (string.IsNullOrWhiteSpace(includeCallees)) includeCallees = "transitive";
-                bool skipFullDeploy = args?["skipFullDeploy"]?.ToObject<bool?>() ?? false;
-                // Item 72 (friction 2026-05-22) — failure-webhook URL plumbed through to BuildService.
-                string notifyOnFailure = args?["notifyOnFailure"]?.ToString();
-                // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental opt-in.
-                bool fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false;
-                // A2: deploy=true forces the full IdeWebBuildAndDeploy (copy to web/bin)
-                // so the built object is runnable, not just compiled.
-                bool fullDeploy = (args?["deploy"]?.ToObject<bool?>() ?? false) || (request["deploy"]?.ToObject<bool?>() ?? false);
-                return _buildService.Build(action, target, includeCallees, cap, skipFullDeploy, notifyOnFailure, fastIncremental, fullDeploy);
-            }
+            return _compilationPipeline.ExecuteBuild(action, target, args, request);
         }
 
         private string Handle_Validation(JObject request, string method, string action, string target, string payload, JObject args)

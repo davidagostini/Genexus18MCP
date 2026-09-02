@@ -861,33 +861,13 @@ function unpatchClientConfig(opts = {}) {
 }
 
 function applyClientEntry(client, launcher, targetConfigPath, opts = {}) {
-    switch (client.format) {
-        case 'mcpServers':
-            return applyMcpServersJson(client.path, launcher, targetConfigPath, opts);
-        case 'opencode':
-            return applyOpenCodeJson(client.path, launcher, targetConfigPath, opts);
-        case 'codex-toml':
-            return applyCodexToml(client.path, launcher, targetConfigPath, opts);
-        case 'vscode-servers':
-            return applyVsCodeServersJson(client.path, launcher, targetConfigPath, opts);
-        default:
-            throw new Error(`Unknown client format: ${client.format}`);
-    }
+    const { getClientAdapter } = require('./client-adapters');
+    return getClientAdapter(client.format).apply(client, launcher, targetConfigPath, opts);
 }
 
 function removeClientEntry(client, opts = {}) {
-    switch (client.format) {
-        case 'mcpServers':
-            return removeMcpServersJson(client.path, opts);
-        case 'opencode':
-            return removeOpenCodeJson(client.path, opts);
-        case 'codex-toml':
-            return removeCodexToml(client.path, opts);
-        case 'vscode-servers':
-            return removeVsCodeServersJson(client.path, opts);
-        default:
-            throw new Error(`Unknown client format: ${client.format}`);
-    }
+    const { getClientAdapter } = require('./client-adapters');
+    return getClientAdapter(client.format).remove(client, opts);
 }
 
 function applyMcpServersJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false } = {}) {
@@ -1534,5 +1514,17 @@ module.exports = {
     getLauncher,
     readClientCommandEntry,
     isOurMcpEntry,
-    DEFAULT_MCP_SERVER_NAME
+    DEFAULT_MCP_SERVER_NAME,
+    applyMcpServersJson,
+    removeMcpServersJson,
+    applyVsCodeServersJson,
+    removeVsCodeServersJson,
+    applyOpenCodeJson,
+    removeOpenCodeJson,
+    applyCodexToml,
+    removeCodexToml,
+    extractCodexTomlEntry,
+    isThirdPartyMcpEntry,
+    applyClientEntry,
+    removeClientEntry
 };

@@ -25,7 +25,6 @@ namespace GxMcp.Worker.Services
         // match). RegexOptions.Compiled pays a one-time JIT and then runs native.
         private static readonly Regex QuickSuffixRegex = new Regex(@"\s*@quick\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex BareQuotedNameRegex = new Regex("^\"(?<v>[^\"]+)\"$", RegexOptions.Compiled);
-        private static readonly Dictionary<string, Regex> FilterRegexes = BuildFilterRegexes();
 
         // PERFORMANCE (perf-review): hoisted separator arrays. TryDirectLookup's
         // IndexOfAny and ParseQuery's Split used to allocate a fresh char[] on every
@@ -33,18 +32,6 @@ namespace GxMcp.Worker.Services
         // queries paid them).
         private static readonly char[] DirectLookupStopChars = { ' ', ':', '*', '@', '"', '?', '/' };
         private static readonly char[] SpaceSeparator = { ' ' };
-
-        private static Dictionary<string, Regex> BuildFilterRegexes()
-        {
-            var map = new Dictionary<string, Regex>(StringComparer.OrdinalIgnoreCase);
-            foreach (var name in new[] { "description", "metadata", "usedby", "parentPath", "parent", "type", "name" })
-            {
-                map[name] = new Regex(
-                    string.Format(@"(?:^|\s){0}:(?:\""(?<quoted>[^\""]+)\""|(?<plain>\S+))", Regex.Escape(name)),
-                    RegexOptions.IgnoreCase | RegexOptions.Compiled);
-            }
-            return map;
-        }
 
         public SearchService(IndexCacheService indexCacheService, ObjectService objectService = null)
         {
@@ -868,64 +855,30 @@ namespace GxMcp.Worker.Services
             var c = new SearchCriteria();
             if (string.IsNullOrEmpty(query)) return c;
 
-            query = ExtractFilter(query, "description", value => c.DescriptionFilter = value);
-            query = ExtractFilter(query, "metadata", value => c.MetadataFilter = value);
-            query = ExtractFilter(query, "usedby", value => c.UsedByFilter = value);
-            query = ExtractFilter(query, "parentPath", value => c.ParentPathFilter = value);
-            query = ExtractFilter(query, "parent", value => c.ParentFilter = value);
-            query = ExtractFilter(query, "type", value => c.TypeFilter = value);
-            // name:"X" or name:X — exact-name lookup. Without this, a quoted long token
-            // like "WorkWithPlusComissaoParecerCadastro" leaked into vector similarity
-            // and surfaced 50 unrelated attributes whose embeddings happened to be
-            // semantically close. Exact-name short-circuits the ranker.
-            query = ExtractFilter(query, "name", value => c.NameFilter = value);
+            var parsed = QueryGrammar.Parse(query);
+            c.DescriptionFilter = parsed.DescriptionFilter;
+            c.MetadataFilter = parsed.MetadataFilter;
+            c.UsedByFilter = parsed.UsedByFilter;
+            c.ParentPathFilter = parsed.ParentPathFilter;
+            c.ParentFilter = parsed.ParentFilter;
+            c.TypeFilter = parsed.TypeFilter;
+            c.NameFilter = parsed.NameFilter;
 
-            // Bare-quoted "X" with no other terms also signals "user wants this exact
-            // name" — same intent as name:"X". Common shape from agents typing a unique
-            // identifier verbatim. Only triggers when the whole residual query is a
-            // single quoted token, so multi-word semantic queries still vector-rank.
             if (string.IsNullOrEmpty(c.NameFilter))
             {
                 var bareQuoted = BareQuotedNameRegex.Match(query.Trim());
                 if (bareQuoted.Success)
                 {
                     c.NameFilter = bareQuoted.Groups["v"].Value;
-                    query = string.Empty;
                 }
             }
 
-            foreach (var part in query.Split(SpaceSeparator, StringSplitOptions.RemoveEmptyEntries)) {
+            foreach (var part in parsed.FreeTerms)
+            {
                 if (part == "*") continue;
                 c.Terms.Add(part.ToLowerInvariant());
             }
             return c;
-        }
-
-        private string ExtractFilter(string query, string filterName, Action<string> assign)
-        {
-            // PERFORMANCE (perf-review): reuse the precompiled per-filter regex; fall
-            // back to an uncached compile only for a filter name outside the fixed
-            // startup set (shouldn't happen — ParseQuery uses the same names).
-            Regex pattern;
-            if (!FilterRegexes.TryGetValue(filterName, out pattern))
-            {
-                pattern = new Regex(
-                    string.Format(@"(?:^|\s){0}:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", Regex.Escape(filterName)),
-                    RegexOptions.IgnoreCase);
-            }
-            var match = pattern.Match(query);
-            if (!match.Success) return query;
-
-            var value = match.Groups["quoted"].Success
-                ? match.Groups["quoted"].Value
-                : match.Groups["plain"].Value;
-
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                assign(value);
-            }
-
-            return query.Remove(match.Index, match.Length).Trim();
         }
 
         private class RankedResult { public SearchIndex.IndexEntry Entry { get; set; } public int Score { get; set; } public float VectorSimilarity { get; set; } }

@@ -9,7 +9,7 @@ using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
 {
-    public sealed class IdempotencyMiddleware
+    public sealed class IdempotencyMiddleware : GxMcp.Gateway.Pipelines.IMcpMiddleware
     {
         private static readonly HashSet<string> WriteTools = new HashSet<string>
         {
@@ -24,6 +24,23 @@ namespace GxMcp.Gateway
         {
             _cache = cache;
             _kbPath = kbPath;
+        }
+
+        public async Task<JObject?> InvokeAsync(GxMcp.Gateway.Pipelines.McpPipelineContext context, GxMcp.Gateway.Pipelines.McpPipelineNextDelegate next)
+        {
+            var toolCall = new JObject
+            {
+                ["name"] = context.ToolName,
+                ["arguments"] = context.Arguments
+            };
+
+            var res = await Invoke(toolCall, async tc =>
+            {
+                var n = await next().ConfigureAwait(false);
+                return n ?? new JObject();
+            }).ConfigureAwait(false);
+
+            return res;
         }
 
         public async Task<JObject> Invoke(JObject toolCall, Func<JObject, Task<JObject>> next)

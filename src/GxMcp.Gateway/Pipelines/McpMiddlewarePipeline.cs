@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 
@@ -36,6 +37,54 @@ namespace GxMcp.Gateway.Pipelines
     public interface IMcpMiddleware
     {
         Task<JObject?> InvokeAsync(McpPipelineContext context, McpPipelineNextDelegate next);
+    }
+
+    public sealed class DryRunMiddleware : IMcpMiddleware
+    {
+        public async Task<JObject?> InvokeAsync(McpPipelineContext context, McpPipelineNextDelegate next)
+        {
+            var response = await next().ConfigureAwait(false);
+            if (response != null && context.IsDryRun)
+            {
+                var meta = response["_meta"] as JObject;
+                if (meta == null)
+                {
+                    meta = new JObject();
+                    response["_meta"] = meta;
+                }
+                if (meta["dryRun"] == null)
+                {
+                    meta["dryRun"] = true;
+                }
+            }
+            return response;
+        }
+    }
+
+    public sealed class ResponseCompactionMiddleware : IMcpMiddleware
+    {
+        public async Task<JObject?> InvokeAsync(McpPipelineContext context, McpPipelineNextDelegate next)
+        {
+            var response = await next().ConfigureAwait(false);
+            if (response == null) return null;
+
+            bool isCompact = context.Arguments["compact"]?.ToObject<bool?>() ?? false;
+            if (isCompact && response["results"] is JArray resultsArr)
+            {
+                foreach (var item in resultsArr)
+                {
+                    if (item is JObject itemObj)
+                    {
+                        var emptyProps = itemObj.Properties()
+                            .Where(p => p.Value == null || p.Value.Type == JTokenType.Null || (p.Value.Type == JTokenType.String && string.IsNullOrEmpty(p.Value.ToString())))
+                            .Select(p => p.Name)
+                            .ToList();
+                        foreach (var name in emptyProps) itemObj.Remove(name);
+                    }
+                }
+            }
+            return response;
+        }
     }
 
     /// <summary>
