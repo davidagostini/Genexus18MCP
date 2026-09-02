@@ -78,15 +78,24 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Introspect REST endpoints exposed by HTTP procedures. action=list|describe|snapshot|diff_baseline. Returns endpoints + detects breaking changes vs a saved baseline.",
+      "description": "Inspect HTTP procedures and native API routes. action=list|describe|routes_inspect|routes_clone|routes_update|snapshot|diff_baseline. API route writes use typed ServiceGroupSource, optimistic versioning, full snapshot, rollback and post-save reread; no lifecycle operation is implicit.",
       "inputSchema": {
         "examples": [
           {
             "action": "list"
           },
           {
-            "action": "describe",
-            "target": "ApiCustomerGet"
+            "action": "routes_inspect",
+            "api": "OrdersApi"
+          },
+          {
+            "action": "routes_clone",
+            "api": "OrdersApi",
+            "sourcePrefix": "inbound",
+            "targetPrefix": "reverse",
+            "operation": "REVERSE",
+            "dryRun": true,
+            "rollbackOnFailure": true
           }
         ],
         "properties": {
@@ -94,9 +103,16 @@
             "enum": [
               "list",
               "describe",
+              "routes_inspect",
+              "routes_clone",
+              "routes_update",
               "snapshot",
               "diff_baseline"
             ],
+            "type": "string"
+          },
+          "api": {
+            "description": "API name (routes_inspect|routes_clone|routes_update).",
             "type": "string"
           },
           "baseline": {
@@ -112,11 +128,37 @@
             "type": "string"
           },
           "pathPrefix": {
-            "description": "Folder prefix filter (action=list), e.g. 'Root Module/API/'.",
+            "description": "Folder prefix filter (action=list).",
+            "type": "string"
+          },
+          "sourcePrefix": {
+            "description": "Source method/path prefix, e.g. inbound.",
             "type": "string"
           },
           "target": {
-            "description": "Procedure name (action=describe).",
+            "description": "Procedure or API name (action=describe).",
+            "type": "string"
+          },
+          "targetPrefix": {
+            "description": "Target method/path prefix, e.g. reverse.",
+            "type": "string"
+          },
+          "expectedVersion": {
+            "description": "versionToken returned by the preceding dry run or inspection.",
+            "type": "string"
+          },
+          "dryRun": {
+            "default": true,
+            "description": "routes_clone/routes_update: preview first; false writes only with expectedVersion.",
+            "type": "boolean"
+          },
+          "rollbackOnFailure": {
+            "default": true,
+            "description": "Restore the complete API snapshot when post-save verification diverges.",
+            "type": "boolean"
+          },
+          "operation": {
+            "description": "Operation value carried by the reused request contract, e.g. REVERSE.",
             "type": "string"
           }
         },

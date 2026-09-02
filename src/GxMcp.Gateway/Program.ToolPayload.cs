@@ -306,6 +306,14 @@ namespace GxMcp.Gateway
                        string.Equals(action, "remove", StringComparison.OrdinalIgnoreCase);
             }
 
+            if (string.Equals(toolName, "genexus_api", StringComparison.OrdinalIgnoreCase))
+            {
+                if (args?["dryRun"]?.ToObject<bool?>() == true) return false;
+                string? action = args?["action"]?.ToString();
+                return string.Equals(action, "routes_clone", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "routes_update", StringComparison.OrdinalIgnoreCase);
+            }
+
             if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase))
             {
                 // Switching the SDK's active environment changes where subsequent

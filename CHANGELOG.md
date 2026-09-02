@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- **Native API route inspection and clone/update plans (`genexus_api`, PR #126).** Added typed `routes_inspect`, `routes_clone`, and `routes_update` support for API `ServiceGroupSource` methods, including route bindings, optimistic version tokens, dry-run previews, complete snapshots, post-save rereads, and verified rollback without implicit lifecycle operations. Contributed by David Vinicius Agostini (@davidagostini).
+- **Tool definitions schema budget expansion.** Expanded tool definitions approximate token budget from 22,200 to 22,500 tokens in `ToolSchemaSizeTests` to accommodate typed API route inspection, clone, and update parameters.
+
 ## v2.51.0 - 2026-09-02
 
 ### Added

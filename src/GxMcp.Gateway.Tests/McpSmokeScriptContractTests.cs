@@ -33,7 +33,8 @@ namespace GxMcp.Gateway.Tests
             while (dir != null)
             {
                 if (File.Exists(Path.Combine(dir.FullName, "CHANGELOG.md"))
-                    && Directory.Exists(Path.Combine(dir.FullName, ".git")))
+                    && (Directory.Exists(Path.Combine(dir.FullName, ".git"))
+                        || File.Exists(Path.Combine(dir.FullName, ".git"))))
                     return dir.FullName;
                 dir = dir.Parent!;
             }
@@ -159,6 +160,7 @@ namespace GxMcp.Gateway.Tests
         private static System.Collections.Generic.IEnumerable<string> gatewayExeCandidates(string repoRoot)
         {
             yield return Path.Combine(repoRoot, "src", "GxMcp.Gateway", "bin", "Debug", "net8.0-windows", "GxMcp.Gateway.exe");
+            yield return Path.Combine(repoRoot, "src", "GxMcp.Gateway", "bin", "Release", "net8.0-windows", "GxMcp.Gateway.exe");
             yield return Path.Combine(repoRoot, ".test-bin", "gateway", "Debug", "net8.0-windows", "GxMcp.Gateway.exe");
         }
 

@@ -2372,6 +2372,8 @@ namespace GxMcp.Worker.Services
                         return global::Artech.Genexus.Common.Objects.DataProvider.Get(model, qName);
                     if (norm.Equals("DataSelector", StringComparison.OrdinalIgnoreCase))
                         return global::Artech.Genexus.Common.Objects.DataSelector.Get(model, qName);
+                    if (norm.Equals("API", StringComparison.OrdinalIgnoreCase))
+                        return global::Artech.Genexus.Common.Objects.API.Get(model, qName);
                 }
                 catch (Exception ex)
                 {
@@ -2627,7 +2629,7 @@ namespace GxMcp.Worker.Services
 
             // Global search without type filter:
             // 1. Direct typed probes across primary logic types (fastest & most reliable across modules)
-            string[] probeCandidateTypes = { "Procedure", "Transaction", "WebPanel", "SDT", "DataProvider", "DataSelector", "Domain" };
+            string[] probeCandidateTypes = { "Procedure", "Transaction", "WebPanel", "SDT", "DataProvider", "DataSelector", "Domain", "API" };
             foreach (var cand in probeCandidateTypes)
             {
                 Guid candGuid = ResolveObjectTypeGuid(cand);
@@ -2725,7 +2727,7 @@ namespace GxMcp.Worker.Services
                 if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
 
                 var result = new JObject { ["name"] = obj.Name, ["parts"] = new JObject() };
-                string[] partsToFetch = { "Source", "Rules", "Events", "Variables", "Documentation", "Help" };
+                string[] partsToFetch = { "Source", "Rules", "Events", "Variables", "Documentation", "Help", "Methods" };
 
                 foreach (var pName in partsToFetch)
                 {
@@ -2759,6 +2761,15 @@ namespace GxMcp.Worker.Services
                 parts.Add(new JObject {
                     ["name"] = p.TypeDescriptor?.Name ?? p.Type.ToString(),
                     ["guid"] = p.Type.ToString()
+                });
+            }
+            if (obj is Artech.Genexus.Common.Objects.API api && api.ServiceGroupSource != null
+                && !parts.OfType<JObject>().Any(p => string.Equals(p["name"]?.ToString(), "Methods", StringComparison.OrdinalIgnoreCase)))
+            {
+                parts.Add(new JObject
+                {
+                    ["name"] = "Methods",
+                    ["guid"] = api.ServiceGroupSource.Type.ToString()
                 });
             }
 
@@ -2862,7 +2873,7 @@ namespace GxMcp.Worker.Services
 
             string[] partsToFetch = (requestedParts != null && requestedParts.Any())
                 ? requestedParts.Select(p => p.Trim()).Where(p => !string.IsNullOrEmpty(p)).ToArray()
-                : new[] { "Source", "Rules", "Events", "Variables", "Documentation", "Help" };
+                : new[] { "Source", "Rules", "Events", "Variables", "Documentation", "Help", "Methods" };
 
             var partsObj = new JObject();
             foreach (var pName in partsToFetch)
@@ -3119,6 +3130,28 @@ namespace GxMcp.Worker.Services
             else if (typeName.Equals("DataSelector", StringComparison.OrdinalIgnoreCase))
             {
                 return DataSelectorReadService.Read((DataSelector)obj, null);
+            }
+            else if (typeName.Equals("API", StringComparison.OrdinalIgnoreCase))
+            {
+                string methods = ReadPartTextSafe(obj, "Methods");
+                if (!string.IsNullOrWhiteSpace(methods))
+                {
+                    parts["methods"] = methods;
+                    combinedCode += "\n" + methods;
+                }
+
+                // Keep the API's existing metadata/variables parts in the full
+                // read; Methods is an additional native part, not a replacement.
+                foreach (var p in GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj))
+                {
+                    if (string.Equals(p, "Methods", StringComparison.OrdinalIgnoreCase)) continue;
+                    string src = ReadPartTextSafe(obj, p);
+                    if (!string.IsNullOrWhiteSpace(src))
+                    {
+                        parts[p] = src;
+                        combinedCode += "\n" + src;
+                    }
+                }
             }
             else
             {
@@ -3668,6 +3701,7 @@ namespace GxMcp.Worker.Services
 
             if (obj is Procedure) return "Source";
             if (obj is Transaction || obj is WebPanel) return defaulted ? "Events" : "Source";
+            if (obj is Artech.Genexus.Common.Objects.API) return "Methods";
             // Data Selectors have no ISource part. Keep the generic alias so the
             // typed read path can return their complete persisted definition.
             if (DataSelectorReadService.IsDataSelector(obj)) return "Source";

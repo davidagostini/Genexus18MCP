@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -289,6 +290,133 @@ namespace GxMcp.Worker.Tests
             var json = svc.Run(new JObject { ["action"] = "bogus" });
             var obj = JObject.Parse(json);
             Assert.Equal("error", obj["status"]?.ToString());
+        }
+
+        // ---- native API route plans ---------------------------------------
+
+        [Fact]
+        public void ApiRoutePlan_CloneChangesOnlyMethodAndPath()
+        {
+            const string source = @"api OrdersApi {
+[RestMethod(POST), RestPath(""/orders/inbound/"")] inbound_post(in:&requestBody,out:&Retorno) => operational.OrderFlow(&requestBody, &Retorno);
+[RestMethod(GET), RestPath(""/orders/inbound/&codOrder"")] inbound_get(in:&codOrder,out:&requestBody) => operational.OrderFlow(&codOrder, &requestBody);
+}";
+
+            var routes = ApiIntrospectService.ParseApiRoutes(source);
+            Assert.Equal(2, routes.Count);
+            Assert.Equal("POST", routes[0].Verb);
+            Assert.Equal("/orders/inbound/", routes[0].Path);
+
+            var plan = ApiIntrospectService.BuildApiRoutePlan(source, "inbound", "reverse", false);
+            Assert.Empty(plan.Conflicts);
+            Assert.Equal(new[] { "/orders/reverse/", "/orders/reverse/&codOrder" }, plan.Added.Select(r => r.Path));
+            Assert.Contains("reverse_post", plan.CandidateSource);
+            Assert.Contains("/orders/reverse/", plan.CandidateSource);
+            Assert.Contains("operational.OrderFlow(&requestBody, &Retorno)", plan.CandidateSource);
+            Assert.Contains("inbound_post", plan.CandidateSource);
+            Assert.DoesNotContain("OrderReverse", plan.CandidateSource);
+        }
+
+        [Fact]
+        public void ApiRoutePlan_CloneRejectsDifferentExistingTarget()
+        {
+            const string source = @"api OrdersApi {
+[RestMethod(POST), RestPath(""/orders/inbound/"")] inbound_post(in:&Request) => operational.OrderInbound(&Request);
+[RestMethod(POST), RestPath(""/orders/reverse/"")] reverse_post(in:&OtherRequest) => operational.Other(&OtherRequest);
+}";
+
+            var plan = ApiIntrospectService.BuildApiRoutePlan(source, "inbound", "reverse", false);
+            Assert.Single(plan.Conflicts);
+            Assert.Contains("method already exists with different content", plan.Conflicts[0].ToString());
+            Assert.Equal(source, plan.CandidateSource);
+        }
+
+        [Fact]
+        public void ApiRoutePlan_MultiAttributeBlocks_ParsedSuccessfully()
+        {
+            const string source = @"api OrdersApi {
+[RestMethod(POST)]
+[RestPath(""/orders/inbound/"")]
+inbound_post(in:&requestBody, out:&Retorno) => operational.OrderFlow(&requestBody, &Retorno);
+
+[RestMethod(GET)]
+[RestPath(""/orders/inbound/&codOrder"")]
+inbound_get(&codOrder) => operational.OrderFlow(&codOrder);
+}";
+
+            var routes = ApiIntrospectService.ParseApiRoutes(source);
+            Assert.Equal(2, routes.Count);
+            Assert.Equal("POST", routes[0].Verb);
+            Assert.Equal("/orders/inbound/", routes[0].Path);
+            Assert.Equal("inbound_post", routes[0].MethodName);
+            Assert.Equal("GET", routes[1].Verb);
+            Assert.Equal("/orders/inbound/&codOrder", routes[1].Path);
+            Assert.Equal("inbound_get", routes[1].MethodName);
+
+            var plan = ApiIntrospectService.BuildApiRoutePlan(source, "inbound", "reverse", false);
+            Assert.Empty(plan.Conflicts);
+            Assert.Equal(2, plan.Added.Count);
+            Assert.Contains("reverse_post", plan.CandidateSource);
+            Assert.Contains("/orders/reverse/", plan.CandidateSource);
+        }
+
+        [Fact]
+        public void ApiRoutePlan_UpdateReplacesExistingTarget()
+        {
+            const string source = @"api OrdersApi {
+[RestMethod(POST), RestPath(""/orders/inbound/"")] inbound_post(in:&Request) => operational.OrderInbound(&Request);
+[RestMethod(POST), RestPath(""/orders/reverse/old"")] reverse_post(in:&Request) => operational.OldOrder(&Request);
+}";
+
+            var plan = ApiIntrospectService.BuildApiRoutePlan(source, "inbound", "reverse", updateExisting: true);
+            Assert.Empty(plan.Conflicts);
+            Assert.Single(plan.Updated);
+            Assert.Equal("reverse_post", plan.Updated[0].MethodName);
+            Assert.Contains(@"[RestMethod(POST), RestPath(""/orders/reverse/"")] reverse_post(in:&Request) => operational.OrderInbound(&Request);", plan.CandidateSource);
+        }
+
+        [Theory]
+        [InlineData("inbound", true)]
+        [InlineData("reverse_flow", true)]
+        [InlineData("api-v2", true)]
+        [InlineData("", false)]
+        [InlineData("   ", false)]
+        [InlineData(null, false)]
+        [InlineData("123prefix", false)]
+        [InlineData("bad/path", false)]
+        [InlineData("../escape", false)]
+        public void IsSafeRoutePrefix_ValidatesCorrectly(string prefix, bool expectedValid)
+        {
+            Assert.Equal(expectedValid, ApiIntrospectService.IsSafeRoutePrefix(prefix));
+        }
+
+        [Fact]
+        public void Run_RoutesClone_InvalidPrefix_ReturnsInvalidPrefixError()
+        {
+            var svc = new ApiIntrospectService(null, null, null);
+            var json = svc.Run(new JObject
+            {
+                ["action"] = "routes_clone",
+                ["api"] = "OrdersApi",
+                ["sourcePrefix"] = "bad/prefix",
+                ["targetPrefix"] = "valid"
+            });
+            var obj = JObject.Parse(json);
+            Assert.Equal("error", obj["status"]?.ToString());
+            Assert.Equal("InvalidPrefix", obj["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void Run_RoutesInspect_MissingApi_ReturnsInvalidApiError()
+        {
+            var svc = new ApiIntrospectService(null, null, null);
+            var json = svc.Run(new JObject
+            {
+                ["action"] = "routes_inspect"
+            });
+            var obj = JObject.Parse(json);
+            Assert.Equal("error", obj["status"]?.ToString());
+            Assert.Equal("InvalidApi", obj["error"]?["code"]?.ToString());
         }
     }
 }
