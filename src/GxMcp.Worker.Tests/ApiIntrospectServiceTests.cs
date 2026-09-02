@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -289,6 +290,44 @@ namespace GxMcp.Worker.Tests
             var json = svc.Run(new JObject { ["action"] = "bogus" });
             var obj = JObject.Parse(json);
             Assert.Equal("error", obj["status"]?.ToString());
+        }
+
+        // ---- native API route plans ---------------------------------------
+
+        [Fact]
+        public void ApiRoutePlan_CloneChangesOnlyMethodAndPath()
+        {
+            const string source = @"api OrdersApi {
+[RestMethod(POST), RestPath(""/orders/inbound/"")] inbound_post(in:&requestBody,out:&Retorno) => operational.OrderFlow(&requestBody, &Retorno);
+[RestMethod(GET), RestPath(""/orders/inbound/&codOrder"")] inbound_get(in:&codOrder,out:&requestBody) => operational.OrderFlow(&codOrder, &requestBody);
+}";
+
+            var routes = ApiIntrospectService.ParseApiRoutes(source);
+            Assert.Equal(2, routes.Count);
+            Assert.Equal("POST", routes[0].Verb);
+            Assert.Equal("/orders/inbound/", routes[0].Path);
+
+            var plan = ApiIntrospectService.BuildApiRoutePlan(source, "inbound", "reverse", false);
+            Assert.Empty(plan.Conflicts);
+            Assert.Equal(new[] { "/orders/reverse/", "/orders/reverse/&codOrder" }, plan.Added.Select(r => r.Path));
+            Assert.Contains("reverse_post", plan.CandidateSource);
+            Assert.Contains("/orders/reverse/", plan.CandidateSource);
+            Assert.Contains("operational.OrderFlow(&requestBody, &Retorno)", plan.CandidateSource);
+            Assert.Contains("inbound_post", plan.CandidateSource);
+            Assert.DoesNotContain("OrderReverse", plan.CandidateSource);
+        }
+
+        [Fact]
+        public void ApiRoutePlan_CloneRejectsDifferentExistingTarget()
+        {
+            const string source = @"api OrdersApi {
+[RestMethod(POST), RestPath(""/orders/inbound/"")] inbound_post(in:&Request) => operational.OrderInbound(&Request);
+[RestMethod(POST), RestPath(""/orders/reverse/"")] reverse_post(in:&OtherRequest) => operational.Other(&OtherRequest);
+}";
+
+            var plan = ApiIntrospectService.BuildApiRoutePlan(source, "inbound", "reverse", false);
+            Assert.Single(plan.Conflicts);
+            Assert.Equal(source, plan.CandidateSource);
         }
     }
 }
