@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v2.50.0 - 2026-09-02
+
+### Added
+
+- **List Knowledge Base environments (`genexus_kb action=list_environments`, Issue #124).** Added `list_environments` action to `genexus_kb` to enumerate all environments configured in the open Knowledge Base under STA lock. Returns `activeEnvironment` alongside each environment's `name`, `description`, primary `generator` (resolved via `GeneratorsPart`), `isActive` status flag, and resolved `webPath`.
+- **Target environment parameter in build lifecycle (`genexus_lifecycle`, Issue #125).** Added optional `environment` parameter to `genexus_lifecycle` for `build`, `specify`, `rebuild`, and `compile_check` actions. Directs the build to target the specified environment without requiring human IDE intervention to switch active environment beforehand.
+
+### Fixed
+
+- **Headless active environment switching (`genexus_kb action=set_environment`, Issue #125).** Fixed `set_environment` failing with `DispatcherException` / `TargetInvocationException` in background workers. The operation now performs direct SDK model activation (`DesignModel.Environment.TargetModel`, `User.SetTargetModel`, and `User.Save`) under `_kbLock`, bypassing the MSBuild task's UI Dispatcher subscriptions (`CommonServices.Output`) with exception-safe fallback.
+
 ## v2.49.2 - 2026-08-31
 
 ### Fixed

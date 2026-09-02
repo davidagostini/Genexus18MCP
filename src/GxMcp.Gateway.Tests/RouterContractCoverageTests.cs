@@ -197,6 +197,17 @@ namespace GxMcp.Gateway.Tests
             Assert.Null(router.ConvertToolCall("genexus_lifecycle", JObject.Parse("{action:'result'}")));
         }
 
+        [Fact]
+        public void Lifecycle_build_with_environment_routes_target_environment()
+        {
+            var router = new SystemRouter();
+            var res = router.ConvertToolCall("genexus_lifecycle", JObject.Parse("{action:'build',target:'MyProc',environment:'NetCore'}"));
+            AssertRoute(res, "Build", "Build");
+            var prop = res.GetType().GetProperty("environment");
+            Assert.NotNull(prop);
+            Assert.Equal("NetCore", prop.GetValue(res)?.ToString());
+        }
+
         [Theory]
         [InlineData("genexus_doc", "{action:'wiki'}", "Wiki", "Generate")]
         [InlineData("genexus_doc", "{action:'visualize'}", "Visualizer", "Generate")]
@@ -204,6 +215,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_test", "{}", "Test", "Run")]
         [InlineData("genexus_kb", "{action:'set_startup'}", "KB", "SetStartupObject")]
         [InlineData("genexus_kb", "{action:'get_startup'}", "KB", "GetStartupObject")]
+        [InlineData("genexus_kb", "{action:'list_environments'}", "KB", "ListEnvironments")]
         [InlineData("genexus_kb", "{action:'get_environment'}", "KB", "GetActiveEnvironment")]
         [InlineData("genexus_kb", "{action:'set_environment',environment:'development'}", "KB", "SetActiveEnvironment")]
         [InlineData("genexus_kb_explorer", "{}", "KbExplorer", "Locate")]

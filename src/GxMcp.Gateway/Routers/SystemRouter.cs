@@ -25,6 +25,7 @@ namespace GxMcp.Gateway.Routers
                                     module = "Build",
                                     action = "CompileCheck",
                                     target = target,
+                                    environment = args?["environment"]?.ToString(),
                                     buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
                                     dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
                                     deploy = args?["deploy"]?.ToObject<bool?>() ?? false
@@ -34,6 +35,7 @@ namespace GxMcp.Gateway.Routers
                                 module = "Build",
                                 action = "Build",
                                 target = target,
+                                environment = args?["environment"]?.ToString(),
                                 includeCallees = args?["includeCallees"]?.ToString(),
                                 buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
                                 // Item 72 (friction 2026-05-22) — Slack/Discord webhook on terminal Failed state.
@@ -50,6 +52,7 @@ namespace GxMcp.Gateway.Routers
                             module = "Build",
                             action = "Specify",
                             target = target,
+                            environment = args?["environment"]?.ToString(),
                             buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
                         };
@@ -57,6 +60,7 @@ namespace GxMcp.Gateway.Routers
                             module = "Build",
                             action = "RebuildAll",
                             target = target,
+                            environment = args?["environment"]?.ToString(),
                             includeCallees = args?["includeCallees"]?.ToString(),
                             buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
@@ -161,6 +165,14 @@ namespace GxMcp.Gateway.Routers
                         {
                             module = "KB",
                             action = "GetStartupObject"
+                        };
+                    }
+                    if (string.Equals(kbAction, "list_environments", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new
+                        {
+                            module = "KB",
+                            action = "ListEnvironments"
                         };
                     }
                     if (string.Equals(kbAction, "get_environment", System.StringComparison.OrdinalIgnoreCase))

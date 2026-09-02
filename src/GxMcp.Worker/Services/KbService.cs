@@ -10,6 +10,8 @@ using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Artech.Architecture.Common.Objects;
+using Artech.Genexus.Common.Entities;
+using Artech.Genexus.Common.ModelParts;
 
 namespace GxMcp.Worker.Services
 {
@@ -1199,10 +1201,12 @@ namespace GxMcp.Worker.Services
                 // Probe all of those representations independently.
                 object[] candidates =
                 {
+                    TryGet(() => (object)_kb.Environment?.TargetModel),
+                    TryGet(() => (object)_kb.DesignModel?.Environment?.TargetModel),
+                    TryGet(() => (object)_kb.ActiveModel),
                     TryGet(() => (object)_kb.Environment),
                     TryGet(() => (object)_kb.UserInterface?.ActiveEnvironment),
-                    TryGet(() => (object)_kb.DesignModel?.Environment),
-                    TryGet(() => (object)_kb.ActiveModel)
+                    TryGet(() => (object)_kb.DesignModel?.Environment)
                 };
                 foreach (var candidate in candidates)
                 {
@@ -1324,43 +1328,334 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
-        // Switch the active GeneXus environment through the same SDK/MSBuild task
-        // used by the IDE. The worker must not edit environment folders directly.
+        // Enumerate all environment models configured in the open KB.
+        public string ListEnvironments()
+        {
+            lock (_kbLock)
+            {
+                if (_kb == null) throw new InvalidOperationException("Knowledge Base is not open.");
+
+                string activeName = GetActiveEnvironment();
+                string activeWebPath = GetActiveEnvironmentWebPath();
+                string kbPath = GetKbPath() ?? Environment.GetEnvironmentVariable("GX_KB_PATH");
+
+                var envModels = EnumerateEnvironmentModels();
+                var envArray = new JArray();
+                var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var model in envModels)
+                {
+                    if (model == null) continue;
+                    string name = TryGetEnvironmentName(model);
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        name = TryGetMember(model, "Name")?.ToString();
+                    }
+                    if (string.IsNullOrWhiteSpace(name) || seenNames.Contains(name))
+                        continue;
+
+                    seenNames.Add(name);
+
+                    string description = TryGetMember(model, "Description")?.ToString() ?? string.Empty;
+                    bool isActive = !string.IsNullOrWhiteSpace(activeName) &&
+                                    string.Equals(name, activeName, StringComparison.OrdinalIgnoreCase);
+
+                    string targetPath = TryGetMember(model, "TargetPath")?.ToString();
+                    string webPath = null;
+                    if (isActive && !string.IsNullOrWhiteSpace(activeWebPath))
+                    {
+                        webPath = activeWebPath;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(targetPath) && !string.IsNullOrWhiteSpace(kbPath))
+                    {
+                        webPath = ResolveEnvironmentWebPath(kbPath, targetPath);
+                    }
+                    if (string.IsNullOrWhiteSpace(webPath) && !string.IsNullOrWhiteSpace(kbPath))
+                    {
+                        webPath = ResolveEnvironmentWebPath(kbPath, name);
+                    }
+
+                    string generator = ResolveModelGenerator(model);
+
+                    var envObj = new JObject
+                    {
+                        ["name"] = name,
+                        ["description"] = description,
+                        ["generator"] = generator,
+                        ["isActive"] = isActive,
+                        ["webPath"] = webPath
+                    };
+                    envArray.Add(envObj);
+                }
+
+                // If active environment was not among enumerated models, add it as fallback entry
+                if (!string.IsNullOrWhiteSpace(activeName) && !seenNames.Contains(activeName))
+                {
+                    var activeObj = new JObject
+                    {
+                        ["name"] = activeName,
+                        ["description"] = string.Empty,
+                        ["generator"] = null,
+                        ["isActive"] = true,
+                        ["webPath"] = activeWebPath
+                    };
+                    envArray.Add(activeObj);
+                }
+
+                var response = new JObject
+                {
+                    ["activeEnvironment"] = activeName,
+                    ["environments"] = envArray
+                };
+
+                return response.ToString(Newtonsoft.Json.Formatting.None);
+            }
+        }
+
+        private List<object> EnumerateEnvironmentModels()
+        {
+            var models = new List<object>();
+            var seen = new HashSet<object>();
+
+            void AddModel(object m)
+            {
+                if (m != null && seen.Add(m))
+                    models.Add(m);
+            }
+
+            try { AddModel((object)_kb.DesignModel?.Environment?.TargetModel); } catch { }
+            try { AddModel((object)_kb.Environment?.TargetModel); } catch { }
+            try { AddModel((object)_kb.ActiveModel); } catch { }
+
+            try
+            {
+                var envModels = _kb.DesignModel?.Environment?.Models;
+                if (envModels is System.Collections.IEnumerable envEnum)
+                {
+                    foreach (var m in envEnum) AddModel(m);
+                }
+            }
+            catch { }
+
+            try
+            {
+                var envModels = _kb.Environment?.Models;
+                if (envModels is System.Collections.IEnumerable envEnum)
+                {
+                    foreach (var m in envEnum) AddModel(m);
+                }
+            }
+            catch { }
+
+            try
+            {
+                var allModels = _kb.Models;
+                if (allModels != null)
+                {
+                    try
+                    {
+                        int designId = _kb.DesignModel.Id;
+                        var children = allModels.GetChildren(designId);
+                        if (children is System.Collections.IEnumerable childEnum)
+                        {
+                            foreach (var m in childEnum) AddModel(m);
+                        }
+                    }
+                    catch { }
+
+                    try
+                    {
+                        var all = allModels.GetAll();
+                        if (all is System.Collections.IEnumerable allEnum)
+                        {
+                            foreach (var m in allEnum)
+                            {
+                                if (m == null) continue;
+                                string typeStr = TryGetMember(m, "Type")?.ToString() ?? string.Empty;
+                                if (string.Equals(typeStr, "Design", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(typeStr, "Backup", StringComparison.OrdinalIgnoreCase))
+                                    continue;
+                                AddModel(m);
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            return models;
+        }
+
+        private static string ResolveModelGenerator(object model)
+        {
+            try
+            {
+                if (model is KBModel kbModel)
+                {
+                    var part = kbModel.Parts.Get<GeneratorsPart>();
+                    if (part != null && part.Generators != null)
+                    {
+                        var gen = part.Generators.FirstOrDefault(g => !g.IsReorgGen) ?? part.Generators.FirstOrDefault();
+                        if (gen != null)
+                        {
+                            if (!string.IsNullOrWhiteSpace(gen.Description))
+                                return gen.Description;
+                            return gen.ToString();
+                        }
+                    }
+                }
+                else
+                {
+                    dynamic dyn = model;
+                    dynamic parts = dyn.Parts;
+                    if (parts != null)
+                    {
+                        dynamic part = parts.Get(typeof(GeneratorsPart)) ?? parts.Get("Generators");
+                        if (part?.Generators != null)
+                        {
+                            foreach (dynamic gen in part.Generators)
+                            {
+                                if (gen != null && (gen.IsReorgGen == false || gen.IsReorgGen == null))
+                                    return (string)(gen.Description ?? gen.ToString());
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // Switch the active GeneXus environment. Prefers direct SDK model activation
+        // under _kbLock to avoid MSBuild task UI Dispatcher issues in headless workers,
+        // with fallback to the MSBuild task if direct model setting is inconclusive.
         public string SetActiveEnvironment(string environmentName)
         {
             if (string.IsNullOrWhiteSpace(environmentName))
                 throw new ArgumentException("Environment name is required.", nameof(environmentName));
+
+            string trimmed = environmentName.Trim();
 
             lock (_kbLock)
             {
                 if (_kb == null) throw new InvalidOperationException("Knowledge Base is not open.");
 
                 string previous = GetActiveEnvironment();
-                Type taskType = ResolveMsBuildTaskType("Genexus.MsBuild.Tasks.SetActiveEnvironment");
-                object task = Activator.CreateInstance(taskType);
-                SetTaskProperty(task, "KB", _kb);
-                SetTaskProperty(task, "EnvironmentName", environmentName.Trim());
-                SetTaskProperty(task, "RedirectIPC", false);
 
-                var execute = taskType.GetMethod("Execute", BindingFlags.Public | BindingFlags.Instance);
-                if (execute == null || !(execute.Invoke(task, null) is bool ok) || !ok)
+                // Find candidate model for the requested environment
+                var envModels = EnumerateEnvironmentModels();
+                object targetModel = envModels.FirstOrDefault(m =>
                 {
-                    string output = TryGetMember(task, "TaskOutput")?.ToString()
-                        ?? TryGetMember(task, "Output")?.ToString();
-                    throw new InvalidOperationException(
-                        "GeneXus could not activate environment '" + environmentName + "'."
-                        + (string.IsNullOrWhiteSpace(output) ? string.Empty : " " + output));
+                    if (m == null) return false;
+                    string name = TryGetEnvironmentName(m);
+                    if (string.IsNullOrWhiteSpace(name))
+                        name = TryGetMember(m, "Name")?.ToString();
+                    if (string.Equals(name, trimmed, StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    string targetPath = TryGetMember(m, "TargetPath")?.ToString();
+                    if (!string.IsNullOrWhiteSpace(targetPath) &&
+                        string.Equals(Path.GetFileName(targetPath), trimmed, StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    return false;
+                });
+
+                bool switched = false;
+
+                // 1. Direct SDK activation (Headless-safe: avoids MSBuild task UI Dispatcher / Output exceptions)
+                if (targetModel != null)
+                {
+                    try
+                    {
+                        var designEnv = TryGet(() => (object)_kb.DesignModel?.Environment);
+                        if (designEnv != null)
+                        {
+                            var prop = designEnv.GetType().GetProperty("TargetModel", BindingFlags.Public | BindingFlags.Instance);
+                            prop?.SetValue(designEnv, targetModel, null);
+                            try { designEnv.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance)?.SetValue(designEnv, TryGetEnvironmentName(targetModel), null); } catch { }
+                        }
+
+                        var kbEnv = TryGet(() => (object)_kb.Environment);
+                        if (kbEnv != null)
+                        {
+                            var prop = kbEnv.GetType().GetProperty("TargetModel", BindingFlags.Public | BindingFlags.Instance);
+                            prop?.SetValue(kbEnv, targetModel, null);
+                            try { kbEnv.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance)?.SetValue(kbEnv, TryGetEnvironmentName(targetModel), null); } catch { }
+                        }
+
+                        try
+                        {
+                            dynamic user = _kb.User;
+                            if (user != null)
+                            {
+                                dynamic dynTarget = targetModel;
+                                dynamic dynDesign = TryGet(() => dynTarget.GetDesignModel()) ?? _kb.DesignModel;
+                                user.SetTargetModel(dynDesign, targetModel);
+                                user.Save();
+                            }
+                        }
+                        catch (Exception exUser)
+                        {
+                            Logger.Warn("[KB-SET-ENV] User.SetTargetModel warning: " + exUser.Message);
+                        }
+
+                        string current = GetActiveEnvironment();
+                        if (string.Equals(current, trimmed, StringComparison.OrdinalIgnoreCase) ||
+                            (targetModel != null && string.Equals(current, TryGetEnvironmentName(targetModel), StringComparison.OrdinalIgnoreCase)))
+                        {
+                            switched = true;
+                            Logger.Info($"[KB-SET-ENV] Switched active environment to '{current}' directly via SDK.");
+                        }
+                    }
+                    catch (Exception exDirect)
+                    {
+                        Logger.Warn("[KB-SET-ENV] Direct SDK switch failed: " + exDirect.Message);
+                    }
+                }
+
+                // 2. Fallback to MSBuild task if direct switch did not complete
+                if (!switched)
+                {
+                    try
+                    {
+                        Type taskType = ResolveMsBuildTaskType("Genexus.MsBuild.Tasks.SetActiveEnvironment");
+                        object task = Activator.CreateInstance(taskType);
+                        SetTaskProperty(task, "KB", _kb);
+                        SetTaskProperty(task, "EnvironmentName", trimmed);
+                        SetTaskProperty(task, "RedirectIPC", false);
+
+                        var execute = taskType.GetMethod("Execute", BindingFlags.Public | BindingFlags.Instance);
+                        if (execute != null && execute.Invoke(task, null) is bool ok && ok)
+                        {
+                            switched = true;
+                        }
+                    }
+                    catch (TargetInvocationException tie)
+                    {
+                        Logger.Warn("[KB-SET-ENV] MSBuild task execution failed: " + (tie.InnerException?.Message ?? tie.Message));
+                    }
+                    catch (Exception exTask)
+                    {
+                        Logger.Warn("[KB-SET-ENV] MSBuild task execution error: " + exTask.Message);
+                    }
                 }
 
                 string active = GetActiveEnvironment();
-                if (!string.Equals(active, environmentName.Trim(), StringComparison.OrdinalIgnoreCase))
+                bool matches = string.Equals(active, trimmed, StringComparison.OrdinalIgnoreCase) ||
+                               (targetModel != null && string.Equals(active, TryGetEnvironmentName(targetModel), StringComparison.OrdinalIgnoreCase));
+
+                if (!matches)
+                {
                     throw new InvalidOperationException(
-                        "GeneXus reported success but the active environment remained '"
-                        + (active ?? "<unknown>") + "' instead of '" + environmentName.Trim() + "'.");
+                        $"GeneXus could not activate environment '{trimmed}'. The active environment remained '{active ?? "<unknown>"}'.");
+                }
+
                 return new JObject
                 {
                     ["previous"] = previous,
-                    ["requested"] = environmentName.Trim(),
+                    ["requested"] = trimmed,
                     ["active"] = active,
                     ["changed"] = !string.Equals(previous, active, StringComparison.OrdinalIgnoreCase)
                 }.ToString(Newtonsoft.Json.Formatting.None);

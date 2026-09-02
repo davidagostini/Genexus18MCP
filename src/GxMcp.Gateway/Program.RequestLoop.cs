@@ -644,6 +644,7 @@ namespace GxMcp.Gateway
                 if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(args?["action"]?.ToString(), "set_startup", StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(args?["action"]?.ToString(), "get_startup", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(args?["action"]?.ToString(), "list_environments", StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(args?["action"]?.ToString(), "get_environment", StringComparison.OrdinalIgnoreCase)
                     && !string.Equals(args?["action"]?.ToString(), "set_environment", StringComparison.OrdinalIgnoreCase))
                 {

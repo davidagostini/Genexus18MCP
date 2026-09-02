@@ -2073,7 +2073,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Manage open KBs, startup config, and the active GeneXus environment. list/open/close/set_default operate on WorkerPool; set_default selects the implicit target for calls that omit kb (an explicit kb always wins for parallel or cross-KB work); set_startup/get_startup mirror IDE 'Set As Startup Object'; get_environment reads the SDK selection; set_environment selects an environment through the SDK task used by the IDE.",
+      "description": "Manage open KBs, startup config, and GeneXus environments. list/open/close/set_default operate on WorkerPool; set_default selects the implicit target for calls that omit kb (an explicit kb always wins for parallel or cross-KB work); set_startup/get_startup mirror IDE 'Set As Startup Object'; list_environments lists all configured environments; get_environment reads the active environment; set_environment selects an environment.",
       "inputSchema": {
         "examples": [
           {
@@ -2082,6 +2082,9 @@
           },
           {
             "action": "list"
+          },
+          {
+            "action": "list_environments"
           },
           {
             "action": "get_environment"
@@ -2100,6 +2103,7 @@
               "set_default",
               "set_startup",
               "get_startup",
+              "list_environments",
               "get_environment",
               "set_environment"
             ],
@@ -2379,6 +2383,10 @@
             "default": false,
             "description": "build/rebuild/index: returns the plan (object list / index entries) without executing.",
             "type": "boolean"
+          },
+          "environment": {
+            "description": "Build: target environment name/folder. Switches active environment before building.",
+            "type": "string"
           },
           "estimated_seconds": {
             "description": "Build: <20 sync, >=20 async (default 60).",

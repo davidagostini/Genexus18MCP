@@ -879,6 +879,10 @@ namespace GxMcp.Worker.Services
                     ["webPath"] = _kbService.GetActiveEnvironmentWebPath()
                 }.ToString(Newtonsoft.Json.Formatting.None);
             }
+            if (action == "ListEnvironments")
+            {
+                return _kbService.ListEnvironments();
+            }
             if (action == "SetActiveEnvironment")
             {
                 string environment = target ?? args?["environment"]?.ToString();
@@ -1905,6 +1909,12 @@ namespace GxMcp.Worker.Services
                 args?["page"]?.ToObject<int?>() ?? 1,
                 args?["pageSize"]?.ToObject<int?>() ?? 50);
             if (action == "Cancel") return _buildService.Cancel(target);
+
+            string requestedEnv = args?["environment"]?.ToString() ?? request?["environment"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(requestedEnv))
+            {
+                _kbService.SetActiveEnvironment(requestedEnv);
+            }
 
             bool buildDryRun = (request["dryRun"]?.ToObject<bool?>() ?? false) || (args?["dryRun"]?.ToObject<bool?>() ?? false);
             if (buildDryRun)
