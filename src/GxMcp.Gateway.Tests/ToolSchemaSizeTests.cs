@@ -144,7 +144,10 @@ namespace GxMcp.Gateway.Tests
             //   2026-08-26 (literal line-break write guard): 21900 → 22200 for
             //   the explicit real-line-break contract on full/patch/atomic text writes.
             //   Measured ~22059; ~141 headroom.
-            Assert.True(approxTokens < 22200, $"tool_definitions.json is ~{approxTokens} tokens; budget 22200.");
+            //   2026-09-02 (native API routes): 22200 → 22500 for typed
+            //   API method inspection, clone/update preview and rollback fields.
+            //   Measured ~22380; ~120 headroom.
+            Assert.True(approxTokens < 22500, $"tool_definitions.json is ~{approxTokens} tokens; budget 22500.");
         }
     }
 }
