@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.52.0 - 2026-09-02
+
 ### Added
 
 - **Native API route inspection and clone/update plans (`genexus_api`, PR #126).** Added typed `routes_inspect`, `routes_clone`, and `routes_update` support for API `ServiceGroupSource` methods, including route bindings, optimistic version tokens, dry-run previews, complete snapshots, post-save rereads, and verified rollback without implicit lifecycle operations. Contributed by David Vinicius Agostini (@davidagostini).
