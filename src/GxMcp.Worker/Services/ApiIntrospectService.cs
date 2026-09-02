@@ -180,7 +180,7 @@ namespace GxMcp.Worker.Services
             string apiName = args?["api"]?.ToString();
             string sourcePrefix = args?["sourcePrefix"]?.ToString();
             string targetPrefix = args?["targetPrefix"]?.ToString();
-            bool dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
+            bool dryRun = args?["dryRun"]?.ToObject<bool?>() ?? true;
             bool rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
             string operation = args?["operation"]?.ToString();
 
@@ -314,6 +314,7 @@ namespace GxMcp.Worker.Services
                 // invoked by this operation.
                 api.ServiceGroupSource.Source = plan.CandidateSource;
                 api.EnsureSave(false);
+                GxMcp.Worker.Helpers.WritePipeline.NoteWrite(api.Name);
 
                 _objectService.MarkReadCacheDirty(api, "Methods");
                 var fresh = ResolveApiFresh(api.Name);
@@ -330,6 +331,15 @@ namespace GxMcp.Worker.Services
                         ? "The persisted API routes differ from the candidate after re-read."
                         : "The SDK changed an API part outside Methods after route save: " + changedPart);
                 }
+
+                try
+                {
+                    var kb = _kbService?.GetKB();
+                    var model = kb?.DesignModel;
+                    var modelCommit = model?.GetType().GetMethod("Commit", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    modelCommit?.Invoke(model, null);
+                }
+                catch { }
 
                 var persisted = BuildApiRoutePlanResult(
                     fresh,
@@ -524,7 +534,7 @@ namespace GxMcp.Worker.Services
         }
 
         private static readonly Regex ApiRouteRegex = new Regex(
-            @"(?ms)(?<block>\[(?<attrs>[^\]]*)\])(?<between>(?:(?:[ \t]*//[^\r\n]*)?\s*)*)(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?<params>.*?)\)\s*=>\s*(?<call>[^;]+);",
+            @"(?ms)(?<block>(?:\[[^\]]*\]\s*)+)(?<between>(?:(?:[ \t]*//[^\r\n]*)?\s*)*)(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?<params>.*?)\)\s*=>\s*(?<call>[^;]+);",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex ApiVerbRegex = new Regex(
@@ -540,7 +550,7 @@ namespace GxMcp.Worker.Services
             RegexOptions.Singleline | RegexOptions.Compiled);
 
         private static readonly Regex ApiBindingRegex = new Regex(
-            @"(?<direction>inout|in|out)\s*:\s*&(?<name>[A-Za-z_][A-Za-z0-9_]*)",
+            @"(?:(?<direction>inout|in|out)\s*:\s*)?&(?<name>[A-Za-z_][A-Za-z0-9_]*)",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex RoutePrefixRegex = new Regex(
@@ -596,8 +606,9 @@ namespace GxMcp.Worker.Services
 
             foreach (Match match in ApiRouteRegex.Matches(source))
             {
-                var verb = ApiVerbRegex.Match(match.Groups["attrs"].Value);
-                var path = ApiPathRegex.Match(match.Groups["attrs"].Value);
+                var block = match.Groups["block"];
+                var verb = ApiVerbRegex.Match(block.Value);
+                var path = ApiPathRegex.Match(block.Value);
                 if (!verb.Success || !path.Success) continue;
 
                 routes.Add(new ApiRoute
@@ -610,7 +621,7 @@ namespace GxMcp.Worker.Services
                     SourceText = match.Value,
                     SourceIndex = match.Index,
                     MethodOffset = match.Groups["name"].Index - match.Index,
-                    PathOffset = match.Groups["attrs"].Index - match.Index + path.Groups["path"].Index,
+                    PathOffset = block.Index - match.Index + path.Groups["path"].Index,
                     PathLength = path.Groups["path"].Length
                 });
             }
@@ -706,7 +717,7 @@ namespace GxMcp.Worker.Services
                 }
                 else
                 {
-                    plan.Conflicts.Add(candidate.MethodName + " (método já existe com conteúdo diferente)");
+                    plan.Conflicts.Add(candidate.MethodName + " (method already exists with different content)");
                 }
             }
 
@@ -811,9 +822,12 @@ namespace GxMcp.Worker.Services
             foreach (Match binding in ApiBindingRegex.Matches(route.ParametersText ?? string.Empty))
             {
                 string name = binding.Groups["name"].Value;
+                string dir = binding.Groups["direction"].Success && !string.IsNullOrWhiteSpace(binding.Groups["direction"].Value)
+                    ? binding.Groups["direction"].Value.ToLowerInvariant()
+                    : "in";
                 var parameter = new JObject
                 {
-                    ["direction"] = binding.Groups["direction"].Value.ToLowerInvariant(),
+                    ["direction"] = dir,
                     ["name"] = name
                 };
                 if (variableTypes != null && variableTypes.TryGetValue(name, out string type) && !string.IsNullOrWhiteSpace(type))
@@ -976,6 +990,7 @@ namespace GxMcp.Worker.Services
 
                 current.ServiceGroupSource.Source = snapshot.Methods ?? string.Empty;
                 current.EnsureSave(false);
+                GxMcp.Worker.Helpers.WritePipeline.NoteWrite(current.Name);
                 _objectService.MarkReadCacheDirty(current, "Methods");
                 var restored = ResolveApiFresh(apiName);
                 var restoredSnapshot = restored == null || restored.ServiceGroupSource == null

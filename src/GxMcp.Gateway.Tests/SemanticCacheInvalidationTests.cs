@@ -88,6 +88,8 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_kb", "set_environment")]
         [InlineData("genexus_generator_reference", "add")]
         [InlineData("genexus_generator_reference", "remove")]
+        [InlineData("genexus_api", "routes_clone")]
+        [InlineData("genexus_api", "routes_update")]
         public void MutatingActions_AreDetected(string toolName, string action)
         {
             var args = new JObject { ["action"] = action };
@@ -117,6 +119,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_deploy")]
         [InlineData("genexus_multi_agent_lock")]
         [InlineData("genexus_sandbox")]
+        [InlineData("genexus_api")]
         public void ToolsWithNoMutatingSignal_AreNotFlagged(string toolName)
         {
             // No action argument at all: these tools must not invalidate the cache.
@@ -155,6 +158,9 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_generator_reference", "list")]
         [InlineData("genexus_generator_reference", "dry_run_add")]
         [InlineData("genexus_generator_reference", "dry_run_remove")]
+        [InlineData("genexus_api", "routes_inspect")]
+        [InlineData("genexus_api", "list")]
+        [InlineData("genexus_api", "describe")]
         public void ReadOnlyActions_AreNotFlagged(string toolName, string action)
         {
             var args = new JObject { ["action"] = action };
@@ -181,6 +187,18 @@ namespace GxMcp.Gateway.Tests
         public void GeneratorReference_DryRunFlag_DoesNotInvalidate(string action)
         {
             Assert.False(Program.IsMutatingTool("genexus_generator_reference", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = true
+            }));
+        }
+
+        [Theory]
+        [InlineData("routes_clone")]
+        [InlineData("routes_update")]
+        public void GenexusApi_DryRun_DoesNotInvalidate(string action)
+        {
+            Assert.False(Program.IsMutatingTool("genexus_api", new JObject
             {
                 ["action"] = action,
                 ["dryRun"] = true
