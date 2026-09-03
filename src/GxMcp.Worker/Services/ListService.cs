@@ -342,10 +342,10 @@ namespace GxMcp.Worker.Services
                     }
 
                     int pageSize = limit <= 0 ? int.MaxValue : limit;
-                    foreach (var entry in orderedIndexEntries
-                        .Skip(startIndex)
-                        .Take(pageSize))
+                    int endIndex = Math.Min(totalIndex, (int)Math.Min((long)totalIndex, (long)startIndex + pageSize));
+                    for (int i = startIndex; i < endIndex; i++)
                     {
+                        var entry = orderedIndexEntries[i];
                         array.Add(BuildItem(
                             entry.Name,
                             entry.Type ?? "Unknown",

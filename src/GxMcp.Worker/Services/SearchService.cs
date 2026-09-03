@@ -405,16 +405,16 @@ namespace GxMcp.Worker.Services
                             bool noiseExplicitlyRequested = !string.IsNullOrEmpty(criteria.TypeFilter)
                                 && IsTypeMatch(entry.Type, criteria.TypeFilter);
                             if (score <= 0 && isNoiseType && !noiseExplicitlyRequested)
-                                return new RankedResult { Score = -1 };
+                                return new RankedResult(null, -1, 0);
                             if (isNoiseType && !noiseExplicitlyRequested)
-                                return new RankedResult { Score = -1 };
+                                return new RankedResult(null, -1, 0);
 
                             if (!isQuick && entry.Embedding != null && queryEmbedding != null)
                             {
                                 vectorScore = _vectorService.CosineSimilarity(queryEmbedding, entry.Embedding);
                             }
                             if (!isQuick && score <= 0 && vectorScore < 0.45f)
-                                return new RankedResult { Score = -1 };
+                                return new RankedResult(null, -1, 0);
                         }
                         else
                         {
@@ -422,9 +422,8 @@ namespace GxMcp.Worker.Services
                         }
 
                         int finalScore = score + (int)(vectorScore * 1000);
-                        return new RankedResult { Entry = entry, Score = finalScore, VectorSimilarity = vectorScore };
+                        return new RankedResult(entry, finalScore, vectorScore);
                     })
-                    .Where(r => r != null) // Safety check
                     .Where(r => r.Score > 0)
                     .ToList();
 
@@ -817,6 +816,16 @@ namespace GxMcp.Worker.Services
             };
         }
 
+        private static bool ContainsIgnoreCase(List<string> list, string term)
+        {
+            if (list == null || list.Count == 0) return false;
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (string.Equals(list[i], term, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
         private int CalculateSemanticScore(SearchIndex.IndexEntry entry, HashSet<string> terms, string typeFilter)
         {
             int score = 0;
@@ -830,17 +839,17 @@ namespace GxMcp.Worker.Services
 
                 if (desc.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 300;
 
-                if (entry.Keywords != null && entry.Keywords.Contains(term, StringComparer.OrdinalIgnoreCase)) score += 800;
-                if (entry.Tags != null && entry.Tags.Contains(term, StringComparer.OrdinalIgnoreCase)) score += 800;
+                if (ContainsIgnoreCase(entry.Keywords, term)) score += 800;
+                if (ContainsIgnoreCase(entry.Tags, term)) score += 800;
 
-                if (entry.Tables != null && entry.Tables.Contains(term, StringComparer.OrdinalIgnoreCase))
+                if (entry.Tables != null && ContainsIgnoreCase(entry.Tables, term))
                 {
                     bool boostForAttributeMember = string.Equals(typeFilter, "Table", StringComparison.OrdinalIgnoreCase)
                                                    && string.Equals(entry.Type, "Table", StringComparison.OrdinalIgnoreCase)
                                                    && _indexCacheService.LooksLikeAttributeName(term);
                     score += boostForAttributeMember ? 5000 : 400;
                 }
-                if (entry.Calls != null && entry.Calls.Contains(term, StringComparer.OrdinalIgnoreCase)) score += 400;
+                if (ContainsIgnoreCase(entry.Calls, term)) score += 400;
             }
             return score;
         }
@@ -881,7 +890,19 @@ namespace GxMcp.Worker.Services
             return c;
         }
 
-        private class RankedResult { public SearchIndex.IndexEntry Entry { get; set; } public int Score { get; set; } public float VectorSimilarity { get; set; } }
+        private readonly struct RankedResult
+        {
+            public SearchIndex.IndexEntry Entry { get; }
+            public int Score { get; }
+            public float VectorSimilarity { get; }
+
+            public RankedResult(SearchIndex.IndexEntry entry, int score, float vectorSimilarity)
+            {
+                Entry = entry;
+                Score = score;
+                VectorSimilarity = vectorSimilarity;
+            }
+        }
         private class SearchCriteria {
             public string TypeFilter { get; set; } public string ParentFilter { get; set; } public string ParentPathFilter { get; set; }
             public string UsedByFilter { get; set; } public string DomainFilter { get; set; }
