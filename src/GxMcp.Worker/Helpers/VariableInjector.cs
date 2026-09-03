@@ -19,6 +19,11 @@ namespace GxMcp.Worker.Helpers
             "Pgmname", "Pgmdesc", "Today", "Time", "Mode", "Message", "EventName", "CtlName"
         };
 
+        private static bool IsWordChar(char c)
+        {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+        }
+
         public static void InjectVariables(KBObject obj, string code, Models.SearchIndex index = null)
         {
             var variablesPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj) ?? obj.Parts.Get<VariablesPart>();
@@ -31,28 +36,59 @@ namespace GxMcp.Worker.Helpers
             // the name-extraction view is masked.
             string scanCode = StripLiteralsAndComments(code);
 
-            var matches = System.Text.RegularExpressions.Regex.Matches(scanCode, @"&(\w+)");
-            var varNames = matches.Cast<System.Text.RegularExpressions.Match>()
-                .Select(m => m.Groups[1].Value)
-                .Distinct()
-                .ToList();
-
-            // Detect &var.Field usage — these vars are likely SDTs/BCs, not scalars
+            var varNamesSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var varNamesList = new List<string>();
             var sdtCandidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(scanCode, @"&(\w+)\."))
+
+            int n = scanCode.Length;
+            int i = 0;
+            while (i < n)
             {
-                sdtCandidates.Add(m.Groups[1].Value);
+                if (scanCode[i] == '&')
+                {
+                    int start = i + 1;
+                    int j = start;
+                    while (j < n && IsWordChar(scanCode[j]))
+                    {
+                        j++;
+                    }
+
+                    if (j > start)
+                    {
+                        string name = scanCode.Substring(start, j - start);
+                        if (varNamesSet.Add(name))
+                        {
+                            varNamesList.Add(name);
+                        }
+
+                        if (j < n && scanCode[j] == '.')
+                        {
+                            sdtCandidates.Add(name);
+                        }
+
+                        i = j;
+                        continue;
+                    }
+                }
+                i++;
+            }
+
+            var existingVars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var v in variablesPart.Variables)
+            {
+                if (!string.IsNullOrEmpty(v.Name)) existingVars.Add(v.Name);
             }
 
             bool injectedAny = false;
-            foreach (var varName in varNames)
+            foreach (var varName in varNamesList)
             {
-                if (!variablesPart.Variables.Any(v => v.Name.Equals(varName, StringComparison.OrdinalIgnoreCase)))
+                if (!existingVars.Contains(varName))
                 {
                     global::Artech.Genexus.Common.Variable v = CreateVariable(variablesPart, varName, index, sdtCandidates.Contains(varName));
                     if (v != null)
                     {
                         variablesPart.Variables.Add(v);
+                        existingVars.Add(varName);
                         injectedAny = true;
                         Logger.Info($"Injected variable: {varName} into {obj.Name}");
                     }
