@@ -28,12 +28,49 @@ namespace GxMcp.Worker.Tests
             catch { }
         }
 
+        public class FakeGenerator
+        {
+            public string Name { get; set; }
+            public string Description { get; set; }
+            public bool IsReorgGen { get; set; }
+            public FakeCategory Category { get; set; }
+            public override string ToString() => Name;
+        }
+
+        public class FakeCategory
+        {
+            public string Name { get; set; }
+        }
+
+        public class FakeGeneratorsPart
+        {
+            public List<FakeGenerator> Generators { get; set; } = new List<FakeGenerator>();
+        }
+
+        public class FakeParts
+        {
+            private readonly Dictionary<string, object> _parts = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+
+            public void Set(string name, object part) => _parts[name] = part;
+
+            public object Get(object typeOrName)
+            {
+                if (typeOrName == null) return null;
+                string key = typeOrName is Type t ? t.Name : typeOrName.ToString();
+                if (_parts.TryGetValue(key, out var val)) return val;
+                if (key.IndexOf("Generator", StringComparison.OrdinalIgnoreCase) >= 0 && _parts.TryGetValue("Generators", out var gVal))
+                    return gVal;
+                return null;
+            }
+        }
+
         public class FakeModel
         {
             public string Name { get; set; }
             public string Description { get; set; }
             public string TargetPath { get; set; }
             public string Type { get; set; } = "Prototype";
+            public object Parts { get; set; }
             public object GetDesignModel() => null;
         }
 
@@ -56,6 +93,7 @@ namespace GxMcp.Worker.Tests
             public string Location { get; set; }
             public FakeEnvironment Environment { get; set; }
             public FakeModel DesignModel { get; set; }
+            public object ActiveModel { get; set; }
             public FakeUser User { get; set; } = new FakeUser();
         }
 
@@ -232,6 +270,150 @@ namespace GxMcp.Worker.Tests
             var ex = Assert.Throws<InvalidOperationException>(() => svc.SetActiveEnvironment("NonExistentEnv"));
             Assert.Contains("NonExistentEnv", ex.Message);
             Assert.Contains("could not activate", ex.Message);
+        }
+
+        [Fact]
+        public void ListEnvironments_MultipleGenerators_SelectsPrimaryWebGenerator()
+        {
+            var svc = new KbService(new IndexCacheService());
+
+            var netModelDir = Path.Combine(_tempDir, "NetModel", "web");
+            Directory.CreateDirectory(netModelDir);
+
+            var genPart = new FakeGeneratorsPart();
+            genPart.Generators.Add(new FakeGenerator
+            {
+                Name = "Android (Android)",
+                Description = "Android",
+                Category = new FakeCategory { Name = "SmartDevices" },
+                IsReorgGen = false
+            });
+            genPart.Generators.Add(new FakeGenerator
+            {
+                Name = "Default (.NET Framework)",
+                Description = ".NET Framework",
+                Category = new FakeCategory { Name = "Web" },
+                IsReorgGen = false
+            });
+            genPart.Generators.Add(new FakeGenerator
+            {
+                Name = "Reorg",
+                Description = "Reorg Generator",
+                Category = new FakeCategory { Name = "Reorg" },
+                IsReorgGen = true
+            });
+
+            var parts = new FakeParts();
+            parts.Set("Generators", genPart);
+
+            var model = new FakeModel
+            {
+                Name = ".Net Environment",
+                Description = "Main Environment",
+                TargetPath = Path.Combine(_tempDir, "NetModel"),
+                Parts = parts
+            };
+
+            var fakeEnv = new FakeEnvironment
+            {
+                Name = ".Net Environment",
+                TargetModel = model,
+                Models = new List<object> { model }
+            };
+
+            var fakeKb = new FakeKb
+            {
+                Location = _tempDir,
+                Environment = fakeEnv,
+                DesignModel = new FakeModel { Name = "Design", Type = "Design" }
+            };
+
+            SetKb(svc, fakeKb);
+
+            string raw = svc.ListEnvironments();
+            var json = JObject.Parse(raw);
+            var envs = (JArray)json["environments"];
+            Assert.Single(envs);
+
+            var env = (JObject)envs[0];
+            Assert.Equal(".Net Environment", (string)env["name"]);
+            Assert.Equal("Default (.NET Framework)", (string)env["generator"]);
+        }
+
+        [Fact]
+        public void ListEnvironments_ExcludesDesignModelFromEnvironments()
+        {
+            var svc = new KbService(new IndexCacheService());
+
+            var netModelDir = Path.Combine(_tempDir, "NetModel", "web");
+            Directory.CreateDirectory(netModelDir);
+
+            var designModel = new FakeModel
+            {
+                Name = "Design",
+                Description = "Design Model",
+                Type = "Design",
+                TargetPath = Path.Combine(_tempDir, "Data001")
+            };
+
+            var envModel = new FakeModel
+            {
+                Name = ".Net Environment",
+                Description = "Production Environment",
+                Type = "Production",
+                TargetPath = Path.Combine(_tempDir, "NetModel")
+            };
+
+            var fakeEnv = new FakeEnvironment
+            {
+                Name = ".Net Environment",
+                TargetModel = envModel,
+                // Notice both DesignModel and TargetModel are in Models
+                Models = new List<object> { designModel, envModel }
+            };
+
+            var fakeKb = new FakeKb
+            {
+                Location = _tempDir,
+                Environment = fakeEnv,
+                DesignModel = designModel,
+                ActiveModel = designModel // ActiveModel was set to DesignModel
+            };
+
+            SetKb(svc, fakeKb);
+
+            string raw = svc.ListEnvironments();
+            var json = JObject.Parse(raw);
+            var envs = (JArray)json["environments"];
+
+            // Design model must be excluded from environments list
+            Assert.Single(envs);
+            var env = (JObject)envs[0];
+            Assert.Equal(".Net Environment", (string)env["name"]);
+            Assert.DoesNotContain(envs, e => string.Equals((string)e["name"], "Design", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private class ShadowBase
+        {
+            public Guid Type { get; set; } = Guid.NewGuid();
+        }
+
+        private class ShadowDerived : ShadowBase
+        {
+            public new string Type { get; set; } = "Design";
+        }
+
+        [Fact]
+        public void TryGetMember_WhenAmbiguousMatch_ReturnsDerivedPropertyValue()
+        {
+            var method = typeof(KbService).GetMethod("TryGetMember", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(method);
+
+            var obj = new ShadowDerived { Type = "Design" };
+            var result = method.Invoke(null, new object[] { obj, "Type" });
+
+            Assert.NotNull(result);
+            Assert.Equal("Design", result.ToString());
         }
     }
 }

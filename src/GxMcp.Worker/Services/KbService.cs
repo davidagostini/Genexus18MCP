@@ -10,6 +10,7 @@ using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Artech.Architecture.Common.Objects;
+using Artech.Genexus.Common;
 using Artech.Genexus.Common.Entities;
 using Artech.Genexus.Common.ModelParts;
 
@@ -1211,6 +1212,19 @@ namespace GxMcp.Worker.Services
                 };
                 foreach (var candidate in candidates)
                 {
+                    if (candidate == null) continue;
+                    try
+                    {
+                        if (_kb?.DesignModel != null && ReferenceEquals(candidate, _kb.DesignModel))
+                            continue;
+                    }
+                    catch { }
+
+                    string typeStr = TryGetMember(candidate, "Type")?.ToString();
+                    if (string.Equals(typeStr, "Design", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(typeStr, "Backup", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
                     var name = TryGetEnvironmentName(candidate);
                     if (!string.IsNullOrWhiteSpace(name)) return name;
                 }
@@ -1390,7 +1404,9 @@ namespace GxMcp.Worker.Services
                 }
 
                 // If active environment was not among enumerated models, add it as fallback entry
-                if (!string.IsNullOrWhiteSpace(activeName) && !seenNames.Contains(activeName))
+                if (!string.IsNullOrWhiteSpace(activeName) &&
+                    !string.Equals(activeName, "Design", StringComparison.OrdinalIgnoreCase) &&
+                    !seenNames.Contains(activeName))
                 {
                     var activeObj = new JObject
                     {
@@ -1420,7 +1436,36 @@ namespace GxMcp.Worker.Services
 
             void AddModel(object m)
             {
-                if (m != null && seen.Add(m))
+                if (m == null) return;
+
+                try
+                {
+                    if (m is KBModel kbM)
+                    {
+                        if (_kb?.DesignModel is KBModel dm && (ReferenceEquals(kbM, dm) || kbM.Id == dm.Id))
+                            return;
+                        if (kbM.Type == Artech.Udm.Framework.ModelType.Design ||
+                            kbM.Type == Artech.Udm.Framework.ModelType.Backup)
+                            return;
+                    }
+                    else if (_kb?.DesignModel != null)
+                    {
+                        if (ReferenceEquals(m, _kb.DesignModel))
+                            return;
+                        var mId = TryGetMember(m, "Id");
+                        var dId = TryGetMember(_kb.DesignModel, "Id");
+                        if (mId != null && dId != null && Equals(mId, dId))
+                            return;
+                    }
+                }
+                catch { }
+
+                string typeStr = TryGetMember(m, "Type")?.ToString() ?? string.Empty;
+                if (string.Equals(typeStr, "Design", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(typeStr, "Backup", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                if (seen.Add(m))
                     models.Add(m);
             }
 
@@ -1471,11 +1516,6 @@ namespace GxMcp.Worker.Services
                         {
                             foreach (var m in allEnum)
                             {
-                                if (m == null) continue;
-                                string typeStr = TryGetMember(m, "Type")?.ToString() ?? string.Empty;
-                                if (string.Equals(typeStr, "Design", StringComparison.OrdinalIgnoreCase) ||
-                                    string.Equals(typeStr, "Backup", StringComparison.OrdinalIgnoreCase))
-                                    continue;
                                 AddModel(m);
                             }
                         }
@@ -1494,31 +1534,101 @@ namespace GxMcp.Worker.Services
             {
                 if (model is KBModel kbModel)
                 {
-                    var part = kbModel.Parts.Get<GeneratorsPart>();
-                    if (part != null && part.Generators != null)
+                    try
                     {
-                        var gen = part.Generators.FirstOrDefault(g => !g.IsReorgGen) ?? part.Generators.FirstOrDefault();
-                        if (gen != null)
+                        var gxModel = kbModel.GetAs<GxModel>() ?? new GxModel(kbModel);
+                        var mainGen = gxModel?.Generator;
+                        if (mainGen != null)
                         {
-                            if (!string.IsNullOrWhiteSpace(gen.Description))
-                                return gen.Description;
-                            return gen.ToString();
+                            string text = mainGen.ToString();
+                            if (!string.IsNullOrWhiteSpace(text))
+                                return text;
+                            if (!string.IsNullOrWhiteSpace(mainGen.Description))
+                                return mainGen.Description;
+                        }
+                    }
+                    catch { }
+
+                    var part = kbModel.Parts.Get<GeneratorsPart>();
+                    if (part?.Generators != null)
+                    {
+                        var candidate = part.Generators.FirstOrDefault(g => !g.IsReorgGen && g.Category?.Name == "Web")
+                                     ?? part.Generators.FirstOrDefault(g => !g.IsReorgGen && (g.ToString() ?? string.Empty).IndexOf("Default", StringComparison.OrdinalIgnoreCase) >= 0)
+                                     ?? part.Generators.FirstOrDefault(g => !g.IsReorgGen)
+                                     ?? part.Generators.FirstOrDefault();
+
+                        if (candidate != null)
+                        {
+                            string text = candidate.ToString();
+                            return !string.IsNullOrWhiteSpace(text) ? text : candidate.Description;
                         }
                     }
                 }
                 else
                 {
+                    // Fallback for mock/fake objects in unit tests or dynamic wrappers
+                    var directGen = TryGetMember(model, "Generator");
+                    if (directGen != null)
+                    {
+                        if (directGen is string s && !string.IsNullOrWhiteSpace(s))
+                            return s;
+
+                        string text = directGen.ToString();
+                        if (!string.IsNullOrWhiteSpace(text) && text != directGen.GetType().FullName)
+                            return text;
+                        string desc = TryGetMember(directGen, "Description")?.ToString();
+                        if (!string.IsNullOrWhiteSpace(desc))
+                            return desc;
+                    }
+
                     dynamic dyn = model;
-                    dynamic parts = dyn.Parts;
+                    dynamic parts = null;
+                    try { parts = dyn.Parts; } catch { }
                     if (parts != null)
                     {
-                        dynamic part = parts.Get(typeof(GeneratorsPart)) ?? parts.Get("Generators");
+                        dynamic part = null;
+                        try { part = parts.Get(typeof(GeneratorsPart)) ?? parts.Get("Generators"); } catch { }
                         if (part?.Generators != null)
                         {
+                            object bestGen = null;
                             foreach (dynamic gen in part.Generators)
                             {
-                                if (gen != null && (gen.IsReorgGen == false || gen.IsReorgGen == null))
-                                    return (string)(gen.Description ?? gen.ToString());
+                                if (gen == null) continue;
+                                bool isReorg = false;
+                                try { isReorg = gen.IsReorgGen == true; } catch { }
+                                if (isReorg) continue;
+
+                                string catName = null;
+                                try { catName = (string)gen.Category?.Name?.ToString(); } catch { }
+                                string genStr = null;
+                                try { genStr = (string)gen.ToString(); } catch { }
+
+                                if (string.Equals(catName, "Web", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    bestGen = gen;
+                                    break;
+                                }
+                                if (genStr != null && genStr.IndexOf("Default", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    bestGen = gen;
+                                }
+                                else if (bestGen == null)
+                                {
+                                    bestGen = gen;
+                                }
+                            }
+
+                            if (bestGen != null)
+                            {
+                                dynamic bg = bestGen;
+                                string text = null;
+                                try { text = (string)bg.ToString(); } catch { }
+                                if (!string.IsNullOrWhiteSpace(text) && text != bestGen.GetType().FullName)
+                                    return text;
+                                string desc = null;
+                                try { desc = (string)bg.Description?.ToString(); } catch { }
+                                if (!string.IsNullOrWhiteSpace(desc))
+                                    return desc;
                             }
                         }
                     }
@@ -1717,30 +1827,11 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
-        private static object TryGetMember(object target, string name)
-        {
-            try
-            {
-                var property = target.GetType().GetProperty(
-                    name,
-                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
-                return property?.GetValue(target, null);
-            }
-            catch { return null; }
-        }
+        private static object TryGetMember(object target, string name) =>
+            ReflectionHelper.TryGetMember(target, name);
 
-        private static object TryGetPropertyBagValue(object target, string name)
-        {
-            try
-            {
-                var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                    .FirstOrDefault(m => m.Name == "GetPropertyValue"
-                        && m.GetParameters().Length == 1
-                        && m.GetParameters()[0].ParameterType == typeof(string));
-                return method?.Invoke(target, new object[] { name });
-            }
-            catch { return null; }
-        }
+        private static object TryGetPropertyBagValue(object target, string name) =>
+            ReflectionHelper.TryGetPropertyBagValue(target, name);
 
         public string GetActiveEnvironmentVersion()
         {

@@ -38,10 +38,34 @@ validation cycle:
 6. Delete scratch objects, close the KB, stop only the scratch gateway, and
    remove temporary files. Never kill a user's running npm/stdio gateway.
 
+### GeneXus SDK Model hierarchy, facades, and reflection
+
+- **Canonical GxModel Facade:** Any `KBModel` instance can be cast to the canonical
+  `Artech.Genexus.Common.GxModel` via `kbModel.GetAs<GxModel>()` or `new GxModel(kbModel)`.
+  This provides direct typed access to the environment's primary active generator
+  (`gxModel.Generator` as `GxGenerator`), active datastore (`gxModel.DataStore`), web path
+  (`gxModel.WebTargetFullPath`), and configured generators collection (`gxModel.Generators`).
+- **Environment Models vs. Design Model:** A Knowledge Base contains a single
+  conceptual root model (`kb.DesignModel`, `ModelType.Design`, physical folder `Data001`)
+  from which target environments branch. Target environments are executable models
+  (`ModelType.Prototype`, `ModelType.Production`). Operations enumerating or targeting
+  environments (`genexus_kb action=list_environments|set_environment`) must always
+  exclude `DesignModel` (identified by `ModelType.Design`, `ReferenceEquals`, or `Id == DesignModel.Id`).
+- **Ambiguous properties in reflection:** In GeneXus SDK inheritance trees, derived
+  classes frequently shadow base entity properties with `new` (for example, `KBModel.Type`
+  declares `ModelType Type`, while base `Entity.Type` declares `Guid Type`). Calling
+  `Type.GetProperty("Type", BindingFlags.Public | BindingFlags.Instance)` throws .NET's
+  `AmbiguousMatchException`. Always use `ReflectionHelper.TryGetMember` to traverse
+  `DeclaredOnly` properties from the most-derived type upward.
+
 ### Windows shell and process gotchas
 
 - In Bash-on-Windows, put the whole PowerShell command in single quotes so
   `$env:VAR` and `$_` reach PowerShell unchanged.
+- When running PowerShell commands with `pwsh -Command` on Windows, wrap multiline
+  scripts or blocks containing variables (`$var`, `$_`) in single-quoted here-strings
+  (`@' ... '@`) or write transient scripts to `scratchpad/` to avoid premature shell
+  variable interpolation and parser errors.
 - Native Windows Python cannot read `/tmp/...`; convert paths with `cygpath -w`
   or use the real Windows temporary path.
 - Git Bash passes `taskkill` switches as `//PID` and `//F`.

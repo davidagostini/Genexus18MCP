@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v2.54.0 - 2026-09-03
+
+### Fixed
+
+- **Primary environment generator selection and Design model exclusion in `genexus_kb(action="list_environments")` (Issue #127).** Fixed generator resolution in `KbService.ResolveModelGenerator` to query `kbModel.GetAs<GxModel>()?.Generator` (with web/default fallbacks) instead of enumerating `GeneratorsPart.Generators` without priority, ensuring the primary/web generator (e.g. `Default (.NET Framework)`) is returned instead of mobile or secondary generators (`Android (Android)`). Fixed `EnumerateEnvironmentModels` and `GetActiveEnvironment` to exclude the conceptual "Design" model and handled `AmbiguousMatchException` in `TryGetMember` when inspecting inheritance-shadowed properties like `KBModel.Type`.
+
+### Internal
+
+- **Centralized `ReflectionHelper` and inheritance-shadowed member resolution.** Extracted `ReflectionHelper` in `GxMcp.Worker.Helpers` to provide safe reflection lookup across GeneXus SDK COM/inheritance hierarchies with declared-only fallback for shadowed properties throwing `AmbiguousMatchException`.
+
 ## v2.53.0 - 2026-09-03
 
 ### Added
