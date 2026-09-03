@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v2.53.0 - 2026-09-03
+
+### Added
+
+- **Active LLM turn-steering via next_legal_actions, multi-part 360° read aliases, and self-healing error suggestions.** Added active `next_legal_actions` on `genexus_read` (suggesting `genexus_edit`, `genexus_analyze`, and `genexus_navigation` with pre-filled arguments) and `genexus_query` (suggesting 360° `genexus_read` and `genexus_inspect` on the top match), supported 1-roundtrip multi-part aliases (`part="all"|"full"|"summary"|"360"` routing to `ExtractFullObject`), and added actionable self-healing recovery hints for `PartNotFound` and `ObjectNotFound` errors in `McpRouter.AttachSuggestedNextStep`. Eliminates 2 to 3 exploratory roundtrips per task.
+
 ### Changed
 
 - **Zero-AST streaming validation in `IsCacheableSuccessEnvelope`.** Replaced full `JObject.Parse(json)` in the worker command dispatcher with a streaming `JsonTextReader` check that verifies top-level `error` and non-cacheable `status` without building in-memory AST syntax trees. Reduces memory allocations by up to 76% and speeds up payload validation by nearly 3X.
@@ -26,7 +32,6 @@
 - **Zero-allocation type match in `IndexEntryFilterBuilder.IsTypeMatchAliasAware`.** Replaced per-object `type.ToLower()` and `query.ToLower()` heap allocations with `string.Equals(..., OrdinalIgnoreCase)` and `IndexOf(..., OrdinalIgnoreCase)`, speeding up type match scans across 38,000 KB objects by 53.7% (6.137ms -> 2.839ms per scan) and eliminating 100% of related Gen0 GC collections (54 -> 0).
 - **In-place ranking sorting, direct indexed pagination, and string concatenation in `SearchService`.** Replaced LINQ `OrderByDescending().ThenBy().ToList()` and `.Skip().Take().ToList()` with in-place `List<RankedResult>.Sort` and direct indexed paging, eliminating intermediate list allocations (25.5% faster ranking, -81.8% Gen0 GC collections), and replaced 10-parameter `string.Format` cache key construction with `string.Concat`.
 - **Single-pass linear token scanner and O(1) variable deduplication in `VariableInjector`.** Replaced two uncompiled Regex passes (`&(\w+)` and `&(\w+)\.`) and LINQ `Cast/Select/Distinct` chains with a single-pass linear scanner, and replaced O(N*M) linear search `variablesPart.Variables.Any(...)` with an O(1) `HashSet<string>` lookup. Speeds up variable extraction during object edits by 10.5X (0.021ms -> 0.002ms per op) and reduces Gen0 GC collections by 84.2%.
-- **Active LLM turn-steering via next_legal_actions, multi-part 360° read aliases, and self-healing error suggestions.** Added active `next_legal_actions` on `genexus_read` (suggesting `genexus_edit`, `genexus_analyze`, and `genexus_navigation` with pre-filled arguments) and `genexus_query` (suggesting 360° `genexus_read` and `genexus_inspect` on the top match), supported 1-roundtrip multi-part aliases (`part="all"|"full"|"summary"|"360"` routing to `ExtractFullObject`), and added actionable self-healing recovery hints for `PartNotFound` and `ObjectNotFound` errors in `McpRouter.AttachSuggestedNextStep`. Eliminates 2 to 3 exploratory roundtrips per task.
 
 ## v2.52.0 - 2026-09-02
 
