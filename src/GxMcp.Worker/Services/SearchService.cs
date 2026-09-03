@@ -104,10 +104,11 @@ namespace GxMcp.Worker.Services
                 // v2.6.8: temporal/sort/cursor controls participate in the cache key
                 // so callers paging by cursor or filtering by date don't collide with
                 // the cached relevance-sorted page.
-                string cacheKey = string.Format("{0}|{1}|{2}|{3}|{4}|{5}|s={6}|sn={7}|mb={8}|cu={9}",
-                    query ?? "", typeFilter ?? "", domainFilter ?? "", limit,
-                    isQuick ? "quick" : "full", exactMatch ? "exact" : "fuzzy",
-                    sort ?? "", since.Ticks, modifiedBefore.Ticks, cursor ?? "");
+                string cacheKey = string.Concat(
+                    query ?? "", "|", typeFilter ?? "", "|", domainFilter ?? "", "|",
+                    limit.ToString(), "|", isQuick ? "quick" : "full", "|", exactMatch ? "exact" : "fuzzy",
+                    "|s=", sort ?? "", "|sn=", since.Ticks.ToString(), "|mb=", modifiedBefore.Ticks.ToString(),
+                    "|cu=", cursor ?? "");
                 if (_queryCache.TryGetValue(cacheKey, out var cached)) return cached;
 
                 var criteria = ParseQuery(query);
@@ -434,18 +435,11 @@ namespace GxMcp.Worker.Services
                     string.Equals(sort, "lastUpdate", StringComparison.OrdinalIgnoreCase);
                 if (sortByLastUpdate)
                 {
-                    rankedAll = rankedAll
-                        .OrderByDescending(r => r.Entry.LastUpdate)
-                        .ThenBy(r => r.Entry.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                        .ThenBy(r => r.Entry.Guid ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                        .ToList();
+                    rankedAll.Sort(CompareRankedResultsByLastUpdate);
                 }
                 else
                 {
-                    rankedAll = rankedAll
-                        .OrderByDescending(r => r.Score)
-                        .ThenBy(r => r.Entry.Name)
-                        .ToList();
+                    rankedAll.Sort(CompareRankedResults);
                 }
 
                 int total = rankedAll.Count;
@@ -476,8 +470,9 @@ namespace GxMcp.Worker.Services
                 }
 
                 var effectiveLimit = limit <= 0 ? total : limit;
-                var scoredResults = rankedAll.Skip(startIndex).Take(effectiveLimit).ToList();
-                bool hasMore = (startIndex + scoredResults.Count) < total;
+                int endIndex = Math.Min(total, (int)Math.Min((long)total, (long)startIndex + effectiveLimit));
+                int returnedCount = Math.Max(0, endIndex - startIndex);
+                bool hasMore = (startIndex + returnedCount) < total;
 
                 JObject responseObj;
                 // v2.6.8: stringify lastUpdate once per row; null when unknown so the
@@ -488,9 +483,9 @@ namespace GxMcp.Worker.Services
                 var resultsArr = new JArray();
                 if (isQuick)
                 {
-                    foreach (var r in scoredResults)
+                    for (int i = startIndex; i < endIndex; i++)
                     {
-                        var e = r.Entry;
+                        var e = rankedAll[i].Entry;
                         resultsArr.Add(new JObject
                         {
                             ["guid"] = e.Guid,
@@ -506,8 +501,9 @@ namespace GxMcp.Worker.Services
                 }
                 else
                 {
-                    foreach (var r in scoredResults)
+                    for (int i = startIndex; i < endIndex; i++)
                     {
+                        var r = rankedAll[i];
                         var e = r.Entry;
                         resultsArr.Add(new JObject
                         {
@@ -533,18 +529,21 @@ namespace GxMcp.Worker.Services
 
                 responseObj = new JObject
                 {
-                    ["count"] = scoredResults.Count,
+                    ["count"] = returnedCount,
                     ["total"] = total,
                     ["hasMore"] = hasMore,
                     ["results"] = resultsArr
                 };
 
                 // v2.6.8: nextCursor for stable temporal paging. Mirrors list_objects.
-                if (sortByLastUpdate && hasMore && scoredResults.Count > 0)
+                if (sortByLastUpdate && hasMore && returnedCount > 0 && endIndex > 0)
                 {
-                    var last = scoredResults[scoredResults.Count - 1].Entry;
-                    var token = ListService.EncodeCursor(last.LastUpdate, last.Name, last.Guid);
-                    if (!string.IsNullOrEmpty(token)) responseObj["nextCursor"] = token;
+                    var last = rankedAll[endIndex - 1].Entry;
+                    if (last != null)
+                    {
+                        var token = ListService.EncodeCursor(last.LastUpdate, last.Name, last.Guid);
+                        if (!string.IsNullOrEmpty(token)) responseObj["nextCursor"] = token;
+                    }
                 }
 
                 // v2.8.0: canonical pagination block
@@ -552,10 +551,10 @@ namespace GxMcp.Worker.Services
                 {
                     ["offset"]     = startIndex,
                     ["limit"]      = effectiveLimit,
-                    ["returned"]   = scoredResults.Count,
+                    ["returned"]   = returnedCount,
                     ["total"]      = total,
                     ["hasMore"]    = hasMore,
-                    ["nextOffset"] = hasMore ? (JToken)(int)(startIndex + scoredResults.Count) : JValue.CreateNull()
+                    ["nextOffset"] = hasMore ? (JToken)(int)(startIndex + returnedCount) : JValue.CreateNull()
                 };
 
                 // Only surface a "suggested_next" when the top result is a confident
@@ -565,22 +564,28 @@ namespace GxMcp.Worker.Services
                 // match_quality so the caller can decide.
                 var meta = (responseObj["_meta"] as JObject) ?? new JObject();
                 string matchQuality = "none";
-                if (scoredResults.Count > 0)
+                if (returnedCount > 0 && startIndex < total)
                 {
-                    int topScore = scoredResults[0].Score;
-                    string topName = scoredResults[0].Entry?.Name ?? "";
+                    var topResult = rankedAll[startIndex];
+                    int topScore = topResult.Score;
+                    string topName = topResult.Entry?.Name ?? "";
                     bool topIsExact = criteria.Terms.Any(t => string.Equals(topName, t, StringComparison.OrdinalIgnoreCase));
                     bool topIsPrefix = !topIsExact && criteria.Terms.Any(t => topName.StartsWith(t, StringComparison.OrdinalIgnoreCase));
                     if (topIsExact) matchQuality = "exact";
                     else if (topIsPrefix) matchQuality = "prefix";
                     else if (topScore >= 500) matchQuality = "substring";
                     else matchQuality = "vector";
+
+                    meta["match_quality"] = matchQuality;
+                    if (matchQuality == "exact" || matchQuality == "prefix")
+                    {
+                        var suggestion = BuildSuggestedNext(topResult.Entry);
+                        if (suggestion != null) meta["suggested_next"] = suggestion;
+                    }
                 }
-                meta["match_quality"] = matchQuality;
-                if (matchQuality == "exact" || matchQuality == "prefix")
+                else
                 {
-                    var suggestion = BuildSuggestedNext(scoredResults);
-                    if (suggestion != null) meta["suggested_next"] = suggestion;
+                    meta["match_quality"] = matchQuality;
                 }
                 responseObj["_meta"] = meta;
 
@@ -606,12 +611,18 @@ namespace GxMcp.Worker.Services
                 string json = responseObj.ToString(Newtonsoft.Json.Formatting.None);
                 if (!_indexCacheService.IsScanning) _queryCache.TryAdd(cacheKey, json);
 
-                if (!isQuick && criteria.Terms.Count > 0 && scoredResults.Count > 0)
+                if (!isQuick && criteria.Terms.Count > 0 && returnedCount > 0)
                 {
-                    var topGuids = scoredResults.Take(5)
-                        .Where(r => !string.IsNullOrEmpty(r.Entry.Guid))
-                        .Select(r => new Guid(r.Entry.Guid))
-                        .ToList();
+                    var topGuids = new List<Guid>();
+                    int warmLimit = Math.Min(endIndex, startIndex + 5);
+                    for (int i = startIndex; i < warmLimit; i++)
+                    {
+                        var g = rankedAll[i].Entry?.Guid;
+                        if (!string.IsNullOrEmpty(g) && Guid.TryParse(g, out var parsedGuid))
+                        {
+                            topGuids.Add(parsedGuid);
+                        }
+                    }
 
                     Program.EnqueueBackground(() => {
                         try {
@@ -798,12 +809,16 @@ namespace GxMcp.Worker.Services
             responseObj["_meta"] = meta;
         }
 
+        private static JObject BuildSuggestedNext(SearchIndex.IndexEntry top)
+        {
+            if (top == null) return null;
+            return BuildSuggestedReadFor(top.Name, top.Type);
+        }
+
         private static JObject BuildSuggestedNext(List<RankedResult> results)
         {
             if (results == null || results.Count == 0) return null;
-            var top = results[0].Entry;
-            if (top == null) return null;
-            return BuildSuggestedReadFor(top.Name, top.Type);
+            return BuildSuggestedNext(results[0].Entry);
         }
 
         public static JObject BuildSuggestedReadFor(string name, string type)
@@ -890,7 +905,7 @@ namespace GxMcp.Worker.Services
             return c;
         }
 
-        private readonly struct RankedResult
+        internal readonly struct RankedResult
         {
             public SearchIndex.IndexEntry Entry { get; }
             public int Score { get; }
@@ -902,6 +917,31 @@ namespace GxMcp.Worker.Services
                 Score = score;
                 VectorSimilarity = vectorSimilarity;
             }
+        }
+
+        internal static int CompareRankedResults(RankedResult a, RankedResult b)
+        {
+            int scoreComp = b.Score.CompareTo(a.Score);
+            if (scoreComp != 0) return scoreComp;
+
+            string nameA = a.Entry != null ? a.Entry.Name : string.Empty;
+            string nameB = b.Entry != null ? b.Entry.Name : string.Empty;
+            return string.Compare(nameA ?? string.Empty, nameB ?? string.Empty, StringComparison.Ordinal);
+        }
+
+        internal static int CompareRankedResultsByLastUpdate(RankedResult a, RankedResult b)
+        {
+            if (a.Entry == null && b.Entry == null) return 0;
+            if (a.Entry == null) return 1;
+            if (b.Entry == null) return -1;
+
+            int dateComp = b.Entry.LastUpdate.CompareTo(a.Entry.LastUpdate);
+            if (dateComp != 0) return dateComp;
+
+            int nameComp = string.Compare(a.Entry.Name ?? string.Empty, b.Entry.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            if (nameComp != 0) return nameComp;
+
+            return string.Compare(a.Entry.Guid ?? string.Empty, b.Entry.Guid ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         }
         private class SearchCriteria {
             public string TypeFilter { get; set; } public string ParentFilter { get; set; } public string ParentPathFilter { get; set; }
