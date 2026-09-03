@@ -18,6 +18,7 @@
 - **Direct streaming response writing in `Program.TryWriteStdout(JObject)`.** Added streaming JSON response serialization directly to `Console.Out` via `JsonTextWriter.WriteTo`, bypassing intermediate large JSON string allocations in stdio MCP dispatching.
 - **Loop unrolling and scalar optimization in `VectorService.ComputeEmbedding`.** Replaced 128-iteration modulo loop with 32-iteration direct dimension updates and scalar multiplication normalization, speeding up embedding generation by 26.8% (4.97µs -> 3.64µs).
 - **Pre-compiled regex and allocation-free token extraction in `SourceSearchService`.** Compiled `LiteralTokenRegex` once statically, replaced LINQ `.Distinct().ToList()` with `HashSet<string>`, hoisted separator arrays in `ParseObjectNames`, and replaced enumerator loops in `MatchesAnyLiteral` with indexed iterations, eliminating GC allocations during literal token pre-filtering.
+- **Fast-path colon guard and regex-free tokenization in `QueryGrammar.Parse`.** Added early `IndexOf(':')` guard to bypass structured filter regex scans for plain queries, replaced dictionary regex lookups with a struct array, eliminated string allocations in property switching, and bypassed regex tokenization for quote-free queries. Speeds up query parsing by 57.8% (14.44µs -> 6.10µs per pair) and cuts Gen0 GC collections by 50%.
 
 ## v2.52.0 - 2026-09-02
 

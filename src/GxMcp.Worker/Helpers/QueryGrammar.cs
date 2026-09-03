@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -72,20 +72,29 @@ namespace GxMcp.Worker.Helpers
             ["ep"] = "Enterprise"
         };
 
-        private static readonly Dictionary<string, Regex> FilterRegexes = new Dictionary<string, Regex>(StringComparer.OrdinalIgnoreCase)
+        private struct FilterPattern
         {
-            ["description"] = new Regex(@"(?:^|\s)description:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            ["metadata"] = new Regex(@"(?:^|\s)metadata:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            ["usedby"] = new Regex(@"(?:^|\s)usedby:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            ["parentPath"] = new Regex(@"(?:^|\s)parentPath:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            ["parent"] = new Regex(@"(?:^|\s)parent:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            ["type"] = new Regex(@"(?:^|\s)type:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-            ["name"] = new Regex(@"(?:^|\s)name:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled)
+            public string Key;
+            public Regex Regex;
+            public FilterPattern(string key, Regex regex) { Key = key; Regex = regex; }
+        }
+
+        private static readonly FilterPattern[] FilterPatterns = new[]
+        {
+            new FilterPattern("description", new Regex(@"(?:^|\s)description:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+            new FilterPattern("metadata", new Regex(@"(?:^|\s)metadata:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+            new FilterPattern("usedby", new Regex(@"(?:^|\s)usedby:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+            new FilterPattern("parentPath", new Regex(@"(?:^|\s)parentPath:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+            new FilterPattern("parent", new Regex(@"(?:^|\s)parent:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+            new FilterPattern("type", new Regex(@"(?:^|\s)type:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled)),
+            new FilterPattern("name", new Regex(@"(?:^|\s)name:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", RegexOptions.IgnoreCase | RegexOptions.Compiled))
         };
 
         private static readonly Regex QuotedOrPlainToken = new Regex(
             @"""(?<quoted>[^""]+)""|(?<plain>\S+)",
             RegexOptions.Compiled);
+
+        private static readonly char[] WhitespaceSeparators = { ' ', '\t', '\r', '\n' };
 
         public static string NormalizeType(string rawType)
         {
@@ -123,52 +132,68 @@ namespace GxMcp.Worker.Helpers
 
             string remaining = query;
 
-            foreach (var kvp in FilterRegexes)
+            if (remaining.IndexOf(':') >= 0)
             {
-                var match = kvp.Value.Match(remaining);
-                if (match.Success)
+                for (int i = 0; i < FilterPatterns.Length; i++)
                 {
-                    string val = match.Groups["quoted"].Success
-                        ? match.Groups["quoted"].Value
-                        : match.Groups["plain"].Value;
-
-                    switch (kvp.Key.ToLowerInvariant())
+                    var fp = FilterPatterns[i];
+                    var match = fp.Regex.Match(remaining);
+                    if (match.Success)
                     {
-                        case "type":
-                            result.TypeFilter = NormalizeType(val);
-                            break;
-                        case "description":
-                            result.DescriptionFilter = val;
-                            break;
-                        case "metadata":
-                            result.MetadataFilter = val;
-                            break;
-                        case "usedby":
-                            result.UsedByFilter = val;
-                            break;
-                        case "parentpath":
-                            result.ParentPathFilter = val;
-                            break;
-                        case "parent":
-                            result.ParentFilter = val;
-                            break;
-                        case "name":
-                            result.NameFilter = val;
-                            break;
-                    }
+                        string val = match.Groups["quoted"].Success
+                            ? match.Groups["quoted"].Value
+                            : match.Groups["plain"].Value;
 
-                    remaining = remaining.Remove(match.Index, match.Length);
+                        switch (fp.Key)
+                        {
+                            case "type":
+                                result.TypeFilter = NormalizeType(val);
+                                break;
+                            case "description":
+                                result.DescriptionFilter = val;
+                                break;
+                            case "metadata":
+                                result.MetadataFilter = val;
+                                break;
+                            case "usedby":
+                                result.UsedByFilter = val;
+                                break;
+                            case "parentPath":
+                                result.ParentPathFilter = val;
+                                break;
+                            case "parent":
+                                result.ParentFilter = val;
+                                break;
+                            case "name":
+                                result.NameFilter = val;
+                                break;
+                        }
+
+                        remaining = remaining.Remove(match.Index, match.Length);
+                    }
                 }
             }
 
-            var matches = QuotedOrPlainToken.Matches(remaining);
-            foreach (Match m in matches)
+            if (remaining.IndexOf('"') < 0)
             {
-                if (!m.Success) continue;
-                string term = m.Groups["quoted"].Success ? m.Groups["quoted"].Value : m.Groups["plain"].Value;
-                if (!string.IsNullOrWhiteSpace(term))
+                var parts = remaining.Split(WhitespaceSeparators, StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 0; i < parts.Length; i++)
                 {
-                    result.FreeTerms.Add(term.Trim());
+                    result.FreeTerms.Add(parts[i]);
+                }
+            }
+            else
+            {
+                var matches = QuotedOrPlainToken.Matches(remaining);
+                for (int i = 0; i < matches.Count; i++)
+                {
+                    var m = matches[i];
+                    if (!m.Success) continue;
+                    string term = m.Groups["quoted"].Success ? m.Groups["quoted"].Value : m.Groups["plain"].Value;
+                    if (!string.IsNullOrWhiteSpace(term))
+                    {
+                        result.FreeTerms.Add(term.Trim());
+                    }
                 }
             }
 
