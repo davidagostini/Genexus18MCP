@@ -494,10 +494,11 @@ namespace GxMcp.Worker.Services
             // skip the cache because they're meta operations.
             string requestId = request["params"]?["clientRequestId"]?.ToString()
                 ?? (request["params"]?["params"] as JObject)?["clientRequestId"]?.ToString();
-            string method0 = request["method"]?.ToString()?.ToLowerInvariant();
+            string method0 = request["method"]?.ToString();
 
-            bool cacheable = !string.IsNullOrEmpty(requestId)
-                && method0 != "ping" && method0 != "control";
+            bool isMeta = string.Equals(method0, "ping", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(method0, "control", StringComparison.OrdinalIgnoreCase);
+            bool cacheable = !string.IsNullOrEmpty(requestId) && !isMeta;
             if (cacheable)
             {
                 // v2.8.0 (#37) — TryServe now waits for any in-flight call

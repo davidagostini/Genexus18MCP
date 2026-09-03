@@ -77,9 +77,11 @@ namespace GxMcp.Worker.Services
             unchecked
             {
                 uint hash = 2166136261;
-                foreach (char c in storageKey)
+                for (int i = 0; i < storageKey.Length; i++)
                 {
-                    hash ^= char.ToUpperInvariant(c);
+                    char c = storageKey[i];
+                    char upper = (c >= 'a' && c <= 'z') ? (char)(c - 32) : char.ToUpperInvariant(c);
+                    hash ^= upper;
                     hash *= 16777619;
                 }
                 return (int)(hash % ShardCount);
