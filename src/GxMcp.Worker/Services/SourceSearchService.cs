@@ -748,16 +748,25 @@ namespace GxMcp.Worker.Services
             return false;
         }
 
+        private static readonly Regex LiteralTokenRegex = new Regex(@"[A-Za-z0-9_]{3,}", RegexOptions.Compiled);
+        private static readonly char[] ObjectNameSeparators = { ',', ';', '\n', '\r' };
+
         // Alphanumeric runs >=3 chars; final regex.IsMatch still gates output so a
         // permissive pre-filter is safe.
-        private static System.Collections.Generic.List<string> ExtractLiteralTokens(string pattern, string callee)
+        internal static System.Collections.Generic.List<string> ExtractLiteralTokens(string pattern, string callee)
         {
-            var toks = new System.Collections.Generic.List<string>();
+            var toks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (!string.IsNullOrEmpty(callee))
-                foreach (Match m in Regex.Matches(callee, @"[A-Za-z0-9_]{3,}")) toks.Add(m.Value);
+            {
+                var matches = LiteralTokenRegex.Matches(callee);
+                for (int i = 0; i < matches.Count; i++) toks.Add(matches[i].Value);
+            }
             if (!string.IsNullOrEmpty(pattern))
-                foreach (Match m in Regex.Matches(pattern, @"[A-Za-z0-9_]{3,}")) toks.Add(m.Value);
-            return toks.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            {
+                var matches = LiteralTokenRegex.Matches(pattern);
+                for (int i = 0; i < matches.Count; i++) toks.Add(matches[i].Value);
+            }
+            return toks.ToList();
         }
 
         // Issue #27 item 4: parse the objectName scope (comma/semicolon/newline-separated)
@@ -765,11 +774,14 @@ namespace GxMcp.Worker.Services
         private static HashSet<string> ParseObjectNames(string objectName)
         {
             if (string.IsNullOrWhiteSpace(objectName)) return null;
-            var names = objectName
-                .Split(new[] { ',', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(s => s.Trim())
-                .Where(s => s.Length > 0);
-            var set = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+            var parts = objectName.Split(ObjectNameSeparators, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return null;
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < parts.Length; i++)
+            {
+                var s = parts[i].Trim();
+                if (s.Length > 0) set.Add(s);
+            }
             return set.Count > 0 ? set : null;
         }
 
@@ -789,7 +801,7 @@ namespace GxMcp.Worker.Services
             return false;
         }
 
-        private static bool MatchesAnyLiteral(Models.SearchIndex.IndexEntry e, System.Collections.Generic.List<string> literals)
+        internal static bool MatchesAnyLiteral(Models.SearchIndex.IndexEntry e, System.Collections.Generic.List<string> literals)
         {
             if (literals == null || literals.Count == 0) return true;
             // issue #25 #3: the literal pre-filter is only SOUND when the index
@@ -804,14 +816,15 @@ namespace GxMcp.Worker.Services
             if (!hasIndexedText) return true;
             string snip = e.SourceSnippet ?? "";
             string nm = e.Name ?? "";
-            foreach (var t in literals)
+            for (int i = 0; i < literals.Count; i++)
             {
+                var t = literals[i];
                 if (snip.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0) return true;
                 if (nm.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0) return true;
                 if (e.Keywords != null)
                 {
-                    for (int i = 0; i < e.Keywords.Count; i++)
-                        if (e.Keywords[i] != null && e.Keywords[i].IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                    for (int k = 0; k < e.Keywords.Count; k++)
+                        if (e.Keywords[k] != null && e.Keywords[k].IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0) return true;
                 }
             }
             return false;
