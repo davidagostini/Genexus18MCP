@@ -550,19 +550,57 @@ namespace GxMcp.Worker.Services
         // Cancelled, Running}. JSON inválido ou vazio retorna false.
         internal static bool IsCacheableSuccessEnvelope(string json)
         {
-            if (string.IsNullOrEmpty(json)) return false;
-            JObject envelope;
+            if (string.IsNullOrWhiteSpace(json)) return false;
+
             try
             {
-                envelope = JObject.Parse(json);
+                using (var sr = new System.IO.StringReader(json))
+                using (var reader = new Newtonsoft.Json.JsonTextReader(sr))
+                {
+                    if (!reader.Read() || reader.TokenType != Newtonsoft.Json.JsonToken.StartObject)
+                        return false;
+
+                    int depth = 1;
+                    while (reader.Read())
+                    {
+                        if (reader.TokenType == Newtonsoft.Json.JsonToken.StartObject || reader.TokenType == Newtonsoft.Json.JsonToken.StartArray)
+                        {
+                            depth++;
+                        }
+                        else if (reader.TokenType == Newtonsoft.Json.JsonToken.EndObject || reader.TokenType == Newtonsoft.Json.JsonToken.EndArray)
+                        {
+                            depth--;
+                            if (depth == 0) break;
+                        }
+                        else if (depth == 1 && reader.TokenType == Newtonsoft.Json.JsonToken.PropertyName)
+                        {
+                            string propName = reader.Value as string;
+                            if (string.Equals(propName, "error", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!reader.Read()) return false;
+                                if (reader.TokenType != Newtonsoft.Json.JsonToken.Null)
+                                    return false;
+                            }
+                            else if (string.Equals(propName, "status", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!reader.Read()) return false;
+                                string status = reader.Value as string;
+                                if (status != null && NonCacheableStatuses.Contains(status))
+                                    return false;
+                            }
+                            else
+                            {
+                                reader.Skip();
+                            }
+                        }
+                    }
+                    return depth == 0;
+                }
             }
             catch
             {
                 return false;
             }
-            if (envelope["error"] != null) return false;
-            string status = envelope["status"]?.ToString();
-            return status == null || !NonCacheableStatuses.Contains(status);
         }
 
         private string DispatchInternal(string line)
@@ -602,11 +640,15 @@ namespace GxMcp.Worker.Services
                 // are preserved as top-level fallback.
                 if (args != null && args["params"] is JObject innerArgs)
                 {
-                    var merged = (JObject)innerArgs.DeepClone();
+                    var merged = new JObject();
+                    foreach (var prop in innerArgs.Properties())
+                    {
+                        merged[prop.Name] = prop.Value;
+                    }
                     foreach (var prop in args.Properties())
                     {
                         if (prop.Name == "params") continue;
-                        if (merged[prop.Name] == null) merged[prop.Name] = prop.Value?.DeepClone();
+                        if (merged[prop.Name] == null) merged[prop.Name] = prop.Value;
                     }
                     args = merged;
                 }

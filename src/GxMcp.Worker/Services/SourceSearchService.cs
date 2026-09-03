@@ -69,6 +69,7 @@ namespace GxMcp.Worker.Services
         // 15-min wedged kill. Bound each match call; the caller maps the resulting
         // RegexMatchTimeoutException to a structured PatternTimeout envelope.
         internal static readonly TimeSpan RegexMatchTimeout = TimeSpan.FromSeconds(2);
+        private static readonly List<string> DefaultScope = new List<string> { "source" };
 
         private static Regex GetCachedRegex(string pattern, RegexOptions opts)
         {
@@ -234,7 +235,7 @@ namespace GxMcp.Worker.Services
                 // which never contains the WebForm XML. A WebForm scope scan would therefore
                 // be pre-filtered away before its part is ever read, so skip the pre-filter
                 // when the caller asked for the webForm/layout part.
-                bool scopeTouchesWebForm = (c.Scope ?? new List<string> { "source" })
+                bool scopeTouchesWebForm = (c.Scope ?? DefaultScope)
                     .Any(s => string.Equals(s, "webForm", StringComparison.OrdinalIgnoreCase)
                            || string.Equals(s, "layout", StringComparison.OrdinalIgnoreCase));
 
@@ -352,7 +353,7 @@ namespace GxMcp.Worker.Services
                     // service seam (unit tests) falls straight through to the local reader.
                     KBObject obj = null;
                     bool resolutionFailed = false;
-                    foreach (var part in c.Scope ?? new List<string> { "source" })
+                    foreach (var part in c.Scope ?? DefaultScope)
                     {
                         if (produced >= c.MaxResults || resolutionFailed) break;
                         string src = null;

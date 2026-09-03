@@ -155,5 +155,25 @@ namespace GxMcp.Gateway
 
             return filtered;
         }
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JArray> _profileCache =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, JArray>(StringComparer.OrdinalIgnoreCase);
+
+        public static void InvalidateCache()
+        {
+            _profileCache.Clear();
+        }
+
+        public static JArray GetOrCreateFiltered(JArray tools, string? profile)
+        {
+            if (tools == null || tools.Count == 0) return new JArray();
+            string normalizedProfile = (profile ?? "").Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(normalizedProfile) || normalizedProfile == "all")
+            {
+                return tools;
+            }
+
+            return _profileCache.GetOrAdd(normalizedProfile, p => Filter(tools, p));
+        }
     }
 }

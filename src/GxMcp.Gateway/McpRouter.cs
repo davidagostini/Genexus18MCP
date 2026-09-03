@@ -394,7 +394,7 @@ namespace GxMcp.Gateway
                         return new JObject
                         {
                             ["resultType"] = "complete",
-                            ["tools"] = ToolProfileFilter.Filter(_toolDefinitions, activeProfile),
+                            ["tools"] = ToolProfileFilter.GetOrCreateFiltered(_toolDefinitions, activeProfile),
                             ["profile"] = activeProfile,
                             ["ttlMs"] = 3600000,
                             ["cacheScope"] = "public"

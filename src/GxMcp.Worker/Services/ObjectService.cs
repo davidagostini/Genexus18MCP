@@ -26,10 +26,21 @@ namespace GxMcp.Worker.Services
 
         private static readonly ConcurrentDictionary<string, ReadCacheEntry> _readCache =
             new ConcurrentDictionary<string, ReadCacheEntry>(StringComparer.OrdinalIgnoreCase);
-        // PERFORMANCE (W-M1): 20s was too tight for read-after-read patterns from LLM agents
-        // that consult the same object multiple times in a single tool sequence. Invalidation
-        // is event-driven elsewhere, so doubling the TTL is safe.
-        private static readonly TimeSpan ReadCacheTtl = TimeSpan.FromSeconds(60);
+        // PERFORMANCE: ReadCacheTtl extended to 300s (5 minutes) default, with GXMCP_READ_CACHE_TTL_SEC
+        // override. Since writes already perform deterministic cache invalidation (MarkReadCacheDirty /
+        // InvalidateCache), retaining read cache across multi-turn agent reasoning avoids redundant
+        // COM round-trips to disk.
+        private static readonly TimeSpan ReadCacheTtl = ResolveReadCacheTtl();
+
+        private static TimeSpan ResolveReadCacheTtl()
+        {
+            string env = Environment.GetEnvironmentVariable("GXMCP_READ_CACHE_TTL_SEC");
+            if (!string.IsNullOrWhiteSpace(env) && int.TryParse(env.Trim(), out int sec) && sec > 0)
+            {
+                return TimeSpan.FromSeconds(sec);
+            }
+            return TimeSpan.FromMinutes(5);
+        }
 
         // Records successful deletions so a follow-up DeleteObject call that arrives
         // after a gateway timeout (worker finished after the pipe died) is reported as
