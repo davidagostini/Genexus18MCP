@@ -65,6 +65,15 @@ namespace GxMcp.Gateway
         private static readonly List<IMcpModuleRouter> _routers;
         private static JArray _toolDefinitions = new JArray();
         private static JObject? _cachedToolsListResponse;
+        private static readonly object _cachedResourcesListResponse = BuildResourcesListResponse();
+        private static readonly object _cachedResourceTemplatesListResponse = BuildResourceTemplatesListResponse();
+        private static readonly object _cachedPromptsListResponse = new
+        {
+            resultType = "complete",
+            prompts = BuildPromptCatalog(),
+            ttlMs = 3600000,
+            cacheScope = "public"
+        };
         // PERFORMANCE (G-B3): hot-reload tool_definitions.json without restarting the gateway.
         // The watcher is kept in a static field so it is rooted for the lifetime of the process.
         // Debounced with a System.Threading.Timer because editors (e.g. VS Code) often fire
@@ -401,129 +410,11 @@ namespace GxMcp.Gateway
                         };
                     }
                 case "resources/list":
-                    {
-                        // v2.8.0 — also surface curated, source-verified GeneXus
-                        // development skills (genexus://kb/skills/<key>) so the
-                        // LLM can read authoritative reference material before
-                        // guessing about properties / methods. Each skill body
-                        // is fact-checked against docs.genexus.com.
-                        var baseResources = new List<object>
-                        {
-                            new { uri = "genexus://kb/index-status", name = "KB Index Status", description = "Current indexing status for the active Knowledge Base." },
-                            new { uri = "genexus://kb/health", name = "Gateway Health Report", description = "Health report for the GeneXus MCP worker and gateway." },
-                            new { uri = "genexus://kb/agent-playbook", name = "GeneXus Agent Playbook", description = "Recommended MCP workflow to operate this GeneXus server in an agent-native, Git-friendly way." },
-                            new { uri = "genexus://kb/llm-playbook", name = "LLM CLI+MCP Playbook", description = "Protocol-first guide for choosing CLI vs MCP, token-efficient calls, and timeout/lifecycle handling." },
-                            new { uri = "genexus://objects", name = "GeneXus Objects Index", description = "Browsable index of all objects in the KB." },
-                            new { uri = "genexus://attributes", name = "GeneXus Attributes", description = "Browsable list of all attributes." }
-                        };
-                        foreach (var skill in SkillCatalog.All)
-                        {
-                            baseResources.Add(new
-                            {
-                                uri = "genexus://kb/skills/" + skill.Key,
-                                name = skill.Title,
-                                description = skill.Description,
-                                mimeType = "text/markdown"
-                            });
-                        }
-                        return new
-                        {
-                            resultType = "complete",
-                            resources = baseResources,
-                            ttlMs = 3600000,
-                            cacheScope = "public"
-                        };
-                    }
+                    return _cachedResourcesListResponse;
                 case "resources/read":
                     return BuildStaticResourceResponse(request);
                 case "resources/templates/list":
-                    return new
-                    {
-                        resultType = "complete",
-                        resourceTemplates = new[]
-                        {
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/part/{part}",
-                                name = "GeneXus Object Part",
-                                description = "Read a specific part of a GeneXus object such as Source, Rules, Events, Variables, Structure, or Layout."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/variables",
-                                name = "GeneXus Object Variables",
-                                description = "Read the variable declarations for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/navigation",
-                                name = "GeneXus Navigation",
-                                description = "Read the navigation analysis for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/hierarchy",
-                                name = "GeneXus Hierarchy",
-                                description = "Read the dependency hierarchy for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/data-context",
-                                name = "GeneXus Data Context",
-                                description = "Read attributes, variables, and inferred data context for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/ui-context",
-                                name = "GeneXus UI Context",
-                                description = "Read UI structure and controls for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/conversion-context",
-                                name = "GeneXus Conversion Context",
-                                description = "Read consolidated conversion context for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/pattern-metadata",
-                                name = "GeneXus Pattern Metadata",
-                                description = "Read pattern metadata detected for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/summary",
-                                name = "GeneXus Object Summary",
-                                description = "Read an LLM-oriented summary for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/indexes",
-                                name = "GeneXus Visual Indexes",
-                                description = "Read visual indexes for a Transaction or Table."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/logic-structure",
-                                name = "GeneXus Logic Structure",
-                                description = "Read the logical structure for a Transaction or Table."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://attributes/{name}",
-                                name = "GeneXus Attribute Metadata",
-                                description = "Read metadata for a specific GeneXus attribute."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://kb/tool-help/{name}",
-                                name = "GeneXus Tool Help",
-                                description = "Long-form help for a single MCP tool: prefixes, modes, examples, defaults."
-                            }
-                        },
-                        ttlMs = 3600000,
-                        cacheScope = "public"
-                    };
+                    return _cachedResourceTemplatesListResponse;
                 case "resources/subscribe":
                     {
                         var uri = (request["params"] as JObject)?["uri"]?.ToString();
@@ -547,13 +438,7 @@ namespace GxMcp.Gateway
                 case "completion/complete":
                     return HandleCompletion(request);
                 case "prompts/list":
-                    return new
-                    {
-                        resultType = "complete",
-                        prompts = BuildPromptCatalog(),
-                        ttlMs = 3600000,
-                        cacheScope = "public"
-                    };
+                    return _cachedPromptsListResponse;
                 case "prompts/get":
                     return BuildPromptResponse(request);
                 case "ping":
@@ -654,6 +539,127 @@ namespace GxMcp.Gateway
                 {
                     values = filteredValues
                 }
+            };
+        }
+
+        private static object BuildResourcesListResponse()
+        {
+            var baseResources = new List<object>
+            {
+                new { uri = "genexus://kb/index-status", name = "KB Index Status", description = "Current indexing status for the active Knowledge Base." },
+                new { uri = "genexus://kb/health", name = "Gateway Health Report", description = "Health report for the GeneXus MCP worker and gateway." },
+                new { uri = "genexus://kb/agent-playbook", name = "GeneXus Agent Playbook", description = "Recommended MCP workflow to operate this GeneXus server in an agent-native, Git-friendly way." },
+                new { uri = "genexus://kb/llm-playbook", name = "LLM CLI+MCP Playbook", description = "Protocol-first guide for choosing CLI vs MCP, token-efficient calls, and timeout/lifecycle handling." },
+                new { uri = "genexus://objects", name = "GeneXus Objects Index", description = "Browsable index of all objects in the KB." },
+                new { uri = "genexus://attributes", name = "GeneXus Attributes", description = "Browsable list of all attributes." }
+            };
+            foreach (var skill in SkillCatalog.All)
+            {
+                baseResources.Add(new
+                {
+                    uri = "genexus://kb/skills/" + skill.Key,
+                    name = skill.Title,
+                    description = skill.Description,
+                    mimeType = "text/markdown"
+                });
+            }
+            return new
+            {
+                resultType = "complete",
+                resources = baseResources,
+                ttlMs = 3600000,
+                cacheScope = "public"
+            };
+        }
+
+        private static object BuildResourceTemplatesListResponse()
+        {
+            return new
+            {
+                resultType = "complete",
+                resourceTemplates = new[]
+                {
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/part/{part}",
+                        name = "GeneXus Object Part",
+                        description = "Read a specific part of a GeneXus object such as Source, Rules, Events, Variables, Structure, or Layout."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/variables",
+                        name = "GeneXus Object Variables",
+                        description = "Read the variable declarations for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/navigation",
+                        name = "GeneXus Navigation",
+                        description = "Read the navigation analysis for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/hierarchy",
+                        name = "GeneXus Hierarchy",
+                        description = "Read the dependency hierarchy for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/data-context",
+                        name = "GeneXus Data Context",
+                        description = "Read attributes, variables, and inferred data context for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/ui-context",
+                        name = "GeneXus UI Context",
+                        description = "Read UI structure and controls for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/conversion-context",
+                        name = "GeneXus Conversion Context",
+                        description = "Read consolidated conversion context for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/pattern-metadata",
+                        name = "GeneXus Pattern Metadata",
+                        description = "Read pattern metadata detected for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/summary",
+                        name = "GeneXus Object Summary",
+                        description = "Read an LLM-oriented summary for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/indexes",
+                        name = "GeneXus Visual Indexes",
+                        description = "Read visual indexes for a Transaction or Table."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/logic-structure",
+                        name = "GeneXus Logic Structure",
+                        description = "Read the logical structure for a Transaction or Table."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://attributes/{name}",
+                        name = "GeneXus Attribute Metadata",
+                        description = "Read metadata for a specific GeneXus attribute."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://kb/tool-help/{name}",
+                        name = "GeneXus Tool Help",
+                        description = "Long-form help for a single MCP tool: prefixes, modes, examples, defaults."
+                    }
+                },
+                ttlMs = 3600000,
+                cacheScope = "public"
             };
         }
 
