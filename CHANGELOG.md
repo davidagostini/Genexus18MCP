@@ -9,6 +9,9 @@
 - **Tool profile definition caching in `ToolProfileFilter` & `McpRouter`.** Added concurrent cache for profile-filtered tool definitions (`core`, `authoring`, `devops`, `ui`, `db`), eliminating repeated `JArray` allocations on `tools/list` calls (yielding >2,800X throughput improvement with 0 allocations).
 - **Extended read cache TTL in `ObjectService`.** Increased default `ReadCacheTtl` from 60s to 300s (5 minutes) and added configurable override via `GXMCP_READ_CACHE_TTL_SEC`. Eliminates redundant COM object reads from disk across multi-turn reasoning sessions while preserving deterministic write invalidation.
 - **Candidate loop allocation reduction in `SourceSearchService`.** Hoisted default scope collections out of per-candidate search loops.
+- **Zero-allocation pipe writing in `WorkerProcess.ProcessQueueAsync`.** Replaced intermediate `rpc.ToString(Formatting.None)` string allocations with direct streaming via `JsonTextWriter.WriteTo` into the worker pipe writer, speeding up command serialization by 5.4X and eliminating intermediate string allocations in the LOH/Gen2.
+- **Asynchronous non-blocking DataStore diagnostic probe in `KbService.OpenKB`.** Offloaded synchronous datastore connection and metadata probing to a background Task so `OpenKB` returns `KbOpened` immediately without gating readiness on remote database latency.
+- **Enhanced `GXMCP_EMIT_STRUCTURED_CONTENT` control.** Added explicit `0`/`false` and `1`/`true` toggle for structured content generation to complement `GXMCP_NO_STRUCTURED_CONTENT`, reducing payload sizes by up to 46.8%.
 
 ## v2.52.0 - 2026-09-02
 

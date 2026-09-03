@@ -237,15 +237,16 @@ namespace GxMcp.Worker.Services
                 // Diagnostic (read-only, no DB connect): record which data store the
                 // active environment points at. The GeneXus SDK may try to reach this
                 // server during open; when it's unreachable, KB-OPEN above balloons or
-                // hangs. This line lets a slow/hung open be correlated with the target
-                // DB from worker_debug.log alone. Best-effort — never gates readiness.
-                // Fase 0: time the probe separately — it does SDK metadata reads and can
-                // balloon if the DB server is unreachable, masquerading as slow KB-open.
-                var dsSw = Stopwatch.StartNew();
-                try { using (SdkGate.Enter()) Logger.Info($"[KB-OPEN-DATASTORE] {DescribeActiveDataStore(opened)}"); }
-                catch (Exception dsEx) { Logger.Debug($"[KB-OPEN-DATASTORE] probe failed: {dsEx.Message}"); }
-                dsSw.Stop();
-                LastDatastoreProbeMs = dsSw.ElapsedMilliseconds;
+                // Diagnostic (read-only, no DB connect): record which data store the
+                // active environment points at in the background so it never gates readiness.
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    var dsSw = Stopwatch.StartNew();
+                    try { using (SdkGate.Enter()) Logger.Info($"[KB-OPEN-DATASTORE] {DescribeActiveDataStore(opened)}"); }
+                    catch (Exception dsEx) { Logger.Debug($"[KB-OPEN-DATASTORE] probe failed: {dsEx.Message}"); }
+                    dsSw.Stop();
+                    LastDatastoreProbeMs = dsSw.ElapsedMilliseconds;
+                });
                 return Models.McpResponse.Ok(
                     target: path,
                     code: "KbOpened",

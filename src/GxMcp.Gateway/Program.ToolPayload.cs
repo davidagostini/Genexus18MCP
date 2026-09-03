@@ -553,10 +553,17 @@ namespace GxMcp.Gateway
         // reload or env change takes effect without restart. Env wins over config file.
         internal static bool EmitStructuredContentEnabled()
         {
-            string? env = Environment.GetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT");
-            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+            string? noEnv = Environment.GetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT");
+            if (string.Equals(noEnv, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(noEnv, "true", StringComparison.OrdinalIgnoreCase))
                 return false;
+
+            string? emitEnv = Environment.GetEnvironmentVariable("GXMCP_EMIT_STRUCTURED_CONTENT");
+            if (!string.IsNullOrWhiteSpace(emitEnv))
+            {
+                return string.Equals(emitEnv, "1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(emitEnv, "true", StringComparison.OrdinalIgnoreCase);
+            }
 
             return ActiveConfig?.Server?.EmitStructuredContent ?? true;
         }

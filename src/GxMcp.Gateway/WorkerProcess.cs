@@ -53,7 +53,7 @@ namespace GxMcp.Gateway
         // the write path just to read two top-level fields).
         private readonly Channel<QueuedCommand> _commandChannel = Channel.CreateUnbounded<QueuedCommand>();
 
-        private sealed record QueuedCommand(string Json, string? Id, string? Method);
+        private sealed record QueuedCommand(string? Json, JObject? Rpc, string? Id, string? Method);
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly object _processLock = new object();
         private readonly TimeSpan _workerIdleTimeout;
@@ -324,8 +324,7 @@ namespace GxMcp.Gateway
                         while (_commandChannel.Reader.TryRead(out var cmd))
                         {
                             Interlocked.Decrement(ref _queuedCommands);
-                            string jsonRpc = cmd.Json;
-                            if (string.IsNullOrEmpty(jsonRpc))
+                            if (cmd.Rpc == null && string.IsNullOrEmpty(cmd.Json))
                             {
                                 continue;
                             }
@@ -338,14 +337,14 @@ namespace GxMcp.Gateway
                             // so the gateway returns a clean JSON-RPC error instead of silently dropping it.
                             if (!IsProcessRunning(_process))
                             {
-                                string failId = cmd.Id ?? "unknown";
+                                string failId = cmd.Id ?? (cmd.Rpc?["id"]?.ToString()) ?? "unknown";
                                 // PERF: id rides on the queue item (JObject overload); fall
                                 // back to parsing only for the legacy string shim.
-                                if (cmd.Id == null)
+                                if (failId == "unknown" && !string.IsNullOrEmpty(cmd.Json))
                                 {
                                     try
                                     {
-                                        var failJson = JObject.Parse(jsonRpc);
+                                        var failJson = JObject.Parse(cmd.Json);
                                         failId = failJson["id"]?.ToString() ?? "unknown";
                                     }
                                     catch { }
@@ -364,15 +363,15 @@ namespace GxMcp.Gateway
                             // PERFORMANCE: id/method ride on the queue item (JObject
                             // overload) — no re-parse of the serialized command. The
                             // legacy string shim (Id/Method null) lazily parses once.
-                            string id = cmd.Id ?? "unknown";
-                            string method = cmd.Method ?? "unknown";
-                            if (cmd.Id == null || cmd.Method == null)
+                            string id = cmd.Id ?? (cmd.Rpc?["id"]?.ToString()) ?? "unknown";
+                            string method = cmd.Method ?? (cmd.Rpc?["method"]?.ToString()) ?? "unknown";
+                            if ((id == "unknown" || method == "unknown") && !string.IsNullOrEmpty(cmd.Json))
                             {
                                 try
                                 {
-                                    var json = JObject.Parse(jsonRpc);
-                                    if (cmd.Id == null && json["id"] != null) id = json["id"]?.ToString() ?? "unknown";
-                                    if (cmd.Method == null) method = json["method"]?.ToString() ?? "unknown";
+                                    var json = JObject.Parse(cmd.Json);
+                                    if (id == "unknown" && json["id"] != null) id = json["id"]?.ToString() ?? "unknown";
+                                    if (method == "unknown") method = json["method"]?.ToString() ?? "unknown";
                                 }
                                 catch { }
                             }
@@ -403,8 +402,18 @@ namespace GxMcp.Gateway
 
                                 if (writer != null)
                                 {
-                                    // WriteLineAsync + FlushAsync with cancellation support.
-                                    await writer.WriteLineAsync(jsonRpc).ConfigureAwait(false);
+                                    if (cmd.Rpc != null)
+                                    {
+                                        using (var jsonWriter = new JsonTextWriter(writer) { CloseOutput = false })
+                                        {
+                                            cmd.Rpc.WriteTo(jsonWriter);
+                                        }
+                                        await writer.WriteLineAsync().ConfigureAwait(false);
+                                    }
+                                    else if (!string.IsNullOrEmpty(cmd.Json))
+                                    {
+                                        await writer.WriteLineAsync(cmd.Json).ConfigureAwait(false);
+                                    }
                                     await writer.FlushAsync().ConfigureAwait(false);
                                     Program.Log($"[Gateway] Command written to pipe: {id}");
                                 }
@@ -1041,7 +1050,7 @@ namespace GxMcp.Gateway
             string? id = rpc["id"]?.ToString();
             string? method = rpc["method"]?.ToString();
             Interlocked.Increment(ref _queuedCommands);
-            await _commandChannel.Writer.WriteAsync(new QueuedCommand(rpc.ToString(Formatting.None), id, method));
+            await _commandChannel.Writer.WriteAsync(new QueuedCommand(null, rpc, id, method));
         }
 
         // Compatibility shim (no production caller after the JObject overload was
@@ -1049,7 +1058,7 @@ namespace GxMcp.Gateway
         public async Task SendCommandAsync(string jsonRpc)
         {
             Interlocked.Increment(ref _queuedCommands);
-            await _commandChannel.Writer.WriteAsync(new QueuedCommand(jsonRpc, null, null));
+            await _commandChannel.Writer.WriteAsync(new QueuedCommand(jsonRpc, null, null, null));
         }
 
         public void Stop() => StopWithReason(WorkerStopReason.GatewayShutdown);
