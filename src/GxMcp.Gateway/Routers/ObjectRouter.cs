@@ -84,11 +84,17 @@ namespace GxMcp.Gateway.Routers
                             type = args?["type"]?.ToString()
                         };
                     }
-                    bool hasExplicitPart = args?["part"] != null && !string.IsNullOrWhiteSpace(args["part"]?.ToString());
-                    if (!hasExplicitPart)
+                    string partStr = args?["part"]?.ToString()?.Trim() ?? string.Empty;
+                    bool isFullOrAll = string.IsNullOrEmpty(partStr)
+                        || string.Equals(partStr, "all", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(partStr, "full", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(partStr, "summary", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(partStr, "360", StringComparison.OrdinalIgnoreCase);
+
+                    if (isFullOrAll)
                     {
-                        // SOTA 1-roundtrip default: omitting 'part' extracts the full object
-                        // (rules, source/events, variables, structure, signatures) tailored to the type.
+                        // SOTA 1-roundtrip default: omitting 'part' or requesting 'all'/'full'/'summary'/'360'
+                        // extracts the full object (rules, source/events, variables, structure, signatures) tailored to the type.
                         return new {
                             module = "Read",
                             action = "ExtractFullObject",

@@ -89,9 +89,11 @@ Discovery:
 Disambiguation:
 - Prefer `parentPath` over `parent` when folder names repeat.
 
-Efficient reads:
-- `genexus_read(name='Obj', part='Source', offset=1, limit=200)`
+Efficient reads (1-roundtrip):
+- `genexus_read(name='Obj')` — omitting `part` (or passing `part='all'`/`'360'`) returns the complete object in 1 call (rules with parm, source/events, variables, structure, called signatures), eliminating 2–3 exploration turns.
+- `genexus_read(name='Obj', part='Source', offset=1, limit=200)` — for targeted single-part reading.
 - For many files, prefer `genexus_read(targets=['A','B','C'], part='Source')` (plural form).
+- Follow `next_legal_actions` on tool responses: the server delivers pre-populated next tool calls with arguments (read → edit → compile) to minimize cross-turn reasoning.
 
 Safe edits (v2.0.0):
 - Preview before applying: any `genexus_edit` call accepts `dryRun: true` and returns `{plan: {touchedObjects, xmlDiff, brokenRefs, warnings}}` without mutation.

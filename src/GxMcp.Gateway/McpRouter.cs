@@ -1914,6 +1914,31 @@ namespace GxMcp.Gateway
                 };
             }
 
+            // PartNotFound — point at genexus_read omitting part (to get full object or availableParts)
+            if (string.Equals(code, "PartNotFound", StringComparison.OrdinalIgnoreCase)
+                || (msg.IndexOf("Part not found", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("part does not exist", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return new JObject
+                {
+                    ["action"] = "read_full_object",
+                    ["tool"] = "genexus_read",
+                    ["hint"] = "The requested part does not exist on this object type. Call genexus_read omitting 'part' (or part='all') to fetch all valid parts for this object in 1 call."
+                };
+            }
+
+            // ObjectNotFound — point at genexus_query to find candidate names
+            if (string.Equals(code, "ObjectNotFound", StringComparison.OrdinalIgnoreCase)
+                || (msg.IndexOf("Object not found", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return new JObject
+                {
+                    ["action"] = "search_objects",
+                    ["tool"] = "genexus_query",
+                    ["hint"] = "Object not found with this exact name. Call genexus_query to search for similar names or partial matches."
+                };
+            }
+
             return null;
         }
 

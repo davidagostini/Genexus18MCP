@@ -78,6 +78,23 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("ExtractFullObject", obj["action"]?.ToString());
         }
 
+        [Theory]
+        [InlineData("all")]
+        [InlineData("full")]
+        [InlineData("summary")]
+        [InlineData("360")]
+        public void PartAliases_RouteToExtractFullObject(string partAlias)
+        {
+            var args = new JObject { ["name"] = "Customer", ["part"] = partAlias };
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            Assert.NotNull(msg);
+            var obj = JObject.FromObject(msg!);
+
+            Assert.Equal("Read", obj["module"]?.ToString());
+            Assert.Equal("ExtractFullObject", obj["action"]?.ToString());
+            Assert.Equal("Customer", obj["target"]?.ToString());
+        }
+
         [Fact]
         public void NullParts_RoutesToExtractFullObject()
         {

@@ -64,6 +64,26 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void PartNotFound_PointsAtReadFullObject()
+        {
+            var err = JObject.Parse(@"{""code"":""PartNotFound"",""message"":""Part 'Foo' does not exist""}");
+            var hint = McpRouter.AttachSuggestedNextStep(err);
+            Assert.NotNull(hint);
+            Assert.Equal("read_full_object", hint["action"]!.ToString());
+            Assert.Equal("genexus_read", hint["tool"]!.ToString());
+        }
+
+        [Fact]
+        public void ObjectNotFound_PointsAtQuery()
+        {
+            var err = JObject.Parse(@"{""code"":""ObjectNotFound"",""message"":""Object not found: UnknownObj""}");
+            var hint = McpRouter.AttachSuggestedNextStep(err);
+            Assert.NotNull(hint);
+            Assert.Equal("search_objects", hint["action"]!.ToString());
+            Assert.Equal("genexus_query", hint["tool"]!.ToString());
+        }
+
+        [Fact]
         public void UnknownError_ReturnsNull()
         {
             // No registered pattern → null. Callers fall back to message/hint.
