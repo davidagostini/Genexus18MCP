@@ -206,6 +206,24 @@ namespace GxMcp.Gateway
             } catch { }
         }
 
+        public static async Task TryWriteStdout(JObject json)
+        {
+            if (json == null) return;
+            try {
+                await _stdoutGate.WaitAsync().ConfigureAwait(false);
+                try {
+                    using (var jsonWriter = new JsonTextWriter(Console.Out) { CloseOutput = false })
+                    {
+                        json.WriteTo(jsonWriter);
+                    }
+                    await Console.Out.WriteLineAsync().ConfigureAwait(false);
+                    await Console.Out.FlushAsync().ConfigureAwait(false);
+                } finally {
+                    _stdoutGate.Release();
+                }
+            } catch { }
+        }
+
         private static void InitializeLogging()
         {
             try
@@ -632,7 +650,7 @@ namespace GxMcp.Gateway
                             var req = JObject.Parse(replayLine);
                             var resp = await ProcessMcpRequest(req);
                             if (resp != null && !IsJsonRpcNotification(req))
-                                await TryWriteStdout(resp.ToString(Formatting.None));
+                                await TryWriteStdout(resp);
                         }
                         catch (Exception ex) { Log("[Gateway] Promotion replay failed: " + ex.Message); }
                     });
@@ -686,7 +704,7 @@ namespace GxMcp.Gateway
                                     ["id"] = JValue.CreateNull(),
                                     ["error"] = new JObject { ["code"] = -32700, ["message"] = "Parse error" }
                                 };
-                                await TryWriteStdout(parseErr.ToString(Formatting.None));
+                                await TryWriteStdout(parseErr);
                                 return;
                             }
                             capturedId = request["id"];
@@ -694,7 +712,7 @@ namespace GxMcp.Gateway
                             var response = await ProcessMcpRequest(request);
                             if (response != null && !notification)
                             {
-                                await TryWriteStdout(response.ToString(Formatting.None));
+                                await TryWriteStdout(response);
                             }
                         }
                         catch (WorkerPoolFullException poolEx)
@@ -707,7 +725,7 @@ namespace GxMcp.Gateway
                                 ["error"] = new JObject { ["code"] = -32000, ["message"] = poolEx.Message }
                             };
                             if (capturedId != null && capturedId.Type != JTokenType.Null)
-                                await TryWriteStdout(errResp.ToString(Formatting.None));
+                                await TryWriteStdout(errResp);
                         }
                         catch (Exception ex)
                         {
@@ -720,7 +738,7 @@ namespace GxMcp.Gateway
                                     ["id"] = capturedId.DeepClone(),
                                     ["error"] = new JObject { ["code"] = -32603, ["message"] = "Internal error" }
                                 };
-                                await TryWriteStdout(errResp.ToString(Formatting.None));
+                                await TryWriteStdout(errResp);
                             }
                         }
                     });
