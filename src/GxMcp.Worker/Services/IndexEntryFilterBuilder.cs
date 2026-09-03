@@ -35,15 +35,43 @@ namespace GxMcp.Worker.Services
         public static bool IsTypeMatchAliasAware(string type, string query)
         {
             if (string.IsNullOrEmpty(type) || string.IsNullOrEmpty(query)) return false;
-            string t = type.ToLower(); string q = query.ToLower();
-            if (q == "prc" || q == "procedure" || q == "proc") return t.Contains("procedure");
-            if (q == "trn" || q == "transaction") return t.Contains("transaction");
-            if (q == "tab" || q == "table") return t == "table";
-            if (q == "wp" || q == "webpanel") return t.Contains("webpanel");
-            if (q == "dp" || q == "dataprovider") return t.Contains("dataprovider");
-            if (q == "sdt") return t.Contains("sdt");
-            if (q == "attr" || q == "attribute") return t.Contains("attribute");
-            return t.Contains(q);
+
+            if (string.Equals(query, "prc", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(query, "procedure", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(query, "proc", StringComparison.OrdinalIgnoreCase))
+            {
+                return type.IndexOf("procedure", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            if (string.Equals(query, "trn", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(query, "transaction", StringComparison.OrdinalIgnoreCase))
+            {
+                return type.IndexOf("transaction", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            if (string.Equals(query, "tab", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(query, "table", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Equals(type, "table", StringComparison.OrdinalIgnoreCase);
+            }
+            if (string.Equals(query, "wp", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(query, "webpanel", StringComparison.OrdinalIgnoreCase))
+            {
+                return type.IndexOf("webpanel", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            if (string.Equals(query, "dp", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(query, "dataprovider", StringComparison.OrdinalIgnoreCase))
+            {
+                return type.IndexOf("dataprovider", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            if (string.Equals(query, "sdt", StringComparison.OrdinalIgnoreCase))
+            {
+                return type.IndexOf("sdt", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            if (string.Equals(query, "attr", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(query, "attribute", StringComparison.OrdinalIgnoreCase))
+            {
+                return type.IndexOf("attribute", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            return type.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         /// <summary>Case-insensitive substring match on Description. Empty/null filter matches everything.</summary>
