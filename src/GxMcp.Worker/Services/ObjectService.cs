@@ -2394,6 +2394,28 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
+        private static readonly string[] DirectCandidates = { "Procedure", "Transaction", "WebPanel", "SDT", "DataProvider", "DataSelector" };
+        private static readonly string[] CandidateIndexTypes = { "Procedure", "Transaction", "WebPanel", "SDT", "DataProvider", "DataSelector", "Domain", "Table" };
+        private static readonly string[] DefaultPartsToFetch = { "Source", "Rules", "Events", "Variables", "Documentation", "Help", "Methods" };
+        private static readonly char[] ColonSeparator = { ':' };
+
+        private static int GetMatchPriority(SearchIndex.IndexEntry m)
+        {
+            if (m == null) return 1000;
+            if (m.Type == "Folder" || m.Type == "Module") return 100;
+            if (m.Type == "File" || m.Type == "Image") return 50;
+            if (IsGeneratedPhysical(m.Type)) return 10;
+            return 0;
+        }
+
+        private static int CompareMatches(SearchIndex.IndexEntry a, SearchIndex.IndexEntry b)
+        {
+            int pa = GetMatchPriority(a);
+            int pb = GetMatchPriority(b);
+            if (pa != pb) return pa.CompareTo(pb);
+            return string.Compare(a.Type ?? string.Empty, b.Type ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
         public KBObject FindObject(string target, string typeFilter = null)
         {
             if (string.IsNullOrEmpty(target)) return null;
@@ -2406,7 +2428,7 @@ namespace GxMcp.Worker.Services
 
             if (target.Contains(":") && typeFilter == null)
             {
-                var parts = target.Split(new[] { ':' }, 2);
+                var parts = target.Split(ColonSeparator, 2);
                 if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
                 {
                     Logger.Warn("FindObject: malformed 'Type:Name' target: " + target);
@@ -2466,13 +2488,12 @@ namespace GxMcp.Worker.Services
                 }
 
                 // Fast direct probe on primary logic types using native SDK static Get methods (<1ms)
-                string[] directCandidates = { "Procedure", "Transaction", "WebPanel", "SDT", "DataProvider", "DataSelector" };
-                foreach (var cand in directCandidates)
+                for (int i = 0; i < DirectCandidates.Length; i++)
                 {
-                    var directTyped = ResolveTypedObjectDirect(kb.DesignModel, cand, namePart);
+                    var directTyped = ResolveTypedObjectDirect(kb.DesignModel, DirectCandidates[i], namePart);
                     if (directTyped != null)
                     {
-                        Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Direct-Probe-Static: {1}) in {2}ms", target, cand, sw.ElapsedMilliseconds));
+                        Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Direct-Probe-Static: {1}) in {2}ms", target, DirectCandidates[i], sw.ElapsedMilliseconds));
                         return directTyped;
                     }
                 }
@@ -2514,10 +2535,9 @@ namespace GxMcp.Worker.Services
                     // Global search in index
                     // OPTIMIZATION: Prioritize logic types if no filter is provided
                     var matches = new List<SearchIndex.IndexEntry>();
-                    string[] candidateIndexTypes = { "Procedure", "Transaction", "WebPanel", "SDT", "DataProvider", "DataSelector", "Domain", "Table" };
-                    foreach (var cand in candidateIndexTypes)
+                    for (int i = 0; i < CandidateIndexTypes.Length; i++)
                     {
-                        string candKey = string.Format("{0}:{1}", cand, namePart);
+                        string candKey = CandidateIndexTypes[i] + ":" + namePart;
                         if (index.Objects.TryGetValue(candKey, out var directEntry))
                         {
                             matches.Add(directEntry);
@@ -2563,13 +2583,12 @@ namespace GxMcp.Worker.Services
 
                     if (matches.Count > 0)
                     {
-                        var orderedMatches = matches
-                            .OrderBy(m => (m.Type == "Folder" || m.Type == "Module") ? 100 : 0)
-                            .ThenBy(m => (m.Type == "File" || m.Type == "Image") ? 50 : 0)
-                            .ThenBy(m => IsGeneratedPhysical(m.Type) ? 10 : 0)
-                            .ThenBy(m => m.Type ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+                        if (matches.Count > 1)
+                        {
+                            matches.Sort(CompareMatches);
+                        }
 
-                        foreach (var m in orderedMatches)
+                        foreach (var m in matches)
                         {
                             KBObject obj = null;
                             if (!string.IsNullOrEmpty(m.Type))
@@ -2884,7 +2903,7 @@ namespace GxMcp.Worker.Services
 
             string[] partsToFetch = (requestedParts != null && requestedParts.Any())
                 ? requestedParts.Select(p => p.Trim()).Where(p => !string.IsNullOrEmpty(p)).ToArray()
-                : new[] { "Source", "Rules", "Events", "Variables", "Documentation", "Help", "Methods" };
+                : DefaultPartsToFetch;
 
             var partsObj = new JObject();
             foreach (var pName in partsToFetch)
@@ -3224,9 +3243,10 @@ namespace GxMcp.Worker.Services
             // the change. Resolve the part name the same way ReadObjectSource does.
             string resolvedPart = string.IsNullOrWhiteSpace(partName) ? null : ResolvePartName(obj, partName);
             string normalizedPart = string.IsNullOrWhiteSpace(resolvedPart) ? null : resolvedPart.Trim().ToLowerInvariant();
-            string objectPrefix = obj.Guid.ToString("N").ToLowerInvariant() + "|";
-            foreach (var key in _readCache.Keys)
+            string objectPrefix = obj.Guid.ToString("N") + "|";
+            foreach (var kvp in _readCache)
             {
+                string key = kvp.Key;
                 if (!key.StartsWith(objectPrefix, StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
@@ -3744,13 +3764,24 @@ namespace GxMcp.Worker.Services
             return string.Equals(client, "mcp", StringComparison.OrdinalIgnoreCase) && !minimize;
         }
 
-        private static string BuildReadCacheKey(Guid objectGuid, string partName, int? offset, int? limit, string client, bool minimize)
+        internal static string BuildReadCacheKey(Guid objectGuid, string partName, int? offset, int? limit, string client, bool minimize)
         {
             string normalizedPart = string.IsNullOrWhiteSpace(partName) ? "source" : partName.Trim().ToLowerInvariant();
             string normalizedClient = string.IsNullOrWhiteSpace(client) ? "mcp" : client.Trim().ToLowerInvariant();
             int normalizedOffset = offset ?? -1;
             int normalizedLimit = limit ?? -1;
-            return objectGuid.ToString("N").ToLowerInvariant() + "|" + normalizedPart + "|" + normalizedOffset + "|" + normalizedLimit + "|" + normalizedClient + "|" + (minimize ? "1" : "0");
+            return string.Concat(
+                objectGuid.ToString("N"),
+                "|",
+                normalizedPart,
+                "|",
+                normalizedOffset.ToString(),
+                "|",
+                normalizedLimit.ToString(),
+                "|",
+                normalizedClient,
+                "|",
+                minimize ? "1" : "0");
         }
 
         private static bool TryGetReadCache(string key, out string payload)
