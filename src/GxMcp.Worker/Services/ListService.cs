@@ -341,12 +341,13 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
+                    bool legacyMode = IsLegacyPerfProfile();
                     int pageSize = limit <= 0 ? int.MaxValue : limit;
                     int endIndex = Math.Min(totalIndex, (int)Math.Min((long)totalIndex, (long)startIndex + pageSize));
                     for (int i = startIndex; i < endIndex; i++)
                     {
                         var entry = orderedIndexEntries[i];
-                        array.Add(BuildItem(
+                        array.Add(BuildItemInternal(
                             entry.Name,
                             entry.Type ?? "Unknown",
                             entry.Description,
@@ -358,7 +359,8 @@ namespace GxMcp.Worker.Services
                             verbose,
                             entry.LastUpdate,
                             entry.CreatedAt,
-                            entry.LastModifiedBy
+                            entry.LastModifiedBy,
+                            legacyMode
                         ));
                     }
 
@@ -366,9 +368,9 @@ namespace GxMcp.Worker.Services
                     // from the last item of this page so callers can continue without
                     // an offset that drifts as the KB mutates.
                     SearchIndex.IndexEntry lastEmitted = null;
-                    if (sortByLastUpdate && array.Count > 0)
+                    if (sortByLastUpdate && array.Count > 0 && endIndex > startIndex)
                     {
-                        lastEmitted = orderedIndexEntries.Skip(startIndex).Take(pageSize).LastOrDefault();
+                        lastEmitted = orderedIndexEntries[endIndex - 1];
                     }
 
                     var paged = BuildPagedResponseInternal(array, totalIndex, startIndex, pageSize);
@@ -559,10 +561,11 @@ namespace GxMcp.Worker.Services
                 int totalRuntime = orderedRuntime.Count;
                 int startRuntime = Math.Max(0, offset);
                 int pageSizeRuntime = limit <= 0 ? int.MaxValue : limit;
-                foreach (var item in orderedRuntime
-                    .Skip(startRuntime)
-                    .Take(pageSizeRuntime))
+                int endRuntime = Math.Min(totalRuntime, (int)Math.Min((long)totalRuntime, (long)startRuntime + pageSizeRuntime));
+                bool runtimeLegacyMode = IsLegacyPerfProfile();
+                for (int i = startRuntime; i < endRuntime; i++)
                 {
+                    var item = orderedRuntime[i];
                     var runtimeParentFolderPath = string.IsNullOrEmpty(item.Hierarchy.ParentPath)
                         ? "Root Module"
                         : "Root Module/" + item.Hierarchy.ParentPath;
@@ -573,7 +576,7 @@ namespace GxMcp.Worker.Services
                     try { rtCreatedAt = item.Object.VersionDate; } catch { }
                     try { rtLastModifiedBy = item.Object.UserName; } catch { }
 
-                    array.Add(BuildItem(
+                    array.Add(BuildItemInternal(
                         item.Object.Name,
                         item.TypeName,
                         item.Object.Description,
@@ -585,7 +588,8 @@ namespace GxMcp.Worker.Services
                         verbose,
                         rtLastUpdate,
                         rtCreatedAt,
-                        rtLastModifiedBy
+                        rtLastModifiedBy,
+                        runtimeLegacyMode
                     ));
                 }
 
