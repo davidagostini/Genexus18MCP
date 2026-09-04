@@ -91,11 +91,11 @@
           {
             "action": "routes_clone",
             "api": "OrdersApi",
-            "sourcePrefix": "inbound",
-            "targetPrefix": "reverse",
-            "operation": "REVERSE",
             "dryRun": true,
-            "rollbackOnFailure": true
+            "operation": "REVERSE",
+            "rollbackOnFailure": true,
+            "sourcePrefix": "inbound",
+            "targetPrefix": "reverse"
           }
         ],
         "properties": {
@@ -119,6 +119,15 @@
             "description": "Baseline name under .gx/api-baselines/ or absolute path (action=diff_baseline).",
             "type": "string"
           },
+          "dryRun": {
+            "default": true,
+            "description": "routes_clone/routes_update: preview first; false writes only with expectedVersion.",
+            "type": "boolean"
+          },
+          "expectedVersion": {
+            "description": "versionToken returned by the preceding dry run or inspection.",
+            "type": "string"
+          },
           "kb": {
             "description": "KB alias.",
             "type": "string"
@@ -127,9 +136,18 @@
             "description": "Baseline name (action=snapshot).",
             "type": "string"
           },
+          "operation": {
+            "description": "Operation value carried by the reused request contract, e.g. REVERSE.",
+            "type": "string"
+          },
           "pathPrefix": {
             "description": "Folder prefix filter (action=list).",
             "type": "string"
+          },
+          "rollbackOnFailure": {
+            "default": true,
+            "description": "Restore the complete API snapshot when post-save verification diverges.",
+            "type": "boolean"
           },
           "sourcePrefix": {
             "description": "Source method/path prefix, e.g. inbound.",
@@ -141,24 +159,6 @@
           },
           "targetPrefix": {
             "description": "Target method/path prefix, e.g. reverse.",
-            "type": "string"
-          },
-          "expectedVersion": {
-            "description": "versionToken returned by the preceding dry run or inspection.",
-            "type": "string"
-          },
-          "dryRun": {
-            "default": true,
-            "description": "routes_clone/routes_update: preview first; false writes only with expectedVersion.",
-            "type": "boolean"
-          },
-          "rollbackOnFailure": {
-            "default": true,
-            "description": "Restore the complete API snapshot when post-save verification diverges.",
-            "type": "boolean"
-          },
-          "operation": {
-            "description": "Operation value carried by the reused request contract, e.g. REVERSE.",
             "type": "string"
           }
         },
@@ -1959,11 +1959,16 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Use this for a compact object snapshot: metadata, variables, structure, signature and navigation context. Don't use it when you need full Source or exact part bytes; use genexus_read for that. runtimeIds needs a prior build.",
+      "description": "Use this for a compact object snapshot: metadata, variables, structure, signature and navigation context. Modular objects accept persisted GUID, EntityKey, or path in addition to name/type. Don't use it when you need full Source or exact part bytes; use genexus_read for that. runtimeIds needs a prior build.",
       "inputSchema": {
         "examples": [
           {
             "name": "Customer"
+          },
+          {
+            "name": "Customer",
+            "path": "Operations/Customer",
+            "type": "Procedure"
           },
           {
             "include": [
@@ -1974,6 +1979,14 @@
           }
         ],
         "properties": {
+          "entityKey": {
+            "description": "Typed GeneXus EntityKey from genexus_list_objects verbose output.",
+            "type": "string"
+          },
+          "guid": {
+            "description": "Persisted object GUID from genexus_list_objects.",
+            "type": "string"
+          },
           "include": {
             "items": {
               "enum": [
@@ -1998,6 +2011,10 @@
           "name": {
             "type": "string"
           },
+          "path": {
+            "description": "Module/folder-qualified object path from genexus_list_objects.",
+            "type": "string"
+          },
           "projection": {
             "description": "Token budget. minimal=name/type/lastUpdate; standard=default (vars≤40 name+type, source heads 1200c); verbose=full vars + 8000c heads.",
             "enum": [
@@ -2011,9 +2028,6 @@
             "type": "string"
           }
         },
-        "required": [
-          "name"
-        ],
         "type": "object"
       },
       "name": "genexus_inspect"
@@ -2508,7 +2522,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "List objects with pagination. Feed nextOffset until hasMore=false. Returns minimal shape by default (name, type, path, parent); verbose=true for full shape.",
+      "description": "List objects with pagination. Feed nextOffset until hasMore=false. Every item exposes its persisted GUID and path; verbose=true also exposes the typed EntityKey when available.",
       "inputSchema": {
         "examples": [
           {
@@ -3029,11 +3043,21 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Read object code and metadata. Omitting 'part' (RECOMMENDED) returns the COMPLETE object in 1 call (rules with parm, source/events, variables, structure, called signatures) tailored to the object type. Pass 'part' only for targeted single-part reads. Response carries versionToken for safe writes. See genexus://kb/tool-help/genexus_read.",
+      "description": "Read object code and metadata. Omitting 'part' (RECOMMENDED) returns the COMPLETE object in 1 call (rules with parm, source/events, variables, structure, called signatures) tailored to the object type. Resolve modular objects by name/type, persisted GUID, EntityKey, or path. Pass 'part' only for targeted single-part reads. Response carries versionToken for safe writes. See genexus://kb/tool-help/genexus_read.",
       "inputSchema": {
         "examples": [
           {
             "name": "Customer"
+          },
+          {
+            "guid": "<guid-from-list>",
+            "name": "Customer",
+            "type": "Procedure"
+          },
+          {
+            "name": "Customer",
+            "path": "Operations/Customer",
+            "type": "Procedure"
           },
           {
             "name": "Customer",
@@ -3041,6 +3065,14 @@
           }
         ],
         "properties": {
+          "entityKey": {
+            "description": "Typed GeneXus EntityKey from genexus_list_objects verbose output.",
+            "type": "string"
+          },
+          "guid": {
+            "description": "Persisted object GUID from genexus_list_objects.",
+            "type": "string"
+          },
           "kb": {
             "description": "KB alias.",
             "type": "string"
@@ -3064,6 +3096,10 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "path": {
+            "description": "Module/folder-qualified object path from genexus_list_objects.",
+            "type": "string"
           },
           "targets": {
             "items": {
@@ -3301,7 +3337,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Regex/semantic search across Procedure/DataProvider/WebPanel/Transaction source. Requires the KB index to be Ready — check genexus_lifecycle action=status if results look empty.",
+      "description": "Regex/semantic search across Procedure/DataProvider/WebPanel/Transaction source. Restrict a scan by object name, persisted GUID, EntityKey, or module/folder-qualified path. Requires the KB index to be Ready — check genexus_lifecycle action=status if results look empty.",
       "inputSchema": {
         "examples": [
           {
@@ -3310,6 +3346,11 @@
           {
             "maxResults": 20,
             "pattern": "for each",
+            "typeFilter": "Procedure"
+          },
+          {
+            "path": "Operations/OrderReverse",
+            "pattern": "REVERSE",
             "typeFilter": "Procedure"
           }
         ],
@@ -3329,6 +3370,10 @@
             "description": "Opaque continuation token from nextCursor; preferred when a result page ended inside an object. Do not edit.",
             "type": "string"
           },
+          "entityKey": {
+            "description": "Typed GeneXus EntityKey from genexus_list_objects verbose output.",
+            "type": "string"
+          },
           "fields": {
             "description": "Whole-field metadata match (returns matchedValue, no line context). Default [source]. Prefer scope=[webForm] for line-context WebForm hits; use fields=[webForm] only for a coarse contains-match.",
             "items": {
@@ -3342,6 +3387,10 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "guid": {
+            "description": "Persisted object GUID from genexus_list_objects.",
+            "type": "string"
           },
           "includeComments": {
             "type": "boolean"
@@ -3359,6 +3408,10 @@
           },
           "objectName": {
             "description": "Restrict the scan to these exact object name(s), comma-separated. Makes a search inside one known object O(object) not O(KB), and bypasses the type whitelist.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Module/folder-qualified object path from genexus_list_objects.",
             "type": "string"
           },
           "pattern": {

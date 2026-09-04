@@ -254,10 +254,24 @@ namespace GxMcp.Worker.Services
                 IEnumerable<Models.SearchIndex.IndexEntry> query = index.Objects.Values;
                 if (hasIdentityScope)
                 {
-                    query = query.Where(e =>
-                        (string.IsNullOrWhiteSpace(c.ObjectGuid) || string.Equals(e.Guid, c.ObjectGuid, StringComparison.OrdinalIgnoreCase))
-                        && (string.IsNullOrWhiteSpace(c.ObjectEntityKey) || string.Equals(e.EntityKey, c.ObjectEntityKey, StringComparison.OrdinalIgnoreCase))
-                        && (string.IsNullOrWhiteSpace(c.ObjectPath) || ObjectPathMatches(e, c.ObjectPath)));
+                    string targetGuid = c.ObjectGuid?.Trim();
+                    string targetKey = c.ObjectEntityKey?.Trim();
+                    string normalizedPath = c.ObjectPath?.Trim().Replace('\\', '/');
+
+                    if (!string.IsNullOrWhiteSpace(targetGuid) && index.GuidToKey != null && index.GuidToKey.TryGetValue(targetGuid, out var sKey) && index.Objects.TryGetValue(sKey, out var matchedEntry))
+                    {
+                        query = (string.IsNullOrWhiteSpace(targetKey) || string.Equals(matchedEntry.EntityKey, targetKey, StringComparison.OrdinalIgnoreCase))
+                            && (string.IsNullOrWhiteSpace(normalizedPath) || ObjectPathMatches(matchedEntry, normalizedPath))
+                            ? new[] { matchedEntry }
+                            : Enumerable.Empty<Models.SearchIndex.IndexEntry>();
+                    }
+                    else
+                    {
+                        query = query.Where(e =>
+                            (string.IsNullOrWhiteSpace(targetGuid) || string.Equals(e.Guid, targetGuid, StringComparison.OrdinalIgnoreCase))
+                            && (string.IsNullOrWhiteSpace(targetKey) || string.Equals(e.EntityKey, targetKey, StringComparison.OrdinalIgnoreCase))
+                            && (string.IsNullOrWhiteSpace(normalizedPath) || ObjectPathMatches(e, normalizedPath)));
+                    }
                 }
                 else if (objectNameSet != null)
                 {

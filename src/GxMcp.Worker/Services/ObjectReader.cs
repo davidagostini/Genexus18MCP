@@ -55,6 +55,11 @@ namespace GxMcp.Worker.Services
 
             if (string.IsNullOrWhiteSpace(request.Target))
             {
+                request.Target = ObjectService.ResolveTargetForIdentity(request.Target, request.Guid, request.EntityKey, request.Path);
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Target))
+            {
                 return McpResponse.Err(code: "MissingTarget", message: "Target object name or GUID is required.");
             }
 

@@ -1338,7 +1338,7 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Object(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString());
+            if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString(), args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
             if (action == "Create")
             {
                 // Item 21 (friction 2026-05-22): dryRun=true returns the planned

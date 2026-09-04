@@ -2569,6 +2569,28 @@ namespace GxMcp.Worker.Services
             if (index?.Objects == null || string.IsNullOrWhiteSpace(target)) return null;
             string key = string.IsNullOrWhiteSpace(type) ? null : type.Trim() + ":" + target.Trim();
             if (key != null && index.Objects.TryGetValue(key, out var exact)) return exact;
+
+            if (index.ByNameIndex != null)
+            {
+                string simpleName = target.Trim();
+                int lastSlash = Math.Max(simpleName.LastIndexOf('/'), simpleName.LastIndexOf('.'));
+                if (lastSlash >= 0 && lastSlash < simpleName.Length - 1)
+                {
+                    simpleName = simpleName.Substring(lastSlash + 1);
+                }
+
+                if (index.ByNameIndex.TryGetValue(simpleName, out var keys))
+                {
+                    foreach (var k in keys)
+                    {
+                        if (index.Objects.TryGetValue(k, out var candidate) && IsEntryType(candidate, type) && IdentityNameMatches(candidate, target))
+                        {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+
             return index.Objects.Values.FirstOrDefault(e => IsEntryType(e, type) && IdentityNameMatches(e, target));
         }
 
@@ -2589,7 +2611,16 @@ namespace GxMcp.Worker.Services
             // same-named object when a caller supplied a GUID/EntityKey/path.
             if (!string.IsNullOrWhiteSpace(guid) || !string.IsNullOrWhiteSpace(entityKey) || !string.IsNullOrWhiteSpace(path))
             {
-                var identityEntry = FindIndexEntry(GetLoadedIndexOrNull(), path ?? target, typeFilter);
+                var loadedIndex = GetLoadedIndexOrNull();
+                SearchIndex.IndexEntry identityEntry = null;
+                if (!string.IsNullOrWhiteSpace(guid) && loadedIndex?.GuidToKey != null && loadedIndex.GuidToKey.TryGetValue(guid.Trim(), out var gKey))
+                {
+                    loadedIndex.Objects?.TryGetValue(gKey, out identityEntry);
+                }
+                if (identityEntry == null)
+                {
+                    identityEntry = FindIndexEntry(loadedIndex, path ?? target, typeFilter);
+                }
                 if (identityEntry != null)
                 {
                     var probe = new SearchIndex.IndexEntry
@@ -2987,9 +3018,37 @@ namespace GxMcp.Worker.Services
             try
             {
                 var index = _kbService?.GetIndexCache()?.TryGetLoadedIndex();
-                var entry = index?.Objects?.Values?.FirstOrDefault(e =>
-                    (!string.IsNullOrEmpty(guid) && string.Equals(e.Guid, guid, StringComparison.OrdinalIgnoreCase)) ||
-                    (!string.IsNullOrEmpty(entityKey) && string.Equals(e.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase)));
+                SearchIndex.IndexEntry entry = null;
+                if (!string.IsNullOrEmpty(guid) && index?.GuidToKey != null && index.GuidToKey.TryGetValue(guid, out var key))
+                {
+                    index.Objects?.TryGetValue(key, out entry);
+                }
+                if (entry == null && index != null && !string.IsNullOrEmpty(obj.Name) && index.ByNameIndex != null && index.ByNameIndex.TryGetValue(obj.Name, out var candidateKeys))
+                {
+                    foreach (var cKey in candidateKeys)
+                    {
+                        if (index.Objects != null && index.Objects.TryGetValue(cKey, out var candidate))
+                        {
+                            if (!string.IsNullOrEmpty(guid) && string.Equals(candidate.Guid, guid, StringComparison.OrdinalIgnoreCase))
+                            {
+                                entry = candidate;
+                                break;
+                            }
+                            if (!string.IsNullOrEmpty(entityKey) && string.Equals(candidate.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase))
+                            {
+                                entry = candidate;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (entry == null)
+                {
+                    entry = index?.Objects?.Values?.FirstOrDefault(e =>
+                        (!string.IsNullOrEmpty(guid) && string.Equals(e.Guid, guid, StringComparison.OrdinalIgnoreCase)) ||
+                        (!string.IsNullOrEmpty(entityKey) && string.Equals(e.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase)));
+                }
+
                 if (!string.IsNullOrWhiteSpace(entry?.Path))
                 {
                     identity["path"] = entry.Path;
@@ -3004,15 +3063,22 @@ namespace GxMcp.Worker.Services
             return identity;
         }
 
-        public string ExtractAllParts(string target, string client = "ide", string typeFilter = null)
+        public string ExtractAllParts(string target, string client = "ide", string typeFilter = null,
+            string guid = null, string entityKey = null, string path = null)
         {
             var sw = Stopwatch.StartNew();
             try
             {
-                var obj = FindObject(target, typeFilter);
+                target = ResolveTargetForIdentity(target, guid, entityKey, path);
+                var obj = FindObject(target, typeFilter, guid, entityKey, path);
                 if (obj == null) return FormatReadNotFound(target);
 
-                var result = new JObject { ["name"] = obj.Name, ["parts"] = new JObject() };
+                var result = new JObject
+                {
+                    ["name"] = obj.Name,
+                    ["identity"] = BuildObjectIdentity(obj),
+                    ["parts"] = new JObject()
+                };
                 string[] partsToFetch = { "Source", "Rules", "Events", "Variables", "Documentation", "Help", "Methods" };
 
                 foreach (var pName in partsToFetch)
@@ -3036,9 +3102,11 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string ReadObject(string target, string typeFilter = null)
+        public string ReadObject(string target, string typeFilter = null,
+            string guid = null, string entityKey = null, string path = null)
         {
-            var obj = FindObject(target, typeFilter);
+            target = ResolveTargetForIdentity(target, guid, entityKey, path);
+            var obj = FindObject(target, typeFilter, guid, entityKey, path);
             if (obj == null) return FormatReadNotFound(target);
 
             var parts = new JArray();
@@ -3090,6 +3158,7 @@ namespace GxMcp.Worker.Services
         public string ReadObjectSource(string target, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false, string typeFilter = null,
             string guid = null, string entityKey = null, string path = null)
         {
+            target = ResolveTargetForIdentity(target, guid, entityKey, path);
             var obj = FindObject(target, typeFilter, guid, entityKey, path);
             if (obj == null) return FormatReadNotFound(target);
 
@@ -3152,6 +3221,7 @@ namespace GxMcp.Worker.Services
         public string ReadObjectSourceParts(string target, IEnumerable<string> requestedParts, string typeFilter = null,
             string guid = null, string entityKey = null, string path = null)
         {
+            target = ResolveTargetForIdentity(target, guid, entityKey, path);
             var obj = FindObject(target, typeFilter, guid, entityKey, path);
             if (obj == null) return FormatReadNotFound(target);
 
@@ -3184,6 +3254,7 @@ namespace GxMcp.Worker.Services
             {
                 ["name"] = obj.Name,
                 ["type"] = obj.TypeDescriptor?.Name,
+                ["identity"] = BuildObjectIdentity(obj),
                 ["parts"] = partsObj
             }.ToString();
         }
@@ -3291,6 +3362,7 @@ namespace GxMcp.Worker.Services
         public string ReadFullObject(string target, string typeFilter = null,
             string guid = null, string entityKey = null, string path = null)
         {
+            target = ResolveTargetForIdentity(target, guid, entityKey, path);
             var obj = FindObject(target, typeFilter, guid, entityKey, path);
             if (obj == null) return FormatReadNotFound(target);
 

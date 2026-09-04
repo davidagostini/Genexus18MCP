@@ -58,6 +58,11 @@ namespace GxMcp.Worker.Services
             }
 
             if (string.IsNullOrWhiteSpace(target))
+            {
+                target = ObjectService.ResolveTargetForIdentity(target, args["guid"]?.ToString(), args["entityKey"]?.ToString(), args["path"]?.ToString());
+            }
+
+            if (string.IsNullOrWhiteSpace(target))
                 return Models.McpResponse.Err(code: "MissingTarget", message: "Target object name is required for inspection.");
 
             string typeFilter = args["type"]?.ToString();

@@ -46,7 +46,8 @@ namespace GxMcp.Gateway.Routers
 
         public object? ConvertToolCall(string toolName, JObject? args)
         {
-            string? target = args?["name"]?.ToString();
+            string? nameArg = args?["name"]?.ToString();
+            string? target = nameArg ?? args?["path"]?.ToString() ?? args?["entityKey"]?.ToString() ?? args?["guid"]?.ToString();
             string part = args?["part"]?.ToString() ?? "Source";
 
             switch (toolName)
@@ -55,7 +56,8 @@ namespace GxMcp.Gateway.Routers
                 {
                     var targetsTokRead = args?["targets"];
                     bool hasTargetsRead = targetsTokRead is JArray;
-                    bool hasNameRead = !string.IsNullOrEmpty(target);
+                    bool hasNameRead = !string.IsNullOrEmpty(nameArg) || !string.IsNullOrEmpty(args?["path"]?.ToString())
+                        || !string.IsNullOrEmpty(args?["entityKey"]?.ToString()) || !string.IsNullOrEmpty(args?["guid"]?.ToString());
                     if (hasNameRead && hasTargetsRead)
                         throw new UsageException("usage_error", "name and targets are mutually exclusive");
                     if (hasTargetsRead)

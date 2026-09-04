@@ -147,7 +147,10 @@ namespace GxMcp.Gateway.Tests
             //   2026-09-02 (native API routes): 22200 → 22500 for typed
             //   API method inspection, clone/update preview and rollback fields.
             //   Measured ~22380; ~120 headroom.
-            Assert.True(approxTokens < 22500, $"tool_definitions.json is ~{approxTokens} tokens; budget 22500.");
+            //   2026-09-04 (modular object identity): 22500 → 23000 for native
+            //   GUID, EntityKey, and qualified path resolution across genexus_read,
+            //   genexus_inspect, and genexus_search_source. Measured ~22782; ~218 headroom.
+            Assert.True(approxTokens < 23000, $"tool_definitions.json is ~{approxTokens} tokens; budget 23000.");
         }
     }
 }
