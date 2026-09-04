@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.54.1 - 2026-09-03
+
 ### Added
 
 - **IDE concurrency detection and warning in `genexus_edit` and `BulkWrite` (Issue #128).** Added `IdeConcurrencyDetector` to detect when `GeneXus.exe` is running and whether the target KB and/or target object is open in an IDE tab/window using Win32 window and child-window inspection. Surfaces structured warnings `GotchaIdeObjectOpenInEditor` and `GotchaIdeActiveOnKb` with resolvable tool-help documentation URIs (`genexus://kb/tool-help/gotchas/ide-object-open-in-editor` and `genexus://kb/tool-help/gotchas/ide-active-on-kb`). Added optional `concurrencyPolicy` argument (`"warn"` [default] or `"fail_if_open"`) to `genexus_edit` schema and `BulkWrite` facade args to abort write operations with an `IdeObjectOpen` error when the target object is open in the IDE. Reported and architected by Antonio Jose Rodrigues Silva (@antoniojosedev).
