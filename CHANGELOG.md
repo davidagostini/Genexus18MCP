@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v2.55.0 - 2026-09-04
+
+### Added
+
+- **Modular object identity resolution across `genexus_read`, `genexus_inspect`, and `genexus_search_source` (PR #129).** Added `guid`, `entityKey`, and `path` parameters across `genexus_read`, `genexus_inspect`, and `genexus_search_source` schemas, allowing LLMs to directly read, inspect, or search objects by their native GUID, SDK EntityKey, or module hierarchy path without requiring ambiguous or duplicated names. `genexus_inspect` now allows omitting `name` when modular identity coordinates are supplied. Contributed by David Agostini (@davidagostini).
+- **Uniform identity metadata on object reads.** Expanded all read surfaces (`ReadObject`, `ReadFullObject`, `ReadObjectSourceParts`, `ExtractAllParts`) to proactively return the structured `identity` block (`guid`, `entityKey`, `entityTypeGuid`, `entityId`, `path`), providing downstream tools with deterministic identity tokens for immediate chaining.
+
+### Changed
+
+- **O(1) index lookups for object identity and search scoping.** Replaced full O(N) linear scans across index collections in `BuildObjectIdentity`, `FindIndexEntry`, and `hasIdentityScope` with O(1) lookups via `GuidToKey` and `ByNameIndex`, reducing object resolution time in large KBs from hundreds of milliseconds to microseconds and eliminating per-call allocations. Contributed by David Agostini (@davidagostini) and Antigravity.
+- **Pre-normalized path matching in `SourceSearchService`.** Hoisted path normalization outside search candidate iteration loops, preventing repetitive string allocations during source searches.
+- **Gateway router identity resolution fallback.** Updated `ObjectRouter` and `AnalyzeRouter` to seamlessly resolve targets from `path`, `entityKey`, or `guid` when `name` is omitted, eliminating missing target errors on modular identity tool calls.
+
 ## v2.54.1 - 2026-09-03
 
 ### Added
