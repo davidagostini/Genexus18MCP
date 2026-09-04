@@ -49,6 +49,9 @@ namespace GxMcp.Gateway.Routers
                         // path (and the Timeout resumeHint's startIndex/timeoutMs) were dead —
                         // every call fell back to a full O(KB) scan.
                         objectName = args?["objectName"]?.ToString(),
+                        guid = args?["guid"]?.ToString(),
+                        entityKey = args?["entityKey"]?.ToString(),
+                        path = args?["path"]?.ToString(),
                         startIndex = args?["startIndex"]?.ToObject<int?>() ?? 0,
                         cursor = args?["cursor"]?.ToString(),
                         timeoutMs = args?["timeoutMs"]?.ToObject<int?>() ?? 30000

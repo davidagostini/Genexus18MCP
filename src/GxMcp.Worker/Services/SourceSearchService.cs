@@ -37,6 +37,9 @@ namespace GxMcp.Worker.Services
         // O(object) instead of O(KB), and bypasses the base type whitelist so any
         // searchable object type can be targeted directly.
         public string ObjectName { get; set; }
+        public string ObjectGuid { get; set; }
+        public string ObjectEntityKey { get; set; }
+        public string ObjectPath { get; set; }
 
         // Issue #27 item 4: resume cursor. On Timeout the response returns a
         // nextCursor; passing it back as StartIndex resumes the scan where it
@@ -225,6 +228,7 @@ namespace GxMcp.Worker.Services
                 }
 
                 var hits = new JArray();
+                var unresolvedObjects = new JArray();
                 var index = _index.GetIndex();
 
                 // Pre-filter by literal tokens against the index so we skip FindObject for
@@ -243,9 +247,19 @@ namespace GxMcp.Worker.Services
                 // those exact objects (bypassing both the base type whitelist and the
                 // literal pre-filter), so a search inside one known object is O(object).
                 var objectNameSet = ParseObjectNames(c.ObjectName);
+                bool hasIdentityScope = !string.IsNullOrWhiteSpace(c.ObjectGuid)
+                    || !string.IsNullOrWhiteSpace(c.ObjectEntityKey)
+                    || !string.IsNullOrWhiteSpace(c.ObjectPath);
 
                 IEnumerable<Models.SearchIndex.IndexEntry> query = index.Objects.Values;
-                if (objectNameSet != null)
+                if (hasIdentityScope)
+                {
+                    query = query.Where(e =>
+                        (string.IsNullOrWhiteSpace(c.ObjectGuid) || string.Equals(e.Guid, c.ObjectGuid, StringComparison.OrdinalIgnoreCase))
+                        && (string.IsNullOrWhiteSpace(c.ObjectEntityKey) || string.Equals(e.EntityKey, c.ObjectEntityKey, StringComparison.OrdinalIgnoreCase))
+                        && (string.IsNullOrWhiteSpace(c.ObjectPath) || ObjectPathMatches(e, c.ObjectPath)));
+                }
+                else if (objectNameSet != null)
                 {
                     // issue #36.7 — tolerate module-qualified vs bare names in EITHER direction
                     // so passing "Foo" finds "MyModule.Foo" and vice-versa (exact match was too
@@ -370,9 +384,15 @@ namespace GxMcp.Worker.Services
                                 // Resolve the object ONCE per candidate; on failure bail the whole
                                 // candidate (review nit: a per-part `continue` here would re-attempt
                                 // FindObject for every remaining part of the same candidate).
-                                try { obj = _objectService.FindObject(e.Name, e.Type); }
+                                try { obj = _objectService.FindObject(e); }
                                 catch { obj = null; }
-                                if (obj == null) { resolutionFailed = true; break; }
+                                if (obj == null)
+                                {
+                                    var diagnostic = _objectService?.GetLastResolutionDiagnostic();
+                                    if (diagnostic != null) unresolvedObjects.Add(diagnostic);
+                                    resolutionFailed = true;
+                                    break;
+                                }
                             }
                             src = _objectService != null
                                 ? _objectService.ReadPartSourceRaw(obj, part)
@@ -507,7 +527,7 @@ namespace GxMcp.Worker.Services
                             {
                                 // Caption / parmNames / webForm require SDK access
                                 KBObject obj2 = null;
-                                try { obj2 = _objectService.FindObject(e.Name, e.Type); } catch { }
+                                try { obj2 = _objectService.FindObject(e); } catch { }
                                 if (obj2 == null) continue;
                                 if (string.Equals(field, "caption", StringComparison.OrdinalIgnoreCase))
                                 {
@@ -554,6 +574,9 @@ namespace GxMcp.Worker.Services
                                 {
                                     ["objectName"] = e.Name,
                                     ["type"] = e.Type,
+                                    ["guid"] = e.Guid,
+                                    ["entityKey"] = e.EntityKey,
+                                    ["path"] = e.Path,
                                     ["field"] = field,
                                     ["matchedValue"] = fieldValue
                                 };
@@ -621,6 +644,11 @@ namespace GxMcp.Worker.Services
                 if (partialIndex)
                 {
                     resultPayload["partialHint"] = "Index walk is still in progress; this scan covered only the objects walked so far. A zero or small count does NOT mean the token is absent — re-run when whoami reports indexStatus=Ready.";
+                }
+                if (unresolvedObjects.Count > 0)
+                {
+                    resultPayload["unresolvedObjects"] = unresolvedObjects;
+                    resultPayload["unresolvedHint"] = "The index listed these objects, but the active SDK could not resolve their native identity; no source was inferred for them.";
                 }
                 if (hits.Count > 0 && hits[0] is JObject topHit)
                 {
@@ -801,6 +829,18 @@ namespace GxMcp.Worker.Services
             return false;
         }
 
+        private static bool ObjectPathMatches(Models.SearchIndex.IndexEntry entry, string wanted)
+        {
+            if (entry == null || string.IsNullOrWhiteSpace(wanted)) return false;
+            string expected = wanted.Trim().Replace('\\', '/');
+            string path = (entry.Path ?? string.Empty).Replace('\\', '/');
+            string withoutRoot = path.StartsWith("Root Module/", StringComparison.OrdinalIgnoreCase)
+                ? path.Substring("Root Module/".Length) : path;
+            return string.Equals(path, expected, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(withoutRoot, expected, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(withoutRoot.Replace('/', '.'), expected, StringComparison.OrdinalIgnoreCase);
+        }
+
         internal static bool MatchesAnyLiteral(Models.SearchIndex.IndexEntry e, System.Collections.Generic.List<string> literals)
         {
             if (literals == null || literals.Count == 0) return true;
@@ -874,6 +914,9 @@ namespace GxMcp.Worker.Services
             {
                 ["objectName"] = e.Name,
                 ["type"] = e.Type,
+                ["guid"] = e.Guid,
+                ["entityKey"] = e.EntityKey,
+                ["path"] = e.Path,
                 ["part"] = part,
                 ["lineNumber"] = line,
                 ["lineText"] = lineText,

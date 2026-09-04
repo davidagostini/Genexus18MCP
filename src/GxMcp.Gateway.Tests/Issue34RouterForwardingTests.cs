@@ -100,5 +100,30 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(100, jo["startIndex"]!.ToObject<int>());
             Assert.Equal(5000, jo["timeoutMs"]!.ToObject<int>());
         }
+
+        [Fact]
+        public void ReadInspectAndSearchForwardModularIdentity()
+        {
+            var read = JObject.FromObject(new ObjectRouter().ConvertToolCall(
+                "genexus_read",
+                JObject.Parse("{name:'ReverseOrder',type:'Procedure',guid:'g',entityKey:'ek',path:'Root Module/Operations/ReverseOrder'}"))!);
+            Assert.Equal("g", read["guid"]!.ToString());
+            Assert.Equal("ek", read["entityKey"]!.ToString());
+            Assert.Equal("Root Module/Operations/ReverseOrder", read["path"]!.ToString());
+
+            var inspect = JObject.FromObject(new AnalyzeRouter().ConvertToolCall(
+                "genexus_inspect",
+                JObject.Parse("{name:'ReverseOrder',type:'Procedure',guid:'g',entityKey:'ek',path:'Root Module/Operations/ReverseOrder'}"))!);
+            Assert.Equal("g", inspect["guid"]!.ToString());
+            Assert.Equal("ek", inspect["entityKey"]!.ToString());
+            Assert.Equal("Root Module/Operations/ReverseOrder", inspect["path"]!.ToString());
+
+            var search = JObject.FromObject(new SearchRouter().ConvertToolCall(
+                "genexus_search_source",
+                JObject.Parse("{pattern:'REVERSE',guid:'g',entityKey:'ek',path:'Root Module/Operations/ReverseOrder'}"))!);
+            Assert.Equal("g", search["guid"]!.ToString());
+            Assert.Equal("ek", search["entityKey"]!.ToString());
+            Assert.Equal("Root Module/Operations/ReverseOrder", search["path"]!.ToString());
+        }
     }
 }
