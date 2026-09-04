@@ -832,6 +832,21 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        private string FormatInspectNotFound(string name)
+        {
+            var diagnostic = _objectService?.GetLastResolutionDiagnostic();
+            if (diagnostic != null)
+            {
+                return Models.McpResponse.Err(
+                    code: "IndexedObjectUnavailable",
+                    message: "The search index contains the object, but the active SDK could not resolve its native identity.",
+                    hint: diagnostic["hint"]?.ToString(),
+                    target: name,
+                    errorExtra: diagnostic);
+            }
+            return HealingService.FormatNotFoundError(name, _indexCacheService.GetIndex());
+        }
+
         // KB-wide source analytics over the index (zero SDK reads). Aggregates the per-object
         // CodeMetrics captured at enrichment: totals + optimization candidates (nested for-each,
         // where-heavy procedures). typeFilter defaults to Procedure+DataProvider.
@@ -910,7 +925,8 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string GetConversionContext(string name, JArray include = null, string typeFilter = null, string projection = "standard")
+        public string GetConversionContext(string name, JArray include = null, string typeFilter = null, string projection = "standard",
+            string guid = null, string entityKey = null, string path = null)
         {
             // Wire the long-advertised (but previously unimplemented) projection knob:
             //   minimal  = name/type/description/lifecycle only (cheapest orient)
@@ -928,7 +944,8 @@ namespace GxMcp.Worker.Services
                                           .Where(s => s.Length > 0)
                                           .OrderBy(s => s, System.StringComparer.OrdinalIgnoreCase));
             // projection must partition the cache — minimal/standard/verbose payloads differ.
-            string inspectKey = (name ?? "") + "|" + includeKey + "|" + (typeFilter ?? "") + "|" + projection;
+            string inspectKey = (name ?? "") + "|" + includeKey + "|" + (typeFilter ?? "") + "|" + projection
+                + "|" + (guid ?? "") + "|" + (entityKey ?? "") + "|" + (path ?? "");
             if (_inspectCache.TryGetValue(inspectKey, out var cached) && cached != null)
             {
                 bool ttlOk = (System.DateTime.UtcNow - cached.FilledAtUtc) < InspectCacheTtl;
@@ -943,12 +960,13 @@ namespace GxMcp.Worker.Services
             }
             try
             {
-                var obj = _objectService.FindObject(name, typeFilter);
-                if (obj == null) return HealingService.FormatNotFoundError(name, _indexCacheService.GetIndex());
+                var obj = _objectService.FindObject(name, typeFilter, guid, entityKey, path);
+                if (obj == null) return FormatInspectNotFound(name);
 
                 var result = new JObject();
                 result["name"] = obj.Name;
                 result["type"] = obj.TypeDescriptor.Name;
+                result["identity"] = _objectService.BuildObjectIdentity(obj);
                 result["description"] = obj.Description;
 
                 // v2.8.5: ambiguity disclosure. When a name resolves across multiple
@@ -1524,15 +1542,16 @@ namespace GxMcp.Worker.Services
         /// signatures of all called procedures/panels + schemas and PKs of referenced tables +
         /// structures of referenced SDTs + top callers in a single roundtrip.
         /// </summary>
-        public string Get360Context(string target, string typeFilter = null)
+        public string Get360Context(string target, string typeFilter = null,
+            string guid = null, string entityKey = null, string path = null)
         {
             try
             {
-                var obj = _objectService.FindObject(target, typeFilter);
-                if (obj == null) return HealingService.FormatNotFoundError(target, _indexCacheService.GetIndex());
+                var obj = _objectService.FindObject(target, typeFilter, guid, entityKey, path);
+                if (obj == null) return FormatInspectNotFound(target);
 
                 // 1. Read full object
-                string fullObjJson = _objectService.ReadFullObject(target, typeFilter);
+                string fullObjJson = _objectService.ReadFullObject(target, typeFilter, guid, entityKey, path);
                 JObject fullObjResult = null;
                 try
                 {

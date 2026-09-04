@@ -55,6 +55,11 @@ namespace GxMcp.Worker.Services
 
             if (string.IsNullOrWhiteSpace(request.Target))
             {
+                request.Target = ObjectService.ResolveTargetForIdentity(request.Target, request.Guid, request.EntityKey, request.Path);
+            }
+
+            if (string.IsNullOrWhiteSpace(request.Target))
+            {
                 return McpResponse.Err(code: "MissingTarget", message: "Target object name or GUID is required.");
             }
 
@@ -76,11 +81,11 @@ namespace GxMcp.Worker.Services
             // 3. Full object vs Parts vs Single part read
             if (request.FullObject)
             {
-                result = _objectService.ReadFullObject(request.Target, request.TypeFilter);
+                result = _objectService.ReadFullObject(request.Target, request.TypeFilter, request.Guid, request.EntityKey, request.Path);
             }
             else if (request.RequestedParts != null && request.RequestedParts.Any())
             {
-                result = _objectService.ReadObjectSourceParts(request.Target, request.RequestedParts, request.TypeFilter);
+                result = _objectService.ReadObjectSourceParts(request.Target, request.RequestedParts, request.TypeFilter, request.Guid, request.EntityKey, request.Path);
             }
             else
             {
@@ -91,7 +96,10 @@ namespace GxMcp.Worker.Services
                     request.Limit,
                     request.ClientFormat ?? "mcp",
                     request.Minimize,
-                    request.TypeFilter);
+                    request.TypeFilter,
+                    request.Guid,
+                    request.EntityKey,
+                    request.Path);
             }
 
             // 4. Cache successful result
@@ -166,7 +174,7 @@ namespace GxMcp.Worker.Services
             int offset = req.Offset ?? -1;
             int limit = req.Limit ?? -1;
             int min = req.Minimize ? 1 : 0;
-            return $"{target}|{part}|{offset}|{limit}|{client}|{min}";
+            return $"{target}|{req.Guid}|{req.EntityKey}|{req.Path}|{part}|{offset}|{limit}|{client}|{min}";
         }
 
         private static bool IsCacheable(string json)

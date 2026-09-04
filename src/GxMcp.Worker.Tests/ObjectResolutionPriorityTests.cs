@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Services;
@@ -55,6 +56,52 @@ namespace GxMcp.Worker.Tests
             var b = ObjectService.PrioritizeNameMatches(
                 new List<SearchIndex.IndexEntry> { E("X", "Procedure"), E("X", "WebPanel") });
             Assert.Equal(a.Type, b.Type);
+        }
+
+        [Fact]
+        public void IdentityCanSupplyTargetWhenNameIsOmitted()
+        {
+            Assert.Equal("Operations/ReverseOrder",
+                ObjectService.ResolveTargetForIdentity(null, null, null, "Operations/ReverseOrder"));
+            Assert.Equal("type-guid-2213",
+                ObjectService.ResolveTargetForIdentity(null, null, "type-guid-2213", null));
+            Assert.Equal("guid-2213",
+                ObjectService.ResolveTargetForIdentity(null, "guid-2213", null, null));
+            Assert.Equal("NamedObject",
+                ObjectService.ResolveTargetForIdentity("NamedObject", "guid-ignored", null, null));
+        }
+
+        [Theory]
+        [InlineData("11111111-1111-1111-1111-111111111111:42")]
+        [InlineData("EntityKey(11111111-1111-1111-1111-111111111111, 42)")]
+        public void EntityKeyTextIsParsedIntoTypedIdentity(string raw)
+        {
+            Assert.True(ObjectService.TryParseEntityKey(raw, out var typeGuid, out var id));
+            Assert.Equal(Guid.Parse("11111111-1111-1111-1111-111111111111"), typeGuid);
+            Assert.Equal(42, id);
+        }
+
+        [Fact]
+        public void IndexEntryPersistsAllNativeIdentityFields()
+        {
+            var index = new SearchIndex();
+            index.Objects["Procedure:ReverseOrder"] = new SearchIndex.IndexEntry
+            {
+                Guid = "22222222-2222-2222-2222-222222222222",
+                EntityKey = "EntityKey(11111111-1111-1111-1111-111111111111, 42)",
+                EntityTypeGuid = "11111111-1111-1111-1111-111111111111",
+                EntityId = 42,
+                Name = "ReverseOrder",
+                Type = "Procedure",
+                Path = "Root Module/Operations/ReverseOrder"
+            };
+
+            var roundTripped = SearchIndex.FromJson(index.ToJson());
+            var entry = roundTripped.Objects["Procedure:ReverseOrder"];
+            Assert.Equal("22222222-2222-2222-2222-222222222222", entry.Guid);
+            Assert.Equal("EntityKey(11111111-1111-1111-1111-111111111111, 42)", entry.EntityKey);
+            Assert.Equal(42, entry.EntityId);
+            Assert.Equal("Root Module/Operations/ReverseOrder", entry.Path);
         }
     }
 }

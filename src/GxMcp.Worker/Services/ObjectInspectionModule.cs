@@ -58,6 +58,11 @@ namespace GxMcp.Worker.Services
             }
 
             if (string.IsNullOrWhiteSpace(target))
+            {
+                target = ObjectService.ResolveTargetForIdentity(target, args["guid"]?.ToString(), args["entityKey"]?.ToString(), args["path"]?.ToString());
+            }
+
+            if (string.IsNullOrWhiteSpace(target))
                 return Models.McpResponse.Err(code: "MissingTarget", message: "Target object name is required for inspection.");
 
             string typeFilter = args["type"]?.ToString();
@@ -65,12 +70,15 @@ namespace GxMcp.Worker.Services
             switch (depth)
             {
                 case InspectionDepth.Full:
-                    return _objectReader.Read(new ObjectReadRequest
-                    {
-                        Target = target,
-                        FullObject = true,
-                        TypeFilter = typeFilter
-                    });
+                return _objectReader.Read(new ObjectReadRequest
+                {
+                    Target = target,
+                    FullObject = true,
+                    TypeFilter = typeFilter,
+                    Guid = args["guid"]?.ToString(),
+                    EntityKey = args["entityKey"]?.ToString(),
+                    Path = args["path"]?.ToString()
+                });
 
                 case InspectionDepth.Parts:
                     var partsTok = args["parts"] as JArray;
@@ -79,18 +87,38 @@ namespace GxMcp.Worker.Services
                     {
                         Target = target,
                         RequestedParts = requestedParts,
-                        TypeFilter = typeFilter
+                        TypeFilter = typeFilter,
+                        Guid = args["guid"]?.ToString(),
+                        EntityKey = args["entityKey"]?.ToString(),
+                        Path = args["path"]?.ToString()
                     });
 
                 case InspectionDepth.Summary:
                     return _analyzeService != null
                         ? _analyzeService.Analyze(target, typeFilter)
-                        : _objectReader.Read(new ObjectReadRequest { Target = target, FullObject = true, TypeFilter = typeFilter });
+                        : _objectReader.Read(new ObjectReadRequest
+                        {
+                            Target = target,
+                            FullObject = true,
+                            TypeFilter = typeFilter,
+                            Guid = args["guid"]?.ToString(),
+                            EntityKey = args["entityKey"]?.ToString(),
+                            Path = args["path"]?.ToString()
+                        });
 
                 case InspectionDepth.Context360:
                     return _analyzeService != null
-                        ? _analyzeService.Get360Context(target, typeFilter)
-                        : _objectReader.Read(new ObjectReadRequest { Target = target, FullObject = true, TypeFilter = typeFilter });
+                        ? _analyzeService.Get360Context(target, typeFilter,
+                            args["guid"]?.ToString(), args["entityKey"]?.ToString(), args["path"]?.ToString())
+                        : _objectReader.Read(new ObjectReadRequest
+                        {
+                            Target = target,
+                            FullObject = true,
+                            TypeFilter = typeFilter,
+                            Guid = args["guid"]?.ToString(),
+                            EntityKey = args["entityKey"]?.ToString(),
+                            Path = args["path"]?.ToString()
+                        });
 
                 case InspectionDepth.Source:
                 default:
@@ -99,6 +127,10 @@ namespace GxMcp.Worker.Services
                     int? limit = args["limit"]?.ToObject<int?>();
                     string format = args["format"]?.ToString() ?? "mcp";
                     bool raw = args["raw"]?.ToObject<bool?>() ?? false;
+                    // The public read contract is a complete object read when no
+                    // part/window was requested. Keep targeted part reads lean.
+                    bool completeRead = string.IsNullOrWhiteSpace(part)
+                        && !offset.HasValue && !limit.HasValue;
                     return _objectReader.Read(new ObjectReadRequest
                     {
                         Target = target,
@@ -107,7 +139,11 @@ namespace GxMcp.Worker.Services
                         Limit = limit,
                         ClientFormat = format,
                         Minimize = raw,
-                        TypeFilter = typeFilter
+                        TypeFilter = typeFilter,
+                        FullObject = completeRead,
+                        Guid = args["guid"]?.ToString(),
+                        EntityKey = args["entityKey"]?.ToString(),
+                        Path = args["path"]?.ToString()
                     });
             }
         }

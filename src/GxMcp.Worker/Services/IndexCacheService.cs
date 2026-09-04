@@ -936,6 +936,15 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            // Some modular SDK objects expose Module but not the full Parent chain
+            // during the lite walk. Keep the module in the qualified path so identity
+            // lookup remains deterministic after a cache rebuild.
+            if (parentSegments.Count == 0 && !string.IsNullOrWhiteSpace(moduleName))
+            {
+                parentSegments.Add(moduleName);
+                parentName = moduleName;
+            }
+
             string parentPath = string.Join("/", parentSegments.Where(segment => !string.IsNullOrWhiteSpace(segment)));
             string path = parentPath;
             if (!string.IsNullOrWhiteSpace(obj?.Name))
@@ -1582,6 +1591,9 @@ namespace GxMcp.Worker.Services
             var entry = new SearchIndex.IndexEntry
             {
                 Guid = obj.Guid.ToString(),
+                EntityKey = SafeEntityKey(obj),
+                EntityTypeGuid = SafeEntityTypeGuid(obj),
+                EntityId = SafeEntityId(obj),
                 Name = obj.Name,
                 Type = obj.TypeDescriptor.Name,
                 Description = obj.Description,
@@ -1697,6 +1709,7 @@ namespace GxMcp.Worker.Services
             // CALLERS get enriched. So in lazy mode impact analysis (callers) correctly relies on
             // the live SDK cross-check rather than the index — see AnalyzeService.
             Guid objGuid = obj.Guid;
+            var objKey = obj.Key;
             Program.EnqueueBackground(() => {
                 try {
                     var kb = _buildService.KbService?.GetKB();
@@ -1705,7 +1718,8 @@ namespace GxMcp.Worker.Services
                     // dispatcher thread must not interleave them with other apartments.
                     using (SdkGate.Enter())
                     {
-                        var bgObj = kb.DesignModel.Objects.Get(objGuid);
+                        var bgObj = kb.DesignModel.Objects.Get(objKey);
+                        if (bgObj == null) bgObj = kb.DesignModel.Objects.Get(objGuid);
                         if (bgObj == null) return;
                         EnrichEdges((global::Artech.Architecture.Common.Objects.KBObject)bgObj, entry, index);
                     }
@@ -1715,6 +1729,24 @@ namespace GxMcp.Worker.Services
             MarkDirtyForKey(key);
             // Fire and forget save to disk (throttled — see ScheduleThrottledFlush)
             ScheduleThrottledFlush();
+        }
+
+        internal (string ParentName, string ParentPath, string Path, string ModuleName) ResolveHierarchyForIndex(global::Artech.Architecture.Common.Objects.KBObject obj)
+            => ResolveHierarchy(obj);
+
+        private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.ToString(); } catch { return null; }
+        }
+
+        private static string SafeEntityTypeGuid(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Type.ToString(); } catch { return null; }
+        }
+
+        private static int? SafeEntityId(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Id; } catch { return null; }
         }
 
         // ── Copy-on-write edge lists ────────────────────────────────────────────

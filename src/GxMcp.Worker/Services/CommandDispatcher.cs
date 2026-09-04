@@ -1188,6 +1188,9 @@ namespace GxMcp.Worker.Services
                     MaxResults = args?["maxResults"]?.ToObject<int?>() ?? 50,
                     // Issue #27 item 4: object scope + tunable timeout + resume cursor.
                     ObjectName = args?["objectName"]?.ToString(),
+                    ObjectGuid = args?["guid"]?.ToString(),
+                    ObjectEntityKey = args?["entityKey"]?.ToString(),
+                    ObjectPath = args?["path"]?.ToString(),
                     StartIndex = args?["startIndex"]?.ToObject<int?>() ?? 0,
                     Cursor = args?["cursor"]?.ToString(),
                     TimeoutMs = args?["timeoutMs"]?.ToObject<int?>() ?? 30000
@@ -1265,7 +1268,8 @@ namespace GxMcp.Worker.Services
             if (action == "ExtractFullObject")
             {
                 string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
-                string fullJson = _objectService.ReadFullObject(target, typeFilter);
+                string fullJson = _objectService.ReadFullObject(target, typeFilter,
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
                 try
                 {
                     string kbPath = _kbService?.GetKbPath();
@@ -1284,7 +1288,8 @@ namespace GxMcp.Worker.Services
             if (action == "ExtractSource")
             {
                 string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
-                string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter);
+                string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter,
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
                 // Phase 2: genexus_read piggyback. Attached here (the tool boundary),
                 // not inside ObjectService, so it (a) never pollutes the mcp read
                 // cache (which stores the pre-attach payload) and (b) doesn't burn
@@ -1310,7 +1315,8 @@ namespace GxMcp.Worker.Services
             {
                 var partsTok = args?["parts"] as JArray;
                 var requestedParts = partsTok?.Select(p => p.ToString()) ?? Enumerable.Empty<string>();
-                return _objectService.ReadObjectSourceParts(target, requestedParts, args?["type"]?.ToString());
+                return _objectService.ReadObjectSourceParts(target, requestedParts, args?["type"]?.ToString(),
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
             }
             if (action == "GetVariables") return _analyzeService.GetVariables(target);
             if (action == "GetAttribute") return _analyzeService.GetAttributeMetadata(target);
@@ -1332,7 +1338,7 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Object(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString());
+            if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString(), args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
             if (action == "Create")
             {
                 // Item 21 (friction 2026-05-22): dryRun=true returns the planned
@@ -1633,7 +1639,8 @@ namespace GxMcp.Worker.Services
                 return _translationsService.Import(payload);
             }
             if (action == "GetParameters") return _analyzeService.GetSignature(target, analyzeType);
-            if (action == "Get360Context" || action == "GetContext") return _analyzeService.Get360Context(target, analyzeType);
+            if (action == "Get360Context" || action == "GetContext") return _analyzeService.Get360Context(target, analyzeType,
+                args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
             if (action == "GetHierarchy") return _analyzeService.GetHierarchy(target, analyzeType);
             if (action == "GetDataContext") return _dataInsightService.GetDataContext(target);
             if (action == "GetConversionContext")
@@ -1641,7 +1648,8 @@ namespace GxMcp.Worker.Services
                 string projection = args?["projection"]?.ToString();
                 if (string.IsNullOrWhiteSpace(projection))
                     projection = (args?["verbose"]?.ToObject<bool?>() ?? false) ? "verbose" : "standard";
-                return _analyzeService.GetConversionContext(target, args?["include"] as JArray, analyzeType, projection);
+                return _analyzeService.GetConversionContext(target, args?["include"] as JArray, analyzeType, projection,
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
             }
             if (action == "GetPatternMetadata") return _patternAnalysisService.GetWWPStructure(target);
             if (action == "Summarize") return _summarizeService.Summarize(target, analyzeType);

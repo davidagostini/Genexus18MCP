@@ -14,6 +14,9 @@ namespace GxMcp.Worker.Services
         public string ClientFormat { get; set; } = "mcp";
         public bool Minimize { get; set; }
         public string TypeFilter { get; set; }
+        public string Guid { get; set; }
+        public string EntityKey { get; set; }
+        public string Path { get; set; }
         public bool FullObject { get; set; }
         public JArray BatchTargets { get; set; }
     }
