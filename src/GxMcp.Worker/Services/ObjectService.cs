@@ -2498,6 +2498,13 @@ namespace GxMcp.Worker.Services
                 && int.TryParse(match.Groups["id"].Value, out id);
         }
 
+        internal static string ResolveTargetForIdentity(string target, string guid, string entityKey, string path)
+        {
+            if (!string.IsNullOrWhiteSpace(target)) return target;
+            return !string.IsNullOrWhiteSpace(path) ? path :
+                (!string.IsNullOrWhiteSpace(entityKey) ? entityKey : guid);
+        }
+
         internal static KBObject ResolveIndexedObject(KBModel model, SearchIndex.IndexEntry entry, out string strategy)
         {
             strategy = null;
@@ -2568,7 +2575,12 @@ namespace GxMcp.Worker.Services
         public KBObject FindObject(string target, string typeFilter = null, string guid = null, string entityKey = null, string path = null)
         {
             _lastResolutionDiagnostic = null;
-            if (string.IsNullOrEmpty(target)) return null;
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                if (string.IsNullOrWhiteSpace(guid) && string.IsNullOrWhiteSpace(entityKey) && string.IsNullOrWhiteSpace(path))
+                    return null;
+                target = ResolveTargetForIdentity(target, guid, entityKey, path);
+            }
             var sw = Stopwatch.StartNew();
             var kb = _kbService.GetKB();
             if (kb == null) return null;

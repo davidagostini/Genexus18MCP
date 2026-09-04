@@ -58,6 +58,19 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(a.Type, b.Type);
         }
 
+        [Fact]
+        public void IdentityCanSupplyTargetWhenNameIsOmitted()
+        {
+            Assert.Equal("Operations/ReverseOrder",
+                ObjectService.ResolveTargetForIdentity(null, null, null, "Operations/ReverseOrder"));
+            Assert.Equal("type-guid-2213",
+                ObjectService.ResolveTargetForIdentity(null, null, "type-guid-2213", null));
+            Assert.Equal("guid-2213",
+                ObjectService.ResolveTargetForIdentity(null, "guid-2213", null, null));
+            Assert.Equal("NamedObject",
+                ObjectService.ResolveTargetForIdentity("NamedObject", "guid-ignored", null, null));
+        }
+
         [Theory]
         [InlineData("11111111-1111-1111-1111-111111111111:42")]
         [InlineData("EntityKey(11111111-1111-1111-1111-111111111111, 42)")]
