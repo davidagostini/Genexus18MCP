@@ -936,6 +936,15 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            // Some modular SDK objects expose Module but not the full Parent chain
+            // during the lite walk. Keep the module in the qualified path so identity
+            // lookup remains deterministic after a cache rebuild.
+            if (parentSegments.Count == 0 && !string.IsNullOrWhiteSpace(moduleName))
+            {
+                parentSegments.Add(moduleName);
+                parentName = moduleName;
+            }
+
             string parentPath = string.Join("/", parentSegments.Where(segment => !string.IsNullOrWhiteSpace(segment)));
             string path = parentPath;
             if (!string.IsNullOrWhiteSpace(obj?.Name))
@@ -1721,6 +1730,9 @@ namespace GxMcp.Worker.Services
             // Fire and forget save to disk (throttled — see ScheduleThrottledFlush)
             ScheduleThrottledFlush();
         }
+
+        internal (string ParentName, string ParentPath, string Path, string ModuleName) ResolveHierarchyForIndex(global::Artech.Architecture.Common.Objects.KBObject obj)
+            => ResolveHierarchy(obj);
 
         private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
         {

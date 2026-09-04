@@ -636,6 +636,7 @@ namespace GxMcp.Worker.Services
                         try { lub = obj.UserName; } catch { }
                         // Fase 1: track the delta baseline (max LastUpdate) during the walk.
                         if (lu != DateTime.MinValue) _indexCacheService.ObserveLastUpdate(lu);
+                        var hierarchy = _indexCacheService.ResolveHierarchyForIndex(obj);
 
                         liteEntries.Add(new SearchIndex.IndexEntry
                         {
@@ -646,6 +647,11 @@ namespace GxMcp.Worker.Services
                             Name = obj.Name,
                             Type = typeName,
                             Description = description,
+                            Parent = hierarchy.ParentName,
+                            ParentPath = hierarchy.ParentPath,
+                            ParentFolderPath = string.IsNullOrEmpty(hierarchy.ParentPath) ? "Root Module" : "Root Module/" + hierarchy.ParentPath,
+                            Path = hierarchy.Path,
+                            Module = hierarchy.ModuleName,
                             LastUpdate = lu,
                             CreatedAt = ca,
                             LastModifiedBy = lub,

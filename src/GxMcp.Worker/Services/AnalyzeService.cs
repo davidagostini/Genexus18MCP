@@ -966,7 +966,7 @@ namespace GxMcp.Worker.Services
                 var result = new JObject();
                 result["name"] = obj.Name;
                 result["type"] = obj.TypeDescriptor.Name;
-                result["identity"] = ObjectService.BuildObjectIdentity(obj);
+                result["identity"] = _objectService.BuildObjectIdentity(obj);
                 result["description"] = obj.Description;
 
                 // v2.8.5: ambiguity disclosure. When a name resolves across multiple
