@@ -308,10 +308,11 @@ namespace GxMcp.Gateway
 
             if (string.Equals(toolName, "genexus_api", StringComparison.OrdinalIgnoreCase))
             {
-                if (args?["dryRun"]?.ToObject<bool?>() == true) return false;
                 string? action = args?["action"]?.ToString();
-                return string.Equals(action, "routes_clone", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(action, "routes_update", StringComparison.OrdinalIgnoreCase);
+                if (!string.Equals(action, "routes_clone", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(action, "routes_update", StringComparison.OrdinalIgnoreCase)) return false;
+                // The API route contract defaults dryRun=true; only an explicit false writes.
+                return args?["dryRun"]?.ToObject<bool?>() == false;
             }
 
             if (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase))

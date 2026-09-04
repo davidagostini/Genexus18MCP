@@ -149,6 +149,33 @@
             "description": "Restore the complete API snapshot when post-save verification diverges.",
             "type": "boolean"
           },
+          "routes": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "type": "string"
+                },
+                "route": {
+                  "pattern": "^/",
+                  "type": "string"
+                },
+                "sourceMethod": {
+                  "type": "string"
+                },
+                "verb": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sourceMethod",
+                "method",
+                "route"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "sourcePrefix": {
             "description": "Source method/path prefix, e.g. inbound.",
             "type": "string"
@@ -3346,11 +3373,6 @@
           {
             "maxResults": 20,
             "pattern": "for each",
-            "typeFilter": "Procedure"
-          },
-          {
-            "path": "Operations/OrderReverse",
-            "pattern": "REVERSE",
             "typeFilter": "Procedure"
           }
         ],

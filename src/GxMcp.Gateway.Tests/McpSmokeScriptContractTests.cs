@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using Xunit;
 
 namespace GxMcp.Gateway.Tests
@@ -42,7 +44,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void McpSmokeScript_Succeeds_AgainstLiveGateway()
+        public async System.Threading.Tasks.Task McpSmokeScript_Succeeds_AgainstLiveGateway()
         {
             if (!IsWindows)
             {
@@ -58,16 +60,32 @@ namespace GxMcp.Gateway.Tests
             string script = Path.Combine(repoRoot, "scripts", "mcp_smoke.ps1");
             Assert.True(File.Exists(script), $"mcp_smoke.ps1 not found at {script}");
 
+            string gatewayExe = FindGatewayExe(repoRoot);
+            Assert.True(File.Exists(gatewayExe),
+                "Gateway exe not found. Searched bin/Debug and .test-bin/gateway — " +
+                "run 'dotnet build src/GxMcp.Gateway/GxMcp.Gateway.csproj' first.\n" +
+                "Searched:\n" + gatewayExeCandidates(repoRoot));
+
             // Launch the just-built gateway with an ephemeral port and a scratch config
             // so the test never touches the user's running instance or KB. The config
             // mirrors what doctor's smoke targets: HTTP-only loopback, no stdio.
-            int port = GetFreePort();
-            string workDir = Path.Combine(Path.GetTempPath(), "gxmcp-smoketest-" + Guid.NewGuid().ToString("N")[..8]);
-            Directory.CreateDirectory(workDir);
-            try
+            // A port can be claimed between GetFreePort and gateway startup on a busy
+            // CI runner. Retry only that bounded infrastructure race; protocol failures
+            // still fail immediately and retain the full smoke-script assertions.
+            const int maxStartupAttempts = 3;
+            var startupFailures = new List<string>();
+            for (int startupAttempt = 1; startupAttempt <= maxStartupAttempts; startupAttempt++)
             {
-                string configPath = Path.Combine(workDir, "gateway.smoke.json");
-                File.WriteAllText(configPath, $@"
+                int port = GetFreePort();
+                string workDir = Path.Combine(Path.GetTempPath(), "gxmcp-smoketest-" + Guid.NewGuid().ToString("N")[..8]);
+                Directory.CreateDirectory(workDir);
+                Process? proc = null;
+                var gatewayOutput = new StringBuilder();
+                var gatewayError = new StringBuilder();
+                try
+                {
+                    string configPath = Path.Combine(workDir, "gateway.smoke.json");
+                    File.WriteAllText(configPath, $@"
 {{
   ""Server"": {{
     ""HttpPort"": {port},
@@ -78,38 +96,55 @@ namespace GxMcp.Gateway.Tests
 }}
 ");
 
-                string gatewayExe = FindGatewayExe(repoRoot);
-                Assert.True(File.Exists(gatewayExe),
-                    "Gateway exe not found. Searched bin/Debug and .test-bin/gateway — " +
-                    "run 'dotnet build src/GxMcp.Gateway/GxMcp.Gateway.csproj' first.\n" +
-                    "Searched:\n" + gatewayExeCandidates(repoRoot));
-
-                using var proc = new Process
-                {
-                    StartInfo = new ProcessStartInfo
+                    proc = new Process
                     {
-                        FileName = gatewayExe,
-                        Arguments = string.Empty,
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        WorkingDirectory = Path.GetDirectoryName(gatewayExe)!,
+                        StartInfo = new ProcessStartInfo
+                        {
+                            FileName = gatewayExe,
+                            Arguments = string.Empty,
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true,
+                            WorkingDirectory = Path.GetDirectoryName(gatewayExe)!,
+                        }
+                    };
+                    proc.StartInfo.EnvironmentVariables["GX_CONFIG_PATH"] = configPath;
+                    // Drain output so a chatty gateway can't block on a full pipe and keep
+                    // it for diagnostics if startup fails.
+                    proc.OutputDataReceived += (_, e) =>
+                    {
+                        if (e.Data != null) gatewayOutput.AppendLine(e.Data);
+                    };
+                    proc.ErrorDataReceived += (_, e) =>
+                    {
+                        if (e.Data != null) gatewayError.AppendLine(e.Data);
+                    };
+                    bool started;
+                    try
+                    {
+                        started = proc.Start();
                     }
-                };
-                proc.StartInfo.EnvironmentVariables["GX_CONFIG_PATH"] = configPath;
-                // Drain output so a chatty gateway can't block on a full pipe.
-                proc.OutputDataReceived += (_, _) => { };
-                proc.ErrorDataReceived += (_, _) => { };
-                Assert.True(proc.Start());
-                proc.BeginOutputReadLine();
-                proc.BeginErrorReadLine();
+                    catch (Exception ex)
+                    {
+                        startupFailures.Add($"tentativa {startupAttempt}/{maxStartupAttempts}, porta {port}: " +
+                            $"falha ao iniciar ({ex.GetType().Name}: {ex.Message})");
+                        continue;
+                    }
+                    Assert.True(started);
+                    proc.BeginOutputReadLine();
+                    proc.BeginErrorReadLine();
 
-                try
-                {
                     // Wait until the HTTP listener answers (gateway startup + lease check).
-                    bool listening = WaitForHttpAsync(port, timeoutSeconds: 30).GetAwaiter().GetResult();
-                    Assert.True(listening, $"Gateway did not start listening on port {port} within 30s.");
+                    bool listening = await WaitForHttpAsync(port, timeoutSeconds: 30);
+                    if (!listening)
+                    {
+                        string exitCode = proc.HasExited ? proc.ExitCode.ToString() : "em execução";
+                        startupFailures.Add(
+                            $"tentativa {startupAttempt}/{maxStartupAttempts}, porta {port}: " +
+                            $"não respondeu em 30s (exitCode={exitCode}, stdout={gatewayOutput}, stderr={gatewayError})");
+                        continue;
+                    }
 
                     // THE CONTRACT: run the actual smoke script unmodified. If anyone
                     // tightens gateway header validation without updating the script —
@@ -125,25 +160,40 @@ namespace GxMcp.Gateway.Tests
                         WorkingDirectory = repoRoot,
                     };
                     using var smoke = Process.Start(psi)!;
+                    bool smokeExited = smoke.WaitForExit(120_000);
+                    if (!smokeExited)
+                    {
+                        try { smoke.Kill(entireProcessTree: true); } catch { /* best effort */ }
+                        smoke.WaitForExit(5_000);
+                    }
                     string stdout = smoke.StandardOutput.ReadToEnd();
                     string stderr = smoke.StandardError.ReadToEnd();
-                    smoke.WaitForExit(120_000);
 
-                    Assert.True(smoke.ExitCode == 0,
+                    Assert.True(smokeExited && smoke.ExitCode == 0,
                         "mcp_smoke.ps1 FAILED against a healthy gateway — first-party diagnostic " +
                         "script has drifted from the gateway's protocol contract.\n" +
                         "--- stdout ---\n" + stdout + "\n--- stderr ---\n" + stderr);
                     Assert.Contains("[SMOKE] PASS", stdout);
+                    return;
                 }
                 finally
                 {
-                    if (!proc.HasExited) proc.Kill(entireProcessTree: true);
+                    if (proc != null)
+                    {
+                        try
+                        {
+                            if (!proc.HasExited) proc.Kill(entireProcessTree: true);
+                        }
+                        catch { /* best-effort cleanup */ }
+                        proc.Dispose();
+                    }
+                    try { Directory.Delete(workDir, recursive: true); } catch { /* best-effort cleanup */ }
                 }
             }
-            finally
-            {
-                try { Directory.Delete(workDir, recursive: true); } catch { /* best-effort cleanup */ }
-            }
+
+            Assert.Fail(
+                "Gateway did not start listening after " + maxStartupAttempts + " attempts.\n" +
+                string.Join("\n", startupFailures));
         }
 
         private static int GetFreePort()
