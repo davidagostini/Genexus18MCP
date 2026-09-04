@@ -22,20 +22,6 @@ namespace GxMcp.Gateway
     /// </summary>
     public static class NextLegalActionsBuilder
     {
-        // Read-only tools — no natural "next step" beyond doing the work
-        // the user asked for, so we skip emission entirely.
-        private static readonly HashSet<string> _readOnlyTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "genexus_whoami",
-            "genexus_list_objects",
-            "genexus_inspect",
-            "genexus_analyze",
-            "genexus_logs",
-            "genexus_doc",
-            "genexus_recipe",
-            "genexus_kb",
-        };
-
         /// <summary>
         /// Build the suggestion array for a single tool response. Returns
         /// null when no suggestions apply.
@@ -43,7 +29,14 @@ namespace GxMcp.Gateway
         public static JArray? BuildFor(string toolName, JObject? args, JObject? responsePayload, bool isError)
         {
             if (string.IsNullOrWhiteSpace(toolName)) return null;
-            if (_readOnlyTools.Contains(toolName)) return null;
+
+            // Tools with explicit next-legal-action builders (genexus_read, genexus_query)
+            // are allowed to produce suggestions even though they are read-only.
+            if (!string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(toolName, "genexus_query", StringComparison.OrdinalIgnoreCase))
+            {
+                if (OperationClassifier.IsReadOnly(toolName, args)) return null;
+            }
 
             args ??= new JObject();
             responsePayload ??= new JObject();

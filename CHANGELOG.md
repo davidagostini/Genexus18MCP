@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added
+
+- **Type disambiguator on `genexus_structure` (Issue #131).** Added optional `type` parameter across Gateway router, Worker dispatcher, and `StructureService.GetVisualStructure`, allowing callers to explicitly target `type="Transaction"` or `type="Table"` when homonyms share a name (such as `Empresa` as both a Transaction and a Table). When untyped resolution resolves an unsupported object type, the error message now identifies the resolved type and suggests specifying `type="Transaction"` or `name="Transaction:<target>"`.
+- **Missing router-consumed parameters declared in `genexus_lifecycle` schema (Issue #131).** Declared `part`, `page`, `pageSize`, `page_size`, `notifyOnFailure`, `skipFullDeploy`, and `fastIncremental` in `tool_definitions.json` and `tools-list.response.json` for `genexus_lifecycle`, ensuring OpenAPI compliance and full schema transparency for client agents.
+- **Recipe crystallization `steps` parameter (Issue #131).** Declared `steps` array in `genexus_recipe` schema for `action="crystallize"`, enabling clients to pass ordered macro steps explicitly.
+- **Tool help documentation for multi-action tools (Issue #131).** Added comprehensive markdown guides in `ToolHelpCatalog` accessible via `genexus://kb/tool-help/<tool>` for `genexus_structure`, `genexus_layout`, `genexus_versioning`, `genexus_io`, `genexus_kb_version`, `genexus_doc`, `genexus_recipe`, and `genexus_refactor`.
+- **Typed API route persistence and rollback (PR #132).** Added typed route persistence with transactional rollback and logical source equality check for API objects. Contributed by David Agostini (@davidagostini).
+
+### Changed
+
+- **Schema property descriptions across all multi-action tools (Issue #131).** Enriched property descriptions across `genexus_layout` (12 properties), `genexus_db`, `genexus_create`, `genexus_versioning`, `genexus_io`, `genexus_kb_version`, `genexus_edit_form`, `genexus_security`, `genexus_apply_pattern`, `genexus_refactor`, and `genexus_structure`.
+- **Tool schema budget bump to 24,500 tokens (Issue #131).** Increased combined schema budget from 23,000 to 24,500 tokens in `ToolSchemaSizeTests` (measured ~24,200 tokens) to accommodate the complete set of property descriptions, undeclared parameters, and typing additions across multi-action tools.
+- **Aligned effect metadata and annotations for `genexus_doc` (Issue #131).** Set `readOnlyHint=false` and `idempotentHint=false` on `genexus_doc` because `action="wiki"` writes Markdown files to disk; updated description to reference dependency graph generation instead of sequence diagrams.
+- **Removed unsupported `run` action from `genexus_recipe` enum (Issue #131).** Cleaned up `genexus_recipe` action enum and error hints by removing dead `run` action.
+- **Documented MCP update and harness synchronization in `AGENTS.md` (Issue #130).** Added preflight checks, decision matrix, operational side-effects/safety boundaries, checkout-scoped process management rules, and portable `<repoRoot>` placeholders to `AGENTS.md`.
+
+### Fixed
+
+- **`dryRun` propagation in `genexus_lifecycle action="index"` (Issue #131).** Fixed `SystemRouter.ConvertToolCall` to forward `dryRun` to the worker for the `index` action so indexing plans can be previewed without executing full rescan.
+- **Semantic cache invalidation for `genexus_structure action="remove_attribute"` (Issue #131).** Registered `remove_attribute` in `Program.ToolPayload.cs` under `genexus_structure`, preventing stale cached read responses after attribute removal.
+- **Crash retry safety on multi-action tools (Issue #131).** Guarded `ShouldRetryWorkerCrash` in `Program.WorkerLifecycle.cs` with action-level inspection via `IsRetrySafeOperation`, ensuring multi-action tools (`genexus_structure`) only retry on safe read operations (`get_visual`, `get_indexes`, `get_logic`, `check_subtypes`) and never retry mutating writes after a worker crash.
+- **Unified read-only classification across internal services (Issue #131).** Extracted `OperationClassifier` to unify read-only detection across `MacroSuggestionService` and `NextLegalActionsBuilder`, eliminating dead tools (`genexus_logs`, `genexus_history`) and correctly classifying multi-action tools (`genexus_doc`, `genexus_recipe`, `genexus_kb`, `genexus_versioning`, `genexus_telemetry`) by action.
+- **Ephemeral port race and abort signal cleanup in tests and IDE client (PR #132).** Added retry resilience for port bind races in smoke test harness and improved abort signal listener cleanup in IDE client. Contributed by David Agostini (@davidagostini).
+
 ## v2.55.0 - 2026-09-04
 
 ### Added

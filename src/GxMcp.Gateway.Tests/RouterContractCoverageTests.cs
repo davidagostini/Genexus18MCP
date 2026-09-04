@@ -1,3 +1,6 @@
+using System;
+using System.IO;
+using System.Linq;
 using GxMcp.Gateway.Routers;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -241,6 +244,77 @@ namespace GxMcp.Gateway.Tests
             Assert.Null(operations.ConvertToolCall("unknown", new JObject()));
             Assert.Null(new AnalyzeRouter().ConvertToolCall("unknown", new JObject()));
             Assert.Null(new SystemRouter().ConvertToolCall("unknown", new JObject()));
+        }
+
+        private static string FindToolDefinitionsJson()
+        {
+            string beside = Path.Combine(AppContext.BaseDirectory, "tool_definitions.json");
+            if (File.Exists(beside)) return beside;
+            string dir = AppContext.BaseDirectory;
+            for (int i = 0; i < 8; i++)
+            {
+                string candidate = Path.Combine(dir, "GxMcp.Gateway", "tool_definitions.json");
+                if (File.Exists(candidate)) return candidate;
+                candidate = Path.Combine(dir, "src", "GxMcp.Gateway", "tool_definitions.json");
+                if (File.Exists(candidate)) return candidate;
+                var parent = Directory.GetParent(dir);
+                if (parent == null) break;
+                dir = parent.FullName;
+            }
+            throw new FileNotFoundException("Could not locate tool_definitions.json from " + AppContext.BaseDirectory);
+        }
+
+        [Fact]
+        public void Lifecycle_all_routed_parameters_are_declared_in_schema()
+        {
+            var path = FindToolDefinitionsJson();
+            var tools = JArray.Parse(File.ReadAllText(path));
+            var lifecycle = tools.FirstOrDefault(t => (string?)t["name"] == "genexus_lifecycle");
+            Assert.NotNull(lifecycle);
+            var props = (JObject?)lifecycle!["inputSchema"]?["properties"];
+            Assert.NotNull(props);
+
+            string[] routerConsumedParams =
+            {
+                "action", "mode", "target", "environment", "includeCallees", "buildPlanCap",
+                "notifyOnFailure", "skipFullDeploy", "fastIncremental", "dryRun", "deploy",
+                "callers", "callerCap", "part", "code", "limit", "snapshotPath", "force",
+                "page", "pageSize", "page_size", "wait", "since"
+            };
+
+            foreach (var param in routerConsumedParams)
+            {
+                Assert.True(props!.ContainsKey(param), $"genexus_lifecycle schema is missing router-consumed parameter '{param}'");
+            }
+        }
+
+        [Fact]
+        public void Structure_type_disambiguator_is_declared_in_schema()
+        {
+            var path = FindToolDefinitionsJson();
+            var tools = JArray.Parse(File.ReadAllText(path));
+            var structure = tools.FirstOrDefault(t => (string?)t["name"] == "genexus_structure");
+            Assert.NotNull(structure);
+            var props = (JObject?)structure!["inputSchema"]?["properties"];
+            Assert.NotNull(props);
+            Assert.True(props!.ContainsKey("type"), "genexus_structure schema is missing 'type' disambiguator parameter");
+        }
+
+        [Fact]
+        public void Recipe_macro_steps_declared_and_run_action_removed_from_schema()
+        {
+            var path = FindToolDefinitionsJson();
+            var tools = JArray.Parse(File.ReadAllText(path));
+            var recipe = tools.FirstOrDefault(t => (string?)t["name"] == "genexus_recipe");
+            Assert.NotNull(recipe);
+            var props = (JObject?)recipe!["inputSchema"]?["properties"];
+            Assert.NotNull(props);
+            Assert.True(props!.ContainsKey("steps"), "genexus_recipe schema is missing 'steps' parameter");
+
+            var actions = ((JArray?)props["action"]?["enum"])?.Select(x => x.ToString()).ToList();
+            Assert.NotNull(actions);
+            Assert.DoesNotContain("run", actions!);
+            Assert.Contains("crystallize", actions!);
         }
 
         private static void AssertRoute(object? result, string module, string action)

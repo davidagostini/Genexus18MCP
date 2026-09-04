@@ -97,6 +97,27 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ConvertToolCall_LifecycleIndex_PropagatesDryRun()
+        {
+            var router = new SystemRouter();
+            var args = new JObject
+            {
+                ["action"] = "index",
+                ["force"] = true,
+                ["dryRun"] = true
+            };
+
+            var routed = router.ConvertToolCall("genexus_lifecycle", args);
+            Assert.NotNull(routed);
+
+            var jobj = JObject.FromObject(routed);
+            Assert.Equal("KB", jobj["module"]?.ToString());
+            Assert.Equal("BulkIndex", jobj["action"]?.ToString());
+            Assert.True(jobj["force"]?.Value<bool>());
+            Assert.True(jobj["dryRun"]?.Value<bool>());
+        }
+
+        [Fact]
         public void AsyncLifecycleBuild_DryRunIsNotEligibleForWorkerDispatch()
         {
             Assert.True(Program.IsLifecycleBuildDryRun(new JObject { ["dryRun"] = true }));

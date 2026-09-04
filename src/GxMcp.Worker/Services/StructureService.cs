@@ -1912,11 +1912,11 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string GetVisualStructure(string targetName)
+        public string GetVisualStructure(string targetName, string typeFilter = null)
         {
             try {
-                Logger.Info($"[StructureService] Loading visual structure for: {targetName}");
-                var obj = _objectService.FindObject(targetName);
+                Logger.Info($"[StructureService] Loading visual structure for: {targetName} (typeFilter={typeFilter})");
+                var obj = _objectService.FindObject(targetName, typeFilter);
                 if (obj == null) return HealingService.FormatNotFoundError(targetName, _objectService.GetKbService().GetIndexCache().GetIndex());
                 
                 Logger.Info($"[StructureService] Found object: {obj.Name} ({obj.TypeDescriptor.Name})");
@@ -1940,16 +1940,22 @@ namespace GxMcp.Worker.Services
                     result["children"] = SerializeTableStructure(tbl);
                 }
                 else {
-                    Logger.Error($"[StructureService] Invalid object type for visual structure: {obj.TypeDescriptor.Name}");
+                    string resolvedType = obj.TypeDescriptor.Name;
+                    Logger.Error($"[StructureService] Invalid object type for visual structure: {resolvedType}");
                     return Models.McpResponse.Err(
                         code: "UnsupportedObjectType",
-                        message: "Visual structure is available only for Transaction, Table, Group, or SDT objects.",
-                        hint: "Use genexus_analyze to inspect this object type.",
+                        message: $"Visual structure is available only for Transaction, Table, Group, or SDT objects. Target '{targetName}' resolved to '{resolvedType}'.",
+                        hint: $"Specify type=\"Transaction\" or use name=\"Transaction:{targetName}\" to disambiguate homonyms, or use genexus_analyze to inspect this {resolvedType}.",
                         target: targetName,
-                        nextSteps: new Newtonsoft.Json.Linq.JArray(Models.McpResponse.NextStep(
-                            tool: "genexus_analyze",
-                            args: new Newtonsoft.Json.Linq.JObject { ["name"] = targetName },
-                            why: "Returns a summary of the object including its type.")));
+                        nextSteps: new Newtonsoft.Json.Linq.JArray(
+                            Models.McpResponse.NextStep(
+                                tool: "genexus_structure",
+                                args: new Newtonsoft.Json.Linq.JObject { ["name"] = targetName, ["type"] = "Transaction" },
+                                why: "Disambiguate to the Transaction of the same name if one exists."),
+                            Models.McpResponse.NextStep(
+                                tool: "genexus_analyze",
+                                args: new Newtonsoft.Json.Linq.JObject { ["name"] = targetName },
+                                why: "Returns a summary of the object including its type.")));
                 }
 
                 result["_meta"] = new JObject

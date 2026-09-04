@@ -276,7 +276,108 @@ namespace GxMcp.Gateway
                 "## Examples\n" +
                 "- `{ action: 'optimize_analyze' }` — every transaction with at least one For each in the KB.\n" +
                 "- `{ action: 'optimize_suggest', target: 'Aluno' }` — covering DDL for the hottest Where signatures on `Aluno`.\n" +
-                "- `{ action: 'optimize_report', format: 'markdown' }` — paste into a code review.\n"
+                "- `{ action: 'optimize_report', format: 'markdown' }` — paste into a code review.\n",
+
+            ["genexus_structure"] =
+                "# genexus_structure\n\n" +
+                "Read or write the structure/data-model of GeneXus objects.\n\n" +
+                "## Actions\n" +
+                "- `get_visual` — returns logical hierarchy of Transaction levels/attributes or SDT structure. Use `type` (e.g. `Transaction`) to disambiguate name collisions.\n" +
+                "- `update_visual` — replace complete logical structure of a Transaction or SDT. Atomic snapshot, verification, and rollback on divergence.\n" +
+                "- `move_attribute` — reorder an attribute within a Transaction level using `before`, `after`, or `position`. Nested levels supported via `levelPath`.\n" +
+                "- `remove_attribute` — remove an attribute from a Transaction level by name.\n" +
+                "- `get_indexes` / `create_index` / `drop_index` — inspect and manage indexes on physical tables or transactions.\n" +
+                "- `set_attribute` — modify global attribute metadata (Domain, Formula, Description). Note: does not alter Transaction level composition; use update_visual/move_attribute/remove_attribute for that.\n" +
+                "- `set_level` — update Transaction level properties such as descriptionAttribute.\n" +
+                "- `set_domain` — define or alter a Domain, including enumValues.\n" +
+                "- `get_logic` — extract rules and events summary for a Transaction.\n" +
+                "- `update_group` — manage subtype group members and relationships.\n" +
+                "- `check_subtypes` — validate subtype consistency and detect circular or misconfigured subtype relations.\n\n" +
+                "## Concurrency & Safety\n" +
+                "All mutating operations support `dryRun: true`, `baseVersion` / `expectedVersion` optimistic locking, and `rollbackOnFailure: true`.\n",
+
+            ["genexus_layout"] =
+                "# genexus_layout\n\n" +
+                "Inspect and modify WebForm and layout control trees.\n\n" +
+                "## Actions\n" +
+                "- `get_tree` — dump hierarchical control tree for a WebPanel or Transaction WebForm.\n" +
+                "- `find_controls` — search controls by name, caption, or query string.\n" +
+                "- `list_controls` — list all controls with type and key attributes.\n" +
+                "- `set_property` — set single property on a layout control (Caption, Visible, Enabled, Class).\n" +
+                "- `set_properties` — batch property updates via `changes: [{control, propertyName, value}]`.\n" +
+                "- `inspect_surface` — analyze layout structure, grid bindings, and responsive layout rows.\n" +
+                "- `get_preview` — get visual representation or HTML mockup preview.\n" +
+                "- `scan_mutators` — inspect potential mutations and event-binding risks.\n" +
+                "- `add_printblock` / `rename_printblock` / `delete_printblock` — manage Procedure printblocks.\n" +
+                "- `design_system` — inspect applied design system tokens and styling.\n",
+
+            ["genexus_versioning"] =
+                "# genexus_versioning\n\n" +
+                "KB version history, git integration, and rollback umbrella.\n\n" +
+                "## Actions\n" +
+                "- `history_list` — list saved versions and timestamps for an object.\n" +
+                "- `history_get` — retrieve source or XML of a specific historic versionId.\n" +
+                "- `history_save` — explicitly snapshot current object state into local history.\n" +
+                "- `history_restore` — restore an object to a prior snapshot or version; pass `discard: true` for IDE 'Discard changes' parity.\n" +
+                "- `undo` — revert the last N edits performed via MCP.\n" +
+                "- `time_travel` — recover object bytes from past git commits (`at: '<sha/ISO>'`).\n" +
+                "- `blame` — git blame annotations for object parts or files.\n" +
+                "- `diff` — compute textual diff between versions or arbitrary text chunks (`mode: textVsText|currentVsText`).\n" +
+                "- `diff_generated` — diff generated code against last build or git HEAD.\n",
+
+            ["genexus_io"] =
+                "# genexus_io\n\n" +
+                "Asset management, file I/O, and part exchange umbrella.\n\n" +
+                "## Actions\n" +
+                "- `asset_find` — search files in KB or target directories matching a glob `pattern`.\n" +
+                "- `asset_read` — read asset file content (text or binary bytes up to `maxBytes`).\n" +
+                "- `asset_write` — write or update asset files using `contentBase64`.\n" +
+                "- `export_part` — export a single object part (e.g. Source, Rules) to an external file.\n" +
+                "- `import_part` — import object part content from a file.\n" +
+                "- `export_unified` — export complete object envelope as a portable JSON file.\n" +
+                "- `screenshot_publish` — publish screenshot PNG into `.gx/published-screenshots`.\n" +
+                "- `ocr` — optical character recognition on image assets.\n",
+
+            ["genexus_kb_version"] =
+                "# genexus_kb_version\n\n" +
+                "Manage KB model versions and development branches via the SDK's KBVersionHelper.\n\n" +
+                "## Actions\n" +
+                "- `list` — enumerate all versions and branches in the KB version tree.\n" +
+                "- `freeze` — freeze current version into an immutable baseline (`name`, `description`, `parentVersion`).\n" +
+                "- `branch` — create a new parallel branch from a parent version (`name`, `includeEnvironments`).\n" +
+                "- `set_active` — switch the active development version/branch (`targetVersion`, `autoUpdate`).\n" +
+                "- `revert` — revert working model changes back to a baseline version.\n",
+
+            ["genexus_doc"] =
+                "# genexus_doc\n\n" +
+                "Generate structured documentation and visual assets for Knowledge Base objects.\n\n" +
+                "## Actions\n" +
+                "- `wiki` — generate complete Markdown wiki pages for target objects and modules. Writes documentation files to disk under the documentation target directory.\n" +
+                "- `visualize` — generate dependency and call graphs (Mermaid / visual format) for target objects.\n" +
+                "- `health` — compile a KB-wide or object-specific health report evaluating code metrics, dead code, and documentation coverage.\n\n" +
+                "## Operational Notes\n" +
+                "`action=wiki` writes documentation files to disk; it is not purely in-memory read-only. Use `genexus_analyze` for structured programmatic inspections.\n",
+
+            ["genexus_recipe"] =
+                "# genexus_recipe\n\n" +
+                "Named playbooks, macro discovery, and repeatable workflow automation.\n\n" +
+                "## Actions\n" +
+                "- `list` — list all available recipes, built-in playbooks, and crystallized user macros.\n" +
+                "- `describe` — display detailed step documentation and prerequisites for a named recipe (`name: 'wwp_on_transaction'`).\n" +
+                "- `suggest_macro` — analyze recent session command telemetry to detect repeated multi-step patterns worthy of automation.\n" +
+                "- `crystallize` — convert an observed or explicit sequence of tool calls (`steps`) into a named, permanent recipe (`macroName`, `description`).\n",
+
+            ["genexus_refactor"] =
+                "# genexus_refactor\n\n" +
+                "Automated refactoring operations across Knowledge Base objects.\n\n" +
+                "## Actions\n" +
+                "- `RenameObject` — rename a KBObject and automatically patch references across all calling objects. Use `type` (e.g. `WebPanel`, `Transaction`) when names are shared.\n" +
+                "- `RenameAttribute` — rename an attribute and patch occurrences in structures, rules, and sources.\n" +
+                "- `RenameVariable` — rename a variable within a specific object (`objectName`).\n" +
+                "- `ExtractProcedure` — extract a highlighted code block (`code`) into a newly created Procedure (`procedureName`), wiring parameters automatically.\n" +
+                "- `ExtractSubroutine` — extract code into a local Subroutine (`subroutineName`).\n" +
+                "- `WWPSetCondition` — set conditions on WorkWithPlus grid or form controls.\n\n" +
+                "Always run with `dryRun: true` first to review affected call sites and projected diffs.\n"
         };
 
         internal static string? Get(string toolName)

@@ -50,24 +50,33 @@ Optional response-shaping arguments for list-heavy tools:
 | `genexus_query` | active | `Search -> Query` |
 | `genexus_list_objects` | active | `List -> Objects` |
 | `genexus_read` | active | `Read -> ExtractSource`; `targets[]` plural form routes to `Batch -> BatchRead` |
-| `genexus_batch_read` | **removed (v2.0.0)** | superseded by `genexus_read` with `targets[]` |
 | `genexus_edit` | active | `Write`, `SemanticOps -> Apply` (mode=ops), `JsonPatch -> Apply` (mode=patch + array), or legacy `Patch -> Apply` (mode=patch + string); `targets[]` plural form routes to `Batch -> MultiEdit` |
-| `genexus_batch_edit` | **removed (v2.0.0)** | superseded by `genexus_edit` with `targets[]` |
 | `genexus_inspect` | active | `Analyze -> GetConversionContext` |
 | `genexus_analyze` | active | `Analyze`, `Linter`, or `UI` depending on mode |
-| `genexus_summarize` | active | `Analyze -> Summarize` |
-| `genexus_inject_context` | active | `Analyze -> InjectContext` |
-| `genexus_lifecycle` | active | `Build`, `KB`, or `Validation` depending on action |
-| `genexus_forge` | partial | `Forge`, `Conversion`, and `Pattern` are now routed, but generation quality is still basic |
-| `genexus_test` | active | `Test -> Run` |
-| `genexus_get_sql` | active | `Analyze -> GetSQL` |
-| `genexus_create_object` | active | `Object -> Create` |
-| `genexus_refactor` | active | `Refactor -> RenameAttribute | RenameVariable | RenameObject | ExtractProcedure` |
+| `genexus_lifecycle` | active | `Build`, `KB`, or `Validation` depending on action (specify, compile_check, build, rebuild, index, status, result, reorg, validate) |
+| `genexus_create` | active | Object creation umbrella: Transaction, Procedure, WebPanel, SDT, API, Domain, Popup, SDPanel, SaveAs, Template, `object_atomic` |
+| `genexus_structure` | active | `Structure -> GetVisualStructure | UpdateVisualStructure | GetVisualIndexes | GetLogicStructure | CheckSubtypes`; supports `type` disambiguation, `remove_attribute`, `move_attribute` |
+| `genexus_refactor` | active | `Refactor -> RenameObject | RenameAttribute | RenameVariable | ExtractProcedure | ExtractSubroutine | WWPSetCondition` |
 | `genexus_format` | active | `Formatting -> Format` |
-| `genexus_properties` | active | `Property -> Get | Set` |
-| `genexus_history` | active | `History -> List | Get_Source | Save | Restore` |
-| `genexus_structure` | active | `Structure -> GetVisualStructure | UpdateVisualStructure | GetVisualIndexes | GetLogicStructure` |
+| `genexus_properties` | active | `Property -> Get | Set | Move` |
+| `genexus_versioning` | active | Versioning umbrella: `History -> List | Get_Source | Save | Restore`, `Undo`, `TimeTravel`, `Blame`, `Diff` |
+| `genexus_io` | active | IO umbrella: `Asset -> Find | Read | Write`, `Object -> ExportText | ImportText`, `Export -> Unified`, `ScreenshotPublish` |
+| `genexus_db` | active | Database umbrella: `DbDrift`, `DbOptimize`, `Analyze -> GetSQL / GetSqlForNavigation / GenerateSampleData`, `Types`, `ReorgImpact` |
+| `genexus_layout` | active | WebForm control tree, layout properties, printblock management |
+| `genexus_edit_form` | active | Semantic WebForm element manipulation |
+| `genexus_apply_pattern` | active | Pattern application and WorkWithPlus action group configuration |
+| `genexus_wwp` | active | WorkWithPlus grid actions and action groups |
+| `genexus_security` | active | `Security -> audit_gam | scan_secrets | scan_native` (native SDK scanner) |
+| `genexus_kb` | active | Multi-KB pool management, startup object, and environment switching |
+| `genexus_kb_version` | active | SDK `KBVersionHelper` model version tree and branch management |
+| `genexus_gam` | active | SDK `IIntegratedSecurityService` GAM provisioning and deploy |
+| `genexus_transfer` | active | Native XPZ export and import |
+| `genexus_deploy` | active | Application deployment targets and execution |
 | `genexus_doc` | active | `Wiki`, `Visualizer`, or `Health` depending on action |
+| `genexus_recipe` | active | Named playbooks, macro suggestion, and crystallization |
+| `genexus_generator_reference` | active | Native typed .NET generator references |
+| `genexus_data_view` | active | Native typed Transaction + Data View authoring |
+| `genexus_whoami` | active | KB context, version, health, and playbook/skills discovery |
 
 ## Resources
 

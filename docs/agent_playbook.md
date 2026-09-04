@@ -77,7 +77,7 @@ validation cycle:
 ### Worker reload and known flakes
 
 After editing Worker code, reload without restarting the MCP client with
-`genexus_worker_reload mode=hard sourceDir=C:\Projetos\Genexus18MCP\src\GxMcp.Worker\bin\Debug`.
+`genexus_worker_reload mode=hard sourceDir=<repoRoot>\src\GxMcp.Worker\bin\Debug`.
 Use `genexus_worker_reload mode=soft force=true` only when the Worker is wedged.
 The gateway pipe can become stale after reload; reconnect `/mcp` once if the
 next call reports a crashed or exited Worker.
@@ -119,6 +119,10 @@ These notes explain when an agent should reach for the newer capabilities.
   a suggested call but does not dispatch it.
 - **`genexus_ai_complete context=<prompt>`** — uses the configured
   OpenAI-compatible completion endpoint, or returns `AiEndpointNotConfigured`.
+- **`genexus_structure action=get_visual name=<target> type=Transaction`** —
+  disambiguates Transaction from same-named Table or WebPanel homonyms. Write actions
+  (`remove_attribute`, `move_attribute`, `update_visual`) are never retried across
+  worker crashes.
 
 ### History, testing, patterns, and cross-KB work
 

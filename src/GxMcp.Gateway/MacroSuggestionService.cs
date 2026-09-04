@@ -22,22 +22,7 @@ namespace GxMcp.Gateway
     //   6. Generate proposedName from tool verbs + constant discriminators.
     internal sealed class MacroSuggestionService
     {
-        // Tools whose calls don't mutate the KB — sequences of only these are not a
-        // candidate macro (likely investigation, not a workflow).
-        private static readonly HashSet<string> ReadOnlyTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "genexus_query",
-            "genexus_list_objects",
-            "genexus_read",
-            "genexus_inspect",
-            "genexus_analyze",
-            "genexus_whoami",
-            "genexus_recipe",
-            "genexus_doc",
-            "genexus_logs",
-            "genexus_history",
-            "genexus_doctor",
-        };
+
 
         private readonly OperationTracker _tracker;
         private readonly string _userMacroDir;
@@ -88,7 +73,7 @@ namespace GxMcp.Gateway
                     if (nonOverlapping.Count < minRepetitions) continue;
 
                     // Skip shapes whose every tool is read-only.
-                    if (nonOverlapping[0].All(s => ReadOnlyTools.Contains(s.ToolName))) continue;
+                    if (nonOverlapping[0].All(s => OperationClassifier.IsReadOnly(s.ToolName, s.ToolArguments))) continue;
 
                     var candidate = BuildCandidate(nonOverlapping);
                     if (candidate != null) candidates.Add(candidate);

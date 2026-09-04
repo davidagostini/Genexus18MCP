@@ -1799,7 +1799,7 @@ namespace GxMcp.Gateway
                                 {
                                     ["status"] = "Error",
                                     ["error"] = $"Unknown action '{action}'.",
-                                    ["hint"] = "Supported: list, describe, run, suggest_macro, crystallize."
+                                    ["hint"] = "Supported: list, describe, suggest_macro, crystallize."
                                 };
                             }
                             else

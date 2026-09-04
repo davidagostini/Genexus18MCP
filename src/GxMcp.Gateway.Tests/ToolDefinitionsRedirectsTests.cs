@@ -108,7 +108,9 @@ namespace GxMcp.Gateway.Tests
             var actions = (JArray)t!["inputSchema"]!["properties"]!["action"]!["enum"]!;
             var actionNames = actions.Select(x => x.ToString()).ToList();
             Assert.Contains("list", actionNames);
-            Assert.Contains("run", actionNames);
+            Assert.DoesNotContain("run", actionNames);
+            Assert.Contains("crystallize", actionNames);
+            Assert.Contains("suggest_macro", actionNames);
         }
 
         [Fact]

@@ -341,9 +341,29 @@ namespace GxMcp.Gateway
         private static readonly HashSet<string> RetrySafeReadTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "genexus_read", "genexus_list_objects", "genexus_inspect", "genexus_query",
-            "genexus_search_source", "genexus_analyze", "genexus_structure", "genexus_navigation",
+            "genexus_search_source", "genexus_analyze", "genexus_navigation",
             "genexus_whoami", "genexus_doctor"
         };
+
+        private static readonly HashSet<string> StructureReadOnlyActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "get_visual", "get_indexes", "get_logic", "check_subtypes"
+        };
+
+        internal static bool IsRetrySafeOperation(string toolName, JObject? toolArgs)
+        {
+            if (string.IsNullOrWhiteSpace(toolName)) return false;
+
+            if (RetrySafeReadTools.Contains(toolName)) return true;
+
+            if (string.Equals(toolName, "genexus_structure", StringComparison.OrdinalIgnoreCase))
+            {
+                string? action = toolArgs?["action"]?.ToString();
+                return !string.IsNullOrWhiteSpace(action) && StructureReadOnlyActions.Contains(action);
+            }
+
+            return false;
+        }
 
         private static bool IsWorkerCrashEnvelope(JObject workerResponse)
         {
@@ -353,11 +373,10 @@ namespace GxMcp.Gateway
                    msg.IndexOf("crashed/exited", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static bool ShouldRetryWorkerCrash(JObject workerResponse, string toolName, int attempt)
+        internal static bool ShouldRetryWorkerCrash(JObject workerResponse, string toolName, JObject? toolArgs, int attempt)
         {
             return attempt == 1
-                && !string.IsNullOrEmpty(toolName)
-                && RetrySafeReadTools.Contains(toolName)
+                && IsRetrySafeOperation(toolName, toolArgs)
                 && IsWorkerCrashEnvelope(workerResponse);
         }
 
@@ -451,7 +470,7 @@ namespace GxMcp.Gateway
                 {
                     var workerResponse = pending.ParsedResponse
                         ?? JObject.Parse(await pending.CompletionSource.Task.ConfigureAwait(false));
-                    if (ShouldRetryWorkerCrash(workerResponse, toolName, workerAttempt))
+                    if (ShouldRetryWorkerCrash(workerResponse, toolName, toolArgs, workerAttempt))
                     {
                         Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");
                         await Task.Delay(750).ConfigureAwait(false);
@@ -494,7 +513,7 @@ namespace GxMcp.Gateway
                 {
                     var workerResponse = pending.ParsedResponse
                         ?? JObject.Parse(await pending.CompletionSource.Task);
-                    if (ShouldRetryWorkerCrash(workerResponse, toolName, workerAttempt))
+                    if (ShouldRetryWorkerCrash(workerResponse, toolName, toolArgs, workerAttempt))
                     {
                         Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");
                         await Task.Delay(750).ConfigureAwait(false);

@@ -64,6 +64,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_structure", "set_domain")]
         [InlineData("genexus_structure", "update_group")]
         [InlineData("genexus_structure", "move_attribute")]
+        [InlineData("genexus_structure", "remove_attribute")]
         [InlineData("genexus_layout", "set_property")]
         [InlineData("genexus_layout", "set_properties")]
         [InlineData("genexus_layout", "rename_printblock")]

@@ -1898,7 +1898,11 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Structure(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "GetVisualStructure") return _structureService.GetVisualStructure(target);
+            if (action == "GetVisualStructure")
+            {
+                string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
+                return _structureService.GetVisualStructure(target, typeFilter);
+            }
             if (action == "UpdateVisualStructure")
             {
                 var structResp = _structureService.UpdateVisualStructure(target, payload,

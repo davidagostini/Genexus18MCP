@@ -150,7 +150,12 @@ namespace GxMcp.Gateway.Tests
             //   2026-09-04 (modular object identity): 22500 → 23000 for native
             //   GUID, EntityKey, and qualified path resolution across genexus_read,
             //   genexus_inspect, and genexus_search_source. Measured ~22782; ~218 headroom.
-            Assert.True(approxTokens < 23000, $"tool_definitions.json is ~{approxTokens} tokens; budget 23000.");
+            //   2026-09-04 (Issue #131 multi-action completeness & descriptions): 23000 → 24500
+            //   for undeclared lifecycle router parameters (part, page, pageSize, notifyOnFailure,
+            //   skipFullDeploy, fastIncremental), structure type parameter, recipe steps array,
+            //   and comprehensive property descriptions across layout, edit_form, refactor,
+            //   apply_pattern, versioning, create, security, and structure. Measured ~24200; ~300 headroom.
+            Assert.True(approxTokens < 24500, $"tool_definitions.json is ~{approxTokens} tokens; budget 24500.");
         }
     }
 }

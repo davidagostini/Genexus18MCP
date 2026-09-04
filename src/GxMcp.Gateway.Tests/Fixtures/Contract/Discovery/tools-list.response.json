@@ -239,15 +239,19 @@
             "type": "string"
           },
           "actionName": {
+            "description": "Name of the action to add, update, or remove.",
             "type": "string"
           },
           "confirmTitle": {
+            "description": "Confirmation dialog title.",
             "type": "string"
           },
           "confirmation": {
+            "description": "Confirmation message prompt.",
             "type": "string"
           },
           "description": {
+            "description": "Action tooltip / description text.",
             "type": "string"
           },
           "dryRun": {
@@ -256,12 +260,15 @@
             "type": "boolean"
           },
           "enabledWhen": {
+            "description": "Condition expression for action enablement.",
             "type": "string"
           },
           "group": {
+            "description": "Action group name (e.g. TableActions).",
             "type": "string"
           },
           "icon": {
+            "description": "Action icon name or class.",
             "type": "string"
           },
           "kb": {
@@ -282,6 +289,7 @@
             "type": "string"
           },
           "newGroup": {
+            "description": "move_action: destination action group.",
             "type": "string"
           },
           "pattern": {
@@ -289,10 +297,12 @@
             "type": "string"
           },
           "position": {
+            "description": "zero-based index among actions in group.",
             "minimum": 0,
             "type": "integer"
           },
           "procedure": {
+            "description": "Target Procedure to execute on action click.",
             "type": "string"
           },
           "reapply": {
@@ -301,6 +311,7 @@
             "type": "boolean"
           },
           "selection": {
+            "description": "Execution scope: current (single record) or multiple.",
             "enum": [
               "current",
               "multiple"
@@ -317,6 +328,7 @@
             "type": "boolean"
           },
           "visibleWhen": {
+            "description": "Condition expression for action visibility.",
             "type": "string"
           }
         },
@@ -659,6 +671,7 @@
             "type": "object"
           },
           "baseVersion": {
+            "description": "Optimistic concurrency versionToken for atomic create/update.",
             "type": "string"
           },
           "basedOn": {
@@ -682,6 +695,7 @@
             "type": "integer"
           },
           "description": {
+            "description": "Human-readable description / title of the object.",
             "type": "string"
           },
           "dryRun": {
@@ -737,6 +751,7 @@
             "type": "string"
           },
           "name": {
+            "description": "Name of the object to create, clone, or update.",
             "type": "string"
           },
           "newName": {
@@ -799,10 +814,12 @@
             "type": "string"
           },
           "type": {
+            "description": "Object type to create (Transaction, Procedure, WebPanel, SDT, API, Domain, Dashboard, Folder, Module).",
             "type": "string"
           },
           "updateExisting": {
             "default": false,
+            "description": "object_atomic: allow updating existing object if it already exists.",
             "type": "boolean"
           },
           "validate": {
@@ -1008,6 +1025,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Database operation to perform.",
             "enum": [
               "drift_check",
               "drift_report",
@@ -1195,11 +1213,11 @@
     {
       "annotations": {
         "destructiveHint": false,
-        "idempotentHint": true,
+        "idempotentHint": false,
         "openWorldHint": false,
-        "readOnlyHint": true
+        "readOnlyHint": false
       },
-      "description": "Use to generate structured docs (wiki, sequence diagrams, health reports). Don't use for programmatic analysis (see genexus_analyze) or source (see genexus_read).",
+      "description": "Use to generate structured docs (wiki, dependency graph, health reports). Don't use for programmatic analysis (see genexus_analyze) or source (see genexus_read).",
       "inputSchema": {
         "examples": [
           {
@@ -1212,6 +1230,7 @@
         ],
         "properties": {
           "action": {
+            "description": "wiki: generate markdown docs; visualize: generate dependency graph; health: produce health report.",
             "enum": [
               "wiki",
               "visualize",
@@ -1220,7 +1239,7 @@
             "type": "string"
           },
           "target": {
-            "description": "Object or domain name.",
+            "description": "Object or domain name (required for wiki/visualize).",
             "type": "string"
           }
         },
@@ -1632,24 +1651,30 @@
             "type": "string"
           },
           "caption": {
+            "description": "add_textblock/add_button: caption text.",
             "type": "string"
           },
           "controlId": {
+            "description": "set_visibility/remove_control: control ID to target.",
             "type": "string"
           },
           "controlIds": {
+            "description": "wrap_in_fieldset: list of control IDs to wrap inside the fieldset.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "dryRun": {
+            "description": "Preview form modifications without persisting.",
             "type": "boolean"
           },
           "event": {
+            "description": "add_button: event name to trigger on click.",
             "type": "string"
           },
           "format": {
+            "description": "add_textblock: format (Text or HTML).",
             "enum": [
               "Text",
               "HTML"
@@ -1661,12 +1686,15 @@
             "type": "string"
           },
           "legend": {
+            "description": "wrap_in_fieldset: legend text for the fieldset container.",
             "type": "string"
           },
           "name": {
+            "description": "Target WebPanel or Transaction name.",
             "type": "string"
           },
           "parent": {
+            "description": "Parent control ID to insert the new control into.",
             "type": "string"
           },
           "position": {
@@ -1674,6 +1702,7 @@
             "type": "string"
           },
           "visible": {
+            "description": "set_visibility: visibility state (true or false).",
             "type": "boolean"
           }
         },
@@ -2325,6 +2354,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Layout/WebForm operation to perform.",
             "enum": [
               "get_tree",
               "set_property",
@@ -2342,15 +2372,19 @@
             "type": "string"
           },
           "changes": {
+            "description": "set_properties: batch array of {control, propertyName, value} objects.",
             "items": {
               "properties": {
                 "control": {
+                  "description": "Control name.",
                   "type": "string"
                 },
                 "propertyName": {
+                  "description": "Property name.",
                   "type": "string"
                 },
                 "value": {
+                  "description": "Property value.",
                   "type": "string"
                 }
               },
@@ -2364,12 +2398,15 @@
             "type": "array"
           },
           "control": {
+            "description": "Control name within the layout or WebForm.",
             "type": "string"
           },
           "currentName": {
+            "description": "rename_printblock: existing printblock name.",
             "type": "string"
           },
           "height": {
+            "description": "add_printblock: height of the new printblock.",
             "type": "integer"
           },
           "kb": {
@@ -2377,24 +2414,31 @@
             "type": "string"
           },
           "limit": {
+            "description": "find_controls/list_controls: maximum results to return.",
             "type": "integer"
           },
           "name": {
+            "description": "Target object name (WebPanel, Transaction, Procedure).",
             "type": "string"
           },
           "newName": {
+            "description": "rename_printblock: new printblock name.",
             "type": "string"
           },
           "printBlockName": {
+            "description": "add_printblock/delete_printblock: name of the printblock.",
             "type": "string"
           },
           "propertyName": {
+            "description": "Property name to modify (e.g. Caption, Visible, Enabled, Class).",
             "type": "string"
           },
           "query": {
+            "description": "find_controls: search query matching control names or captions.",
             "type": "string"
           },
           "value": {
+            "description": "Value to assign to the specified property.",
             "type": "string"
           }
         },
@@ -2430,6 +2474,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Lifecycle action to perform.",
             "enum": [
               "build",
               "cancel",
@@ -2461,6 +2506,7 @@
             "type": "boolean"
           },
           "code": {
+            "description": "validate: in-memory code to check without persisting.",
             "type": "string"
           },
           "compact": {
@@ -2484,6 +2530,10 @@
             "description": "Build: <20 sync, >=20 async (default 60).",
             "type": "integer"
           },
+          "fastIncremental": {
+            "description": "build: experimental fast incremental build opt-in.",
+            "type": "boolean"
+          },
           "force": {
             "description": "Index: full SDK rescan (clears snapshot).",
             "type": "boolean"
@@ -2502,6 +2552,7 @@
             "type": "string"
           },
           "limit": {
+            "description": "validate-kb: maximum number of objects/conditions to validate.",
             "type": "integer"
           },
           "mode": {
@@ -2511,11 +2562,36 @@
             ],
             "type": "string"
           },
+          "notifyOnFailure": {
+            "description": "build: Slack/Discord webhook URL to notify on terminal build failure.",
+            "type": "string"
+          },
+          "page": {
+            "description": "status/result: 1-based page number for paginated results.",
+            "type": "integer"
+          },
+          "pageSize": {
+            "description": "status/result: page size for paginated results (default 50).",
+            "type": "integer"
+          },
+          "page_size": {
+            "description": "status/result: snake_case alias for pageSize.",
+            "type": "integer"
+          },
+          "part": {
+            "description": "validate: specific object part to check (e.g. Source, Rules).",
+            "type": "string"
+          },
           "since": {
             "description": "Status: prior _meta.snapshot for chained waits.",
             "type": "string"
           },
+          "skipFullDeploy": {
+            "description": "build: skip full deployment stage to speed up compile pass.",
+            "type": "boolean"
+          },
           "snapshotPath": {
+            "description": "snapshots-restore: path to pattern snapshot to restore.",
             "type": "string"
           },
           "target": {
@@ -3149,7 +3225,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Named playbooks + self-extending macros. action=list|describe|run|suggest_macro|crystallize.",
+      "description": "Named playbooks + self-extending macros. action=list|describe|suggest_macro|crystallize.",
       "inputSchema": {
         "examples": [
           {
@@ -3164,11 +3240,10 @@
         ],
         "properties": {
           "action": {
-            "description": "suggest_macro: detect repeated sequences; crystallize: save one as a recipe.",
+            "description": "list: show recipes; describe: inspect recipe; suggest_macro: detect repeated sequences; crystallize: save sequence as recipe.",
             "enum": [
               "list",
               "describe",
-              "run",
               "suggest_macro",
               "crystallize"
             ],
@@ -3189,6 +3264,14 @@
           "name": {
             "description": "Recipe key (latest version), 'name@v1' (pinned), or 'list'.",
             "type": "string"
+          },
+          "steps": {
+            "description": "crystallize: ordered array of tool call steps to include in the macro.",
+            "items": {
+              "description": "Tool call step object or template.",
+              "type": "object"
+            },
+            "type": "array"
           },
           "windowMinutes": {
             "description": "suggest_macro: history window (default 30).",
@@ -3239,9 +3322,11 @@
             "type": "string"
           },
           "code": {
+            "description": "ExtractProcedure/ExtractSubroutine: code block to extract.",
             "type": "string"
           },
           "controlAttribute": {
+            "description": "WWPSetCondition: control or attribute name to attach condition.",
             "type": "string"
           },
           "dryRun": {
@@ -3254,15 +3339,19 @@
             "type": "string"
           },
           "newName": {
+            "description": "New name for the renamed object, attribute, or variable.",
             "type": "string"
           },
           "objectName": {
+            "description": "RenameVariable: target object name containing the variable.",
             "type": "string"
           },
           "procedureName": {
+            "description": "ExtractProcedure: name for the newly created Procedure.",
             "type": "string"
           },
           "subroutineName": {
+            "description": "ExtractSubroutine: name for the newly created Subroutine.",
             "type": "string"
           },
           "target": {
@@ -3274,6 +3363,7 @@
             "type": "string"
           },
           "value": {
+            "description": "WWPSetCondition: condition expression to set.",
             "type": "string"
           }
         },
@@ -3477,7 +3567,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Audit KB security. action=audit_gam scans GAM/env props; action=scan_secrets greps Source for credential-shaped literals. Returns findings with severity.",
+      "description": "Audit KB security. action=audit_gam scans GAM/env props; action=scan_secrets greps Source for credential-shaped literals; action=scan_native drives the native GeneXus Security Scanner (ISecurityScannerService). Returns findings with severity.",
       "inputSchema": {
         "examples": [
           {
@@ -3489,6 +3579,7 @@
         ],
         "properties": {
           "action": {
+            "description": "audit_gam: scans GAM and environment properties; scan_secrets: greps Source for credentials; scan_native: drives native GeneXus Security Scanner.",
             "enum": [
               "audit_gam",
               "scan_secrets",
@@ -3515,7 +3606,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read or write the structure/data-model of GeneXus objects. update_visual now snapshots every part, checks optimistic concurrency, saves and re-reads the Transaction, and restores the complete snapshot when persistence or authored-part verification fails. Default form projections are allowed to follow Structure; user-authored forms are invariant. No structure action implicitly runs Specify, Generate, Build, Rebuild, compilation, reorganization, execution, or tests. Other actions cover indexes, attributes, levels, Domains, SubType Groups and subtype consistency. For layout control trees use genexus_layout.",
+      "description": "Read or write the structure/data-model of GeneXus objects. update_visual now snapshots every part, checks optimistic concurrency, saves and re-reads the Transaction, and restores the complete snapshot when persistence or authored-part verification fails. Default form projections are allowed to follow Structure; user-authored forms are invariant. No structure action implicitly runs Specify, Generate, Build, Rebuild, compilation, reorganization, execution, or tests. Other actions cover indexes, attributes (set_attribute operates on global attribute definitions; use update_visual/move_attribute/remove_attribute for Transaction structure), levels, Domains (including enumValues), SubType Groups and subtype consistency (check_subtypes). For layout control trees use genexus_layout.",
       "inputSchema": {
         "examples": [
           {
@@ -3590,6 +3681,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Structure operation to execute.",
             "enum": [
               "get_visual",
               "update_visual",
@@ -3668,6 +3760,10 @@
             "default": true,
             "description": "update_visual, move_attribute and create_index capture snapshots and verify rollback after any save or re-read divergence.",
             "type": "boolean"
+          },
+          "type": {
+            "description": "Optional object type disambiguator (e.g. 'Transaction', 'Table') when multiple objects share the same name.",
+            "type": "string"
           },
           "validationMode": {
             "description": "Explicitly run the inline Specify pass after selected writes. Never runs unless requested.",
@@ -4128,9 +4224,11 @@
             "type": "integer"
           },
           "discard": {
+            "description": "history_restore: true for IDE 'Discard changes' parity.",
             "type": "boolean"
           },
           "dryRun": {
+            "description": "history_restore/undo: preview without mutating the KB.",
             "type": "boolean"
           },
           "filePath": {
@@ -4162,9 +4260,11 @@
             "type": "string"
           },
           "name": {
+            "description": "Object name for history, diff, time_travel, or blame.",
             "type": "string"
           },
           "part": {
+            "description": "Object part name, e.g. Source, Rules, Events.",
             "type": "string"
           },
           "right": {
@@ -4172,9 +4272,11 @@
             "type": "string"
           },
           "snapshot": {
+            "description": "history_restore: snapshot label or path to restore.",
             "type": "string"
           },
           "versionId": {
+            "description": "history_get/history_restore: numerical version ID.",
             "type": "integer"
           }
         },

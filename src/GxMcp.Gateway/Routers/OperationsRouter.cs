@@ -1296,6 +1296,7 @@ namespace GxMcp.Gateway.Routers
                 module = "Structure",
                 action = mappedAction,
                 target = args?["name"]?.ToString(),
+                type = args?["type"]?.ToString(),
                 payload = args?["payload"]?.ToString(),
                 transactionModule = args?["module"]?.ToString(),
                 attribute = args?["attribute"]?.ToString(),

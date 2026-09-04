@@ -77,7 +77,8 @@ namespace GxMcp.Gateway.Routers
                         case "index": return new {
                             module = "KB",
                             action = "BulkIndex",
-                            force = args?["force"]?.ToObject<bool?>() ?? false
+                            force = args?["force"]?.ToObject<bool?>() ?? false,
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
                         };
                         case "status":
                             if (!string.IsNullOrEmpty(target))

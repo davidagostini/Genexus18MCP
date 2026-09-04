@@ -373,6 +373,7 @@ namespace GxMcp.Gateway
                        string.Equals(action, "create_index", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(action, "drop_index", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(action, "set_attribute", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(action, "remove_attribute", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(action, "set_level", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(action, "set_domain", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(action, "update_group", StringComparison.OrdinalIgnoreCase) ||

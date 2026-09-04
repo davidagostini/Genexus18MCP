@@ -41,5 +41,23 @@ namespace GxMcp.Gateway.Tests
             var json = JObject.FromObject(new OperationsRouter().ConvertToolCall("genexus_structure", args)!);
             Assert.Equal(0, json["position"]!.Value<int>());
         }
+
+        [Fact]
+        public void GetVisualStructure_ForwardsTypeFilter()
+        {
+            var args = JObject.Parse(@"{
+              'action': 'get_visual',
+              'name': 'Empresa',
+              'type': 'Transaction'
+            }");
+
+            var routed = new OperationsRouter().ConvertToolCall("genexus_structure", args);
+            var json = JObject.FromObject(routed!);
+
+            Assert.Equal("Structure", json["module"]!.ToString());
+            Assert.Equal("GetVisualStructure", json["action"]!.ToString());
+            Assert.Equal("Empresa", json["target"]!.ToString());
+            Assert.Equal("Transaction", json["type"]!.ToString());
+        }
     }
 }

@@ -87,7 +87,7 @@ Use the handshake and scratch-KB procedure in `docs/agent_playbook.md` or
 hot-swap with:
 
 ```text
-genexus_worker_reload mode=hard sourceDir=C:\Projetos\Genexus18MCP\src\GxMcp.Worker\bin\Debug
+genexus_worker_reload mode=hard sourceDir=<repoRoot>\src\GxMcp.Worker\bin\Debug
 ```
 
 If the next call reports a stale pipe or crashed Worker, reconnect `/mcp` once.
@@ -108,6 +108,35 @@ If the next call reports a stale pipe or crashed Worker, reconnect `/mcp` once.
   scope, logic, edge cases, compatibility, security, tests, and docs.
 - Do not commit, push, merge, release, deploy, or close an issue unless the
   user explicitly asks. Issue closure requires a released fix and release link.
+
+## MCP update and harness synchronization
+
+Before creating or proposing any new script for build, installation, upgrade, or agent registration, inspect existing tooling:
+- `install.ps1` (local checkout orchestrator)
+- `build.ps1` (compiler & artifact packager)
+- `scripts/install.ps1` (fixed-path release installer)
+- `cli/run.js` & `cli/lib/config.js` (client registry & discovery)
+- `cli/lib/update-check.js` (update planning)
+- `docs/llm_cli_mcp_playbook.md` (authoritative CLI playbook)
+
+### Decision matrix
+
+| Scenario | Recommended flow | Notes |
+|---|---|---|
+| Updated local checkout | `.\install.ps1` | Updates `config.json`, runs `build.ps1`, and registers detected clients (`init --write-clients`). Parameters: `-KBPath`, `-GeneXusPath`. |
+| Compile local checkout only | `.\build.ps1` | Regenerates `publish/` without modifying `config.json` or client registrations. |
+| Fixed-path release install / upgrade | `powershell -File scripts/install.ps1` | Downloads release `publish.zip` into fixed location. Parameters: `-Kb`, `-Gx`. |
+| npx / npm global upgrade | Run `genexus-mcp update` plan | Follow returned guidance and fully restart the AI client. |
+| Antigravity launcher pointing to stale cache | `npx genexus-mcp clients add --clients antigravity` | Re-points the launcher to current direct gateway or package cache. |
+| Post-sync validation | `npx genexus-mcp clients --format json`<br>`npx genexus-mcp doctor --mcp-smoke --format json` | Validates registration, gateway HTTP loopback, and live MCP protocol smoke. |
+| Release publication | `.\release.ps1` | Only upon explicit user request. See `docs/release_protocol.md`. |
+
+### Operational safety and side effects
+
+- **Installer vs. build**: `install.ps1` mutates `config.json` and client configs; treat it as an installer, not a neutral build. `build.ps1` is the neutral compiler.
+- **Client registration**: `clients add` / `init --write-clients` makes atomic backups and preserves unrelated servers and both OpenCode config formats (`mcp.<name>` and `mcp.servers.<name>`). OpenCode Desktop is detect-only and requires manual UI configuration.
+- **Session reloading is a separate gate**: A healthy CLI, green build, or rewritten client config does NOT mean the current agent session has reloaded MCP. AI clients cache tool schemas at connection start; a full client restart is mandatory before new tools/schemas take effect.
+- **Process management**: Prefer the scoped process termination in `build.ps1` (terminating only processes mapped to the current checkout path). Do not use broad `Stop-Process -Name GxMcp.Gateway,GxMcp.Worker` across the machine when other checkouts or instances may be active, unless hitting locked output errors covered by the Scoped Permission.
 
 ## Task-specific references
 

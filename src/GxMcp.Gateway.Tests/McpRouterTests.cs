@@ -809,6 +809,29 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ToolHelpCatalog_HasEntriesForMultiActionTools()
+        {
+            string[] expected =
+            {
+                "genexus_structure",
+                "genexus_layout",
+                "genexus_versioning",
+                "genexus_io",
+                "genexus_kb_version",
+                "genexus_doc",
+                "genexus_recipe",
+                "genexus_refactor"
+            };
+
+            foreach (var name in expected)
+            {
+                var help = ToolHelpCatalog.Get(name);
+                Assert.False(string.IsNullOrWhiteSpace(help), $"No help text for {name}");
+                Assert.True(help!.Length >= 200, $"Help for {name} should be detailed (at least 200 chars)");
+            }
+        }
+
+        [Fact]
         public void ToolHelpCatalog_ReturnsNullForUnknownTool()
         {
             Assert.Null(ToolHelpCatalog.Get("genexus_unknown_tool"));
