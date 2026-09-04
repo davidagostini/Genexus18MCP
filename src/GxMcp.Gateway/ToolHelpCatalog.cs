@@ -354,7 +354,23 @@ namespace GxMcp.Gateway
                 "# GotchaDuplicateControlName\n\n" +
                 "Two elements share the same `id` / `Name`. The SDK auto-renames the duplicates via `GetUniqueName` on save — any caller reference (event handler, JS, parent layout) that pointed at the renamed control breaks silently.\n\n" +
                 "## Fix\n" +
-                "Make each `id` unique. Suffix logically-related controls (`Btn1`, `Btn2`, ...).\n"
+                "Make each `id` unique. Suffix logically-related controls (`Btn1`, `Btn2`, ...).\n",
+            ["GotchaIdeObjectOpenInEditor"] =
+                "# GotchaIdeObjectOpenInEditor\n\n" +
+                "**Severity:** Critical Warning / Concurrency Hazard.\n\n" +
+                "The object is currently open in an active editor tab in the running GeneXus IDE. " +
+                "If the developer presses Ctrl+S (Save) in the GeneXus IDE, their in-memory tab state will silently overwrite the changes made out-of-process by MCP (Last-Write-Wins hazard).\n\n" +
+                "## Fix\n" +
+                "- In the GeneXus IDE, close the open object tab WITHOUT saving, or choose \"Reload\" when prompted.\n" +
+                "- Or use `concurrencyPolicy: 'fail_if_open'` in `genexus_edit` to prevent writes while the object is open in the IDE.\n",
+            ["GotchaIdeActiveOnKb"] =
+                "# GotchaIdeActiveOnKb\n\n" +
+                "**Severity:** Notice / Informational.\n\n" +
+                "GeneXus IDE is currently running and has this Knowledge Base open. " +
+                "While the specific target object does not appear to be currently open in an active editor tab, keep in mind that concurrent edits in the IDE and MCP can cause conflicts.\n\n" +
+                "## Fix\n" +
+                "- Ensure any open tabs in the GeneXus IDE are closed or reloaded after external MCP writes.\n" +
+                "- Review GeneXus IDE prompts if an external reload prompt appears.\n"
         };
 
         internal static string GetGotchaHelp(string code)

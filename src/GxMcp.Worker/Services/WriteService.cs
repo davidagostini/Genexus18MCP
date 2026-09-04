@@ -22,8 +22,6 @@ namespace GxMcp.Worker.Services
         private static readonly object _persistenceWarmupLock = new object();
         private static bool _persistenceWarmupDone = false;
         private static readonly object _flushLock = new object();
-        private static System.Timers.Timer _flushTimer;
-        private static bool _pendingCommit = false;
 
         public WriteService(ObjectService objectService)
         {
@@ -31,75 +29,66 @@ namespace GxMcp.Worker.Services
             _objectServiceRef = objectService; // v2.6.9 — static handle for NotePerTargetWrite → EditDirtyTracker
             _patternAnalysisService = new PatternAnalysisService(objectService);
             _patchService = new PatchService(objectService, this, _patternAnalysisService);
-            InitializeFlushTimer();
-            AppDomain.CurrentDomain.ProcessExit += (s, e) => FlushBackground();
+            AppDomain.CurrentDomain.ProcessExit += (s, e) => FlushSync();
         }
 
         public void SetValidationService(ValidationService vs) { _validationService = vs; }
         public void SetStructureService(StructureService structureService) { _structureService = structureService; }
 
-
-        private void InitializeFlushTimer()
+        private void FlushSync()
         {
-            if (_flushTimer != null) return;
             lock (_flushLock)
             {
-                if (_flushTimer != null) return;
-                _flushTimer = new System.Timers.Timer(2000); // 2 seconds debounce
-                _flushTimer.AutoReset = false;
-                _flushTimer.Elapsed += (s, e) => FlushBackground();
-            }
-        }
-
-        private void FlushBackground()
-        {
-            if (!_pendingCommit) return;
-            
-            lock (_flushLock)
-            {
-                if (!_pendingCommit) return;
                 try
                 {
-                    Logger.Info("[BACKGROUND-FLUSH] Starting commits...");
+                    Logger.Info("[FLUSH-SYNC] Starting sync commit...");
                     var kb = _objectService.GetKbService().GetKB();
                     if (kb == null) return;
 
-                    // Track commit failures: a failed Commit must NOT clear _pendingCommit,
-                    // or the write is silently lost (no retry) after the caller was already
-                    // told Success. Keep the flag set on failure so the next flush retries.
-                    bool commitFailed = false;
-
-                    // Commits
                     var model = kb.DesignModel;
-                    if (model != null) {
-                        try {
-                            var modelCommit = model.GetType().GetMethod("Commit", BindingFlags.Public | BindingFlags.Instance);
-                            modelCommit?.Invoke(model, null);
-                            Logger.Info("[BACKGROUND-FLUSH] Model.Commit() successful.");
-                        } catch (Exception ex) { commitFailed = true; Logger.Error("[BACKGROUND-FLUSH] Model.Commit FAILED (will retry): " + ex.Message); }
+                    if (model != null)
+                    {
+                        try
+                        {
+                            var now = DateTime.UtcNow;
+                            model.LastCommitDate = now;
+                            model.LastObjectsVersionDate = now;
+                            Logger.Info("[FLUSH-SYNC] Model revision dates updated.");
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Debug("[FLUSH-SYNC] Updating model revision dates: " + ex.Message);
+                        }
                     }
 
-                    try {
-                        var kbCommit = kb.GetType().GetMethod("Commit", BindingFlags.Public | BindingFlags.Instance);
-                        kbCommit?.Invoke(kb, null);
-                        Logger.Info("[BACKGROUND-FLUSH] KB.Commit() successful.");
-                    } catch (Exception ex) { commitFailed = true; Logger.Error("[BACKGROUND-FLUSH] KB.Commit FAILED (will retry): " + ex.Message); }
-
-                    if (commitFailed)
-                    {
-                        Logger.Error("[BACKGROUND-FLUSH] Commit failed; keeping pending flag so the write is retried on the next flush.");
-                    }
-                    else
-                    {
-                        _pendingCommit = false;
-                        Logger.Info("[BACKGROUND-FLUSH] Full commit cycle complete.");
-                    }
+                    Logger.Info("[FLUSH-SYNC] Sync commit cycle complete.");
                 }
                 catch (Exception ex)
                 {
-                    // Leave _pendingCommit set so a later flush retries rather than dropping the write.
-                    Logger.Error("[BACKGROUND-FLUSH] ERROR (write left pending for retry): " + ex.Message);
+                    Logger.Error("[FLUSH-SYNC] ERROR: " + ex.Message);
                 }
+            }
+        }
+
+        internal static void StampObjectRevisionDates(global::Artech.Architecture.Common.Objects.KBObject obj, global::Artech.Architecture.Common.Objects.KBModel model)
+        {
+            if (obj == null) return;
+            try
+            {
+                var now = DateTime.UtcNow;
+                try { obj.LastUpdate = now; } catch { }
+                try { obj.SaveModelEntityDate(301, 0, now); } catch { }
+                try { obj.SaveModelEntityDate(300, 0, now); } catch { }
+                try { obj.SaveVersionIndependentDate(310, 0, now); } catch { }
+                if (model != null)
+                {
+                    try { model.LastCommitDate = now; } catch { }
+                    try { model.LastObjectsVersionDate = now; } catch { }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[IDE-CONCURRENCY] StampObjectRevisionDates failed: " + ex.Message);
             }
         }
 
@@ -142,19 +131,7 @@ namespace GxMcp.Worker.Services
 
         private void ScheduleFlush(bool force = false)
         {
-            _pendingCommit = true;
-            if (force)
-            {
-                FlushBackground();
-                return;
-            }
-
-            lock (_flushLock)
-            {
-                if (_flushTimer == null) return;
-                _flushTimer.Stop();
-                _flushTimer.Start();
-            }
+            FlushSync();
         }
 
         private static string GetSdkMessagesSafe(object target)
@@ -593,6 +570,42 @@ namespace GxMcp.Worker.Services
                 if (staleErr != null) return staleErr;
             }
 
+            // Issue #128: IDE concurrency detection and policy enforcement
+            string kbPath = null;
+            string kbName = null;
+            try
+            {
+                var kb = _objectService?.GetKbService()?.GetKB();
+                kbPath = _objectService?.GetKbService()?.GetKbPath();
+                kbName = kb?.Name;
+            }
+            catch { }
+
+            IdeConcurrencyStatus concurrencyStatus = null;
+            try
+            {
+                concurrencyStatus = IdeConcurrencyDetector.Check(kbPath, kbName, target);
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[IDE-CONCURRENCY] Check skipped: " + ex.Message);
+            }
+
+            if (concurrencyStatus != null && concurrencyStatus.IsTargetObjectOpen &&
+                string.Equals(facadeArgs.ConcurrencyPolicy, "fail_if_open", StringComparison.OrdinalIgnoreCase))
+            {
+                return McpResponse.Err(
+                    code: "IdeObjectOpen",
+                    message: concurrencyStatus.WarningMessage,
+                    hint: "Close the object tab in GeneXus IDE without saving, reload it, or pass concurrencyPolicy='warn' to override.",
+                    nextSteps: new JArray(McpResponse.NextStep(
+                        tool: "genexus_edit",
+                        args: new JObject { ["name"] = target, ["concurrencyPolicy"] = "warn" },
+                        why: "Force write by setting concurrencyPolicy='warn' (Last-Write-Wins hazard if saved in IDE).")),
+                    target: target,
+                    extra: concurrencyStatus.ToWarningObject(target, kbName));
+            }
+
             string raw;
             if (string.Equals(facadeArgs.Mode, "patch", StringComparison.OrdinalIgnoreCase))
             {
@@ -644,10 +657,9 @@ namespace GxMcp.Worker.Services
             // building.
             try
             {
-                    var unrepresentable = CollectNonWin1252Glyphs(args);
+                var unrepresentable = CollectNonWin1252Glyphs(args);
                 if (unrepresentable.Count > 0)
                 {
-                    var parsed = JObject.Parse(raw);
                     var charsetWarn = new JObject
                     {
                         // Friction 2026-05-22 #62: was snake_case "kb_charset_lossy";
@@ -657,33 +669,75 @@ namespace GxMcp.Worker.Services
                         ["message"] = "Content contains characters outside the KB's WIN1252 charset (will render as '?' at runtime): " + string.Join(", ", unrepresentable),
                         ["hint"] = "Replace with ASCII equivalents (e.g. ✓ -> 'OK', ⧖ -> '[wait]'), or change the KB's NLS_CHARACTERSET if you need full unicode."
                     };
-                    // Preserve any pre-existing warnings regardless of shape — earlier
-                    // writers may produce a JArray, a JObject keyed by code, or even
-                    // a scalar summary. Don't clobber.
-                    var existing = parsed["warnings"];
-                    JArray warnings;
-                    if (existing is JArray arr)
-                    {
-                        warnings = arr;
-                    }
-                    else if (existing != null && existing.Type != JTokenType.Null)
-                    {
-                        warnings = new JArray { existing.DeepClone() };
-                    }
-                    else
-                    {
-                        warnings = new JArray();
-                    }
-                    warnings.Add(charsetWarn);
-                    parsed["warnings"] = warnings;
-                    raw = parsed.ToString(Newtonsoft.Json.Formatting.None);
+                    raw = AttachWarning(raw, charsetWarn);
                 }
             }
             catch (Exception ex)
             {
                 Logger.Debug("[CHARSET-WARN] skipped: " + ex.Message);
             }
+
+            // Issue #128: attach IDE concurrency warning if applicable
+            if (concurrencyStatus != null && concurrencyStatus.HasWarning)
+            {
+                raw = AttachWarning(raw, concurrencyStatus.ToWarningObject(target, kbName));
+            }
+
+            // If write was executed against disk, nudge IDE message pump to trigger reload check
+            if (!facadeArgs.DryRun && concurrencyStatus != null)
+            {
+                concurrencyStatus.TickleIde();
+            }
+
             return raw;
+        }
+
+        internal static string AttachWarning(string jsonResponse, JObject warningObj)
+        {
+            if (string.IsNullOrWhiteSpace(jsonResponse) || warningObj == null) return jsonResponse;
+            try
+            {
+                var parsed = JObject.Parse(jsonResponse);
+                var existing = parsed["warnings"];
+                JArray warnings;
+                if (existing is JArray arr)
+                {
+                    warnings = arr;
+                }
+                else if (existing != null && existing.Type != JTokenType.Null)
+                {
+                    warnings = new JArray { existing.DeepClone() };
+                }
+                else
+                {
+                    warnings = new JArray();
+                }
+
+                string code = warningObj["code"]?.ToString();
+                bool alreadyExists = false;
+                if (!string.IsNullOrEmpty(code))
+                {
+                    foreach (var w in warnings)
+                    {
+                        if (w is JObject wObj && string.Equals(wObj["code"]?.ToString(), code, StringComparison.OrdinalIgnoreCase))
+                        {
+                            alreadyExists = true;
+                            break;
+                        }
+                    }
+                }
+                if (!alreadyExists)
+                {
+                    warnings.Add(warningObj);
+                }
+
+                parsed["warnings"] = warnings;
+                return parsed.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch
+            {
+                return jsonResponse;
+            }
         }
 
         // Optimistic-concurrency token for an object: its last-modification timestamp
@@ -807,7 +861,8 @@ namespace GxMcp.Worker.Services
                     ?? args["versionToken"]?.ToString(),
                 AutoInjectVariables = args["autoDeclareVariables"]?.ToObject<bool?>()
                     ?? args["autoInjectVariables"]?.ToObject<bool?>()
-                    ?? false
+                    ?? false,
+                ConcurrencyPolicy = args["concurrencyPolicy"]?.ToString() ?? "warn"
             };
         }
 
@@ -831,6 +886,7 @@ namespace GxMcp.Worker.Services
             public bool RollbackOnFailure { get; set; }
             public string BaseVersion { get; set; }
             public bool AutoInjectVariables { get; set; }
+            public string ConcurrencyPolicy { get; set; }
         }
 
         // Returns a deduped list of glyphs in the args payload that cannot
@@ -1210,6 +1266,7 @@ namespace GxMcp.Worker.Services
                         try {
                             StructureParser.ParseFromText(objToUpdate, decodedCode);
                             objToUpdate.EnsureSave();
+                            StampObjectRevisionDates(objToUpdate, objToUpdate.Model as global::Artech.Architecture.Common.Objects.KBModel);
                             // Friction-report 05-13 #2: a Structure write on an SDT or Transaction
                             // must commit synchronously, not via the debounced ScheduleFlush()
                             // timer. Subsequent requests (e.g. a Procedure that references
@@ -1533,6 +1590,7 @@ namespace GxMcp.Worker.Services
                             {
                                 Logger.Info("[DEBUG-SAVE] Fast persistence path: obj.Save() without explicit transaction.");
                                 saveMethod.Invoke(obj, null);
+                                StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
                                 ScheduleFlush();
                                 _objectService.MarkReadCacheDirty(obj, partName);
                                 {
@@ -1545,6 +1603,7 @@ namespace GxMcp.Worker.Services
 
                             Logger.Info("[DEBUG-SAVE] Fast persistence path fallback: obj.EnsureSave(false) without explicit transaction.");
                             obj.EnsureSave(false);
+                            StampObjectRevisionDates(obj, _objectService.GetKbService().GetKB()?.DesignModel);
                             ScheduleFlush();
                             _objectService.MarkReadCacheDirty(obj, partName);
                             {
@@ -1661,6 +1720,7 @@ namespace GxMcp.Worker.Services
                         transaction.Commit();
                         transactionCommitted = true;
                         transactionFinished = true;
+                        StampObjectRevisionDates(obj, kb.DesignModel);
                         Logger.Info("[DEBUG-SAVE] SDK Transaction Committed.");
                     }
                     catch (Exception ex)

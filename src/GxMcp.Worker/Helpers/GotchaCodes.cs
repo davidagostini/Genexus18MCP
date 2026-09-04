@@ -43,5 +43,9 @@ namespace GxMcp.Worker.Helpers
         public const string GotchaHtmlFormatScriptStripped = "GotchaHtmlFormatScriptStripped";
         public const string GotchaCellOutsideTable = "GotchaCellOutsideTable";
         public const string GotchaDuplicateControlName = "GotchaDuplicateControlName";
+
+        // Concurrency codes — emitted by IdeConcurrencyDetector (Issue #128)
+        public const string GotchaIdeObjectOpenInEditor = "GotchaIdeObjectOpenInEditor";
+        public const string GotchaIdeActiveOnKb = "GotchaIdeActiveOnKb";
     }
 }

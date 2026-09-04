@@ -137,5 +137,30 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("exact", normalized.VerifyMode);
             Assert.True(normalized.RollbackOnFailure);
         }
+
+        [Fact]
+        public void NormalizeFacadeArgs_ConcurrencyPolicy_DefaultsToWarn()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["part"] = "Source",
+                ["content"] = "parm();"
+            });
+
+            Assert.Equal("warn", normalized.ConcurrencyPolicy);
+        }
+
+        [Fact]
+        public void NormalizeFacadeArgs_ConcurrencyPolicy_ParsesCustomValue()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["part"] = "Source",
+                ["content"] = "parm();",
+                ["concurrencyPolicy"] = "fail_if_open"
+            });
+
+            Assert.Equal("fail_if_open", normalized.ConcurrencyPolicy);
+        }
     }
 }

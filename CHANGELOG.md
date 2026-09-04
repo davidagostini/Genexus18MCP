@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v2.54.1 - 2026-09-03
+
+### Added
+
+- **IDE concurrency detection and warning in `genexus_edit` and `BulkWrite` (Issue #128).** Added `IdeConcurrencyDetector` to detect when `GeneXus.exe` is running and whether the target KB and/or target object is open in an IDE tab/window using Win32 window and child-window inspection. Surfaces structured warnings `GotchaIdeObjectOpenInEditor` and `GotchaIdeActiveOnKb` with resolvable tool-help documentation URIs (`genexus://kb/tool-help/gotchas/ide-object-open-in-editor` and `genexus://kb/tool-help/gotchas/ide-active-on-kb`). Added optional `concurrencyPolicy` argument (`"warn"` [default] or `"fail_if_open"`) to `genexus_edit` schema and `BulkWrite` facade args to abort write operations with an `IdeObjectOpen` error when the target object is open in the IDE. Reported and architected by Antonio Jose Rodrigues Silva (@antoniojosedev).
+
+### Fixed
+
+- **Synchronous object flushing, entity revision date stamping, and IDE message pump nudging in `WriteService` (Issue #128).** Eliminated race conditions caused by the 2-second debounce timer (`_flushTimer`) and removed non-functional reflection (`model.GetType().GetMethod("Commit")`), replacing with synchronous `FlushSync()`. Stamped entity and model revision dates (`SaveModelEntityDate(301)`, `SaveModelEntityDate(300)`, `SaveVersionIndependentDate(310)`, `KBModel.LastCommitDate`, `KBModel.LastObjectsVersionDate`) upon write/commit so external tooling and IDE detect saved modifications. Dispatched non-intrusive `WM_NULL` to running GeneXus IDE windows after successful writes to trigger `Application.Idle` and prompt the IDE's built-in external modification detection (`Messages.ObjectModified`). Reported and architected by Antonio Jose Rodrigues Silva (@antoniojosedev).
+
+
+
 ## v2.54.0 - 2026-09-03
 
 ### Fixed
