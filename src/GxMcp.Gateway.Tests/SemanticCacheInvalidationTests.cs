@@ -1,3 +1,4 @@
+using System;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -93,6 +94,8 @@ namespace GxMcp.Gateway.Tests
         public void MutatingActions_AreDetected(string toolName, string action)
         {
             var args = new JObject { ["action"] = action };
+            if (string.Equals(toolName, "genexus_api", StringComparison.OrdinalIgnoreCase))
+                args["dryRun"] = false;
             Assert.True(Program.IsMutatingTool(toolName, args),
                 $"expected {toolName} action={action} to invalidate the semantic cache");
         }
@@ -202,6 +205,17 @@ namespace GxMcp.Gateway.Tests
             {
                 ["action"] = action,
                 ["dryRun"] = true
+            }));
+        }
+
+        [Theory]
+        [InlineData("routes_clone")]
+        [InlineData("routes_update")]
+        public void GenexusApi_DefaultDryRun_DoesNotInvalidate(string action)
+        {
+            Assert.False(Program.IsMutatingTool("genexus_api", new JObject
+            {
+                ["action"] = action
             }));
         }
 

@@ -180,16 +180,19 @@ namespace GxMcp.Worker.Services
             string apiName = args?["api"]?.ToString();
             string sourcePrefix = args?["sourcePrefix"]?.ToString();
             string targetPrefix = args?["targetPrefix"]?.ToString();
+            var requestedRoutes = args?["routes"] as JArray;
             bool dryRun = args?["dryRun"]?.ToObject<bool?>() ?? true;
             bool rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
             string operation = args?["operation"]?.ToString();
 
             if (string.IsNullOrWhiteSpace(apiName)) return Err("InvalidApi", "api is required.");
-            if (!IsSafeRoutePrefix(sourcePrefix) || !IsSafeRoutePrefix(targetPrefix))
+            if (requestedRoutes == null && (!IsSafeRoutePrefix(sourcePrefix) || !IsSafeRoutePrefix(targetPrefix)))
                 return McpResponse.Err(
                     code: "InvalidPrefix",
                     message: "sourcePrefix and targetPrefix must be identifiers (letters, digits, _ or -).",
                     hint: "Use values such as inbound and reverse.");
+            if (requestedRoutes != null && requestedRoutes.Count == 0)
+                return Err("InvalidRoutes", "routes must contain at least one typed route specification.");
 
             var api = ResolveApi(apiName);
             if (api == null)
@@ -199,10 +202,26 @@ namespace GxMcp.Worker.Services
 
             string currentSource = api.ServiceGroupSource.Source ?? string.Empty;
             var snapshot = CaptureApiSnapshot(api, currentSource);
-            var plan = BuildApiRoutePlan(currentSource, sourcePrefix, targetPrefix, updateExisting);
-            string expectedVersion = args?["expectedVersion"]?.ToString();
+            if (!snapshot.Complete)
+                return McpResponse.Err(
+                    code: "SnapshotFailed",
+                    message: snapshot.Error ?? "The complete API snapshot could not be captured; no route was written.",
+                    hint: "Re-read the API after the SDK is idle and retry.",
+                    target: api.Name,
+                    extra: new JObject { ["persisted"] = false });
+
+            var plan = BuildApiRoutePlan(currentSource, sourcePrefix, targetPrefix, updateExisting, requestedRoutes);
+            if (!string.IsNullOrWhiteSpace(plan.ValidationError))
+                return McpResponse.Err(
+                    code: "InvalidRoutes",
+                    message: plan.ValidationError,
+                    hint: "Each route needs sourceMethod, method and route; verb is optional and must match the source route.",
+                    target: api.Name,
+                    extra: new JObject { ["persisted"] = false });
+            string expectedVersion = args?["expectedVersion"]?.ToString()
+                ?? args?["versionToken"]?.ToString();
             string requestedOperation = string.IsNullOrWhiteSpace(operation)
-                ? targetPrefix.ToUpperInvariant()
+                ? (string.IsNullOrWhiteSpace(targetPrefix) ? "ROUTES" : targetPrefix.ToUpperInvariant())
                 : operation;
 
             var preview = BuildApiRoutePlanResult(
@@ -256,7 +275,7 @@ namespace GxMcp.Worker.Services
                     extra: new JObject { ["persisted"] = false, ["diff"] = preview["diff"], ["conflicts"] = plan.Conflicts });
             }
 
-            if (string.Equals(currentSource, plan.CandidateSource, StringComparison.Ordinal))
+            if (LogicalSourceEquals(currentSource, plan.CandidateSource))
             {
                 preview["status"] = RouteStatusNoChange;
                 preview["persisted"] = false;
@@ -279,8 +298,9 @@ namespace GxMcp.Worker.Services
             }
 
             var latestSnapshot = CaptureApiSnapshot(latest, latest.ServiceGroupSource.Source ?? string.Empty);
-            if (!string.Equals(latestSnapshot.VersionToken, snapshot.VersionToken, StringComparison.Ordinal)
-                || !string.Equals(latestSnapshot.Methods, snapshot.Methods, StringComparison.Ordinal))
+            if (!latestSnapshot.Complete
+                || !string.Equals(latestSnapshot.VersionToken, snapshot.VersionToken, StringComparison.Ordinal)
+                || !LogicalSourceEquals(latestSnapshot.Methods, snapshot.Methods))
             {
                 return McpResponse.Err(
                     code: "VersionConflict",
@@ -309,12 +329,11 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                // The candidate contains only the new/updated ServiceGroupSource
-                // blocks. No Specify, Generate, Build, Rebuild or execution is
-                // invoked by this operation.
-                api.ServiceGroupSource.Source = plan.CandidateSource;
-                api.EnsureSave(false);
-                GxMcp.Worker.Helpers.WritePipeline.NoteWrite(api.Name);
+                // ServiceGroupSource is a nested KB part. Setting Source and calling
+                // EnsureSave(false) can report success while KBObjectManager skips the
+                // unchanged part. Force the nested part dirty and persist it with the
+                // owner in one SDK transaction. No lifecycle action is invoked here.
+                PersistApiMethods(api, plan.CandidateSource);
 
                 _objectService.MarkReadCacheDirty(api, "Methods");
                 var fresh = ResolveApiFresh(api.Name);
@@ -324,11 +343,14 @@ namespace GxMcp.Worker.Services
                 var after = CaptureApiSnapshot(fresh, fresh.ServiceGroupSource.Source ?? string.Empty);
                 string changedPart = null;
                 bool nonMethodsEqual = SnapshotNonMethodsEqual(snapshot, after, out changedPart);
-                if (!string.Equals(after.Methods, plan.CandidateSource, StringComparison.Ordinal)
+                if (!after.Complete
+                    || !LogicalSourceEquals(after.Methods, plan.CandidateSource)
                     || !nonMethodsEqual)
                 {
                     throw new InvalidOperationException(string.IsNullOrWhiteSpace(changedPart)
-                        ? "The persisted API routes differ from the candidate after re-read."
+                        ? (after.Complete
+                            ? "The persisted API routes differ from the candidate after re-read."
+                            : after.Error ?? "The complete API could not be re-read after route save.")
                         : "The SDK changed an API part outside Methods after route save: " + changedPart);
                 }
 
@@ -580,6 +602,7 @@ namespace GxMcp.Worker.Services
         internal sealed class ApiRoutePlan
         {
             public string CandidateSource;
+            public string ValidationError;
             public List<ApiRoute> Added = new List<ApiRoute>();
             public List<ApiRoute> Updated = new List<ApiRoute>();
             public List<ApiRoute> Unchanged = new List<ApiRoute>();
@@ -591,6 +614,8 @@ namespace GxMcp.Worker.Services
         {
             public string Methods;
             public string VersionToken;
+            public bool Complete = true;
+            public string Error;
             public Dictionary<string, string> Parts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
 
@@ -664,6 +689,33 @@ namespace GxMcp.Worker.Services
             };
         }
 
+        private static ApiRoute CloneApiRouteTo(ApiRoute source, string methodName, string path)
+        {
+            if (source == null) return null;
+
+            string block = source.SourceText;
+            if (source.MethodOffset > source.PathOffset)
+            {
+                block = ReplaceAt(block, source.MethodOffset, source.MethodName.Length, methodName);
+                block = ReplaceAt(block, source.PathOffset, source.PathLength, path);
+            }
+            else
+            {
+                block = ReplaceAt(block, source.PathOffset, source.PathLength, path);
+                block = ReplaceAt(block, source.MethodOffset, source.MethodName.Length, methodName);
+            }
+
+            return new ApiRoute
+            {
+                MethodName = methodName,
+                Verb = source.Verb,
+                Path = path,
+                ParametersText = source.ParametersText,
+                CallText = source.CallText,
+                SourceText = block
+            };
+        }
+
         private static string ReplaceAt(string text, int index, int length, string replacement)
         {
             return text.Substring(0, index) + replacement + text.Substring(index + length);
@@ -677,8 +729,22 @@ namespace GxMcp.Worker.Services
 
         internal static ApiRoutePlan BuildApiRoutePlan(string source, string sourcePrefix, string targetPrefix, bool updateExisting)
         {
+            return BuildApiRoutePlan(source, sourcePrefix, targetPrefix, updateExisting, null);
+        }
+
+        internal static ApiRoutePlan BuildApiRoutePlan(
+            string source,
+            string sourcePrefix,
+            string targetPrefix,
+            bool updateExisting,
+            JArray requestedRoutes)
+        {
             var plan = new ApiRoutePlan { CandidateSource = source ?? string.Empty };
             var current = ParseApiRoutes(plan.CandidateSource);
+
+            if (requestedRoutes != null && requestedRoutes.Count > 0)
+                return BuildExplicitApiRoutePlan(plan, current, requestedRoutes, updateExisting);
+
             var selected = current.Where(r => HasRoutePrefix(r, sourcePrefix)).ToList();
             var replacements = new List<ApiRouteChange>();
             var additions = new List<ApiRoute>();
@@ -742,6 +808,129 @@ namespace GxMcp.Worker.Services
             return plan;
         }
 
+        private static ApiRoutePlan BuildExplicitApiRoutePlan(
+            ApiRoutePlan plan,
+            List<ApiRoute> current,
+            JArray requestedRoutes,
+            bool updateExisting)
+        {
+            var replacements = new List<ApiRouteChange>();
+            var additions = new List<ApiRoute>();
+            var requestedMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var requestedRoutesSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            for (int i = 0; i < requestedRoutes.Count; i++)
+            {
+                var spec = requestedRoutes[i] as JObject;
+                if (spec == null)
+                {
+                    plan.ValidationError = "routes[" + i + "] must be an object.";
+                    return plan;
+                }
+
+                string sourceMethod = spec["sourceMethod"]?.ToString();
+                string targetMethod = spec["method"]?.ToString() ?? spec["name"]?.ToString();
+                string targetPath = spec["route"]?.ToString() ?? spec["path"]?.ToString();
+                string requestedVerb = spec["verb"]?.ToString();
+
+                if (!IsSafeMethodName(sourceMethod) || !IsSafeMethodName(targetMethod)
+                    || !IsSafeRoutePath(targetPath))
+                {
+                    plan.ValidationError = "routes[" + i + "] has an invalid sourceMethod, method or route.";
+                    return plan;
+                }
+
+                var sourceRoute = current.FirstOrDefault(r =>
+                    string.Equals(r.MethodName, sourceMethod, StringComparison.OrdinalIgnoreCase));
+                if (sourceRoute == null)
+                {
+                    plan.Conflicts.Add(sourceMethod + " (source method not found)");
+                    continue;
+                }
+                if (!string.IsNullOrWhiteSpace(requestedVerb)
+                    && !string.Equals(sourceRoute.Verb, requestedVerb, StringComparison.OrdinalIgnoreCase))
+                {
+                    plan.ValidationError = "routes[" + i + "] verb does not match sourceMethod '" + sourceMethod + "'.";
+                    return plan;
+                }
+
+                var candidate = CloneApiRouteTo(sourceRoute, targetMethod, targetPath);
+                if (!requestedMethods.Add(candidate.MethodName))
+                {
+                    plan.Conflicts.Add(candidate.MethodName + " (duplicate target method in request)");
+                    continue;
+                }
+                string routeKey = candidate.Verb + " " + candidate.Path;
+                if (!requestedRoutesSeen.Add(routeKey))
+                {
+                    plan.Conflicts.Add(candidate.MethodName + " (duplicate route in request: " + routeKey + ")");
+                    continue;
+                }
+                plan.TargetMethodNames.Add(candidate.MethodName);
+                var existing = current.FirstOrDefault(r =>
+                    string.Equals(r.MethodName, candidate.MethodName, StringComparison.OrdinalIgnoreCase));
+                if (existing == null)
+                {
+                    existing = current.FirstOrDefault(r =>
+                        string.Equals(r.Verb, candidate.Verb, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(r.Path, candidate.Path, StringComparison.OrdinalIgnoreCase));
+                    if (existing != null)
+                    {
+                        plan.Conflicts.Add(candidate.MethodName + " (" + candidate.Verb + " " + candidate.Path + ")");
+                        continue;
+                    }
+
+                    additions.Add(candidate);
+                    plan.Added.Add(candidate);
+                    continue;
+                }
+
+                if (string.Equals(existing.SourceText, candidate.SourceText, StringComparison.Ordinal))
+                {
+                    plan.Unchanged.Add(candidate);
+                }
+                else if (updateExisting)
+                {
+                    plan.Updated.Add(candidate);
+                    replacements.Add(new ApiRouteChange { Existing = existing, Replacement = candidate.SourceText });
+                }
+                else
+                {
+                    plan.Conflicts.Add(candidate.MethodName + " (method already exists with different content)");
+                }
+            }
+
+            // Never write a partial explicit clone/update when one target collides.
+            if (plan.Conflicts.Count > 0)
+                return plan;
+
+            string candidateSource = plan.CandidateSource ?? string.Empty;
+            foreach (var change in replacements.OrderByDescending(c => c.Existing.SourceIndex))
+            {
+                candidateSource = candidateSource.Substring(0, change.Existing.SourceIndex)
+                    + change.Replacement
+                    + candidateSource.Substring(change.Existing.SourceIndex + change.Existing.SourceText.Length);
+            }
+            if (additions.Count > 0)
+                candidateSource = AppendApiRouteBlocks(candidateSource, additions.Select(a => a.SourceText));
+
+            plan.CandidateSource = candidateSource;
+            return plan;
+        }
+
+        private static bool IsSafeMethodName(string name)
+        {
+            return !string.IsNullOrWhiteSpace(name)
+                && Regex.IsMatch(name.Trim(), @"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant);
+        }
+
+        private static bool IsSafeRoutePath(string path)
+        {
+            return !string.IsNullOrWhiteSpace(path)
+                && path.StartsWith("/", StringComparison.Ordinal)
+                && path.IndexOfAny(new[] { '\r', '\n', '\0' }) < 0;
+        }
+
         private static string AppendApiRouteBlocks(string source, IEnumerable<string> blocks)
         {
             string addition = string.Join(Environment.NewLine + Environment.NewLine, blocks ?? Enumerable.Empty<string>());
@@ -769,12 +958,99 @@ namespace GxMcp.Worker.Services
                 {
                     string json = _objectService.ReadObjectSourceForVerification(api.Name, partName, "API");
                     var payload = JObject.Parse(json);
+                    if (payload["error"] != null)
+                    {
+                        snapshot.Complete = false;
+                        snapshot.Error = "The API part '" + partName + "' could not be read for the complete snapshot.";
+                        continue;
+                    }
                     snapshot.Parts[partName] = payload["source"]?.ToString()
                         ?? (payload["error"] == null ? payload.ToString(Formatting.None) : null);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    snapshot.Complete = false;
+                    snapshot.Error = "The API part '" + partName + "' could not be snapshotted: " + ex.Message;
+                }
             }
             return snapshot;
+        }
+
+        private void PersistApiMethods(GeneXusApi api, string methods)
+        {
+            if (api?.ServiceGroupSource == null)
+                throw new InvalidOperationException("The API does not expose its native ServiceGroupSource part.");
+
+            var kb = _kbService?.GetKB();
+            if (kb == null)
+                throw new InvalidOperationException("No KB is open for API route persistence.");
+
+            bool committed = false;
+            using (var transaction = kb.BeginTransaction())
+            {
+                try
+                {
+                    api.ServiceGroupSource.Source = methods ?? string.Empty;
+                    // The API part can remain Mode=Unchanged after Source mutation
+                    // in headless GX18. Force the native part state before saving so
+                    // the SDK cannot silently skip nested route bytes.
+                    WriteService.ForcePatternPartDirty(api.ServiceGroupSource);
+                    api.ServiceGroupSource.Save();
+                    api.Save(new Artech.Architecture.Common.Objects.KBObjectSavePreferences
+                    {
+                        ForceSave = true,
+                        ForceSaveDefaultParts = false,
+                        // Route persistence must retain the SDK validation gate. The
+                        // explicit preflight and post-save reread make the operation
+                        // safer without accepting invalid API definitions.
+                        SkipValidation = false
+                    });
+                    transaction.Commit();
+                    committed = true;
+                }
+                finally
+                {
+                    if (!committed)
+                    {
+                        try { transaction.Rollback(); } catch { }
+                    }
+                }
+            }
+
+            // The SDK may defer the design-model/database flush even after the
+            // object transaction commits. Complete both commits before re-reading.
+            CommitKnowledgeBase(kb);
+            WritePipeline.NoteWrite(api.Name);
+        }
+
+        private static void CommitKnowledgeBase(object kb)
+        {
+            if (kb == null) throw new InvalidOperationException("No KB is open for API route persistence.");
+
+            var designModel = kb.GetType().GetProperty("DesignModel")?.GetValue(kb, null);
+            var modelCommit = designModel?.GetType().GetMethod(
+                "Commit",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
+                null,
+                Type.EmptyTypes,
+                null);
+            modelCommit?.Invoke(designModel, null);
+
+            var kbCommit = kb.GetType().GetMethod(
+                "Commit",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance,
+                null,
+                Type.EmptyTypes,
+                null);
+            kbCommit?.Invoke(kb, null);
+        }
+
+        private static bool LogicalSourceEquals(string left, string right)
+        {
+            return string.Equals(
+                (left ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n"),
+                (right ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n"),
+                StringComparison.Ordinal);
         }
 
         private JArray BuildApiMethods(GeneXusApi api, string source)
@@ -980,24 +1256,23 @@ namespace GxMcp.Worker.Services
                 }
 
                 string currentSource = current.ServiceGroupSource.Source ?? string.Empty;
-                if (!string.Equals(currentSource, candidateSource, StringComparison.Ordinal)
-                    && !string.Equals(currentSource, snapshot.Methods, StringComparison.Ordinal))
+                if (!LogicalSourceEquals(currentSource, candidateSource)
+                    && !LogicalSourceEquals(currentSource, snapshot.Methods))
                 {
                     result["error"] = "The API changed again after the failed write; rollback was not allowed to overwrite it.";
                     result["versionToken"] = WriteService.ComputeContentVersionToken(current, currentSource);
                     return result;
                 }
 
-                current.ServiceGroupSource.Source = snapshot.Methods ?? string.Empty;
-                current.EnsureSave(false);
-                GxMcp.Worker.Helpers.WritePipeline.NoteWrite(current.Name);
+                PersistApiMethods(current, snapshot.Methods ?? string.Empty);
                 _objectService.MarkReadCacheDirty(current, "Methods");
                 var restored = ResolveApiFresh(apiName);
                 var restoredSnapshot = restored == null || restored.ServiceGroupSource == null
                     ? null
                     : CaptureApiSnapshot(restored, restored.ServiceGroupSource.Source ?? string.Empty);
                 result["verified"] = restoredSnapshot != null
-                    && string.Equals(restoredSnapshot.Methods, snapshot.Methods, StringComparison.Ordinal)
+                    && restoredSnapshot.Complete
+                    && LogicalSourceEquals(restoredSnapshot.Methods, snapshot.Methods)
                     && SnapshotNonMethodsEqual(snapshot, restoredSnapshot, out string ignored);
                 if (restoredSnapshot != null) result["versionToken"] = restoredSnapshot.VersionToken;
             }

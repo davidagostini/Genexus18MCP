@@ -361,6 +361,66 @@ inbound_get(&codOrder) => operational.OrderFlow(&codOrder);
         }
 
         [Fact]
+        public void ApiRoutePlan_ExplicitRoutes_PreservesInboundAndSupportsNestedPaths()
+        {
+            const string source = @"api OrdersApi {
+[RestMethod(POST), RestPath(""/orders/inbound/storage"")] inbound_storage_post(in:&Storage,out:&Retorno) => operational.OrderInboundStorage(&Storage, &Retorno);
+[RestMethod(POST), RestPath(""/orders/inbound/dispatch"")] outbound_dispatch_post(in:&Dispatch,out:&Retorno) => operational.OrderOutboundDispatch(&Dispatch, &Retorno);
+}";
+
+            var requested = new JArray
+            {
+                new JObject
+                {
+                    ["sourceMethod"] = "inbound_storage_post",
+                    ["method"] = "reverse_storage_post",
+                    ["route"] = "/orders/reverse/inbound/storage",
+                    ["verb"] = "POST"
+                },
+                new JObject
+                {
+                    ["sourceMethod"] = "outbound_dispatch_post",
+                    ["method"] = "reverse_dispatch_post",
+                    ["route"] = "/orders/reverse/outbound/dispatch",
+                    ["verb"] = "POST"
+                }
+            };
+
+            var plan = ApiIntrospectService.BuildApiRoutePlan(source, null, null, true, requested);
+
+            Assert.Empty(plan.Conflicts);
+            Assert.Equal(new[] { "/orders/reverse/inbound/storage", "/orders/reverse/outbound/dispatch" },
+                plan.Added.Select(r => r.Path));
+            Assert.Contains("inbound_storage_post", plan.CandidateSource);
+            Assert.Contains("outbound_dispatch_post", plan.CandidateSource);
+            Assert.Contains("operational.OrderInboundStorage(&Storage, &Retorno)", plan.CandidateSource);
+            Assert.Contains("operational.OrderOutboundDispatch(&Dispatch, &Retorno)", plan.CandidateSource);
+        }
+
+        [Fact]
+        public void ApiRoutePlan_ExplicitRoutes_RejectsInvalidVerbWithoutPartialCandidate()
+        {
+            const string source = @"api OrdersApi {
+[RestMethod(POST), RestPath(""/orders/inbound/storage"")] inbound_storage_post(in:&Storage) => operational.OrderInboundStorage(&Storage);
+}";
+            var requested = new JArray
+            {
+                new JObject
+                {
+                    ["sourceMethod"] = "inbound_storage_post",
+                    ["method"] = "reverse_storage_post",
+                    ["route"] = "/orders/reverse/inbound/storage",
+                    ["verb"] = "PUT"
+                }
+            };
+
+            var plan = ApiIntrospectService.BuildApiRoutePlan(source, null, null, true, requested);
+
+            Assert.Equal("routes[0] verb does not match sourceMethod 'inbound_storage_post'.", plan.ValidationError);
+            Assert.Equal(source, plan.CandidateSource);
+        }
+
+        [Fact]
         public void ApiRoutePlan_UpdateReplacesExistingTarget()
         {
             const string source = @"api OrdersApi {
