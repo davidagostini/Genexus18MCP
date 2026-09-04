@@ -165,7 +165,7 @@ Write-Host "   > Writing sanitized fallback config.json to publish..."
 $defaultConfig = @{
     GeneXus = @{
         InstallationPath = "C:\\Program Files (x86)\\GeneXus\\GeneXus18"
-        WorkerExecutable = "$publishDir\\worker\\GxMcp.Worker.exe"
+        WorkerExecutable = "worker\\GxMcp.Worker.exe"
     }
     Server = @{
         HttpPort = 5000

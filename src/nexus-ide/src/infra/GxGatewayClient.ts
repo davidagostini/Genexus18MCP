@@ -265,6 +265,29 @@ export class GxGatewayClient {
       const requestLabel = this.describeCommand(command);
       const startedAt = Date.now();
       let finished = false;
+      let req: http.ClientRequest | undefined;
+      let removeAbortListener = (): void => undefined;
+
+      const cleanupAbortListener = (): void => {
+        removeAbortListener();
+        removeAbortListener = (): void => undefined;
+      };
+
+      const failRequest = (error: Error, outcome: string): void => {
+        if (finished) return;
+        finished = true;
+        cleanupAbortListener();
+        this.finishTrackedRequest(requestLabel, startedAt, outcome);
+        reject(error);
+      };
+
+      const onAbort = (): void => {
+        const error = new Error("MCP request aborted.");
+        error.name = "AbortError";
+        (error as { code?: string }).code = "ABORT_ERR";
+        failRequest(error, "aborted");
+        req?.destroy();
+      };
 
       try {
         GxGatewayClient.activeRequests++;
@@ -282,7 +305,7 @@ export class GxGatewayClient {
           `[GxGateway] Calling: ${targetUrl} with module ${command.module ?? command.method}...`,
         );
         const url = new URL(targetUrl);
-        const req = http.request(
+        req = http.request(
           url,
           {
             method: "POST",
@@ -303,6 +326,7 @@ export class GxGatewayClient {
             res.on("end", () => {
               if (!finished) {
                 finished = true;
+                cleanupAbortListener();
                 this.finishTrackedRequest(requestLabel, startedAt, `HTTP ${res.statusCode}`);
               }
               resolve({ body, headers: res.headers });
@@ -310,27 +334,30 @@ export class GxGatewayClient {
           },
         );
 
-        req.on("timeout", () => {
-          req.destroy();
-          if (!finished) {
-            finished = true;
-            this.finishTrackedRequest(requestLabel, startedAt, "timeout");
+        if (signal) {
+          signal.addEventListener("abort", onAbort, { once: true });
+          removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+          if (signal.aborted) {
+            onAbort();
+            return;
           }
-          reject(new Error(`Timeout Gateway (${timeout / 1000}s)`));
+        }
+
+        req.on("timeout", () => {
+          const error = new Error(`Timeout Gateway (${timeout / 1000}s)`);
+          failRequest(error, "timeout");
+          req?.destroy();
         });
 
         req.on("error", (error) => {
-          if (!finished) {
-            finished = true;
-            this.finishTrackedRequest(requestLabel, startedAt, `error: ${error.message}`);
-          }
-          reject(error);
+          failRequest(error, `error: ${error.message}`);
         });
         req.write(data);
         req.end();
       } catch (syncError) {
         if (!finished) {
           finished = true;
+          cleanupAbortListener();
           // In case activeRequests was already incremented
           if (GxGatewayClient.activeRequests > 0) {
               this.finishTrackedRequest(requestLabel, startedAt, `sync_error: ${syncError}`);

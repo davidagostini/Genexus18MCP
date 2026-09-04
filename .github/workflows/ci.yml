@@ -25,6 +25,14 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Cache VS Code test runtime
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: src/nexus-ide/.vscode-test
+          key: nexus-ide-vscode-${{ runner.os }}-1.111.0
+          restore-keys: |
+            nexus-ide-vscode-${{ runner.os }}-
+
       - name: Install npm deps
         run: npm install
 

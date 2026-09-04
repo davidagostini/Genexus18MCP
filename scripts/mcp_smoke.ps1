@@ -21,7 +21,6 @@ function Invoke-Mcp {
         "Content-Type" = "application/json"
         # The gateway rejects POSTs without both media types (406 Not Acceptable).
         "Accept" = "application/json, text/event-stream"
-        # The gateway rejects POSTs without both media types (406 Not Acceptable).
     }
     if (-not [string]::IsNullOrWhiteSpace($SessionId)) {
         $headers["MCP-Session-Id"] = $SessionId
