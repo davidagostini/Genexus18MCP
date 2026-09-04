@@ -1274,6 +1274,15 @@
             "description": "Optimistic concurrency: pass the versionToken from the genexus_read this edit is based on. If the object changed since (e.g. edited in the IDE), the write is refused with VersionConflict instead of overwriting the newer version. Omit to skip the check.",
             "type": "string"
           },
+          "concurrencyPolicy": {
+            "default": "warn",
+            "description": "warn (default) or fail_if_open if open in GeneXus IDE.",
+            "enum": [
+              "warn",
+              "fail_if_open"
+            ],
+            "type": "string"
+          },
           "content": {
             "type": "string"
           },
