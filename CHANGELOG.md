@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.56.0 - 2026-09-04
+
 ### Added
 
 - **Type disambiguator on `genexus_structure` (Issue #131).** Added optional `type` parameter across Gateway router, Worker dispatcher, and `StructureService.GetVisualStructure`, allowing callers to explicitly target `type="Transaction"` or `type="Table"` when homonyms share a name (such as `Empresa` as both a Transaction and a Table). When untyped resolution resolves an unsupported object type, the error message now identifies the resolved type and suggests specifying `type="Transaction"` or `name="Transaction:<target>"`.
