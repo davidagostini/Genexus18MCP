@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Race condition and E409 conflict during npm provenance publish.** Hardened `.github/workflows/release.yml` to gracefully handle npm registry E409 "Cannot publish over previously staged version" during asynchronous Sigstore provenance ingestion, added an active polling loop verifying registry availability before completing, removed duplicate `released` trigger causing simultaneous workflow runs, removed obsolete `always-auth` npmrc configuration, and updated `release.ps1` to detect active in-flight release workflows before triggering redundant fallback runs.
+
 ## v2.56.0 - 2026-09-04
 
 ### Added

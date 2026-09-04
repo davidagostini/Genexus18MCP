@@ -1,4 +1,4 @@
-﻿# GeneXus 18 MCP - one-shot release script
+# GeneXus 18 MCP - one-shot release script
 # =========================================
 #
 # Why this exists: the npm publish workflow (.github/workflows/release.yml)
@@ -556,18 +556,26 @@ Invoke-Cmd 'gh' $createArgs
 
 Ok "Release created: https://github.com/lennix1337/Genexus18MCP/releases/tag/$tag"
 
-# Belt-and-suspenders: explicitly trigger the publish workflow.
-# Observed 2026-05-26: v2.6.11 was created with publish.zip attached but the
-# `release.published` event never fired the workflow - npm stayed at 2.6.10
-# until a manual `gh workflow run release.yml -f tag=v2.6.11` backfilled it.
-# Dispatching explicitly is idempotent: if the release event DID fire, the
-# workflow's `Check npm registry` step short-circuits the duplicate run with
-# `already_published=true` and exits cheap.
+# Belt-and-suspenders: verify the publish workflow started, or trigger it manually.
+# Normally the `release.published` event starts the workflow automatically.
+# We check if an active run already exists before dispatching, avoiding
+# unnecessary concurrent duplicate runs while retaining the automatic backfill.
 if (-not $DryRun) {
-    Step "Triggering publish workflow (belt-and-suspenders)"
-    Start-Sleep -Seconds 3  # let GitHub register the release before dispatch
-    Invoke-Cmd 'gh' @('workflow', 'run', 'release.yml', '-f', "tag=$tag")
-    Ok "Workflow dispatched."
+    Step "Verifying publish workflow trigger"
+    Start-Sleep -Seconds 5  # let GitHub register the release event
+    $activeRun = $null
+    try {
+        $recentRuns = gh run list --workflow release.yml --limit 5 --json status,conclusion,databaseId 2>$null | ConvertFrom-Json
+        $activeRun = $recentRuns | Where-Object { $_.status -in @('queued', 'in_progress', 'waiting') } | Select-Object -First 1
+    } catch { }
+
+    if ($activeRun) {
+        Ok "Publish workflow #$($activeRun.databaseId) is already active (triggered by release event)."
+    } else {
+        Warn "No active workflow detected after 5s - dispatching manually as fallback."
+        Invoke-Cmd 'gh' @('workflow', 'run', 'release.yml', '-f', "tag=$tag")
+        Ok "Workflow dispatched."
+    }
 }
 Write-Host ""
 Write-Host "    Watch the publish workflow:" -ForegroundColor Cyan

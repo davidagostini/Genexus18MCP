@@ -2,9 +2,9 @@ name: Release
 
 on:
   release:
-    # `edited` / `released` let a late `gh release upload publish.zip` re-trigger
+    # `edited` lets a late `gh release upload publish.zip` re-trigger
     # this workflow when the asset was missing on first publish.
-    types: [published, released, edited]
+    types: [published, edited]
   workflow_dispatch:
     inputs:
       tag:
@@ -150,7 +150,6 @@ jobs:
           OIDC_NPMRC="$RUNNER_TEMP/npmrc-oidc"
           {
             echo "registry=https://registry.npmjs.org/"
-            echo "always-auth=false"
           } > "$OIDC_NPMRC"
           echo "NPM_CONFIG_USERCONFIG=$OIDC_NPMRC" >> "$GITHUB_ENV"
 
@@ -160,4 +159,41 @@ jobs:
         run: |
           set -euo pipefail
           unset NODE_AUTH_TOKEN NPM_TOKEN
-          npm publish --access public --provenance
+          TARGET_SPEC="${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}"
+
+          echo "Publishing ${TARGET_SPEC} to npm with provenance..."
+          set +e
+          PUBLISH_OUT=$(npm publish --access public --provenance 2>&1)
+          PUBLISH_EXIT=$?
+          set -e
+
+          echo "$PUBLISH_OUT"
+
+          if [ $PUBLISH_EXIT -eq 0 ]; then
+            echo "npm publish accepted by registry (staged with provenance)."
+          elif echo "$PUBLISH_OUT" | grep -Eq "E409|previously staged|previously published"; then
+            echo "Notice: ${TARGET_SPEC} is already staged or published on npm (E409 conflict). Proceeding to verify registry propagation..."
+          else
+            echo "::error::npm publish failed with exit code $PUBLISH_EXIT"
+            exit $PUBLISH_EXIT
+          fi
+
+          echo "Verifying that ${TARGET_SPEC} is live on npm registry..."
+          MAX_ATTEMPTS=30
+          SLEEP_SECONDS=10
+          AVAILABLE=false
+
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            if npm view "${TARGET_SPEC}" version >/dev/null 2>&1; then
+              AVAILABLE=true
+              echo "Successfully verified ${TARGET_SPEC} on npm registry (attempt $i/$MAX_ATTEMPTS)!"
+              break
+            fi
+            echo "Package not yet queryable on npm (attempt $i/$MAX_ATTEMPTS). Waiting ${SLEEP_SECONDS}s..."
+            sleep $SLEEP_SECONDS
+          done
+
+          if [ "$AVAILABLE" != "true" ]; then
+            echo "::error::Package ${TARGET_SPEC} was submitted but did not become available on npm registry within $((MAX_ATTEMPTS * SLEEP_SECONDS)) seconds."
+            exit 1
+          fi
