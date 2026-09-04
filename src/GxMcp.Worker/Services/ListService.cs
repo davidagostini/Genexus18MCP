@@ -360,7 +360,11 @@ namespace GxMcp.Worker.Services
                             entry.LastUpdate,
                             entry.CreatedAt,
                             entry.LastModifiedBy,
-                            legacyMode
+                            legacyMode,
+                            entry.Guid,
+                            entry.EntityKey,
+                            entry.EntityTypeGuid,
+                            entry.EntityId
                         ));
                     }
 
@@ -589,7 +593,11 @@ namespace GxMcp.Worker.Services
                         rtLastUpdate,
                         rtCreatedAt,
                         rtLastModifiedBy,
-                        runtimeLegacyMode
+                        runtimeLegacyMode,
+                        item.Object.Guid.ToString(),
+                        SafeEntityKey(item.Object),
+                        SafeEntityTypeGuid(item.Object),
+                        SafeEntityId(item.Object)
                     ));
                 }
 
@@ -840,11 +848,13 @@ namespace GxMcp.Worker.Services
                    string.Equals(perfProfile, "legacy", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static JObject BuildItemInternal(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose, DateTime lastUpdate, DateTime createdAt, string lastModifiedBy, bool isLegacyMode = false)
+        private static JObject BuildItemInternal(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose, DateTime lastUpdate, DateTime createdAt, string lastModifiedBy, bool isLegacyMode = false,
+            string guid = null, string entityKey = null, string entityTypeGuid = null, int? entityId = null)
         {
             var item = new JObject();
             item["name"] = name;
             item["type"] = type;
+            if (!string.IsNullOrWhiteSpace(guid)) item["guid"] = guid;
 
             // In legacy mode, always return full shape for backward compatibility
             if (isLegacyMode || verbose)
@@ -854,6 +864,9 @@ namespace GxMcp.Worker.Services
                 item["module"] = module;
                 item["path"] = path;
                 item["parentPath"] = parentPath;
+                if (!string.IsNullOrWhiteSpace(entityKey)) item["entityKey"] = entityKey;
+                if (!string.IsNullOrWhiteSpace(entityTypeGuid)) item["entityTypeGuid"] = entityTypeGuid;
+                if (entityId.HasValue) item["entityId"] = entityId.Value;
             }
             else
             {
@@ -894,6 +907,21 @@ namespace GxMcp.Worker.Services
             }
 
             return item;
+        }
+
+        private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.ToString(); } catch { return null; }
+        }
+
+        private static string SafeEntityTypeGuid(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Type.ToString(); } catch { return null; }
+        }
+
+        private static int? SafeEntityId(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Id; } catch { return null; }
         }
 
         private HierarchyInfo ResolveHierarchy(dynamic obj)

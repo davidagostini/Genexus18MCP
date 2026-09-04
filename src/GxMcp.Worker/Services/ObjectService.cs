@@ -2416,12 +2416,216 @@ namespace GxMcp.Worker.Services
             return string.Compare(a.Type ?? string.Empty, b.Type ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         }
 
-        public KBObject FindObject(string target, string typeFilter = null)
+        [ThreadStatic]
+        private static JObject _lastResolutionDiagnostic;
+
+        private static void SetIndexedUnavailable(SearchIndex.IndexEntry entry, string requestedTarget, string typeFilter, string strategy = null)
         {
+            if (entry == null) return;
+            _lastResolutionDiagnostic = new JObject
+            {
+                ["diagnostic"] = "IndexedObjectUnavailable",
+                ["indexed"] = true,
+                ["persisted"] = false,
+                ["requested"] = requestedTarget,
+                ["name"] = entry.Name,
+                ["type"] = entry.Type,
+                ["guid"] = entry.Guid,
+                ["entityKey"] = entry.EntityKey,
+                ["path"] = entry.Path,
+                ["module"] = entry.Module,
+                ["requestedType"] = typeFilter,
+                ["resolutionStrategy"] = strategy ?? "identity+qualified-path",
+                ["hint"] = "The search index contains this object, but the active SDK could not resolve its native identity. Refresh the KB/index and verify that the object is persisted in the active model."
+            };
+        }
+
+        internal JObject GetLastResolutionDiagnostic() => _lastResolutionDiagnostic?.DeepClone() as JObject;
+
+        private static bool IsEntryType(SearchIndex.IndexEntry entry, string type)
+        {
+            return entry != null && (string.IsNullOrWhiteSpace(type)
+                || string.Equals(NormalizeTypeAlias(entry.Type), NormalizeTypeAlias(type), StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IdentityNameMatches(SearchIndex.IndexEntry entry, string target)
+        {
+            if (entry == null || string.IsNullOrWhiteSpace(target)) return false;
+            string value = target.Trim().Replace('\\', '/');
+            string path = (entry.Path ?? string.Empty).Trim().Replace('\\', '/');
+            string pathWithoutRoot = path.StartsWith("Root Module/", StringComparison.OrdinalIgnoreCase)
+                ? path.Substring("Root Module/".Length) : path;
+            string dottedPath = pathWithoutRoot.Replace('/', '.');
+            return string.Equals(entry.Name, value, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(path, value, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(pathWithoutRoot, value, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(dottedPath, value, StringComparison.OrdinalIgnoreCase)
+                || string.Equals((entry.Module ?? string.Empty) + "/" + entry.Name, value, StringComparison.OrdinalIgnoreCase)
+                || string.Equals((entry.Module ?? string.Empty) + "." + entry.Name, value, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static IEnumerable<string> QualifiedIdentityCandidates(SearchIndex.IndexEntry entry)
+        {
+            var yieldValues = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Action<string> add = value =>
+            {
+                if (string.IsNullOrWhiteSpace(value)) return;
+                string normalized = value.Trim().Replace('\\', '/');
+                if (seen.Add(normalized)) yieldValues.Add(normalized);
+                string withoutRoot = normalized.StartsWith("Root Module/", StringComparison.OrdinalIgnoreCase)
+                    ? normalized.Substring("Root Module/".Length) : normalized;
+                if (seen.Add(withoutRoot)) yieldValues.Add(withoutRoot);
+                string dotted = withoutRoot.Replace('/', '.');
+                if (seen.Add(dotted)) yieldValues.Add(dotted);
+            };
+            add(entry?.Path);
+            add(entry?.ParentPath == null ? null : entry.ParentPath.TrimEnd('/') + "/" + entry.Name);
+            add(string.IsNullOrWhiteSpace(entry?.Module) ? null : entry.Module + "/" + entry.Name);
+            add(string.IsNullOrWhiteSpace(entry?.Name) ? null : entry.Name);
+            return yieldValues;
+        }
+
+        internal static bool TryParseEntityKey(string raw, out Guid typeGuid, out int id)
+        {
+            typeGuid = Guid.Empty;
+            id = 0;
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            var match = System.Text.RegularExpressions.Regex.Match(raw,
+                @"(?<type>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})[^0-9]*(?<id>\d+)\s*[\)\]]*\s*$");
+            return match.Success
+                && Guid.TryParse(match.Groups["type"].Value, out typeGuid)
+                && int.TryParse(match.Groups["id"].Value, out id);
+        }
+
+        internal static KBObject ResolveIndexedObject(KBModel model, SearchIndex.IndexEntry entry, out string strategy)
+        {
+            strategy = null;
+            if (model == null || entry == null) return null;
+
+            if (Guid.TryParse(entry.EntityTypeGuid, out var entityTypeGuid) && entry.EntityId.HasValue)
+            {
+                try
+                {
+                    var byEntityKey = model.Objects.Get(new global::Artech.Udm.Framework.EntityKey(entityTypeGuid, entry.EntityId.Value));
+                    if (byEntityKey != null) { strategy = "entityKey-fields"; return byEntityKey; }
+                }
+                catch { }
+            }
+
+            if (TryParseEntityKey(entry.EntityKey, out entityTypeGuid, out int entityId))
+            {
+                try
+                {
+                    var byEntityKey = model.Objects.Get(new global::Artech.Udm.Framework.EntityKey(entityTypeGuid, entityId));
+                    if (byEntityKey != null) { strategy = "entityKey"; return byEntityKey; }
+                }
+                catch { }
+            }
+
+            if (Guid.TryParse(entry.Guid, out var objectGuid))
+            {
+                try
+                {
+                    var byGuid = model.Objects.Get(objectGuid);
+                    if (byGuid != null) { strategy = "guid"; return byGuid; }
+                }
+                catch { }
+            }
+
+            foreach (var candidate in QualifiedIdentityCandidates(entry))
+            {
+                var byPath = ResolveTypedObjectDirect(model, entry.Type, candidate);
+                if (byPath != null)
+                {
+                    strategy = "qualified-path";
+                    return byPath;
+                }
+            }
+
+            return null;
+        }
+
+        internal KBObject FindObject(SearchIndex.IndexEntry entry)
+        {
+            _lastResolutionDiagnostic = null;
+            var kb = _kbService.GetKB();
+            if (kb == null || entry == null) return null;
+            string strategy;
+            var resolved = ResolveIndexedObject(kb.DesignModel, entry, out strategy);
+            if (resolved == null) SetIndexedUnavailable(entry, entry.Name, entry.Type, strategy);
+            return resolved;
+        }
+
+        private static SearchIndex.IndexEntry FindIndexEntry(SearchIndex index, string target, string type)
+        {
+            if (index?.Objects == null || string.IsNullOrWhiteSpace(target)) return null;
+            string key = string.IsNullOrWhiteSpace(type) ? null : type.Trim() + ":" + target.Trim();
+            if (key != null && index.Objects.TryGetValue(key, out var exact)) return exact;
+            return index.Objects.Values.FirstOrDefault(e => IsEntryType(e, type) && IdentityNameMatches(e, target));
+        }
+
+        public KBObject FindObject(string target, string typeFilter = null, string guid = null, string entityKey = null, string path = null)
+        {
+            _lastResolutionDiagnostic = null;
             if (string.IsNullOrEmpty(target)) return null;
             var sw = Stopwatch.StartNew();
             var kb = _kbService.GetKB();
             if (kb == null) return null;
+
+            // Explicit identity is authoritative. Do not silently fall back to a
+            // same-named object when a caller supplied a GUID/EntityKey/path.
+            if (!string.IsNullOrWhiteSpace(guid) || !string.IsNullOrWhiteSpace(entityKey) || !string.IsNullOrWhiteSpace(path))
+            {
+                var identityEntry = FindIndexEntry(GetLoadedIndexOrNull(), path ?? target, typeFilter);
+                if (identityEntry != null)
+                {
+                    var probe = new SearchIndex.IndexEntry
+                    {
+                        Guid = string.IsNullOrWhiteSpace(guid) ? identityEntry.Guid : guid.Trim(),
+                        EntityKey = string.IsNullOrWhiteSpace(entityKey) ? identityEntry.EntityKey : entityKey.Trim(),
+                        EntityTypeGuid = identityEntry.EntityTypeGuid,
+                        EntityId = identityEntry.EntityId,
+                        Name = identityEntry.Name,
+                        Type = identityEntry.Type,
+                        Path = string.IsNullOrWhiteSpace(path) ? identityEntry.Path : path.Trim(),
+                        ParentPath = identityEntry.ParentPath,
+                        Module = identityEntry.Module
+                    };
+                    string resolvedBy;
+                    var resolved = ResolveIndexedObject(kb.DesignModel, probe, out resolvedBy);
+                    if (resolved != null) return resolved;
+                    SetIndexedUnavailable(probe, target, typeFilter, resolvedBy);
+                    return null;
+                }
+
+                if (Guid.TryParse(guid, out var explicitGuid))
+                {
+                    try { var resolved = kb.DesignModel.Objects.Get(explicitGuid); if (resolved != null) return resolved; } catch { }
+                }
+                if (TryParseEntityKey(entityKey, out var explicitTypeGuid, out int explicitId))
+                {
+                    try
+                    {
+                        var resolved = kb.DesignModel.Objects.Get(new global::Artech.Udm.Framework.EntityKey(explicitTypeGuid, explicitId));
+                        if (resolved != null) return resolved;
+                    }
+                    catch { }
+                }
+
+                foreach (var candidate in QualifiedIdentityCandidates(new SearchIndex.IndexEntry
+                {
+                    Name = target,
+                    Type = typeFilter,
+                    Path = path,
+                    Module = null
+                }))
+                {
+                    var resolved = ResolveTypedObjectDirect(kb.DesignModel, typeFilter, candidate);
+                    if (resolved != null) return resolved;
+                }
+                return null;
+            }
 
             string typePart = typeFilter;
             string namePart = target.Trim();
@@ -2509,25 +2713,16 @@ namespace GxMcp.Worker.Services
                 if (typePart != null)
                 {
                     string key = string.Format("{0}:{1}", typePart, namePart);
-                    if (index.Objects.TryGetValue(key, out var entry))
+                    var entry = FindIndexEntry(index, namePart, typePart);
+                    if (entry != null)
                     {
-                        KBObject obj = null;
-                        if (!string.IsNullOrEmpty(entry.Guid))
-                        {
-                            try { obj = kb.DesignModel.Objects.Get(new Guid(entry.Guid)); } catch { }
-                        }
-                        if (obj == null && !string.IsNullOrEmpty(entry.Type))
-                        {
-                            Guid tGuid = ResolveObjectTypeGuid(entry.Type);
-                            if (tGuid != Guid.Empty)
-                            {
-                                try { obj = kb.DesignModel.Objects.Get(tGuid, entry.Name); } catch { }
-                            }
-                        }
+                        string resolvedBy;
+                        KBObject obj = ResolveIndexedObject(kb.DesignModel, entry, out resolvedBy);
                         if (obj != null) {
                             Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Index-Typed) in {1}ms", target, sw.ElapsedMilliseconds));
                             return obj;
                         }
+                        SetIndexedUnavailable(entry, target, typePart, resolvedBy);
                     }
                 }
                 else
@@ -2572,7 +2767,7 @@ namespace GxMcp.Worker.Services
                             foreach (var kv in index.Objects)
                             {
                                 var entry = kv.Value;
-                                if (string.Equals(entry?.Name, namePart, StringComparison.OrdinalIgnoreCase) ||
+                                if (IdentityNameMatches(entry, namePart) ||
                                     kv.Key.EndsWith(":" + namePart, StringComparison.OrdinalIgnoreCase))
                                 {
                                     matches.Add(entry);
@@ -2590,28 +2785,14 @@ namespace GxMcp.Worker.Services
 
                         foreach (var m in matches)
                         {
-                            KBObject obj = null;
-                            if (!string.IsNullOrEmpty(m.Type))
-                            {
-                                obj = ResolveTypedObjectDirect(kb.DesignModel, m.Type, m.Name ?? namePart);
-                            }
-                            if (obj == null && !string.IsNullOrEmpty(m.Guid))
-                            {
-                                try { obj = kb.DesignModel.Objects.Get(new Guid(m.Guid)); } catch { }
-                            }
-                            if (obj == null && !string.IsNullOrEmpty(m.Type))
-                            {
-                                Guid tGuid = ResolveObjectTypeGuid(m.Type);
-                                if (tGuid != Guid.Empty)
-                                {
-                                    try { obj = kb.DesignModel.Objects.Get(tGuid, m.Name ?? namePart); } catch { }
-                                }
-                            }
+                            string resolvedBy;
+                            KBObject obj = ResolveIndexedObject(kb.DesignModel, m, out resolvedBy);
                             if (obj != null)
                             {
                                 Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Index-Ordered: {1}) in {2}ms", target, m.Type, sw.ElapsedMilliseconds));
                                 return obj;
                             }
+                            SetIndexedUnavailable(m, target, typePart, resolvedBy);
                         }
                     }
                 }
@@ -2745,7 +2926,46 @@ namespace GxMcp.Worker.Services
 
             MarkReadCacheDirty(seed);
             var kb = _kbService.GetKB();
-            return kb?.DesignModel.Objects.Get(seed.Guid);
+            try
+            {
+                var byEntityKey = kb?.DesignModel.Objects.Get(seed.Key);
+                if (byEntityKey != null) return byEntityKey;
+            }
+            catch { }
+            try { return kb?.DesignModel.Objects.Get(seed.Guid); } catch { return seed; }
+        }
+
+        private string FormatReadNotFound(string target)
+        {
+            var diagnostic = GetLastResolutionDiagnostic();
+            if (diagnostic != null)
+            {
+                return McpResponse.Err(
+                    code: "IndexedObjectUnavailable",
+                    message: "The search index contains the object, but the active SDK could not resolve its native identity.",
+                    hint: diagnostic["hint"]?.ToString(),
+                    target: target,
+                    errorExtra: diagnostic);
+            }
+            return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+        }
+
+        internal static JObject BuildObjectIdentity(KBObject obj)
+        {
+            var identity = new JObject();
+            if (obj == null) return identity;
+            try { identity["guid"] = obj.Guid.ToString(); } catch { }
+            try
+            {
+                if (obj.Key != null)
+                {
+                    identity["entityKey"] = obj.Key.ToString();
+                    identity["entityTypeGuid"] = obj.Key.Type.ToString();
+                    identity["entityId"] = obj.Key.Id;
+                }
+            }
+            catch { }
+            return identity;
         }
 
         public string ExtractAllParts(string target, string client = "ide", string typeFilter = null)
@@ -2754,7 +2974,7 @@ namespace GxMcp.Worker.Services
             try
             {
                 var obj = FindObject(target, typeFilter);
-                if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+                if (obj == null) return FormatReadNotFound(target);
 
                 var result = new JObject { ["name"] = obj.Name, ["parts"] = new JObject() };
                 string[] partsToFetch = { "Source", "Rules", "Events", "Variables", "Documentation", "Help", "Methods" };
@@ -2783,7 +3003,7 @@ namespace GxMcp.Worker.Services
         public string ReadObject(string target, string typeFilter = null)
         {
             var obj = FindObject(target, typeFilter);
-            if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+            if (obj == null) return FormatReadNotFound(target);
 
             var parts = new JArray();
             foreach (KBObjectPart p in obj.Parts)
@@ -2823,6 +3043,7 @@ namespace GxMcp.Worker.Services
                 {
                     ["name"] = obj.Name,
                     ["type"] = obj.TypeDescriptor?.Name,
+                    ["identity"] = BuildObjectIdentity(obj),
                     ["parent"] = parentName,
                     ["module"] = moduleName,
                     ["parts"] = parts,
@@ -2830,10 +3051,11 @@ namespace GxMcp.Worker.Services
                 });
         }
 
-        public string ReadObjectSource(string target, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false, string typeFilter = null)
+        public string ReadObjectSource(string target, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false, string typeFilter = null,
+            string guid = null, string entityKey = null, string path = null)
         {
-            var obj = FindObject(target, typeFilter);
-            if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+            var obj = FindObject(target, typeFilter, guid, entityKey, path);
+            if (obj == null) return FormatReadNotFound(target);
 
             string resolvedPart = ResolvePartName(obj, partName);
             if (ShouldUseReadCache(client, minimize))
@@ -2866,7 +3088,7 @@ namespace GxMcp.Worker.Services
         internal string ReadObjectSourceForVerification(string target, string partName, string typeFilter = null)
         {
             var obj = FindObjectFresh(target, typeFilter);
-            if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+            if (obj == null) return FormatReadNotFound(target);
 
             string resolvedPart = ResolvePartName(obj, partName);
             string response = ReadObjectSourceInternal(
@@ -2891,10 +3113,11 @@ namespace GxMcp.Worker.Services
         /// Parts that are not found or produce no source are silently omitted.
         /// When requestedParts is null/empty the full default set is returned (backward-compatible).
         /// </summary>
-        public string ReadObjectSourceParts(string target, IEnumerable<string> requestedParts, string typeFilter = null)
+        public string ReadObjectSourceParts(string target, IEnumerable<string> requestedParts, string typeFilter = null,
+            string guid = null, string entityKey = null, string path = null)
         {
-            var obj = FindObject(target, typeFilter);
-            if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+            var obj = FindObject(target, typeFilter, guid, entityKey, path);
+            if (obj == null) return FormatReadNotFound(target);
 
             if (DataSelectorReadService.IsDataSelector(obj))
             {
@@ -3029,16 +3252,18 @@ namespace GxMcp.Worker.Services
         /// and called signatures tailored to the target object type in a single fast call.
         /// Eliminates the multi-roundtrip exploration loop.
         /// </summary>
-        public string ReadFullObject(string target, string typeFilter = null)
+        public string ReadFullObject(string target, string typeFilter = null,
+            string guid = null, string entityKey = null, string path = null)
         {
-            var obj = FindObject(target, typeFilter);
-            if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+            var obj = FindObject(target, typeFilter, guid, entityKey, path);
+            if (obj == null) return FormatReadNotFound(target);
 
             string typeName = obj.TypeDescriptor?.Name ?? "Object";
             var result = new JObject
             {
                 ["name"] = obj.Name,
-                ["type"] = typeName
+                ["type"] = typeName,
+                ["identity"] = BuildObjectIdentity(obj)
             };
 
             string parentName = null;

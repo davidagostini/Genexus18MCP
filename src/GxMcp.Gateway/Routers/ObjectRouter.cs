@@ -81,7 +81,10 @@ namespace GxMcp.Gateway.Routers
                             action = "ExtractParts",
                             target = target,
                             parts = (JArray)partsTok!,
-                            type = args?["type"]?.ToString()
+                            type = args?["type"]?.ToString(),
+                            guid = args?["guid"]?.ToString(),
+                            entityKey = args?["entityKey"]?.ToString(),
+                            path = args?["path"]?.ToString()
                         };
                     }
                     string partStr = args?["part"]?.ToString()?.Trim() ?? string.Empty;
@@ -99,7 +102,10 @@ namespace GxMcp.Gateway.Routers
                             module = "Read",
                             action = "ExtractFullObject",
                             target = target,
-                            type = args?["type"]?.ToString()
+                            type = args?["type"]?.ToString(),
+                            guid = args?["guid"]?.ToString(),
+                            entityKey = args?["entityKey"]?.ToString(),
+                            path = args?["path"]?.ToString()
                         };
                     }
                     return new {
@@ -109,7 +115,10 @@ namespace GxMcp.Gateway.Routers
                         part = part,
                         offset = args?["offset"]?.ToObject<int?>(),
                         limit = args?["limit"]?.ToObject<int?>(),
-                        type = args?["type"]?.ToString()
+                        type = args?["type"]?.ToString(),
+                        guid = args?["guid"]?.ToString(),
+                        entityKey = args?["entityKey"]?.ToString(),
+                        path = args?["path"]?.ToString()
                     };
                 }
 

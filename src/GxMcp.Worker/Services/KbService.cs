@@ -640,6 +640,9 @@ namespace GxMcp.Worker.Services
                         liteEntries.Add(new SearchIndex.IndexEntry
                         {
                             Guid = obj.Guid.ToString(),
+                            EntityKey = SafeEntityKey(obj),
+                            EntityTypeGuid = SafeEntityTypeGuid(obj),
+                            EntityId = SafeEntityId(obj),
                             Name = obj.Name,
                             Type = typeName,
                             Description = description,
@@ -824,21 +827,39 @@ namespace GxMcp.Worker.Services
         }
 
         // Shared enrich-one-entry closure used by the lite-pass queue, the delta resume queue,
-        // and on-demand PromoteAsync: resolve the full SDK object by Guid and UpdateEntry it.
+        // and on-demand PromoteAsync: resolve the full SDK object by EntityKey/GUID/path.
         private IndexEntryEnricher BuildEnricher(dynamic kb, string logLabel)
         {
             return new IndexEntryEnricher(e =>
             {
                 try
                 {
-                    if (string.IsNullOrEmpty(e?.Guid)) return;
-                    if (!Guid.TryParse(e.Guid, out var g)) return;
-                    var fullObj = kb.DesignModel.Objects.Get(g);
+                    if (e == null) return;
+                    string resolutionStrategy;
+                    var fullObj = ObjectService.ResolveIndexedObject(kb.DesignModel, e, out resolutionStrategy);
                     if (fullObj == null) return;
                     _indexCacheService.UpdateEntry(fullObj);
                 }
                 catch (Exception ex) { Logger.Warn(logLabel + " " + (e != null ? e.Name : "?") + " failed: " + ex.Message); }
             });
+        }
+
+        // EntityKey is the SDK identity that survives modular-name qualification.
+        // Keep its scalar pieces in the index so a warm process can reconstruct it
+        // without depending on a facade object's Guid lookup.
+        private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.ToString(); } catch { return null; }
+        }
+
+        private static string SafeEntityTypeGuid(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Type.ToString(); } catch { return null; }
+        }
+
+        private static int? SafeEntityId(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Id; } catch { return null; }
         }
 
         // Fase 1: bounded delta refresh on warm start. The in-memory index is already

@@ -13,7 +13,7 @@ namespace GxMcp.Gateway.Routers
             switch (toolName)
             {
                 case "genexus_inspect":
-                    return new { module = "Analyze", action = "GetConversionContext", target = target, include = args?["include"], type = type, projection = args?["projection"]?.ToString(), verbose = args?["verbose"]?.ToObject<bool?>() ?? false };
+                    return new { module = "Analyze", action = "GetConversionContext", target = target, include = args?["include"], type = type, projection = args?["projection"]?.ToString(), verbose = args?["verbose"]?.ToObject<bool?>() ?? false, guid = args?["guid"]?.ToString(), entityKey = args?["entityKey"]?.ToString(), path = args?["path"]?.ToString() };
 
                 case "genexus_inject_context":
                     bool recursive = args?["recursive"]?.Value<bool>() ?? false;

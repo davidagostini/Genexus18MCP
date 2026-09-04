@@ -52,6 +52,12 @@ namespace GxMcp.Worker.Models
         public class IndexEntry
         {
             public string Guid { get; set; }
+            // Modular objects can have a stable Guid that is not sufficient for
+            // DesignModel.Objects.Get(Guid). Keep the SDK's typed identity as
+            // well; EntityKey is the authoritative lookup key for those objects.
+            public string EntityKey { get; set; }
+            public string EntityTypeGuid { get; set; }
+            public int? EntityId { get; set; }
             public string Name { get; set; }
             public string Type { get; set; }
             public string Description { get; set; }
