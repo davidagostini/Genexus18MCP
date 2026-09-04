@@ -2950,18 +2950,42 @@ namespace GxMcp.Worker.Services
             return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
         }
 
-        internal static JObject BuildObjectIdentity(KBObject obj)
+        internal JObject BuildObjectIdentity(KBObject obj)
         {
             var identity = new JObject();
             if (obj == null) return identity;
-            try { identity["guid"] = obj.Guid.ToString(); } catch { }
+            string guid = null;
+            string entityKey = null;
+            try { guid = obj.Guid.ToString(); identity["guid"] = guid; } catch { }
             try
             {
                 if (obj.Key != null)
                 {
-                    identity["entityKey"] = obj.Key.ToString();
+                    entityKey = obj.Key.ToString();
+                    identity["entityKey"] = entityKey;
                     identity["entityTypeGuid"] = obj.Key.Type.ToString();
                     identity["entityId"] = obj.Key.Id;
+                }
+            }
+            catch { }
+
+            // Keep read/inspect identity aligned with list/search entries. The
+            // native object is authoritative, while the index supplies the
+            // qualified path for modular handles whose parent chain is partial.
+            try
+            {
+                var index = _kbService?.GetIndexCache()?.TryGetLoadedIndex();
+                var entry = index?.Objects?.Values?.FirstOrDefault(e =>
+                    (!string.IsNullOrEmpty(guid) && string.Equals(e.Guid, guid, StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrEmpty(entityKey) && string.Equals(e.EntityKey, entityKey, StringComparison.OrdinalIgnoreCase)));
+                if (!string.IsNullOrWhiteSpace(entry?.Path))
+                {
+                    identity["path"] = entry.Path;
+                }
+                else
+                {
+                    var hierarchy = _kbService?.GetIndexCache()?.ResolveHierarchyForIndex(obj);
+                    if (hierarchy.HasValue && !string.IsNullOrWhiteSpace(hierarchy.Value.Path)) identity["path"] = hierarchy.Value.Path;
                 }
             }
             catch { }

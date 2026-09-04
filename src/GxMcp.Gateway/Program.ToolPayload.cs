@@ -483,7 +483,7 @@ namespace GxMcp.Gateway
         private static readonly HashSet<string> CompactFieldsQuery =
             new HashSet<string>(new[] { "name", "type", "path", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<string> CompactFieldsListObjects =
-            new HashSet<string>(new[] { "name", "type", "path", "parentPath", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+            new HashSet<string>(new[] { "name", "type", "path", "parentPath", "lastUpdate", "guid", "entityKey", "entityTypeGuid", "entityId" }, StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<string> CompactFieldsSearch =
             new HashSet<string>(new[] { "name", "type", "description", "path", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<string> MinimalProjectionFields =
