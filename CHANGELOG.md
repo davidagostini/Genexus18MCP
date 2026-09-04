@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **Typed Transaction record access (PR #133).** Added `genexus_db` actions
+  `records_query`, `records_insert`, and `records_update`. They derive table,
+  attributes, key metadata, and scalar conversions from the GeneXus
+  Transaction, return an optimistic `versionToken`, default writes to
+  `dryRun=true`, and require that token before persisting. Contributed by
+  David Agostini (@davidagostini). [PR #133](https://github.com/lennix1337/Genexus18MCP/pull/133)
+
 ### Changed
 
 - **Tool schema budget for action contracts (Issues #139/#140).** Raised the guarded schema-size budget from 24,500 to 25,000 tokens to accommodate the required descriptions for all 31 action-bearing tools; the current measured size is ~24,666 tokens with ~334 tokens of headroom.
