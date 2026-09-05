@@ -2,8 +2,19 @@
 
 ## Unreleased
 
+### Changed
+
+- **Tool schema budget for action contracts (Issues #139/#140).** Raised the guarded schema-size budget from 24,500 to 25,000 tokens to accommodate the required descriptions for all 31 action-bearing tools; the current measured size is ~24,666 tokens with ~334 tokens of headroom.
+
 ### Fixed
 
+- **Release warning baseline and reduction (Issue #138).** Removed the reported xUnit1012 and benchmark CS8618 diagnostics, scoped the Worker.Tests MSB3277 suppression, and documented a reproducible 216-location nullable-warning baseline for future Release builds.
+- **Action contract parity and conservative classification (Issue #139).** Added descriptions to all 31 umbrella `action` properties and replaced permissive fallback logic with explicit read-only/mutating sets; omitted and unknown actions are now non-read-only, with every supported `dryRun` preview exception covered by the same contract tests.
+- **Tool help and capability inventory parity (Issue #140).** Added help coverage for every action-bearing tool, introduced a schema-checked inventory of all valid actions and mutation semantics, and corrected the README's 50-tool count and dependency-graph wording.
+- **OpenCode Desktop setup guidance (Issue #135).** Kept the Desktop target detect-only, exposed structured local-server fields and validation steps, and made `clients add` report a manual setup skip without touching the app-managed configuration file.
+- **Deterministic no-navigation smoke coverage (Issue #137).** The live Procedure navigation test now paginates the complete listing with bounded retries for an indexing response and reports observed object/status pairs when no `NoNavigationBlocks` result exists.
+- **Legacy `genexus_analyze` explain envelope (Issue #136).** Restored `mode="explain"` to the published schema and discovery fixture so the existing typed `NotImplemented` response is reachable instead of being rejected by gateway enum validation.
+- **Transitive npm security updates (Issue #134).** Refreshed the lockfile to `brace-expansion@1.1.18` and `js-yaml@4.3.2`, removing the two high-severity audit findings without changing the declared dependency surface.
 - **Race condition and E409 conflict during npm provenance publish.** Hardened `.github/workflows/release.yml` to gracefully handle npm registry E409 "Cannot publish over previously staged version" during asynchronous Sigstore provenance ingestion, added an active polling loop verifying registry availability before completing, removed duplicate `released` trigger causing simultaneous workflow runs, removed obsolete `always-auth` npmrc configuration, and updated `release.ps1` to detect active in-flight release workflows before triggering redundant fallback runs.
 
 ## v2.56.0 - 2026-09-04

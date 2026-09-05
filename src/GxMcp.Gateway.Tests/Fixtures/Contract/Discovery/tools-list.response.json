@@ -9,7 +9,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Use this for cross-object semantic analysis. mode=context returns 360° task context in 1 call (object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs + callers). Other modes: impact, callers, hierarchy, navigation, linter, summary. Requires Ready index for impact/callers.",
+      "description": "Use this for cross-object semantic analysis. mode=context returns 360° task context in 1 call (object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs + callers). Other modes: impact, callers, hierarchy, navigation, linter, summary, explain. mode=explain preserves the legacy compatibility envelope and returns NotImplemented until a typed code explanation is available. Requires Ready index for impact/callers.",
       "inputSchema": {
         "examples": [
           {
@@ -51,7 +51,8 @@
               "dependency_heatmap",
               "code_metrics",
               "kb_stats",
-              "table_relations"
+              "table_relations",
+              "explain"
             ],
             "type": "string"
           },
@@ -100,6 +101,7 @@
         ],
         "properties": {
           "action": {
+            "description": "API introspection, route-editing, or baseline operation to perform.",
             "enum": [
               "list",
               "describe",
@@ -376,6 +378,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Authoring operation to add a typed member or condition to a supported object.",
             "enum": [
               "add_external_method",
               "add_external_property",
@@ -430,6 +433,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Browser verification operation to execute.",
             "enum": [
               "smoke",
               "a11y",
@@ -650,6 +654,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Object-creation or scaffold operation to perform.",
             "enum": [
               "object",
               "object_atomic",
@@ -912,6 +917,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Operation to inspect, preview, create, update, or delete a native Data View mapping.",
             "enum": [
               "inspect",
               "dry_run",
@@ -1191,6 +1197,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Deployment-target or deployment execution operation to perform.",
             "enum": [
               "list_targets",
               "deploy"
@@ -1641,6 +1648,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Semantic WebForm control operation to execute.",
             "enum": [
               "add_textblock",
               "add_button",
@@ -1828,6 +1836,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Typed .NET generator-reference operation to perform.",
             "enum": [
               "list",
               "dry_run_add",
@@ -1918,6 +1927,7 @@
         ],
         "properties": {
           "action": {
+            "description": "GXserver/Team Development or CI pipeline operation to perform.",
             "enum": [
               "status",
               "pending",
@@ -2111,6 +2121,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Asset, part-exchange, screenshot, or OCR operation to perform.",
             "enum": [
               "asset_find",
               "asset_read",
@@ -2217,6 +2228,7 @@
         ],
         "properties": {
           "action": {
+            "description": "KB pool or startup-selection operation to perform.",
             "enum": [
               "list",
               "open",
@@ -2279,6 +2291,7 @@
         ],
         "properties": {
           "action": {
+            "description": "KB model-version or branch operation to perform.",
             "enum": [
               "list",
               "freeze",
@@ -2750,6 +2763,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Persistent agent-memory operation to perform.",
             "enum": [
               "save",
               "recall",
@@ -2885,6 +2899,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Module Manager operation to inspect, install, or update a module.",
             "enum": [
               "install",
               "install_builtin",
@@ -2939,6 +2954,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Navigation report operation to execute.",
             "enum": [
               "view"
             ],
@@ -2991,6 +3007,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Object-property operation to read or change metadata or move the object.",
             "enum": [
               "get",
               "set",
@@ -3311,6 +3328,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Refactoring operation to execute; rename and extraction actions change KB source or metadata.",
             "enum": [
               "RenameAttribute",
               "RenameVariable",
@@ -3801,6 +3819,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Telemetry, profiling, or friction-log operation to perform.",
             "enum": [
               "executions",
               "watch_event",
@@ -3950,6 +3969,7 @@
         ],
         "properties": {
           "action": {
+            "description": "XPZ export, inspection, or import operation to perform.",
             "enum": [
               "export",
               "inspect",
@@ -4050,6 +4070,7 @@
         ],
         "properties": {
           "action": {
+            "description": "Variable-part operation to add, delete, or modify a variable.",
             "enum": [
               "add",
               "delete",
@@ -4194,6 +4215,7 @@
         ],
         "properties": {
           "action": {
+            "description": "History, diff, time-travel, or rollback operation to perform.",
             "enum": [
               "history_list",
               "history_get",
@@ -4389,6 +4411,7 @@
         ],
         "properties": {
           "action": {
+            "description": "WorkWithPlus action-group or grid-action operation to perform.",
             "enum": [
               "list",
               "add_action",

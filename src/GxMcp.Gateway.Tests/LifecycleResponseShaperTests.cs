@@ -10,7 +10,7 @@ namespace GxMcp.Gateway.Tests
     // returns counts + top-10 errors + warning dedup; opt out with compact=false.
     public class LifecycleResponseShaperTests
     {
-        private static string MakeBuildStatus(int errors, int warnings, string repeatedWarning = null)
+        private static string MakeBuildStatus(int errors, int warnings, string? repeatedWarning = null)
         {
             var errArr = new JArray();
             for (int i = 0; i < errors; i++) errArr.Add(new JObject { ["message"] = $"err{i}: CS0246", ["location"] = $"file{i}.cs(10,5)" });
@@ -211,9 +211,9 @@ namespace GxMcp.Gateway.Tests
         [InlineData("")]
         [InlineData("   ")]
         [InlineData("\t\r\n")]
-        public void Compact_EmptyOrWhitespace_ReturnsAsIs(string raw)
+        public void Compact_EmptyOrWhitespace_ReturnsAsIs(string? raw)
         {
-            var result = LifecycleResponseShaper.Compact(raw, compact: true);
+            var result = LifecycleResponseShaper.Compact(raw!, compact: true);
             Assert.Equal(raw, result);
         }
 

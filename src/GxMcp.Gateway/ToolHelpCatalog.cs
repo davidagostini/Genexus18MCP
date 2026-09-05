@@ -377,7 +377,171 @@ namespace GxMcp.Gateway
                 "- `ExtractProcedure` — extract a highlighted code block (`code`) into a newly created Procedure (`procedureName`), wiring parameters automatically.\n" +
                 "- `ExtractSubroutine` — extract code into a local Subroutine (`subroutineName`).\n" +
                 "- `WWPSetCondition` — set conditions on WorkWithPlus grid or form controls.\n\n" +
-                "Always run with `dryRun: true` first to review affected call sites and projected diffs.\n"
+                "Always run with `dryRun: true` first to review affected call sites and projected diffs.\n",
+
+            ["genexus_kb"] =
+                "# genexus_kb\n\n" +
+                "Manage the gateway's multi-KB pool and the startup fallback selected for future sessions.\n\n" +
+                "## Read actions\n" +
+                "- `list` — show selected, active, default, open, known, and declared KB aliases.\n" +
+                "- `list_environments` / `get_environment` — inspect environment metadata.\n" +
+                "- `get_startup` — read the persisted startup selection.\n\n" +
+                "## Mutating actions\n" +
+                "- `open` / `close` — register or release a Worker and KB lease.\n" +
+                "- `set_default` / `set_startup` / `set_environment` — change session or persisted selection.\n\n" +
+                "Use an explicit `kb` alias when a call must target a different open KB; do not rely on shared server-side selection between independent clients.\n",
+
+            ["genexus_data_view"] =
+                "# genexus_data_view\n\n" +
+                "Author a root-only Business Component Transaction mapped through a native Data View.\n\n" +
+                "## Actions\n" +
+                "- `inspect` — read the existing mapping, attributes, keys, and version token.\n" +
+                "- `dry_run` — validate a proposed mapping without persistence.\n" +
+                "- `create` / `update` — validate, save, re-read, and report the committed mapping.\n" +
+                "- `delete` — destructive removal; pass the required confirmation and review incoming references first.\n\n" +
+                "Use the returned version token as `baseVersion` for optimistic concurrency. A failed verification rolls back the SDK write; a preview never changes the KB.\n",
+
+            ["genexus_gam"] =
+                "# genexus_gam\n\n" +
+                "Inspect and provision GeneXus Application Management (GAM) integration through the native security service.\n\n" +
+                "## Actions\n" +
+                "- `status` — read the current GAM/environment security configuration.\n" +
+                "- `define_api` — define or update the API security surface.\n" +
+                "- `deploy` — apply the GAM deployment operation; confirm the target environment before using it.\n\n" +
+                "Only `status` is read-only. Treat `define_api` and `deploy` as state-changing operations and inspect their response before continuing.\n",
+
+            ["genexus_properties"] =
+                "# genexus_properties\n\n" +
+                "Read or change object-level GeneXus properties without editing the object source.\n\n" +
+                "## Actions\n" +
+                "- `get` — read the current property values and version information.\n" +
+                "- `set` — assign one or more named properties and verify the saved values.\n" +
+                "- `move` — move an object to another module or folder.\n\n" +
+                "`get` is read-only. `set` and `move` mutate the KB; use the version token when a concurrent IDE edit must not be overwritten.\n",
+
+            ["genexus_authoring"] =
+                "# genexus_authoring\n\n" +
+                "Add members that are not covered by the generic object-structure DSL.\n\n" +
+                "## Actions\n" +
+                "- `add_external_method` — add a method to an External Object.\n" +
+                "- `add_external_property` — add a property to an External Object.\n" +
+                "- `add_menu_option` — add a menu option and its target.\n" +
+                "- `add_condition` — add an authoring condition to the supported object.\n\n" +
+                "All actions write object metadata. Resolve the target type first, send a complete typed payload, and use the returned verification details to confirm the SDK persisted the member.\n",
+
+            ["genexus_navigation"] =
+                "# genexus_navigation\n\n" +
+                "Read the IDE-style navigation report for a GeneXus object.\n\n" +
+                "## Action\n" +
+                "- `view` — inspect navigation levels, referenced tables, filters, orders, and the report status.\n\n" +
+                "This action is read-only and does not modify source or generated artifacts. A report with no levels is a valid `NoNavigationBlocks` result; a missing report is an error that should be investigated separately.\n",
+
+            ["genexus_api"] =
+                "# genexus_api\n\n" +
+                "Inspect HTTP procedure/API endpoints and compare their route shape with a saved baseline.\n\n" +
+                "## Actions\n" +
+                "- `list`, `describe`, `routes_inspect`, and `diff_baseline` — read endpoint metadata or compare it with a baseline.\n" +
+                "- `snapshot` — persist the current endpoint set as a named baseline.\n" +
+                "- `routes_clone` / `routes_update` — change API route metadata.\n\n" +
+                "The first group is read-only; `snapshot`, `routes_clone`, and `routes_update` change state. Review the endpoint diff and version token before applying route changes.\n",
+
+            ["genexus_security"] =
+                "# genexus_security\n\n" +
+                "Run security inspections against the KB, environment properties, and native GeneXus scanner.\n\n" +
+                "## Actions\n" +
+                "- `audit_gam` — inspect GAM and environment security configuration.\n" +
+                "- `scan_secrets` — scan source for credential-like values.\n" +
+                "- `scan_native` — invoke the installed native GeneXus Security Scanner when available.\n\n" +
+                "All actions are read-only audits. Findings may contain sensitive locations or snippets; keep them in the current response and do not copy secrets into logs or commits.\n",
+
+            ["genexus_edit_form"] =
+                "# genexus_edit_form\n\n" +
+                "Apply typed semantic edits to a WebForm control tree.\n\n" +
+                "## Actions\n" +
+                "- `add_textblock` and `add_button` — create controls with their captions and placement.\n" +
+                "- `set_visibility` — change a control's visibility expression.\n" +
+                "- `remove_control` — remove a named control after checking references.\n" +
+                "- `wrap_in_fieldset` — wrap selected controls in a fieldset container.\n\n" +
+                "Every action mutates the layout. Prefer a read of the authoritative WebForm/PatternInstance first and verify the persisted tree after the write.\n",
+
+            ["genexus_module"] =
+                "# genexus_module\n\n" +
+                "Inspect and manage modules through the GeneXus Module Manager.\n\n" +
+                "## Actions\n" +
+                "- `list` — read installed and available module metadata.\n" +
+                "- `install` / `install_builtin` — add a module to the KB.\n" +
+                "- `update` — update an installed module.\n\n" +
+                "Only `list` is read-only. Installation and updates can change many KB objects; review the returned plan and run an appropriate build or validation afterward.\n",
+
+            ["genexus_gxserver"] =
+                "# genexus_gxserver\n\n" +
+                "Inspect GXserver/Team Development state and perform explicit synchronization operations.\n\n" +
+                "## Read actions\n" +
+                "`status`, `pending`, `ignored`, `conflicts`, `history`, `pipeline_list`, `pipeline_runs`, and `pipeline_output` inspect server or pipeline state.\n\n" +
+                "## Mutating actions\n" +
+                "`commit`, `update`, `lock`, `resolve`, `pipeline_run`, and `pipeline_abort` contact the server or change team-development state. Confirm the target and inspect conflicts before using them.\n",
+
+            ["genexus_browser"] =
+                "# genexus_browser\n\n" +
+                "Run browser-based verification against a resolved GeneXus application URL.\n\n" +
+                "## Actions\n" +
+                "- `smoke` — check that the page loads and basic navigation works.\n" +
+                "- `a11y` / `wcag` — run accessibility checks.\n" +
+                "- `capture` — collect a screenshot or browser artifact.\n" +
+                "- `cross` — exercise cross-browser verification.\n" +
+                "- `preview` — inspect a preview surface.\n\n" +
+                "These actions are read-only with respect to the KB. They may create temporary browser artifacts; use the response path and cleanup guidance rather than treating them as KB writes.\n",
+
+            ["genexus_telemetry"] =
+                "# genexus_telemetry\n\n" +
+                "Inspect MCP execution telemetry and maintain the explicit friction log.\n\n" +
+                "## Actions\n" +
+                "`executions`, `watch_event`, `friction_tail`, `learning_report`, `logs`, `profile_analyze`, `profile_hotspots`, and `profile_correlate` read telemetry or profiling data.\n\n" +
+                "`friction_append` writes a new observation to the per-KB friction log. Keep the append payload concise and free of credentials or personal data.\n",
+
+            ["genexus_memory"] =
+                "# genexus_memory\n\n" +
+                "Manage durable agent facts scoped to the active Knowledge Base.\n\n" +
+                "## Actions\n" +
+                "- `recall` / `list` — read relevant or stored facts.\n" +
+                "- `save` — persist a new fact.\n" +
+                "- `forget` — remove a fact.\n" +
+                "- `promote` / `consolidate` — change fact status or merge related facts.\n\n" +
+                "Only `recall` and `list` are read-only. Treat all other actions as persistent writes and avoid storing secrets, tokens, or unnecessary personal data.\n",
+
+            ["genexus_transfer"] =
+                "# genexus_transfer\n\n" +
+                "Exchange complete GeneXus objects through native XPZ/import-export paths.\n\n" +
+                "## Actions\n" +
+                "- `export` — create an XPZ export, optionally including dependency closure.\n" +
+                "- `inspect` — inspect an XPZ manifest without importing it.\n" +
+                "- `import` — import the package into the active KB after validating its manifest.\n\n" +
+                "`export` and `inspect` are read-only with respect to the KB; `import` mutates it. Review conflicts and use a disposable or explicitly selected target KB for untrusted packages.\n",
+
+            ["genexus_deploy"] =
+                "# genexus_deploy\n\n" +
+                "Resolve deployment targets and explicitly deploy an application.\n\n" +
+                "## Actions\n" +
+                "- `list_targets` — read the configured deployment targets and capabilities.\n" +
+                "- `deploy` — execute deployment to the selected target; pass the required confirmation for a destructive operation.\n\n" +
+                "Only `list_targets` is read-only. Deployment can change external systems and generated output, so verify the target, environment, and final plan before calling it.\n",
+
+            ["genexus_generator_reference"] =
+                "# genexus_generator_reference\n\n" +
+                "Manage typed .NET generator references on a GeneXus object.\n\n" +
+                "## Actions\n" +
+                "- `list` — inspect current references.\n" +
+                "- `dry_run_add` / `dry_run_remove` — validate a proposed change without saving.\n" +
+                "- `add` / `remove` — persist a reference after managed-assembly validation.\n\n" +
+                "The list and dry-run actions are read-only. Add/remove writes object metadata, uses optimistic concurrency when supplied, and verifies the complete post-save snapshot.\n",
+
+            ["genexus_wwp"] =
+                "# genexus_wwp\n\n" +
+                "Inspect and edit WorkWithPlus Action Groups and grid actions in PatternInstance XML.\n\n" +
+                "## Actions\n" +
+                "- `list` — read the current action groups and ordered actions.\n" +
+                "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n\n" +
+                "Only `list` is read-only. Read the authoritative PatternInstance first, use `dryRun` when supported, and verify the saved XML because WorkWithPlus may reconcile IDE ordering on save.\n"
         };
 
         internal static string? Get(string toolName)

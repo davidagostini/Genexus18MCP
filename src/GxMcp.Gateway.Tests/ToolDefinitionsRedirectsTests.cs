@@ -114,16 +114,16 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void GenexusAnalyze_ModeEnumDoesNotIncludeExplain()
+        public void GenexusAnalyze_ModeEnumIncludesLegacyExplainCompatibilityAction()
         {
-            // Item #1: analyze mode 'explain' was a stub returning hardcoded
-            // "Code analysis simulation". Removed from the schema; legacy
-            // dispatchers respond NotImplemented.
+            // Issue #136: the legacy explain route is intentionally exposed in
+            // the schema so the gateway can return its typed NotImplemented
+            // envelope instead of rejecting the call as InvalidArgs.
             var t = FindTool("genexus_analyze");
             Assert.NotNull(t);
             var modeEnum = (JArray)t!["inputSchema"]!["properties"]!["mode"]!["enum"]!;
             var names = modeEnum.Select(m => m.ToString()).ToList();
-            Assert.DoesNotContain("explain", names);
+            Assert.Contains("explain", names);
             // Sanity: the canonical modes are still there.
             Assert.Contains("summary", names);
             Assert.Contains("linter", names);

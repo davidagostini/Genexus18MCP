@@ -155,7 +155,10 @@ namespace GxMcp.Gateway.Tests
             //   skipFullDeploy, fastIncremental), structure type parameter, recipe steps array,
             //   and comprehensive property descriptions across layout, edit_form, refactor,
             //   apply_pattern, versioning, create, security, and structure. Measured ~24200; ~300 headroom.
-            Assert.True(approxTokens < 24500, $"tool_definitions.json is ~{approxTokens} tokens; budget 24500.");
+            //   2026-09-04 (Issues #139/#140 action contract parity): 24500 → 25000
+            //   for explicit descriptions on all 31 action-bearing tool properties and
+            //   their machine-checked action inventory. Measured ~24666; ~334 headroom.
+            Assert.True(approxTokens < 25000, $"tool_definitions.json is ~{approxTokens} tokens; budget 25000.");
         }
     }
 }

@@ -791,6 +791,56 @@ test('clients list returns structured status with summary', () => {
     assert.equal(typeof row.registered, 'boolean');
 });
 
+test('clients list reports OpenCode Desktop as manual with exact setup fields', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-status-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        fs.mkdirSync(path.join(env.APPDATA, 'ai.opencode.desktop'), { recursive: true });
+
+        const result = runCli(['clients', '--format', 'json'], { env });
+        assert.equal(result.status, 0);
+        const row = JSON.parse(result.stdout).ok.clients.find((client) => client.id === 'opencode-desktop');
+        assert.ok(row, 'OpenCode Desktop should be listed');
+        assert.equal(row.installed, true);
+        assert.equal(row.registered, false);
+        assert.equal(row.writeSupported, false);
+        assert.equal(row.registrationMode, 'manual');
+        assert.equal(row.manualSetup.transport, 'local');
+        assert.deepEqual(row.manualSetup.args, ['-y', 'genexus-mcp@latest']);
+        assert.equal(row.manualSetup.environment.GX_CONFIG_PATH, '<config.json path printed by genexus-mcp init>');
+        assert.ok(row.manualSetup.steps.some((step) => step.includes('genexus_whoami')));
+        assert.match(row.note, /does not write/i);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('clients add reports OpenCode Desktop manual skip without mutating its app-managed file', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-add-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const cfgPath = path.join(tempRoot, 'config.json');
+        const desktopDir = path.join(env.APPDATA, 'ai.opencode.desktop');
+        const desktopConfig = path.join(desktopDir, 'mcp.json');
+        const original = { unrelated: { keep: true } };
+        fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        fs.mkdirSync(desktopDir, { recursive: true });
+        fs.writeFileSync(desktopConfig, JSON.stringify(original, null, 2));
+
+        const result = runCli(['clients', 'add', '--clients', 'opencode-desktop', '--format', 'json'], {
+            env: { ...env, GX_CONFIG_PATH: cfgPath }
+        });
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        assert.deepEqual(parsed.ok.patchedClients, []);
+        assert.ok(parsed.meta.skippedClients.some((entry) =>
+            entry.client === 'OpenCode Desktop' && /Settings > MCP|manual setup/i.test(entry.reason)));
+        assert.deepEqual(JSON.parse(fs.readFileSync(desktopConfig, 'utf8')), original);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('getLauncher prefers the packaged gateway for Antigravity only', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-launcher-'));
     const gatewayPath = path.join(tempRoot, 'publish', 'GxMcp.Gateway.exe');

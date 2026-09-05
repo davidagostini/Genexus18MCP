@@ -16,7 +16,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("LIST")]
         public void Get_List_ReturnsRecipeNamesArray(string name)
         {
-            var r = RecipeCatalog.Get(name);
+            var r = RecipeCatalog.Get(name!);
             Assert.NotNull(r["recipes"]);
             var arr = (JArray)r["recipes"]!;
             Assert.True(arr.Count >= 5, $"expected ≥5 recipes, got {arr.Count}");
@@ -79,9 +79,9 @@ namespace GxMcp.Gateway.Tests
         [InlineData(null)]
         [InlineData("")]
         [InlineData("   ")]
-        public void Get_EmptyName_ReturnsErrorEnvelope(string name)
+        public void Get_EmptyName_ReturnsErrorEnvelope(string? name)
         {
-            var r = RecipeCatalog.Get(name);
+            var r = RecipeCatalog.Get(name!);
             Assert.NotNull(r["error"]);
             Assert.NotNull(r["hint"]);
         }

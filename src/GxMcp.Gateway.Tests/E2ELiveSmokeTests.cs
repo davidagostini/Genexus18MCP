@@ -141,34 +141,84 @@ namespace GxMcp.Gateway.Tests
         [LiveKbFact]
         public async Task Navigation_NoForEachBlocks_ReturnsNoNavigationBlocksStatus()
         {
-                        var list = await _h.CallToolAsync("genexus_list_objects", new JObject
-            {
-                ["typeFilter"] = "Procedure",
-                ["limit"] = 5
-            });
-            var items = LiveGatewayHarness.ParseToolPayload(list)?["results"] as JArray
-                    ?? LiveGatewayHarness.ParseToolPayload(list)?["items"] as JArray;
+            // The first rows are not a contract: a KB can legitimately begin
+            // with procedures that contain navigation blocks. Walk every page
+            // in stable service order until a valid empty navigation report is
+            // found, while retaining enough evidence to diagnose a bad fixture.
+            const int pageSize = 50;
+            const int maxProcedures = 5000;
+            int offset = 0;
+            int indexingRetries = 0;
+            var observed = new System.Collections.Generic.List<string>();
+            JObject? hit = null;
 
-            // Walk a few procedures looking for one without any navigation levels
-            // (most Academic procs have no For Each blocks).
-            JObject hit = null;
-            foreach (var item in items ?? new JArray())
+            while (offset < maxProcedures)
             {
-                string name = item["name"]?.ToString();
-                var nav = await _h.CallToolAsync("genexus_analyze", new JObject
+                var list = await _h.CallToolAsync("genexus_list_objects", new JObject
                 {
-                    ["name"] = name,
-                    ["mode"] = "navigation"
+                    ["typeFilter"] = "Procedure",
+                    ["limit"] = pageSize,
+                    ["offset"] = offset
                 });
-                var navPayload = LiveGatewayHarness.ParseToolPayload(nav);
-                var levels = navPayload?["levels"] as JArray;
-                if (levels != null && levels.Count == 0)
+                var listPayload = LiveGatewayHarness.ParseToolPayload(list);
+                Assert.NotNull(listPayload);
+
+                if (string.Equals(listPayload!["code"]?.ToString(), "IndexNotReady", System.StringComparison.OrdinalIgnoreCase))
                 {
-                    hit = navPayload;
-                    break;
+                    if (indexingRetries++ >= 5)
+                        Assert.Fail("Procedure listing remained unavailable after index retries.");
+                    await Task.Delay(1000);
+                    continue;
                 }
+
+                if (LiveGatewayHarness.IsToolError(list))
+                    Assert.Fail("Procedure listing failed: " + listPayload.ToString(Newtonsoft.Json.Formatting.None));
+
+                var items = listPayload["results"] as JArray
+                    ?? listPayload["items"] as JArray;
+                if (items == null || items.Count == 0) break;
+
+                foreach (var item in items)
+                {
+                    string? name = item["name"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+
+                    var nav = await _h.CallToolAsync("genexus_analyze", new JObject
+                    {
+                        ["name"] = name,
+                        ["mode"] = "navigation"
+                    });
+                    var navPayload = LiveGatewayHarness.ParseToolPayload(nav);
+                    if (navPayload == null)
+                    {
+                        observed.Add(name + "=<unparseable>");
+                        continue;
+                    }
+
+                    var levels = navPayload["levels"] as JArray;
+                    string navStatus = navPayload["status"]?.ToString()
+                        ?? navPayload["code"]?.ToString()
+                        ?? (LiveGatewayHarness.IsToolError(nav) ? "error" : "unknown");
+                    observed.Add(name + "=" + navStatus);
+                    if (levels != null && levels.Count == 0)
+                    {
+                        hit = navPayload;
+                        break;
+                    }
+                }
+
+                if (hit != null) break;
+
+                bool hasMore = listPayload["hasMore"]?.ToObject<bool?>() == true;
+                int? nextOffset = listPayload["nextOffset"]?.ToObject<int?>()
+                    ?? listPayload["pagination"]?["nextOffset"]?.ToObject<int?>();
+                if (!hasMore || !nextOffset.HasValue || nextOffset.Value <= offset) break;
+                offset = nextOffset.Value;
             }
-            Assert.NotNull(hit);
+
+            Assert.True(hit != null,
+                "No Procedure returned NoNavigationBlocks after paginating the KB. Observed: " +
+                string.Join(", ", observed.Take(40)));
             Assert.Equal("NoNavigationBlocks", hit!["status"]?.ToString());
             Assert.NotNull(hit["hint"]);
         }

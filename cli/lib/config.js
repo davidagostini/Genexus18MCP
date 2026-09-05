@@ -655,7 +655,7 @@ function getClientConfigTargets() {
             // and how to wire it up, but never mutate its config blindly.
             format: 'manual',
             writeSupported: false,
-            manualNote: 'OpenCode Desktop: add the genexus MCP server from the app\'s settings (automatic registration not supported yet).',
+            manualNote: 'OpenCode Desktop manual setup: Settings > MCP > Add server > Local; name genexus18mcp; command npx.cmd on Windows (npx elsewhere); args -y genexus-mcp@latest; environment GX_CONFIG_PATH=<config.json path printed by init>; save, fully restart the app, then call genexus_whoami. The CLI does not write the app-managed Desktop mcp.json.',
             path: path.join(appData, 'ai.opencode.desktop', 'mcp.json'),
             installMarkers: [
                 path.join(localAppData, 'Programs', '@opencode-aidesktop'),
@@ -728,6 +728,27 @@ function clientCommandHealth(entry, client = null) {
     return { stale: false, reason: null };
 }
 
+function buildManualClientSetup(client) {
+    return {
+        mode: 'manual',
+        managedConfigPath: client.path,
+        serverName: DEFAULT_MCP_SERVER_NAME,
+        transport: 'local',
+        command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
+        args: ['-y', 'genexus-mcp@latest'],
+        environment: {
+            GX_CONFIG_PATH: '<config.json path printed by genexus-mcp init>'
+        },
+        steps: [
+            'Open OpenCode Desktop settings and select MCP.',
+            'Choose Add server, select Local, and enter the server name genexus18mcp.',
+            'Set the command, arguments, and GX_CONFIG_PATH environment value shown above.',
+            'Save the server and fully restart OpenCode Desktop so it reloads MCP configuration.',
+            'Call genexus_whoami to verify the GeneXus server and selected KB.'
+        ]
+    };
+}
+
 // Read-only report of every supported agent on this platform: is it installed,
 // is genexus registered, where, what launcher command it points at, and whether
 // that command is stale. Backs the `genexus-mcp clients` command.
@@ -747,6 +768,7 @@ function clientsStatus(opts = {}) {
             name: client.name,
             installed: det.installed,
             registered: entry !== null,
+            registrationMode: client.writeSupported === false ? 'manual' : 'automatic',
             serverName,
             isThirdParty: Boolean(isThirdParty),
             writeSupported: client.writeSupported !== false,
@@ -756,7 +778,8 @@ function clientsStatus(opts = {}) {
             commandStale: health.stale,
             commandStaleReason: health.reason || (isThirdParty ? 'configured as third-party / HTTP MCP server (e.g. official GeneXus MCP)' : null),
             detectedAt: det.markerHit || (det.hasConfig ? client.path : null),
-            note: client.writeSupported === false ? (client.manualNote || null) : null
+            note: client.writeSupported === false ? (client.manualNote || null) : null,
+            manualSetup: client.writeSupported === false ? buildManualClientSetup(client) : null
         };
     });
 }

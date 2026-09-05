@@ -45,6 +45,56 @@ Optional response-shaping arguments for list-heavy tools:
 - `meta.fields` is returned when field projection is active.
 - `meta.totalByType` may be emitted when result rows expose a `type` field.
 
+## Action contract
+
+The table below is the machine-checkable action contract for every umbrella tool. An action appears in exactly one column. A mutating action changes KB, gateway, filesystem, database, team-server, or deployment state; `dryRun` is read-only only where the tool explicitly supports that preview mode.
+
+| Tool | Read-only actions | Mutating actions |
+| --- | --- | --- |
+| `genexus_data_view` | `inspect`, `dry_run` | `create`, `update`, `delete` |
+| `genexus_recipe` | `list`, `describe`, `suggest_macro` | `crystallize` |
+| `genexus_lifecycle` | `reorg_preview`, `validate`, `validate-kb`, `status`, `result`, `snapshots-list` | `build`, `cancel`, `specify`, `rebuild`, `reorg`, `sync`, `index`, `snapshots-restore` |
+| `genexus_refactor` | — | `RenameAttribute`, `RenameVariable`, `RenameObject`, `ExtractProcedure`, `ExtractSubroutine`, `WWPSetCondition` |
+| `genexus_gam` | `status` | `define_api`, `deploy` |
+| `genexus_properties` | `get` | `set`, `move` |
+| `genexus_structure` | `get_visual`, `get_indexes`, `get_logic`, `check_subtypes` | `update_visual`, `create_index`, `drop_index`, `set_attribute`, `set_level`, `set_domain`, `update_group`, `move_attribute`, `remove_attribute` |
+| `genexus_authoring` | — | `add_external_method`, `add_external_property`, `add_menu_option`, `add_condition` |
+| `genexus_layout` | `get_tree`, `find_controls`, `inspect_surface`, `get_preview`, `scan_mutators`, `list_controls`, `design_system` | `set_property`, `set_properties`, `rename_printblock`, `add_printblock`, `delete_printblock` |
+| `genexus_doc` | `health` | `wiki`, `visualize` |
+| `genexus_kb` | `list`, `list_environments`, `get_environment`, `get_startup` | `open`, `close`, `set_default`, `set_startup`, `set_environment` |
+| `genexus_navigation` | `view` | — |
+| `genexus_api` | `list`, `describe`, `routes_inspect`, `diff_baseline` | `routes_clone`, `routes_update`, `snapshot` |
+| `genexus_apply_pattern` | `list_actions` | `add_grid_action`, `update_action`, `move_action`, `remove_action` |
+| `genexus_security` | `audit_gam`, `scan_secrets`, `scan_native` | — |
+| `genexus_edit_form` | — | `add_textblock`, `add_button`, `set_visibility`, `remove_control`, `wrap_in_fieldset` |
+| `genexus_module` | `list` | `install`, `install_builtin`, `update` |
+| `genexus_gxserver` | `status`, `pending`, `ignored`, `conflicts`, `history`, `pipeline_list`, `pipeline_runs`, `pipeline_output` | `commit`, `update`, `lock`, `resolve`, `pipeline_run`, `pipeline_abort` |
+| `genexus_kb_version` | `list` | `freeze`, `branch`, `set_active`, `revert` |
+| `genexus_browser` | `smoke`, `a11y`, `wcag`, `capture`, `cross`, `preview` | — |
+| `genexus_db` | `drift_check`, `drift_report`, `optimize_analyze`, `optimize_suggest`, `optimize_report`, `sql_ddl`, `sql_navigation`, `types_list`, `types_describe`, `types_validate`, `reorg_impact`, `reorg_preview` | `sample_data`, `translations_import` |
+| `genexus_versioning` | `history_list`, `history_get`, `time_travel`, `blame`, `diff`, `diff_generated` | `history_save`, `history_restore`, `undo` |
+| `genexus_io` | `asset_find`, `asset_read`, `ocr` | `asset_write`, `export_part`, `import_part`, `export_unified`, `screenshot_publish` |
+| `genexus_variable` | — | `add`, `delete`, `modify` |
+| `genexus_telemetry` | `executions`, `watch_event`, `friction_tail`, `learning_report`, `logs`, `profile_analyze`, `profile_hotspots`, `profile_correlate` | `friction_append` |
+| `genexus_create` | `sd_panel_inspect` | `object`, `object_atomic`, `popup`, `sd_panel_create`, `sd_panel_edit`, `save_as`, `scaffold`, `translate`, `sample`, `template`, `curl_procedure` |
+| `genexus_memory` | `recall`, `list` | `save`, `forget`, `promote`, `consolidate` |
+| `genexus_transfer` | `export`, `inspect` | `import` |
+| `genexus_deploy` | `list_targets` | `deploy` |
+| `genexus_generator_reference` | `list`, `dry_run_add`, `dry_run_remove` | `add`, `remove` |
+| `genexus_wwp` | `list` | `add_action`, `update_action`, `move_action`, `remove_action` |
+
+Real-KB validation gate: `genexus_structure action=get_visual` with a homonymous
+target must be exercised against a KB that contains the relevant Transaction/Table
+or WebPanel collision, using `type=Transaction` (or the other intended type). The
+automated tests verify schema, routing, and contract parity; they do not claim to
+exercise GeneXus SDK object resolution in CI. Follow the controlled SDK procedure
+in [`docs/agent_playbook.md`](agent_playbook.md) for that manual check.
+
+This follow-up preserves the multi-action contract delivered in #131, the placement
+semantics documented in #65, and the homonym-routing behavior tracked in #34.
+
+## Tool inventory
+
 | Tool | Status | Worker path |
 | --- | --- | --- |
 | `genexus_query` | active | `Search -> Query` |

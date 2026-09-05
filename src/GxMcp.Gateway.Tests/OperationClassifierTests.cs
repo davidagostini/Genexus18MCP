@@ -14,12 +14,31 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_analyze")]
         [InlineData("genexus_whoami")]
         [InlineData("genexus_doctor")]
-        [InlineData("genexus_navigation")]
         [InlineData("genexus_search_source")]
-        [InlineData("genexus_security")]
         public void PureReadTools_ClassifiedAsReadOnly(string toolName)
         {
             Assert.True(OperationClassifier.IsReadOnly(toolName, new JObject()));
+        }
+
+        [Fact]
+        public void ActionToolsRequireAnExplicitAction()
+        {
+            Assert.False(OperationClassifier.IsReadOnly("genexus_navigation", new JObject()));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_security", new JObject()));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_db", new JObject()));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_navigation", new JObject { ["action"] = "unknown" }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_security", new JObject { ["action"] = "status" }));
+            Assert.Equal(OperationClassifier.OperationKind.Unknown,
+                OperationClassifier.ClassifyAction("genexus_db", "unknown"));
+        }
+
+        [Fact]
+        public void ReadOnlyActionTools_ClassifiedAsReadOnly()
+        {
+            Assert.True(OperationClassifier.IsReadOnly("genexus_navigation", new JObject { ["action"] = "view" }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_security", new JObject { ["action"] = "scan_native" }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_browser", new JObject { ["action"] = "preview" }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_api", new JObject { ["action"] = "diff_baseline" }));
         }
 
         [Theory]
@@ -89,8 +108,8 @@ namespace GxMcp.Gateway.Tests
         public void GenexusTelemetry_Classifications()
         {
             Assert.True(OperationClassifier.IsReadOnly("genexus_telemetry", new JObject { ["action"] = "logs" }));
-            Assert.True(OperationClassifier.IsReadOnly("genexus_telemetry", new JObject { ["action"] = "metrics" }));
-            Assert.True(OperationClassifier.IsReadOnly("genexus_telemetry", new JObject { ["action"] = "status" }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_telemetry", new JObject { ["action"] = "executions" }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_telemetry", new JObject { ["action"] = "profile_hotspots" }));
 
             // friction_append writes to disk
             Assert.False(OperationClassifier.IsReadOnly("genexus_telemetry", new JObject { ["action"] = "friction_append" }));
@@ -108,6 +127,35 @@ namespace GxMcp.Gateway.Tests
             Assert.False(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "history_save" }));
             Assert.False(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "history_restore" }));
             Assert.False(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "undo" }));
+        }
+
+        [Fact]
+        public void DocumentedDryRunActions_AreReadOnlyOnlyWhenPreviewing()
+        {
+            Assert.True(OperationClassifier.IsReadOnly("genexus_properties", new JObject { ["action"] = "move", ["dryRun"] = true }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_api", new JObject { ["action"] = "routes_update", ["dryRun"] = true }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_edit_form", new JObject { ["action"] = "add_button", ["dryRun"] = true }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "history_restore", ["dryRun"] = true }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_variable", new JObject { ["action"] = "modify", ["dryRun"] = true }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_create", new JObject { ["action"] = "object_atomic", ["dryRun"] = true }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_memory", new JObject { ["action"] = "consolidate", ["dryRun"] = true }));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_transfer", new JObject { ["action"] = "import", ["dryRun"] = true }));
+
+            Assert.False(OperationClassifier.IsReadOnly("genexus_properties", new JObject { ["action"] = "move", ["dryRun"] = false }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_api", new JObject { ["action"] = "routes_update", ["dryRun"] = false }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_edit_form", new JObject { ["action"] = "add_button", ["dryRun"] = false }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_variable", new JObject { ["action"] = "modify", ["dryRun"] = false }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_memory", new JObject { ["action"] = "consolidate", ["dryRun"] = false }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_transfer", new JObject { ["action"] = "import", ["dryRun"] = false }));
+        }
+
+        [Fact]
+        public void UnsupportedDryRunActions_RemainMutating()
+        {
+            Assert.False(OperationClassifier.IsReadOnly("genexus_lifecycle", new JObject { ["action"] = "specify", ["dryRun"] = true }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_api", new JObject { ["action"] = "snapshot", ["dryRun"] = true }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_create", new JObject { ["action"] = "scaffold", ["dryRun"] = true }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_gam", new JObject { ["action"] = "define_api", ["dryRun"] = true }));
         }
     }
 }

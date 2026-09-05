@@ -189,7 +189,7 @@ namespace GxMcp.Benchmarks
         // shape — one object per candidate — is preserved for MemoryDiagnoser).
         public class Ranked
         {
-            public IndexEntry Entry { get; set; }
+            public IndexEntry? Entry { get; set; }
             public int Score { get; set; }
             public float VectorSimilarity { get; set; }
         }
@@ -197,15 +197,15 @@ namespace GxMcp.Benchmarks
         // Minimal stand-in for SearchIndex.IndexEntry — only the fields the ranker reads.
         public class IndexEntry
         {
-            public string Name { get; set; }
-            public string Type { get; set; }
-            public string Description { get; set; }
-            public string BusinessDomain { get; set; }
-            public List<string> Keywords { get; set; }
-            public List<string> Tags { get; set; }
-            public List<string> Tables { get; set; }
-            public List<string> Calls { get; set; }
-            public float[] Embedding { get; set; }
+            public string Name { get; set; } = string.Empty;
+            public string Type { get; set; } = string.Empty;
+            public string Description { get; set; } = string.Empty;
+            public string? BusinessDomain { get; set; }
+            public List<string> Keywords { get; set; } = new List<string>();
+            public List<string> Tags { get; set; } = new List<string>();
+            public List<string> Tables { get; set; } = new List<string>();
+            public List<string> Calls { get; set; } = new List<string>();
+            public float[] Embedding { get; set; } = Array.Empty<float>();
         }
     }
 }

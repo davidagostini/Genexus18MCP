@@ -20,7 +20,7 @@ In practice: you point the MCP at your KB, then ask your AI assistant things lik
 
 ## What you can do with it
 
-A quick map of what the agent can do against your real KB through the **49 tools** (details in [Tool Surface](#tool-surface)):
+A quick map of what the agent can do against your real KB through the **50 tools** (details in [Tool Surface](#tool-surface)):
 
 | Area | What the agent can do |
 |---|---|
@@ -199,7 +199,7 @@ Once installed, here's what unlocks. Try these as your first prompts:
 - *"Build the KB and report any errors."*
 - *"Run the unit tests and show me which failed."*
 
-The agent picks the right tool from the **40+ tools** the MCP exposes (read, edit, refactor, analyze, build, data-model authoring, layout automation, DB/DDL, versioning, security, SQL preview, etc.). The full tool list is in [Tool Surface](#tool-surface) below.
+The agent picks the right tool from the **50 tools** the MCP exposes (read, edit, refactor, analyze, build, data-model authoring, layout automation, DB/DDL, versioning, security, SQL preview, etc.). The full tool list is in [Tool Surface](#tool-surface) below.
 
 ---
 
@@ -217,10 +217,25 @@ Auto-detected and auto-configured by the installer:
 | OpenCode (CLI) | ✅ | Reads both direct and nested MCP layouts; restart required |
 | Codex CLI | ✅ | Writes `~/.codex/config.toml` |
 | VS Code / VS Code Insiders | ✅ | Native MCP (`User/mcp.json`); restart required |
-| OpenCode Desktop | Detect-only | Reported as installed; add the server from the app's settings |
+| OpenCode Desktop | Manual setup | Detected and reported with exact local-server fields; add the server from the app's MCP settings |
 | Any MCP client | Manual | Use the JSON snippet printed by `init` |
 
 Run **`npx genexus-mcp clients`** at any time to see which agents are installed, which have `genexus` registered, and whether any point at a stale gateway exe. To (re)register specific ones: `npx genexus-mcp clients add --clients antigravity,vscode`.
+
+### OpenCode Desktop (manual setup)
+
+The CLI detects OpenCode Desktop but does not write its app-managed `mcp.json`.
+After `init` prints the path to `config.json`, open **Settings → MCP → Add server
+→ Local** in OpenCode Desktop and enter:
+
+- Name: `genexus18mcp`
+- Command: `npx.cmd` on Windows, `npx` elsewhere
+- Arguments: `-y genexus-mcp@latest`
+- Environment: `GX_CONFIG_PATH=<the config.json path printed by init>`
+
+Save the server, fully restart OpenCode Desktop, and call `genexus_whoami` to
+verify the GeneXus server and selected KB. The CLI intentionally leaves the
+Desktop-managed configuration file untouched.
 
 ---
 
@@ -251,7 +266,7 @@ Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) 
 
 ## Tool Surface
 
-The worker exposes **49 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json).
+The worker exposes **50 tools** to the MCP router, grouped by capability below. Most are umbrellas with an `action` (e.g. `genexus_db action=sql_ddl`); the detailed schemas live in [`src/GxMcp.Gateway/tool_definitions.json`](src/GxMcp.Gateway/tool_definitions.json).
 
 **Orientation & health**
 - `genexus_whoami` — KB context, version, worker/index/database health, self-update check, next-step hints
@@ -304,7 +319,7 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 
 **Analysis, docs & API**
 - `genexus_analyze` — cross-object semantic analysis (impact, dependencies, complexity, naming, code_metrics, summary, explain, `kb_stats` = KB activity/freshness, `table_relations` = table↔transaction relations + redundant attrs, …)
-- `genexus_doc` — generate wiki / sequence diagrams / health reports
+- `genexus_doc` — generate wiki / dependency graphs / health reports
 - `genexus_api` — introspect REST endpoints exposed by HTTP procedures
 - `genexus_security` — audit KB security: `audit_gam` (env/GAM props), `scan_secrets` (regex over Source), `scan_native` (the SDK's own Security Scanner, `ISecurityScannerService`)
 
