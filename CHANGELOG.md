@@ -7,9 +7,11 @@
 - **Typed Transaction record access (PR #133).** Added `genexus_db` actions
   `records_query`, `records_insert`, and `records_update`. They derive table,
   attributes, key metadata, and scalar conversions from the GeneXus
-  Transaction, return an optimistic `versionToken`, default writes to
-  `dryRun=true`, and require that token before persisting. Contributed by
-  David Agostini (@davidagostini). [PR #133](https://github.com/lennix1337/Genexus18MCP/pull/133)
+  Transaction, bound every read, return an optimistic `versionToken`, default
+  writes to `dryRun=true`, and require a matching single-use v2 preview receipt
+  before persistence. Direct SQL boundaries and the absence of GeneXus business
+  rules are reported explicitly. Contributed by David Agostini
+  (@davidagostini). [PR #133](https://github.com/lennix1337/Genexus18MCP/pull/133)
 
 ### Changed
 

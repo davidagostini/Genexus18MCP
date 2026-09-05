@@ -21,8 +21,9 @@ namespace GxMcp.Worker.Services
     ///
     /// The SDK remains the source of truth for the table, attributes, keys and
     /// scalar types. Values are always parameters; callers cannot inject a table,
-    /// column or predicate. Writes use a serializable ADO transaction and a
-    /// compensating, verified rollback when the post-commit reread diverges.
+    /// column or predicate. Writes verify before committing a serializable ADO
+    /// transaction. Post-commit divergence requires explicit recovery: value
+    /// equality alone cannot distinguish a concurrently deleted/recreated row.
     /// </summary>
     public sealed class TransactionRecordsService
     {
@@ -32,6 +33,22 @@ namespace GxMcp.Worker.Services
 
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
+        private readonly Func<string, TransactionMetadata> _metadataResolver;
+        private readonly Func<JObject, DatabaseMetadata> _databaseResolver;
+
+        // Trusted internal seam for ADO integration tests; never populated from client JSON.
+        internal TransactionRecordsService(Func<string, TransactionMetadata> metadataResolver, Func<JObject, DatabaseMetadata> databaseResolver)
+        {
+            _metadataResolver = metadataResolver;
+            _databaseResolver = databaseResolver;
+        }
+
+        private TransactionMetadata ResolveMetadata(string name)
+        {
+            if (_metadataResolver != null) return _metadataResolver(name);
+            var transaction = _objectService?.FindObject(name, "Transaction") as Transaction;
+            return transaction == null ? null : ReadMetadata(transaction);
+        }
 
         public TransactionRecordsService(KbService kbService, ObjectService objectService)
         {
@@ -48,13 +65,12 @@ namespace GxMcp.Worker.Services
                 if (string.IsNullOrWhiteSpace(transactionName))
                     return Error("TransactionRequired", "Transaction name is required.", "Provide transaction or name.");
 
-                var transaction = _objectService?.FindObject(transactionName, "Transaction") as Transaction;
-                if (transaction == null)
+                var metadata = ResolveMetadata(transactionName);
+                if (metadata == null)
                     return Error("TransactionNotFound", "The requested Transaction could not be resolved by the SDK.", "Read the Transaction with type=Transaction and retry.", transactionName);
 
-                var metadata = ReadMetadata(transaction);
                 if (metadata.Attributes.Count == 0)
-                    return Error("TransactionSchemaUnavailable", "The SDK returned no root-level attributes for the Transaction.", "The operation currently supports the root level of a Transaction.", transaction.Name);
+                    return Error("TransactionSchemaUnavailable", "The SDK returned no root-level attributes for the Transaction.", "The operation currently supports the root level of a Transaction.", metadata.Name);
 
                 if (string.Equals(action, "QueryRecords", StringComparison.OrdinalIgnoreCase))
                     return Query(metadata, args);
@@ -63,7 +79,7 @@ namespace GxMcp.Worker.Services
                 if (string.Equals(action, "UpdateRecords", StringComparison.OrdinalIgnoreCase))
                     return Write(metadata, args, isInsert: false);
 
-                return Error("InvalidTransactionRecordsAction", "Unsupported Transaction records action.", "Use records_query, records_insert or records_update.", transaction.Name);
+                return Error("InvalidTransactionRecordsAction", "Unsupported Transaction records action.", "Use records_query, records_insert or records_update.", metadata.Name);
             }
             catch (RecordOperationException ex)
             {
@@ -71,7 +87,7 @@ namespace GxMcp.Worker.Services
             }
             catch (DbException ex)
             {
-                Logger.Error("[TRANSACTION-RECORDS] datastore failure: " + ex.Message);
+                Logger.Error("[TRANSACTION-RECORDS] datastore failure: " + ex.GetType().Name);
                 return Error("TransactionRecordsDatabaseFailed", "The datastore rejected the Transaction records operation.", "Check the active datastore and retry; no GeneXus lifecycle action was run.", target,
                     new JObject
                     {
@@ -82,7 +98,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                Logger.Error("[TRANSACTION-RECORDS] unexpected failure: " + ex.Message);
+                Logger.Error("[TRANSACTION-RECORDS] unexpected failure: " + ex.GetType().Name);
                 return Error("TransactionRecordsFailed", "The Transaction records operation failed.", "Inspect the datastore diagnostics and retry with a fresh version token.", target,
                     new JObject { ["diagnostic"] = "Unexpected backend failure; sensitive connection details were omitted." });
             }
@@ -100,7 +116,7 @@ namespace GxMcp.Worker.Services
                 db.Bind(metadata);
                 connection.ConnectionString = db.ConnectionString;
                 connection.Open();
-                using (var command = BuildSelect(connection, metadata, fields, filters, limit, null, db))
+                using (var command = BuildSelect(connection, metadata, fields, filters, limit + 1, null, db))
                 {
                     command.CommandTimeout = ReadTimeout(args);
                     var rows = ReadRows(command, fields);
@@ -108,6 +124,16 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Ok(target: metadata.Name, code: "TransactionRecordsRead", result: result);
                 }
             }
+        }
+
+        // Approval receipts contain no source or row cache. Only a digest of the
+        // reviewed plan is retained, for 15 minutes, and consumed before mutation.
+        private static readonly object PreviewLock = new object();
+        private static readonly Dictionary<string, PreviewApproval> Previews = new Dictionary<string, PreviewApproval>();
+        private sealed class PreviewApproval
+        {
+            public string Digest;
+            public DateTime Expires;
         }
 
         private string Write(TransactionMetadata metadata, JObject args, bool isInsert)
@@ -120,158 +146,238 @@ namespace GxMcp.Worker.Services
             if (values == null || values.Count == 0)
                 throw new RecordOperationException("RecordValuesRequired", "Record values are required.", "Provide values as an object.");
             if (!isInsert && (filters == null || filters.Count == 0))
-                throw new RecordOperationException("UpdateFilterRequired", "An update requires an explicit equality filter.", "Provide where and keep expectedCount=1 unless a broader update is intentional.");
+                throw new RecordOperationException("UpdateFilterRequired", "An update requires an explicit equality filter.", "Provide a unique where filter.");
+            if (isInsert && filters != null && filters.Count != 0)
+                throw new RecordOperationException("InsertFilterUnsupported", "Insert scope is determined by its primary key.", "Remove where from the insert.");
             if (!IsWriteAllowed(dryRun, expectedVersion))
-                throw new RecordOperationException("ExpectedVersionRequired", "A version token is required for a persisted write.", "Run the same operation with dryRun=true and send its versionToken back as expectedVersion.");
-
+                throw new RecordOperationException("DryRunRequired", "A current write preview is required.", "Run the same operation with dryRun=true; query and v1 tokens cannot authorize writes.");
             var normalizedValues = NormalizeValues(metadata, values);
             var normalizedFilters = filters == null ? null : NormalizeValues(metadata, filters);
             if (metadata.Keys.Count == 0)
-                throw new RecordOperationException("TransactionPrimaryKeyUnavailable", "The Transaction does not expose a primary key in the SDK structure.", "Record writes are refused because they cannot be rolled back safely.");
-            if (!isInsert)
-            {
-                foreach (var key in metadata.Keys)
-                {
-                    if (normalizedValues.ContainsKey(key.Name))
-                        throw new RecordOperationException("KeyMutationNotSupported", "Primary-key changes are not supported by the atomic update operation.", "Update only non-key attributes so rollback can identify the original row.");
-                }
-            }
-
+                throw new RecordOperationException("TransactionPrimaryKeyUnavailable", "The Transaction does not expose a primary key.", "Record writes require a primary key.");
+            if (!isInsert && metadata.Keys.Any(k => normalizedValues.ContainsKey(k.Name)))
+                throw new RecordOperationException("KeyMutationNotSupported", "Primary-key changes are not supported.", "Update only non-key attributes.");
+            if (metadata.Keys.Any(k => normalizedValues.ContainsKey(k.Name) && normalizedValues[k.Name].Type == JTokenType.Null))
+                throw new RecordOperationException("PrimaryKeyRequired", "Primary keys cannot be null.", "Supply non-null key values.");
+            int expectedCount = args["expectedCount"]?.Value<int?>() ?? (isInsert ? 0 : 1);
+            if (expectedCount != (isInsert ? 0 : 1))
+                throw new RecordOperationException("SingleRowUpdateRequired", "The adapter inserts one absent key or updates exactly one row.", "Use expectedCount=0 for insert or expectedCount=1 for update.");
+            var managedFields = ResolveManagedFields(metadata, args, normalizedValues);
             var db = OpenDatabase(args);
-            using (var connection = db.Factory.CreateConnection())
+            db.Bind(metadata);
+            var missingKeys = metadata.Keys.Where(k => !normalizedValues.ContainsKey(k.Name)).ToList();
+            if (isInsert && (missingKeys.Count > 1 || (missingKeys.Count == 1 && db.Family != "sqlserver")))
+                throw new RecordOperationException("GeneratedKeyUnavailable", "The provider cannot safely return this generated primary key.", "Supply the complete primary key, or use SQL Server with one generated key.");
+            bool generatedIdentity = isInsert && missingKeys.Count == 1;
+            var scope = isInsert ? (generatedIdentity ? null : BuildKeyFilter(metadata, normalizedValues)) : normalizedFilters;
+            bool commitAttempted = false;
+            bool commitConfirmed = false;
+            bool rollbackAttempted = false;
+            bool rollbackConfirmed = false;
+            List<JObject> snapshot = null;
+            List<JObject> expectedAfter = null;
+            List<JObject> persisted = null;
+            int timeout = ReadTimeout(args);
+            try
             {
-                db.Bind(metadata);
-                connection.ConnectionString = db.ConnectionString;
-                connection.Open();
-                int timeout = ReadTimeout(args);
-                List<JObject> before;
-                string currentToken;
-                using (var readTx = connection.BeginTransaction(IsolationLevel.Serializable))
+                using (var connection = db.Factory.CreateConnection())
                 {
-                    var beforeFilters = isInsert ? null : normalizedFilters;
-                    using (var select = BuildSelect(connection, metadata, metadata.Attributes, beforeFilters, isInsert ? 0 : 0, readTx, db))
+                    connection.ConnectionString = db.ConnectionString;
+                    connection.Open();
+                    using (var tx = connection.BeginTransaction(IsolationLevel.Serializable))
                     {
-                        select.CommandTimeout = timeout;
-                        before = ReadRows(select, metadata.Attributes);
+                        try
+                        {
+                            snapshot = generatedIdentity ? new List<JObject>() : SelectRows(connection, tx, db, metadata, scope, timeout);
+                            if (isInsert && snapshot.Count != 0)
+                                throw new RecordOperationException("RecordAlreadyExists", "The insert primary key already exists.", "Review the existing record before creating a new preview.",
+                                    new JObject { ["persisted"] = false });
+                            if (!isInsert && snapshot.Count != 1)
+                                throw new RecordOperationException("ExpectedCountMismatch", "The update must match exactly one record.", "Use a unique where filter.",
+                                    new JObject { ["matchedCount"] = snapshot.Count, ["matchedCountExact"] = snapshot.Count < 2, ["persisted"] = false });
+                            string digest = ComputePlanDigest(metadata, db, connection, isInsert, normalizedFilters, normalizedValues,
+                                managedFields, snapshot, expectedCount, rollbackOnFailure);
+                            if (dryRun)
+                            {
+                                // Ending a read-only transaction writes no application data.
+                                tx.Rollback();
+                                string receipt = IssuePreview(digest);
+                                var preview = BuildDryRunResult(metadata, db, isInsert, normalizedFilters, normalizedValues,
+                                    snapshot, receipt, expectedCount, rollbackOnFailure);
+                                preview["databaseManagedFields"] = new JArray(managedFields.OrderBy(x => x, StringComparer.Ordinal));
+                                preview["versionTokenKind"] = "write-preview-v2";
+                                preview["previewExpiresInSeconds"] = 900;
+                                preview["previewSingleUse"] = true;
+                                return McpResponse.Ok(target: metadata.Name, code: "TransactionRecordDryRun", result: preview);
+                            }
+                            ConsumePreview(expectedVersion, digest);
+                            JToken generatedKey;
+                            ExecuteWrite(connection, tx, db, isInsert, normalizedFilters, normalizedValues, snapshot, out generatedKey, timeout);
+                            if (generatedIdentity)
+                            {
+                                if (generatedKey == null || generatedKey.Type == JTokenType.Null)
+                                    throw new RecordOperationException("GeneratedKeyUnavailable", "The datastore did not return the generated key.", "Supply the primary key explicitly.");
+                                normalizedValues[missingKeys[0].Name] = NormalizeToken(generatedKey, missingKeys[0]);
+                            }
+                            var finalScope = isInsert ? BuildKeyFilter(metadata, normalizedValues) : BuildKeyFilterForRows(metadata, snapshot);
+                            expectedAfter = SelectRows(connection, tx, db, metadata, finalScope, timeout);
+                            if (!VerifyRows(metadata, isInsert, normalizedValues, snapshot, expectedAfter, managedFields))
+                                throw new RecordOperationException("WriteVerificationFailed", "The write did not round-trip inside the transaction.", "Inspect the values and explicitly declare database-managed fields where appropriate.");
+                            commitAttempted = true;
+                            tx.Commit();
+                            commitConfirmed = true;
+                        }
+                        catch
+                        {
+                            if (!commitAttempted)
+                            {
+                                rollbackAttempted = true;
+                                try { tx.Rollback(); rollbackConfirmed = true; } catch { }
+                            }
+                            throw;
+                        }
                     }
-                    currentToken = ComputeVersionToken(metadata, normalizedFilters, before);
-                    readTx.Commit();
-                }
-
-                if (!string.IsNullOrWhiteSpace(expectedVersion) && !string.Equals(expectedVersion, currentToken, StringComparison.Ordinal))
-                {
-                    throw new RecordOperationException(
-                        "VersionConflict",
-                        "The datastore changed after the supplied version token was issued.",
-                        "Re-read the records, review the diff and retry with the current versionToken.",
-                        new JObject { ["expectedVersion"] = expectedVersion, ["currentVersion"] = currentToken, ["persisted"] = false });
-                }
-
-                int expectedCount = args["expectedCount"]?.Value<int?>() ?? (isInsert ? 0 : 1);
-                if (!isInsert && expectedCount != 1)
-                    throw new RecordOperationException("SingleRowUpdateRequired", "The atomic adapter currently updates exactly one primary-keyed record.", "Use a unique where filter and expectedCount=1.");
-                if (!isInsert && before.Count != expectedCount)
-                    throw new RecordOperationException("ExpectedCountMismatch", "The update matched a different number of records than expected.", "Review where and expectedCount before retrying.",
-                        new JObject { ["expectedCount"] = expectedCount, ["matchedCount"] = before.Count, ["persisted"] = false });
-
-                var dryRunResult = BuildDryRunResult(metadata, db, isInsert, normalizedFilters, normalizedValues, before, currentToken, expectedCount, rollbackOnFailure);
-                if (dryRun)
-                    return McpResponse.Ok(target: metadata.Name, code: "TransactionRecordDryRun", result: dryRunResult);
-
-                var snapshot = before.Select(CloneRow).ToList();
-                List<JObject> expectedAfter;
-                using (var writeTx = connection.BeginTransaction(IsolationLevel.Serializable))
-                {
-                    // Re-check inside the write transaction. This closes the gap between
-                    // the optimistic read and the mutation when another writer races us.
-                    List<JObject> lockedBefore;
-                    using (var select = BuildSelect(connection, metadata, metadata.Attributes, isInsert ? null : normalizedFilters, 0, writeTx, db))
-                    {
-                        select.CommandTimeout = timeout;
-                        lockedBefore = ReadRows(select, metadata.Attributes);
-                    }
-                    string lockedToken = ComputeVersionToken(metadata, normalizedFilters, lockedBefore);
-                    if (!string.Equals(lockedToken, currentToken, StringComparison.Ordinal))
-                        throw new RecordOperationException("VersionConflict", "The datastore changed while the write was being prepared.", "Re-read the records and retry with a fresh versionToken.",
-                            new JObject { ["expectedVersion"] = currentToken, ["currentVersion"] = lockedToken, ["persisted"] = false });
-                    if (!isInsert && lockedBefore.Count != expectedCount)
-                        throw new RecordOperationException("ExpectedCountMismatch", "The update matched a different number of records inside the write transaction.", "Retry after re-reading the records.");
-
-                    JToken generatedKey = null;
-                    ExecuteWrite(connection, writeTx, db, isInsert, normalizedFilters, normalizedValues, lockedBefore, out generatedKey, timeout);
-                    if (isInsert && generatedKey != null)
-                    {
-                        if (generatedKey.Type == JTokenType.Null)
-                            throw new RecordOperationException("GeneratedKeyUnavailable", "The datastore did not return the generated primary key.", "Provide the primary key in values or configure generated-key support.");
-                        var generated = metadata.Keys.Single(k => !normalizedValues.ContainsKey(k.Name));
-                        normalizedValues[generated.Name] = generatedKey;
-                    }
-
-                    var afterFilters = isInsert
-                        ? BuildKeyFilter(metadata, normalizedValues)
-                        : BuildKeyFilterForRows(metadata, lockedBefore);
-                    using (var verify = BuildSelect(connection, metadata, metadata.Attributes, afterFilters, 0, writeTx, db))
-                    {
-                        verify.CommandTimeout = timeout;
-                        expectedAfter = ReadRows(verify, metadata.Attributes);
-                    }
-                    if (!VerifyRows(metadata, isInsert, normalizedValues, lockedBefore, expectedAfter))
-                    {
-                        throw new RecordOperationException("WriteVerificationFailed", "The write did not round-trip inside the transaction.", "The transaction was rolled back before commit; no persisted change was accepted.",
-                            new JObject { ["persisted"] = false, ["rereadConfirmed"] = false, ["rollbackPerformed"] = true });
-                    }
-                    writeTx.Commit();
                 }
 
                 var finalFilters = isInsert ? BuildKeyFilter(metadata, normalizedValues) : BuildKeyFilterForRows(metadata, snapshot);
-                List<JObject> persisted;
-                using (var rereadConnection = db.Factory.CreateConnection())
+                using (var reread = db.Factory.CreateConnection())
                 {
-                    rereadConnection.ConnectionString = db.ConnectionString;
-                    rereadConnection.Open();
-                    using (var reread = BuildSelect(rereadConnection, metadata, metadata.Attributes, finalFilters, 0, null, db))
-                    {
-                        reread.CommandTimeout = timeout;
-                        persisted = ReadRows(reread, metadata.Attributes);
-                    }
+                    reread.ConnectionString = db.ConnectionString;
+                    reread.Open();
+                    persisted = SelectRows(reread, null, db, metadata, finalFilters, timeout);
                 }
-
-                bool confirmed = VerifyRows(metadata, isInsert, normalizedValues, snapshot, persisted);
-                bool rollbackAttempted = false;
-                bool stateRestored = false;
-                if (!confirmed && rollbackOnFailure)
+                // Compare the complete observed state, including database-managed fields.
+                if (!RowsEquivalent(expectedAfter, persisted))
                 {
-                    rollbackAttempted = true;
-                    stateRestored = Compensate(metadata, db, isInsert, snapshot, expectedAfter, persisted, timeout);
-                }
-                if (!confirmed)
-                {
-                    throw new RecordOperationException("WriteNotPersisted", "The post-save reread diverged from the requested record state.", "No lifecycle operation was run; inspect the returned rollback status before retrying.",
+                    // Never compensate after observing divergence. Even an equal
+                    // subsequent row may be another writer's replacement (ABA).
+                    // Only the still-open original transaction can roll back safely.
+                    return Error("PostCommitDivergence", "The committed record changed before confirmation.",
+                        "Do not retry or restore automatically. Inspect the current keys and obtain a new preview for explicit recovery.", metadata.Name,
                         new JObject
                         {
-                            ["persisted"] = false,
-                            ["rereadConfirmed"] = false,
-                            ["rollbackAttempted"] = rollbackAttempted,
-                            ["stateRestored"] = stateRestored,
-                            ["versionToken"] = ComputeVersionToken(metadata, finalFilters, persisted)
+                            ["persisted"] = JValue.CreateNull(),
+                            ["commitState"] = "Confirmed", ["commitConfirmed"] = true,
+                            ["persistenceState"] = "Diverged",
+                            ["rereadConfirmed"] = false, ["retrySafe"] = false,
+                            ["rollbackAttempted"] = false, ["stateRestored"] = false,
+                            ["rollbackDiagnostic"] = rollbackOnFailure ? "ConcurrentChangePreserved" : "NotRequested",
+                            ["automaticCompensationSupported"] = false,
+                            ["keys"] = BuildKeys(metadata, expectedAfter)
                         });
                 }
+                return McpResponse.Ok(target: metadata.Name, code: isInsert ? "TransactionRecordInserted" : "TransactionRecordsUpdated",
+                    result: new JObject
+                    {
+                        ["transaction"] = metadata.Name, ["table"] = metadata.Table,
+                        ["persisted"] = true, ["commitState"] = "Confirmed", ["commitConfirmed"] = true,
+                        ["persistenceState"] = "Confirmed", ["rereadConfirmed"] = true, ["retrySafe"] = false,
+                        ["rollbackAttempted"] = false, ["stateRestored"] = false,
+                        ["versionTokenBefore"] = expectedVersion,
+                        ["versionToken"] = ComputeVersionToken(metadata, finalFilters, persisted),
+                        ["versionTokenKind"] = "read-only", ["writePreviewRequired"] = true,
+                        ["matchedCount"] = persisted.Count, ["matchedCountExact"] = true,
+                        ["records"] = new JArray(persisted), ["keys"] = BuildKeys(metadata, persisted)
+                    });
+            }
+            catch (Exception ex)
+            {
+                // Once Commit is attempted, an exception cannot prove non-persistence.
+                // Never leak provider messages or suggest blindly repeating an insert.
+                var known = ex as RecordOperationException;
+                var extra = known?.Extra == null ? new JObject() : (JObject)known.Extra.DeepClone();
+                extra["persisted"] = commitConfirmed ? (JToken)true : commitAttempted || (rollbackAttempted && !rollbackConfirmed) ? JValue.CreateNull() : (JToken)false;
+                extra["commitState"] = commitConfirmed ? "Confirmed" : commitAttempted ? "Indeterminate" : "NotAttempted";
+                extra["commitConfirmed"] = commitConfirmed;
+                extra["persistenceState"] = commitConfirmed ? "CommittedUnverified" : commitAttempted || (rollbackAttempted && !rollbackConfirmed) ? "Indeterminate" : "NotPersisted";
+                extra["rereadConfirmed"] = false;
+                extra["retrySafe"] = false;
+                extra["rollbackAttempted"] = rollbackAttempted;
+                extra["stateRestored"] = rollbackConfirmed;
+                if (expectedAfter != null) extra["keys"] = BuildKeys(metadata, expectedAfter);
+                return Error(commitConfirmed ? "PostCommitReadFailed" : commitAttempted ? "CommitOutcomeUnknown" : known?.Code ?? "TransactionRecordsDatabaseFailed",
+                    commitConfirmed ? "Commit succeeded but persisted state could not be confirmed." : commitAttempted ? "The commit outcome is unknown." : known?.Message ?? "The record operation failed.",
+                    "Do not retry automatically. Inspect the current record state and obtain a new dry-run preview.", metadata.Name, extra);
+            }
+        }
 
-                var result = new JObject
-                {
-                    ["transaction"] = metadata.Name,
-                    ["table"] = metadata.Table,
-                    ["persisted"] = true,
-                    ["rereadConfirmed"] = true,
-                    ["rollbackAttempted"] = false,
-                    ["stateRestored"] = true,
-                    ["versionTokenBefore"] = currentToken,
-                    ["versionToken"] = ComputeVersionToken(metadata, finalFilters, persisted),
-                    ["matchedCount"] = persisted.Count,
-                    ["records"] = new JArray(persisted),
-                    ["keys"] = BuildKeys(metadata, persisted)
-                };
-                return McpResponse.Ok(target: metadata.Name, code: isInsert ? "TransactionRecordInserted" : "TransactionRecordsUpdated", result: result);
+        private static List<JObject> SelectRows(DbConnection connection, DbTransaction tx, DatabaseMetadata db,
+            TransactionMetadata metadata, Dictionary<string, JToken> filters, int timeout)
+        {
+            using (var command = BuildSelect(connection, metadata, metadata.Attributes, filters, 2, tx, db))
+            {
+                command.CommandTimeout = timeout;
+                return ReadRows(command, metadata.Attributes);
+            }
+        }
+
+        private static HashSet<string> ResolveManagedFields(TransactionMetadata metadata, JObject args, Dictionary<string, JToken> values)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var requested = args["databaseManagedFields"];
+            if (requested == null) return result;
+            if (!(requested is JArray array))
+                throw new RecordOperationException("InvalidDatabaseManagedFields", "databaseManagedFields must be an array.", "Supply existing non-key attributes not present in values.");
+            foreach (var name in array)
+            {
+                var attr = name.Type == JTokenType.String
+                    ? metadata.Attributes.FirstOrDefault(a => string.Equals(a.Name, name.Value<string>(), StringComparison.OrdinalIgnoreCase)) : null;
+                if (attr == null || attr.IsKey || values.ContainsKey(attr.Name))
+                    throw new RecordOperationException("InvalidDatabaseManagedFields", "A database-managed field is unknown, a key, or explicitly assigned.", "Supply existing non-key attributes not present in values.");
+                result.Add(attr.Name);
+            }
+            return result;
+        }
+
+        private static string ComputePlanDigest(TransactionMetadata metadata, DatabaseMetadata db, DbConnection connection, bool insert,
+            Dictionary<string, JToken> filters, Dictionary<string, JToken> values, HashSet<string> managedFields,
+            List<JObject> snapshot, int expectedCount, bool rollback)
+        {
+            if (string.IsNullOrWhiteSpace(db.KbIdentity) || string.IsNullOrWhiteSpace(db.EnvironmentIdentity) || string.IsNullOrWhiteSpace(metadata.Identity))
+                throw new RecordOperationException("DestinationIdentityUnavailable", "The SDK did not expose a stable destination identity.", "Resolve the KB, environment and Transaction identity before writing.");
+            return Hash(Canonical(new JObject
+            {
+                ["kb"] = db.KbIdentity, ["environment"] = db.EnvironmentIdentity, ["datastore"] = db.Name,
+                ["provider"] = db.Factory.GetType().AssemblyQualifiedName, ["family"] = db.Family,
+                ["server"] = connection.DataSource, ["database"] = connection.Database,
+                // The digest is private: credentials and connection details never enter responses.
+                ["connectionContext"] = Hash(db.ConnectionString), ["schemaTable"] = db.QualifiedTable,
+                ["object"] = metadata.Identity, ["schemaState"] = ComputeVersionToken(metadata, filters, snapshot),
+                ["operation"] = insert ? "insert" : "update", ["values"] = ToObject(values),
+                ["databaseManagedFields"] = new JArray(managedFields.OrderBy(x => x, StringComparer.Ordinal)),
+                ["expectedCount"] = expectedCount, ["rollbackOnFailure"] = rollback
+            }));
+        }
+
+        private static string Hash(string value)
+        {
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(value ?? ""))).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static string IssuePreview(string digest)
+        {
+            lock (PreviewLock)
+            {
+                foreach (var expired in Previews.Where(p => p.Value.Expires <= DateTime.UtcNow).Select(p => p.Key).ToList())
+                    Previews.Remove(expired);
+                if (Previews.Count >= 1024) Previews.Remove(Previews.OrderBy(p => p.Value.Expires).First().Key);
+                string token = "trn-v2:" + Guid.NewGuid().ToString("N");
+                Previews.Add(token, new PreviewApproval { Digest = digest, Expires = DateTime.UtcNow.AddMinutes(15) });
+                return token;
+            }
+        }
+
+        private static void ConsumePreview(string token, string digest)
+        {
+            lock (PreviewLock)
+            {
+                if (!Previews.TryGetValue(token, out var preview) || preview.Expires <= DateTime.UtcNow)
+                    throw new RecordOperationException("DryRunRequired", "The preview is missing, expired, consumed or belongs to another Worker.", "Create a new dry-run preview.");
+                // Any submitted attempt consumes the receipt, even a conflicting plan.
+                Previews.Remove(token);
+                if (!string.Equals(preview.Digest, digest, StringComparison.Ordinal))
+                    throw new RecordOperationException("VersionConflict", "The destination, plan or scoped records changed after preview.", "Review a new dry-run; the previous approval cannot authorize this write.");
             }
         }
 
@@ -294,11 +400,19 @@ namespace GxMcp.Worker.Services
 
                     var columns = values.Keys.Select(name => db.AttributeMap[name]).ToList();
                     string prefix = ParameterPrefix(db.Family);
-                    string output = missingKeys.Count == 1 ? " OUTPUT INSERTED." + QuoteIdentifier(missingKeys[0].Name, db.Family) : string.Empty;
-                    command.CommandText = "INSERT INTO " + db.QualifiedTable + " (" + string.Join(", ", columns.Select(a => QuoteIdentifier(a.Name, db.Family))) + ")" + output + " VALUES ("
-                        + string.Join(", ", columns.Select((a, i) => AddParameter(command, prefix, "v" + i, a, values[a.Name]))) + ")";
-                    generatedKey = missingKeys.Count == 1 ? ToJsonToken(command.ExecuteScalar()) : null;
-                    if (missingKeys.Count == 0) command.ExecuteNonQuery();
+                    var keyOutput = missingKeys.Count == 1 ? AddGeneratedKeyOutput(command, missingKeys[0]) : null;
+                    // OUTPUT INTO supports enabled triggers; direct OUTPUT does not.
+                    // Match the table variable to the typed output parameter: SQL
+                    // Server does not implicitly convert sql_variant to scalar outputs.
+                    string output = missingKeys.Count == 1 ? " OUTPUT INSERTED." + QuoteIdentifier(missingKeys[0].Name, db.Family) + " INTO @generatedKeys (Value)" : string.Empty;
+                    command.CommandText = (keyOutput != null ? "DECLARE @generatedKeys TABLE (Value " + GeneratedKeySqlType(keyOutput) + "); " : "")
+                        + "INSERT INTO " + db.QualifiedTable + " (" + string.Join(", ", columns.Select(a => QuoteIdentifier(a.Name, db.Family))) + ")" + output + " VALUES ("
+                        + string.Join(", ", columns.Select((a, i) => AddParameter(command, prefix, "v" + i, a, values[a.Name]))) + ")"
+                        + (missingKeys.Count == 1 ? "; SELECT @generatedKey = Value FROM @generatedKeys" : "");
+                    // Triggers may emit arbitrary result sets. Read only the typed
+                    // output parameter after the whole batch has completed.
+                    command.ExecuteNonQuery();
+                    generatedKey = keyOutput == null ? null : ToJsonToken(keyOutput.Value);
                     return;
                 }
 
@@ -307,91 +421,76 @@ namespace GxMcp.Worker.Services
                 command.CommandText = "UPDATE " + db.QualifiedTable + " SET "
                     + string.Join(", ", updateColumns.Select((a, i) => QuoteIdentifier(a.Name, db.Family) + "=" + AddParameter(command, parameterPrefix, "v" + i, a, values[a.Name])))
                     + BuildWhere(command, db, filters, parameterPrefix, "w");
-                int affected = command.ExecuteNonQuery();
+                int affected = ExecuteAffected(command, db);
                 if (affected != before.Count)
                     throw new RecordOperationException("ConcurrentWriteDetected", "The update affected a different number of rows than the locked snapshot.", "Retry with the versionToken returned by a fresh dry-run.");
             }
             finally { command.Dispose(); }
         }
 
-        private static bool Compensate(TransactionMetadata metadata, DatabaseMetadata db, bool isInsert,
-            List<JObject> snapshot, List<JObject> expectedAfter, List<JObject> persisted, int timeout)
+        private static int ExecuteAffected(DbCommand command, DatabaseMetadata db)
         {
-            try
+            if (db.Family != "sqlserver") return command.ExecuteNonQuery();
+            // ExecuteNonQuery includes trigger row counts and can return -1 under
+            // NOCOUNT. @@ROWCOUNT identifies the outer statement's affected rows.
+            var affected = AddOutputParameter(command, "@affectedRows", DbType.Int32);
+            command.CommandText += "; SET @affectedRows = @@ROWCOUNT";
+            command.ExecuteNonQuery();
+            if (affected.Value == null || affected.Value == DBNull.Value)
+                throw new RecordOperationException("AffectedRowsUnavailable", "The datastore did not return the statement row count.", "Inspect the provider before obtaining a new preview.");
+            return Convert.ToInt32(affected.Value, CultureInfo.InvariantCulture);
+        }
+
+        private static DbParameter AddOutputParameter(DbCommand command, string name, DbType type)
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Direction = ParameterDirection.Output;
+            parameter.DbType = type;
+            parameter.Value = DBNull.Value;
+            command.Parameters.Add(parameter);
+            return parameter;
+        }
+
+        private static DbParameter AddGeneratedKeyOutput(DbCommand command, AttributeMetadata key)
+        {
+            string type = (key.Type ?? "").ToUpperInvariant();
+            DbType dbType;
+            if (type.Contains("NUMERIC") || type.Contains("PACKED") || type.Contains("ZONED") || type.Contains("DECIMAL")) dbType = DbType.Decimal;
+            else if (type.Contains("INT")) dbType = DbType.Int64;
+            else if (type.Contains("DATETIME")) dbType = DbType.DateTime2;
+            else if (type.Contains("DATE")) dbType = DbType.Date;
+            else if (type.Contains("BOOLEAN") || type == "BIT") dbType = DbType.Boolean;
+            else if (type.Contains("GUID")) dbType = DbType.Guid;
+            else if (type.Contains("CHAR")) dbType = DbType.String;
+            else throw new RecordOperationException("GeneratedKeyTypeUnsupported", "The SDK key type has no supported output parameter mapping.", "Provide the primary key explicitly.");
+            var parameter = AddOutputParameter(command, "@generatedKey", dbType);
+            if (dbType == DbType.String) parameter.Size = key.Length > 0 ? key.Length : 4000;
+            if (dbType == DbType.Decimal)
             {
-                if (persisted == null || persisted.Count == 0) return isInsert;
-                using (var connection = db.Factory.CreateConnection())
-                {
-                    connection.ConnectionString = db.ConnectionString;
-                    connection.Open();
-                    using (var tx = connection.BeginTransaction(IsolationLevel.Serializable))
-                    {
-                        using (var currentCommand = BuildSelect(connection, metadata, metadata.Attributes, BuildKeyFilterForRows(metadata, persisted), 0, tx, db))
-                        {
-                            currentCommand.CommandTimeout = timeout;
-                            var current = ReadRows(currentCommand, metadata.Attributes);
-                            // Compensate only when the committed row still exactly
-                            // matches the row observed before commit. This restores
-                            // trigger/default columns too, while refusing to clobber
-                            // a concurrent change made after the commit.
-                            if (!RowsEquivalent(expectedAfter, current)) return false;
-                            if (isInsert)
-                            {
-                                foreach (var row in current) ExecuteDelete(connection, tx, db, row, timeout);
-                            }
-                            else
-                            {
-                                foreach (var row in snapshot) ExecuteRestore(connection, tx, db, row, timeout);
-                            }
-                        }
-                        tx.Commit();
-                    }
-                    using (var verify = BuildSelect(connection, metadata, metadata.Attributes,
-                        isInsert ? BuildKeyFilterForRows(metadata, expectedAfter) : BuildKeyFilterForRows(metadata, snapshot), 0, null, db))
-                    {
-                        verify.CommandTimeout = timeout;
-                        var rows = ReadRows(verify, metadata.Attributes);
-                        return isInsert ? rows.Count == 0 : RowsEquivalent(snapshot, rows);
-                    }
-                }
+                parameter.Precision = (byte)(key.Length > 0 ? Math.Min(key.Length, 38) : 38);
+                parameter.Scale = (byte)Math.Max(0, Math.Min(key.Decimals, parameter.Precision));
             }
-            catch (Exception ex)
+            return parameter;
+        }
+
+        private static string GeneratedKeySqlType(DbParameter parameter)
+        {
+            // Closed mapping from SDK-derived DbType; no caller-supplied SQL types.
+            switch (parameter.DbType)
             {
-                Logger.Warn("[TRANSACTION-RECORDS] compensating rollback failed: " + ex.Message);
-                return false;
+                case DbType.Int64: return "bigint";
+                case DbType.Decimal: return "decimal(" + parameter.Precision.ToString(CultureInfo.InvariantCulture)
+                        + "," + parameter.Scale.ToString(CultureInfo.InvariantCulture) + ")";
+                case DbType.DateTime2: return "datetime2(7)";
+                case DbType.Date: return "date";
+                case DbType.Boolean: return "bit";
+                case DbType.Guid: return "uniqueidentifier";
+                case DbType.String: return "nvarchar(" + (parameter.Size > 4000 ? "max" : parameter.Size.ToString(CultureInfo.InvariantCulture)) + ")";
+                default: throw new InvalidOperationException("Unsupported generated-key output type.");
             }
         }
 
-        private static void ExecuteDelete(DbConnection connection, DbTransaction tx, DatabaseMetadata db, JObject row, int timeout)
-        {
-            var command = connection.CreateCommand();
-            command.Transaction = tx;
-            command.CommandTimeout = timeout;
-            try
-            {
-                string prefix = ParameterPrefix(db.Family);
-                command.CommandText = "DELETE FROM " + db.QualifiedTable + BuildWhere(command, db, BuildKeyFilterForRow(db, row), prefix, "d");
-                if (command.ExecuteNonQuery() != 1) throw new InvalidOperationException("Rollback delete affected an unexpected number of rows.");
-            }
-            finally { command.Dispose(); }
-        }
-
-        private static void ExecuteRestore(DbConnection connection, DbTransaction tx, DatabaseMetadata db, JObject row, int timeout)
-        {
-            var command = connection.CreateCommand();
-            command.Transaction = tx;
-            command.CommandTimeout = timeout;
-            try
-            {
-                var nonKeys = db.Attributes.Where(a => !a.IsKey).ToList();
-                string prefix = ParameterPrefix(db.Family);
-                command.CommandText = "UPDATE " + db.QualifiedTable + " SET "
-                    + string.Join(", ", nonKeys.Select((a, i) => QuoteIdentifier(a.Name, db.Family) + "=" + AddParameter(command, prefix, "r" + i, a, row[a.Name])))
-                    + BuildWhere(command, db, BuildKeyFilterForRow(db, row), prefix, "k");
-                if (command.ExecuteNonQuery() != 1) throw new InvalidOperationException("Rollback restore affected an unexpected number of rows.");
-            }
-            finally { command.Dispose(); }
-        }
 
         private static DbCommand BuildSelect(DbConnection connection, TransactionMetadata metadata, IList<AttributeMetadata> fields,
             Dictionary<string, JToken> filters, int limit, DbTransaction tx, DatabaseMetadata db)
@@ -448,16 +547,21 @@ namespace GxMcp.Worker.Services
         private static JObject BuildReadResult(TransactionMetadata metadata, DatabaseMetadata db, IList<AttributeMetadata> fields,
             Dictionary<string, JToken> filters, List<JObject> rows, int limit)
         {
+            bool truncated = rows.Count > limit;
+            if (truncated) rows.RemoveRange(limit, rows.Count - limit);
             return new JObject
             {
                 ["transaction"] = metadata.Name,
                 ["table"] = metadata.Table,
                 ["dataStore"] = db.Name,
+                ["versionTokenKind"] = "read-only",
+                ["writePreviewRequired"] = true,
                 ["fields"] = new JArray(fields.Select(a => a.Name)),
                 ["records"] = new JArray(rows),
                 ["matchedCount"] = rows.Count,
                 ["limit"] = limit,
-                ["truncated"] = limit > 0 && rows.Count >= limit,
+                ["truncated"] = truncated,
+                ["matchedCountExact"] = !truncated,
                 ["versionToken"] = ComputeVersionToken(metadata, filters, rows),
                 ["keys"] = BuildKeys(metadata, rows)
             };
@@ -470,6 +574,7 @@ namespace GxMcp.Worker.Services
             {
                 ["operation"] = isInsert ? "insert" : "update",
                 ["matchedCount"] = isInsert ? 0 : before.Count,
+                ["matchedCountExact"] = true,
                 ["expectedCount"] = expectedCount,
                 ["changedFields"] = new JArray(values.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
                 ["values"] = ToObject(values)
@@ -490,9 +595,9 @@ namespace GxMcp.Worker.Services
         }
 
         private static bool VerifyRows(TransactionMetadata metadata, bool isInsert, Dictionary<string, JToken> values,
-            List<JObject> before, List<JObject> after)
+            List<JObject> before, List<JObject> after, HashSet<string> managedFields)
         {
-            if (after == null || after.Count == 0) return false;
+            if (after == null || after.Count != 1) return false;
             if (isInsert)
             {
                 return after.Any(row => values.All(pair => ValueEquals(row[pair.Key], pair.Value)));
@@ -504,6 +609,7 @@ namespace GxMcp.Worker.Services
                 if (current == null) return false;
                 foreach (var attribute in metadata.Attributes)
                 {
+                    if (managedFields.Contains(attribute.Name)) continue;
                     JToken expected = values.ContainsKey(attribute.Name) ? values[attribute.Name] : oldRow[attribute.Name];
                     if (!ValueEquals(current[attribute.Name], expected)) return false;
                 }
@@ -571,11 +677,12 @@ namespace GxMcp.Worker.Services
                 attributes.Add(new AttributeMetadata { Name = name, Type = type, Length = length, Decimals = decimals, IsKey = isKey });
             }
             var keys = attributes.Where(a => a.IsKey).ToList();
-            return new TransactionMetadata { Name = transaction.Name, Table = table, Attributes = attributes, Keys = keys };
+            return new TransactionMetadata { Identity = transaction.Guid.ToString("D"), Name = transaction.Name, Table = table, Attributes = attributes, Keys = keys };
         }
 
         private DatabaseMetadata OpenDatabase(JObject args)
         {
+            if (_databaseResolver != null) return _databaseResolver(args);
             dynamic kb = _kbService?.GetKB();
             if (kb == null) throw new RecordOperationException("KbNotOpen", "No KB is currently open.", "Open the KB before accessing Transaction records.");
             string requested = FirstText(args, "dataStore", "datastore");
@@ -630,7 +737,9 @@ namespace GxMcp.Worker.Services
                 Family = family,
                 Factory = factory,
                 ConnectionString = connectionString,
-                Schema = schemaName
+                Schema = schemaName,
+                KbIdentity = _kbService.GetKbPath(),
+                EnvironmentIdentity = _kbService.GetActiveEnvironment()
             };
         }
 
@@ -730,7 +839,7 @@ namespace GxMcp.Worker.Services
             if (type.Contains("DATE") && !type.Contains("DATETIME")) return token.Value<DateTime>().Date;
             if (type.Contains("DATETIME")) return token.Value<DateTime>();
             if (type.Contains("BOOLEAN") || type == "BIT") return token.Value<bool>();
-            if (type.Contains("GUID")) return token.Value<Guid>();
+            if (type.Contains("GUID")) return Guid.Parse(token.ToString());
             return token.Type == JTokenType.String ? token.Value<string>() : token.ToObject<object>();
         }
 
@@ -740,7 +849,7 @@ namespace GxMcp.Worker.Services
             {
                 ["transaction"] = metadata.Name,
                 ["table"] = metadata.Table,
-                ["attributes"] = new JArray(metadata.Attributes.Select(a => a.Name + ":" + a.Type + ":" + a.Length + ":" + a.Decimals)),
+                ["attributes"] = new JArray(metadata.Attributes.Select(a => a.Name + ":" + a.Type + ":" + a.Length + ":" + a.Decimals + ":" + a.IsKey)),
                 ["where"] = ToObject(filters),
                 ["rows"] = new JArray((rows ?? Enumerable.Empty<JObject>()).Select(CloneRow).OrderBy(Canonical, StringComparer.Ordinal))
             };
@@ -769,7 +878,7 @@ namespace GxMcp.Worker.Services
         }
 
         internal static bool IsWriteAllowed(bool dryRun, string expectedVersion)
-            => dryRun || !string.IsNullOrWhiteSpace(expectedVersion);
+            => dryRun || (expectedVersion != null && expectedVersion.StartsWith("trn-v2:", StringComparison.Ordinal));
 
         private static string ParameterPrefix(string family) => family == "oracle" ? ":" : "@";
         private static int ClampLimit(int limit) => limit <= 0 ? DefaultLimit : Math.Min(limit, MaxLimit);
@@ -786,8 +895,7 @@ namespace GxMcp.Worker.Services
                 if (attr == null) throw new RecordOperationException("TransactionAttributeNotFound", "A requested field is not part of the Transaction root structure.", "Use the field names returned by the Transaction metadata.", name);
                 if (!result.Any(a => string.Equals(a.Name, attr.Name, StringComparison.OrdinalIgnoreCase))) result.Add(attr);
             }
-            // Keep identity visible even when the caller asks for a projection. It
-            // makes the returned version token and keys actionable for a later write.
+            // Keep identity visible in projections. Read tokens do not authorize writes.
             foreach (var key in metadata.Keys)
                 if (!result.Any(a => string.Equals(a.Name, key.Name, StringComparison.OrdinalIgnoreCase))) result.Add(key);
             return result;
@@ -869,6 +977,14 @@ namespace GxMcp.Worker.Services
         {
             if (left == null || left.Type == JTokenType.Null) return right == null || right.Type == JTokenType.Null;
             if (right == null || right.Type == JTokenType.Null) return false;
+            // SDK Numeric attributes may map to integral SQL columns. JSON's
+            // integer/float distinction must not reject equal database numbers.
+            if ((left.Type == JTokenType.Integer || (left as JValue)?.Value is decimal)
+                && (right.Type == JTokenType.Integer || (right as JValue)?.Value is decimal))
+            {
+                try { return left.Value<decimal>() == right.Value<decimal>(); }
+                catch (Exception ex) when (ex is OverflowException || ex is FormatException) { return false; }
+            }
             if (left.Type == JTokenType.String || right.Type == JTokenType.String) return string.Equals(left.ToString(), right.ToString(), StringComparison.Ordinal);
             return JToken.DeepEquals(left, right);
         }
@@ -900,15 +1016,16 @@ namespace GxMcp.Worker.Services
                 : this(code, message, hint, new JObject { ["target"] = target }, inner) { }
         }
 
-        private sealed class TransactionMetadata
+        internal sealed class TransactionMetadata
         {
+            public string Identity;
             public string Name;
             public string Table;
             public List<AttributeMetadata> Attributes = new List<AttributeMetadata>();
             public List<AttributeMetadata> Keys = new List<AttributeMetadata>();
         }
 
-        private sealed class AttributeMetadata
+        internal sealed class AttributeMetadata
         {
             public string Name;
             public string Type;
@@ -917,8 +1034,10 @@ namespace GxMcp.Worker.Services
             public bool IsKey;
         }
 
-        private sealed class DatabaseMetadata
+        internal sealed class DatabaseMetadata
         {
+            public string KbIdentity;
+            public string EnvironmentIdentity;
             public string Name;
             public string Family;
             public string Schema;
