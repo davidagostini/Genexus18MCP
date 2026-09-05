@@ -207,6 +207,34 @@ namespace GxMcp.Gateway
 
         internal static IReadOnlyCollection<string> ActionTools => ActionContracts.Keys;
 
+        internal static string BuildHelpContract(string toolName)
+        {
+            if (!ActionContracts.TryGetValue(toolName, out var contract)) return string.Empty;
+
+            string readOnly = string.Join(", ", contract.ReadOnly.OrderBy(action => action, StringComparer.Ordinal)
+                .Select(action => "`" + action + "`"));
+            string mutating = string.Join(", ", contract.Mutating.OrderBy(action => action, StringComparer.Ordinal)
+                .Select(action => "`" + action + "`"));
+            string preview = string.Join(", ", DryRunCapableActions
+                .Where(key => key.StartsWith(toolName + ":", StringComparison.OrdinalIgnoreCase))
+                .Select(key => key.Substring(toolName.Length + 1))
+                .OrderBy(action => action, StringComparer.Ordinal)
+                .Select(action => "`" + action + "`"));
+
+            var lines = new List<string>
+            {
+                "\n## Action contract\n",
+                "- Read-only actions: " + (string.IsNullOrEmpty(readOnly) ? "none" : readOnly) + ".\n",
+                "- Mutating actions: " + (string.IsNullOrEmpty(mutating) ? "none" : mutating) + ".\n"
+            };
+            if (!string.IsNullOrEmpty(preview))
+            {
+                lines.Add("- `dryRun=true` is a read-only preview only for: " + preview + ".\n");
+            }
+
+            return string.Concat(lines);
+        }
+
         internal static OperationKind ClassifyAction(string? toolName, string? action)
         {
             if (string.IsNullOrWhiteSpace(toolName) || string.IsNullOrWhiteSpace(action))

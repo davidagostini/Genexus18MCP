@@ -493,7 +493,7 @@ namespace GxMcp.Worker.Tests
             Assert.False(error["rollbackAttempted"].Value<bool>());
             Assert.Equal(JTokenType.Null, error["persisted"].Type);
             Assert.Equal("ConcurrentChangePreserved", error["rollbackDiagnostic"].Value<string>());
-            Assert.Equal(1, f.Db.Rows.Count);
+            Assert.Single(f.Db.Rows);
             Assert.Equal(1, f.Db.Writes);
         }
         [Theory]
@@ -530,6 +530,22 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(count, f.Db.SelectedRows);
             Error(f.Write("UpdateRecords", Update(), result["versionToken"].Value<string>()), "DryRunRequired");
             Assert.Equal(0, f.Db.Writes);
+        }
+
+        [Fact]
+        public void QueryUsesProjectionAndReadsOnlyOneSentinelBeyondTheLimit()
+        {
+            var f = new Fixture(10000);
+            var response = f.Execute("QueryRecords", JObject.Parse("{'fields':['Value'],'limit':10}"));
+            var result = response["result"];
+
+            Assert.Equal("ok", response["status"].Value<string>());
+            Assert.Equal(10, ((JArray)result["records"]).Count);
+            Assert.True(result["truncated"].Value<bool>());
+            Assert.Equal(11, f.Db.SelectedRows);
+            Assert.Contains("TOP 11 ", f.Db.Commands.Single(command => command.StartsWith("SELECT ")));
+            Assert.Contains("[Value]", f.Db.Commands.Single(command => command.StartsWith("SELECT ")));
+            Assert.DoesNotContain("[Stamp]", f.Db.Commands.Single(command => command.StartsWith("SELECT ")));
         }
 
         [Theory]

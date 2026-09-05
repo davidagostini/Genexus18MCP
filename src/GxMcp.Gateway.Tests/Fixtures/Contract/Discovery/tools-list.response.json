@@ -1013,7 +1013,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Database umbrella. action: drift_check|drift_report (Transaction↔DB schema drift) | optimize_analyze|optimize_suggest|optimize_report (static index advisor) | sql_ddl|sql_navigation (SQL for Transaction/Procedure) | sample_data (fake INSERTs) | records_query|records_insert|records_update (typed application rows through Transaction metadata; writes default to dryRun) | types_list|types_describe|types_validate (Domains/SDT constraints) | reorg_impact (timestamp/deep ImpactDatabase) | reorg_preview (non-mutating logical↔physical impact diff plus exact SQL only when a current artifact is available) | translations_import.",
+      "description": "Database umbrella. action: drift_check|drift_report (Transaction↔DB schema drift) | optimize_analyze|optimize_suggest|optimize_report (static index advisor) | sql_ddl|sql_navigation (SQL for Transaction/Procedure) | sample_data (fake INSERTs) | records_query|records_insert|records_update (typed application rows through Transaction metadata; writes default to dryRun; direct SQL only and no GeneXus business rules) | types_list|types_describe|types_validate (Domains/SDT constraints) | reorg_impact (timestamp/deep ImpactDatabase) | reorg_preview (non-mutating logical↔physical impact diff plus exact SQL only when a current artifact is available) | translations_import.",
       "inputSchema": {
         "examples": [
           {
@@ -1031,7 +1031,7 @@
         ],
         "properties": {
           "action": {
-            "description": "Database operation to perform.",
+            "description": "Database operation. records_query is read-only; records_insert/records_update default to dryRun=true and require the matching single-use v2 preview token for persistence.",
             "enum": [
               "drift_check",
               "drift_report",
@@ -1056,6 +1056,13 @@
           "dataStore": {
             "description": "records_*: existing active-environment datastore; defaults to the SDK default.",
             "type": "string"
+          },
+          "databaseManagedFields": {
+            "description": "records_*: reviewed trigger-maintained fields; excludes keys and supplied values. Included in the preview token.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "deep": {
             "description": "reorg_impact/reorg_preview only: run ISpecifierService.ImpactDatabase (specification, build-heavy) for the authoritative AnalysisResult. Default false (cheap timestamp heuristic).",
@@ -1170,13 +1177,6 @@
           "where": {
             "description": "records_query/update: equality filters only; update requires a filter.",
             "type": "object"
-          },
-          "databaseManagedFields": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "records_*: reviewed trigger-maintained fields; excludes keys and supplied values. Included in the preview token."
           }
         },
         "required": [

@@ -428,7 +428,7 @@ namespace GxMcp.Worker.Services
             // writers — returning `new object()` gave each caller its own lock and
             // silently disabled the per-target serialization this method exists for.
             // Route them through a shared sentinel key instead.
-            string key = string.IsNullOrWhiteSpace(target) ? "<empty-target>" : target;
+            string key = string.IsNullOrWhiteSpace(target) ? " <empty-target>" : target;
             return _perTargetLocks.GetOrAdd(key, _ => new object());
         }
 
@@ -1446,7 +1446,6 @@ namespace GxMcp.Worker.Services
                 }
 
                 global::Artech.Architecture.Common.Objects.KBObjectPart part = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, partName);
-                bool dataProviderSourcePart = IsDataProviderSourcePart(obj, partName, part);
 
                 if (part == null) {
                     Logger.Error("[DEBUG-SAVE] Part NOT FOUND in object: " + partName);
@@ -1651,12 +1650,12 @@ namespace GxMcp.Worker.Services
                         failureStage = "part_save";
                         Logger.Info(string.Format("[DEBUG-SAVE] Invoking part.Save() for {0}...", part.TypeDescriptor?.Name));
                         bool skippedPartSave = false;
-                        if ((preferFastSourceSave || WritePolicy.IsLogicalSourcePart(partName) || dataProviderSourcePart) &&
-                            (part is global::Artech.Architecture.Common.Objects.ISource || dataProviderSourcePart))
+                        if ((preferFastSourceSave || WritePolicy.IsLogicalSourcePart(partName)) &&
+                            part is global::Artech.Architecture.Common.Objects.ISource)
                         {
                             skippedPartSave = true;
-                            retryStrategy = dataProviderSourcePart ? "dataprovider_object_save_only" : "object_save_only_fast_path";
-                            Logger.Info($"[DEBUG-SAVE] Object-level source save path enabled for {target} ({partName}). Skipping part.Save().");
+                            retryStrategy = "object_save_only_fast_path";
+                            Logger.Info($"[DEBUG-SAVE] Fast source save path enabled for {target} ({partName}). Skipping part.Save().");
                         }
                         else
                         {
@@ -1777,10 +1776,7 @@ namespace GxMcp.Worker.Services
                     });
                     
                     // Final persistence with debounce to avoid sync commit on every write.
-                    // DataProviderSourcePart is a logical projection in the SDK. Its
-                    // object-level EnsureSave is the authoritative persistence call;
-                    // wait for the synchronous flush before the caller rereads it.
-                    ScheduleFlush(force: dataProviderSourcePart);
+                    ScheduleFlush();
 
                     Logger.Info("[DEBUG-SAVE] SAVE & COMMIT COMPLETE.");
                     _objectService.MarkReadCacheDirty(obj, partName);
@@ -1975,22 +1971,6 @@ namespace GxMcp.Worker.Services
                 nextSteps: nextSteps,
                 target: target,
                 extra: extra);
-        }
-
-        internal static bool IsDataProviderSourcePart(
-            global::Artech.Architecture.Common.Objects.KBObject obj,
-            string partName,
-            global::Artech.Architecture.Common.Objects.KBObjectPart part)
-        {
-            if (obj == null || part == null) return false;
-            if (!string.Equals(obj.TypeDescriptor?.Name, "DataProvider", StringComparison.OrdinalIgnoreCase)) return false;
-            if (!string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(partName, "Code", StringComparison.OrdinalIgnoreCase)) return false;
-            // GeneXus has used more than one concrete SDK type name for this
-            // logical part across minor releases. On a DataProvider, Source/Code
-            // is the source projection; keep the decision stable by object type
-            // and part name instead of depending on the concrete CLR class.
-            return true;
         }
 
         private static string BuildSuggestion(string error, string partName)
