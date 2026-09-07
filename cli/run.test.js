@@ -791,82 +791,119 @@ test('clients list returns structured status with summary', () => {
     assert.equal(typeof row.registered, 'boolean');
 });
 
-test('clients list reports OpenCode Desktop as manual with exact setup fields', () => {
+test('clients list reads OpenCode Desktop registration from the shared OpenCode config', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-status-'));
     try {
         const env = sandboxHomeEnv(tempRoot);
+        const sharedConfig = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.jsonc');
         fs.mkdirSync(path.join(env.APPDATA, 'ai.opencode.desktop'), { recursive: true });
+        fs.mkdirSync(path.dirname(sharedConfig), { recursive: true });
+        fs.writeFileSync(sharedConfig, JSON.stringify({
+            mcp: {
+                genexus18mcp: {
+                    type: 'local',
+                    command: ['npx.cmd', '-y', 'genexus-mcp@latest'],
+                    environment: { GX_CONFIG_PATH: 'C:\\Synthetic\\config.json' },
+                    enabled: true
+                }
+            }
+        }, null, 2));
 
         const result = runCli(['clients', '--format', 'json'], { env });
         assert.equal(result.status, 0);
         const row = JSON.parse(result.stdout).ok.clients.find((client) => client.id === 'opencode-desktop');
         assert.ok(row, 'OpenCode Desktop should be listed');
         assert.equal(row.installed, true);
-        assert.equal(row.registered, false);
-        assert.equal(row.writeSupported, false);
-        assert.equal(row.registrationMode, 'manual');
-        assert.equal(row.manualSetup.transport, 'local');
-        assert.deepEqual(row.manualSetup.args, ['-y', 'genexus-mcp@latest']);
-        assert.equal(row.manualSetup.environment.GX_CONFIG_PATH, '<config.json path printed by genexus-mcp init>');
-        assert.ok(row.manualSetup.steps.some((step) => step.includes('genexus_whoami')));
-        assert.match(row.note, /does not write/i);
+        assert.equal(row.registered, true);
+        assert.equal(row.writeSupported, true);
+        assert.equal(row.registrationMode, 'automatic');
+        assert.equal(row.configPath, sharedConfig);
+        assert.equal(row.manualSetup, null);
+        assert.equal(row.note, null);
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
 
-test('clients add reports OpenCode Desktop manual skip without mutating its app-managed file', () => {
+test('clients add writes OpenCode Desktop to the shared config and preserves unrelated entries', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-add-'));
     try {
         const env = sandboxHomeEnv(tempRoot);
         const cfgPath = path.join(tempRoot, 'config.json');
         const desktopDir = path.join(env.APPDATA, 'ai.opencode.desktop');
         const desktopConfig = path.join(desktopDir, 'mcp.json');
-        const original = { unrelated: { keep: true } };
+        const sharedConfig = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.jsonc');
+        const originalDesktop = { unrelated: { keep: true } };
         fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
         fs.mkdirSync(desktopDir, { recursive: true });
-        fs.writeFileSync(desktopConfig, JSON.stringify(original, null, 2));
+        fs.mkdirSync(path.dirname(sharedConfig), { recursive: true });
+        fs.writeFileSync(desktopConfig, JSON.stringify(originalDesktop, null, 2));
+        fs.writeFileSync(sharedConfig, JSON.stringify({
+            mcp: { other: { type: 'remote', url: 'https://example.invalid/mcp' } }
+        }, null, 2));
 
         const result = runCli(['clients', 'add', '--clients', 'opencode-desktop', '--format', 'json'], {
             env: { ...env, GX_CONFIG_PATH: cfgPath }
         });
         assert.equal(result.status, 0);
         const parsed = JSON.parse(result.stdout);
-        assert.deepEqual(parsed.ok.patchedClients, []);
-        const skipped = parsed.meta.skippedClients.find((entry) => entry.client === 'OpenCode Desktop');
-        assert.ok(skipped && /Settings > MCP|manual setup/i.test(skipped.reason));
-        assert.equal(skipped.registrationMode, 'manual');
-        assert.equal(skipped.installed, true);
-        assert.equal(skipped.manualSetup.environment.GX_CONFIG_PATH, cfgPath);
-        assert.ok(parsed.help.some((entry) => /manual setup/i.test(entry)));
-        assert.deepEqual(JSON.parse(fs.readFileSync(desktopConfig, 'utf8')), original);
+        assert.deepEqual(parsed.ok.patchedClients, ['OpenCode Desktop']);
+        assert.deepEqual(parsed.meta.skippedClients, []);
+
+        const written = JSON.parse(fs.readFileSync(sharedConfig, 'utf8'));
+        assert.equal(written.mcp.genexus18mcp.type, 'local');
+        assert.deepEqual(written.mcp.genexus18mcp.environment, { GX_CONFIG_PATH: cfgPath });
+        assert.equal(written.mcp.other.url, 'https://example.invalid/mcp');
+        assert.deepEqual(JSON.parse(fs.readFileSync(desktopConfig, 'utf8')), originalDesktop);
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
 
-test('clients add always reports undetected OpenCode Desktop manual setup', () => {
+test('clients add explicitly registers an undetected OpenCode Desktop in the shared config', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-undetected-'));
     try {
         const env = sandboxHomeEnv(tempRoot);
         const cfgPath = path.join(tempRoot, 'config.json');
+        const sharedConfig = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
         fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
 
         const result = runCli(['clients', 'add', '--clients', 'opencode-desktop', '--format', 'json'], {
-            env: {
-                ...env,
-                GX_CONFIG_PATH: cfgPath,
-                GENEXUS_MCP_GATEWAY_EXE: path.join(tempRoot, 'missing', 'GxMcp.Gateway.exe')
-            }
+            env: { ...env, GX_CONFIG_PATH: cfgPath }
         });
         assert.equal(result.status, 0);
         const parsed = JSON.parse(result.stdout);
-        assert.deepEqual(parsed.ok.patchedClients, []);
-        const skipped = parsed.meta.skippedClients.find((entry) => entry.client === 'OpenCode Desktop');
-        assert.ok(skipped, 'undetected detect-only client should still be actionable');
-        assert.equal(skipped.installed, false);
-        assert.equal(skipped.manualSetup.environment.GX_CONFIG_PATH, cfgPath);
-        assert.equal(skipped.manualSetup.command, process.platform === 'win32' ? 'npx.cmd' : 'npx');
+        assert.deepEqual(parsed.ok.patchedClients, ['OpenCode Desktop']);
+        assert.ok(fs.existsSync(sharedConfig));
+        const written = JSON.parse(fs.readFileSync(sharedConfig, 'utf8'));
+        assert.deepEqual(written.mcp.genexus18mcp.environment, { GX_CONFIG_PATH: cfgPath });
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('init auto-registers a detected OpenCode Desktop in the shared config', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-init-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const kbDir = path.join(tempRoot, 'kb');
+        const desktopMarker = path.join(env.APPDATA, 'ai.opencode.desktop');
+        const sharedConfig = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
+        fs.mkdirSync(kbDir, { recursive: true });
+        fs.mkdirSync(desktopMarker, { recursive: true });
+
+        const result = runCli(
+            ['init', '--kb', kbDir, '--gx', testGxPath, '--no-smoke', '--format', 'json'],
+            { cwd: kbDir, env: { ...env, ...testGatewayEnv } }
+        );
+        assert.equal(result.status, 0, result.stderr);
+
+        const parsed = JSON.parse(result.stdout);
+        assert.ok(parsed.meta.patchedClients.includes('OpenCode Desktop'));
+        const written = JSON.parse(fs.readFileSync(sharedConfig, 'utf8'));
+        assert.deepEqual(written.mcp.genexus18mcp.environment, {
+            GX_CONFIG_PATH: path.join(kbDir, 'config.json')
+        });
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }

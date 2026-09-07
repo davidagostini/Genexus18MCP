@@ -650,13 +650,8 @@ function getClientConfigTargets() {
         {
             id: 'opencode-desktop',
             name: 'OpenCode Desktop',
-            // Detect-only: the Desktop app's MCP config schema differs from the CLI
-            // and isn't auto-written yet. We report it so the user knows it's there
-            // and how to wire it up, but never mutate its config blindly.
-            format: 'manual',
-            writeSupported: false,
-            manualNote: 'OpenCode Desktop manual setup: Settings > MCP > Add server > Local; name genexus18mcp; command npx.cmd on Windows (npx elsewhere); args -y genexus-mcp@latest; environment GX_CONFIG_PATH=<config.json path printed by init>; save, fully restart the app, then call genexus_whoami. The CLI does not write the app-managed Desktop mcp.json.',
-            path: path.join(appData, 'ai.opencode.desktop', 'mcp.json'),
+            format: 'opencode',
+            path: resolveOpenCodeConfigPath(xdgConfig),
             installMarkers: [
                 path.join(localAppData, 'Programs', '@opencode-aidesktop'),
                 path.join(appData, 'ai.opencode.desktop'),
@@ -808,9 +803,7 @@ function patchClientConfig(targetConfigPath, opts = {}) {
         platform: process.platform
     });
 
-    // A direct gateway path only matters to clients that can be written. A
-    // detect-only client such as OpenCode Desktop must still receive manual
-    // setup guidance when its app-managed config is not detectable.
+    // A direct gateway path only matters to clients that can be written.
     const writableCandidates = candidates.filter((client) =>
         client.writeSupported !== false
         && (!onlyExisting || detectClientInstalled(client).installed)
@@ -831,8 +824,8 @@ function patchClientConfig(targetConfigPath, opts = {}) {
     const skipped = [];
 
     for (const client of candidates) {
-        // Detect-only agents (e.g. OpenCode Desktop) can't be auto-written; surface
-        // the manual step instead of pretending we registered them.
+        // Detect-only agents can't be auto-written; surface the manual step instead
+        // of pretending we registered them.
         if (client.writeSupported === false) {
             const detection = detectClientInstalled(client);
             if (onlyExisting && !detection.installed) {

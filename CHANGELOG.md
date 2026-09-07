@@ -30,6 +30,10 @@
   `expectedVersion` remains the canonical spelling.
 - Fixed the live-fixture path check when Windows exposes the temporary folder
   through an 8.3 short path.
+- **OpenCode Desktop registration (Issue #142).** The Desktop target now reads
+  and writes the shared `opencode.jsonc` / `opencode.json` configuration instead
+  of reporting a separate manual AppData setup. Existing MCP servers remain
+  preserved and the public `opencode-desktop` client id continues to work.
 - Warning baseline checks now classify line-only diagnostic moves separately
   while continuing to block genuinely new warning locations.
 - Live Build All evidence parsing now preserves terminal fields from JSON-in-JSON
