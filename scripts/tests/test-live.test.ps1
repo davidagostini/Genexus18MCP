@@ -28,6 +28,7 @@ $fixture = [pscustomobject]@{
     }
 }
 Assert-LiveFixture $fixture 'C:\fixtures\small'
+Assert-LiveFixture $fixture 'C:\fixtures\nested\..\small'
 Expect-Failure { Assert-LiveFixture $fixture 'C:\fixtures\other' }
 $fixture.synthetic = $false
 Expect-Failure { Assert-LiveFixture $fixture 'C:\fixtures\small' }
@@ -86,4 +87,4 @@ finally {
 if ($childExit -eq 0 -or ($output -join "`n") -notmatch 'live=unavailable') {
     throw 'The real entry point must fail closed before build/SDK startup without a manifest.'
 }
-Write-Host 'PASS: fixture rejection, provenance hashes, benchmark alias contract and owned process selection (10 assertions).'
+Write-Host 'PASS: fixture rejection, canonical path equivalence, provenance hashes, benchmark alias contract and owned process selection (11 assertions).'

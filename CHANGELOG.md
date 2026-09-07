@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Internal
+
+- Added a regression assertion for equivalent non-canonical live-fixture paths
+  while preserving rejection of paths that select a different KB.
+
 ## v3.0.2 - 2026-09-07
 
 
