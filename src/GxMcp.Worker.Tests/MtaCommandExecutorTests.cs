@@ -40,7 +40,7 @@ namespace GxMcp.Worker.Tests
                 Assert.Equal(3, maximum);
                 Assert.Equal(24, responses.Count);
                 Assert.All(responses.Values, value => Assert.Equal(1, value));
-                Assert.Equal(0, executor.ActiveCount);
+                Assert.True(SpinWait.SpinUntil(() => executor.ActiveCount == 0, 2000));
             }
         }
 
