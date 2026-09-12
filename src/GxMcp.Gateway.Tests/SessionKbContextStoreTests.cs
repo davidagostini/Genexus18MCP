@@ -89,6 +89,23 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ProgramSessionSelection_CanonicalizesLeaseAlias()
+        {
+            string sessionId = "canonical-alias-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                Program.SetSessionSelectedKb(sessionId, "MC30", "C:/KB/MC30");
+
+                Assert.True(Program.TryGetSessionSnapshotForTest(sessionId, out var snapshot));
+                Assert.Equal("mc30", snapshot!.Lease!.KbId);
+            }
+            finally
+            {
+                Program.ClearSessionSelectedKb(sessionId);
+            }
+        }
+
+        [Fact]
         public void StdioSession_DoesNotExpireOnIdle()
         {
             var store = new SessionKbContextStore(TimeSpan.FromMilliseconds(1));

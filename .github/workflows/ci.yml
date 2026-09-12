@@ -58,6 +58,7 @@ jobs:
             'scripts/install.ps1',
             'scripts/install-transaction.ps1',
             'scripts/test-live.ps1',
+            'scripts/check-upstream-drift.ps1',
             'scripts/test-live-matrix.ps1',
             'scripts/check-build-warning-baseline.ps1'
           )
@@ -71,7 +72,7 @@ jobs:
             }
           }
           ./scripts/check-build-warning-baseline.ps1 -ValidateOnly
-          ./scripts/tests/test-live.test.ps1
+          ./scripts/tests/test-upstream-drift.ps1
           ./scripts/tests/test-live-matrix.test.ps1
           ./scripts/tests/sdk-validation-contract.tests.ps1
           ./scripts/tests/install-contract.tests.ps1

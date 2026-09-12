@@ -226,6 +226,9 @@ namespace GxMcp.Worker.Services
         // and MSBuild surfaces some lines as 'error : <message>' (no code). Capture all three forms.
         private static readonly Regex _rxError      = new Regex(@"\berror\s*(:|[A-Z]{2,4}\d+\s*:)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex _rxWarning    = new Regex(@"\bwarning\s*(:|[A-Z]{2,4}\d+\s*:)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex _rxAmbiguousObject = new Regex(
+            @"(?:ambiguous|ambiguo|ambíguo).*(?:object|objeto|nome Objeto)|(?:object|objeto|nome Objeto).*?(?:ambiguous|ambiguo|ambíguo)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
         // issue #32 item 5: the GeneXus specifier emits "Object 'X' was not found in the
         // Knowledge Base" (EN) / "Objeto 'X' não foi encontrado na Knowledge Base" (PT-BR)
         // as a warning during a single-object spec pass on a freshly created/edited object,
@@ -3136,6 +3139,20 @@ namespace GxMcp.Worker.Services
                         if (!string.IsNullOrEmpty(norm) && status.SuggestedRebuildTargets.Count < 50)
                             status.SuggestedRebuildTargets.Add(norm);
                     }
+                }
+                else if (_rxAmbiguousObject.IsMatch(line))
+                {
+                    status.ErrorCount++;
+                    string rawErr = line.Trim();
+                    if (status.Errors.Count < 50) status.Errors.Add(rawErr);
+                    if (status.ErrorsDetailed.Count < 50)
+                        status.ErrorsDetailed.Add(new ErrorDetail
+                        {
+                            raw = rawErr,
+                            phase = status.Phase,
+                            gxObject = status.CurrentObject,
+                            category = "ambiguous-object"
+                        });
                 }
                 else if (_rxWarning.IsMatch(line))
                 {

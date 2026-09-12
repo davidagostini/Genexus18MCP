@@ -141,6 +141,14 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("KB_LEASE_EXPIRED", expired.Code);
         }
 
+        [Theory]
+        [InlineData("KBTeste", "kbteste")]
+        [InlineData("  Orders ", "orders")]
+        public void KbAliasesAreCanonicalizedBeforeLeaseIdentityIsUsed(string input, string expected)
+        {
+            Assert.Equal(expected, Program.CanonicalizeKbAlias(input));
+        }
+
         private sealed class TestMonotonicClock : IMonotonicClock
         {
             public TimeSpan Now { get; private set; }

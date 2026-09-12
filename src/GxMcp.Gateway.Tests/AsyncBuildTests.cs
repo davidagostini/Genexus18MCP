@@ -1,3 +1,4 @@
+using System;
 using GxMcp.Gateway;
 using Xunit;
 
@@ -95,6 +96,24 @@ namespace GxMcp.Gateway.Tests
         {
             // If caller passes estimated_seconds=10, they opt into sync fast-path
             Assert.True(BuildPathSelector.UseSync(estimatedSeconds: 10, thresholdSeconds: 20));
+        }
+
+        [Theory]
+        [InlineData("build", 1800)]
+        [InlineData("build_all", 2700)]
+        [InlineData("rebuild", 2700)]
+        public void AsyncBuildHardCap_LeavesRoomForWorkerWatchdog(string action, int expectedSeconds)
+        {
+            string? previousTimeout = Environment.GetEnvironmentVariable("GXMCP_BUILD_TIMEOUT_SEC");
+            try
+            {
+                Environment.SetEnvironmentVariable("GXMCP_BUILD_TIMEOUT_SEC", null);
+                Assert.Equal(expectedSeconds, Program.ResolveAsyncBuildHardCapSeconds(action));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_BUILD_TIMEOUT_SEC", previousTimeout);
+            }
         }
     }
 }

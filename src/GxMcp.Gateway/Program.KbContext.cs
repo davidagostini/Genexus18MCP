@@ -42,13 +42,27 @@ namespace GxMcp.Gateway
                 _sessionKbContexts.Initialize(sessionId, null);
             long generation = (prior?.ContextGeneration ?? 0) + 1;
             string identity = (kbId ?? string.Empty).Trim().TrimEnd('\\', '/').ToLowerInvariant();
-            var lease = _kbLeases.Open(sessionId, alias, generation, identity, "session-" + generation, TimeSpan.FromMinutes(10));
-            _sessionKbContexts.Set(sessionId, alias, alias.Trim().ToLowerInvariant(), lease);
+            string canonicalAlias = CanonicalizeKbAlias(alias);
+            var lease = _kbLeases.Open(sessionId, canonicalAlias, generation, identity, "session-" + generation, TimeSpan.FromMinutes(10));
+            _sessionKbContexts.Set(sessionId, alias, canonicalAlias, lease);
+        }
+
+        internal static string CanonicalizeKbAlias(string alias)
+        {
+            if (string.IsNullOrWhiteSpace(alias))
+                throw new ArgumentException("KB alias is required.", nameof(alias));
+            return alias.Trim().ToLowerInvariant();
         }
 
         internal static void ClearSessionSelectedKb(string sessionId)
         {
             _sessionKbContexts.Clear(sessionId);
+        }
+
+        // Test-only seam for validating the lease payload without starting a Worker.
+        internal static bool TryGetSessionSnapshotForTest(string sessionId, out SessionKbContextStore.Snapshot? snapshot)
+        {
+            return _sessionKbContexts.TryGetSnapshot(sessionId, out snapshot);
         }
 
         internal static IDisposable ConfigureRouteStateForTest(Configuration config, string configPath)

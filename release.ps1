@@ -45,6 +45,15 @@ param(
     # Issues explicitly completed by this release. Each issue receives the
     # release URL before it is closed; omitted issues are never touched.
     [int[]]$CloseIssues,
+    # Optional text file with one issue number per line (commas are accepted).
+    # Its entries are combined with -CloseIssues and deduplicated.
+    [string]$CloseIssuesFile,
+    # Include every open issue carrying fixed-pending-release. The generated
+    # generated release-issues.txt is operational and intentionally ignored;
+    # release-issues.json is the immutable committed snapshot.
+    [switch]$SkipLabeledIssues,
+    # Optional GitHub milestone number used with the automatic label filter.
+    [int]$ReleaseMilestone,
     # Optional machine-readable progress file. Defaults to %TEMP% and is safe
     # to poll from another shell while a detached release is running.
     [string]$StatusFile,
@@ -58,6 +67,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
+# Native `gh` output is UTF-8. Set both encodings so PowerShell does not
+# decode issue titles with the OEM code page before JSON parsing.
+$utf8 = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
 $root = $PSScriptRoot
 . (Join-Path $root 'scripts\gx-version-catalog.ps1')
 $gxCatalog = Get-GxVersionCatalog -Root $root
@@ -78,8 +92,113 @@ $statusState = [ordered]@{
     workflowRunId = $null
     exitCode = $null
     error = $null
+    issues = [ordered]@{
+        discovered = @()
+        validated = @()
+        commented = @()
+        closed = @()
+        failed = @()
+    }
 }
+$tag = $null
 $releaseUrl = $null
+$script:releaseIssueSnapshotReused = $false
+
+$releaseIssuesPath = Join-Path $root 'release-issues.txt'
+$releaseIssuesSnapshotPath = Join-Path $root 'release-issues.json'
+function Get-LabeledReleaseIssues {
+    if ($SkipLabeledIssues) { return @() }
+    if ($ReleaseMilestone -lt 0) { Fail "ReleaseMilestone must be positive when supplied." }
+    $milestoneQuery = if ($ReleaseMilestone -gt 0) { "&milestone=$ReleaseMilestone" } else { '' }
+    $endpoint = "repos/{owner}/{repo}/issues?state=open&labels=fixed-pending-release&per_page=100$milestoneQuery"
+    $numbers = @(gh api --paginate $endpoint --jq '.[] | select(.pull_request == null) | .number' 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Could not list open issues with the fixed-pending-release label."
+    }
+    return @($numbers | ForEach-Object {
+        $value = ([string]$_).Trim()
+        if ($value -match '^\d+$') { [int]$value }
+    } | Sort-Object -Unique)
+}
+
+function Get-ReleaseIssueNumbers {
+    $values = New-Object System.Collections.Generic.List[int]
+    foreach ($issue in @($CloseIssues)) {
+        if ($issue -le 0) { Fail "Issue number must be positive: $issue" }
+        $values.Add($issue)
+    }
+    if ($CloseIssuesFile) {
+        if (-not (Test-Path -LiteralPath $CloseIssuesFile -PathType Leaf)) {
+            Fail "CloseIssuesFile not found: $CloseIssuesFile"
+        }
+        $content = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $CloseIssuesFile))
+        foreach ($token in ($content -split '[,\s]+')) {
+            if ([string]::IsNullOrWhiteSpace($token)) { continue }
+            if ($token -notmatch '^#?\d+$') { Fail "Invalid issue number in CloseIssuesFile: $token" }
+            $number = [int]($token.TrimStart('#'))
+            if ($number -le 0) { Fail "Issue number must be positive: $number" }
+            $values.Add($number)
+        }
+    }
+    return @($values | Select-Object -Unique)
+}
+
+function Get-ReleaseIssueSnapshot {
+    if (-not $DryRun -and (Test-Path -LiteralPath $releaseIssuesSnapshotPath -PathType Leaf)) {
+        try {
+            $existing = Get-Content -LiteralPath $releaseIssuesSnapshotPath -Raw | ConvertFrom-Json
+            if ($existing.schema -eq 'gxmcp-release-issues/1' -and
+                $existing.version -eq $Version -and $existing.tag -eq $tag) {
+                $script:releaseIssueSnapshotReused = $true
+                return @($existing.issues)
+            }
+        } catch {
+            Warn "Ignoring invalid release-issues.json; rebuilding the snapshot."
+        }
+    }
+    $records = New-Object System.Collections.Generic.List[object]
+    foreach ($issue in @($CloseIssues | Select-Object -Unique)) {
+        $raw = @(gh api "repos/{owner}/{repo}/issues/$issue" --jq '{number,title,url:.html_url,state,labels,milestone}' 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $raw.Count -eq 0) {
+            Fail "Could not read issue #$issue before the release."
+        }
+        $record = ($raw -join [Environment]::NewLine) | ConvertFrom-Json
+        $recordState = ([string]$record.state).ToUpperInvariant()
+        if ($recordState -ne 'OPEN') {
+            Fail "Issue #$issue is not open at release preparation time."
+        }
+        $records.Add([ordered]@{
+            number = [int]$record.number
+            title = [string]$record.title
+            url = [string]$record.url
+            state = [string]$record.state
+            labels = @($record.labels | ForEach-Object { [string]$_.name })
+            milestone = if ($record.milestone) { [string]$record.milestone.title } else { $null }
+        })
+    }
+    return $records.ToArray()
+}
+
+function Write-ReleaseIssueSnapshot {
+    param([object[]]$Records)
+    $snapshot = [ordered]@{
+        schema = 'gxmcp-release-issues/1'
+        version = $Version
+        tag = $tag
+        collectedAtUtc = [DateTime]::UtcNow.ToString('o')
+        issues = @($Records)
+    }
+    if ($DryRun) {
+        Warn "[DRY-RUN] would snapshot $($Records.Count) release issue(s) with titles in release-issues.json."
+        return
+    }
+    if ($script:releaseIssueSnapshotReused) {
+        Ok "Reusing immutable release-issues.json snapshot with $($Records.Count) issue(s)."
+        return
+    }
+    [IO.File]::WriteAllText($releaseIssuesSnapshotPath, ($snapshot | ConvertTo-Json -Depth 8) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    Ok "release-issues.json snapshot written with $($Records.Count) issue(s)."
+}
 
 function Write-ReleaseStatus {
     param(
@@ -159,31 +278,39 @@ function Get-ForwardedArgs {
 
 function Close-ReleaseIssues {
     param([Parameter(Mandatory = $true)][string]$ReleaseUrl)
-    foreach ($issue in @($CloseIssues | Select-Object -Unique)) {
+    $issues = @($CloseIssues | Select-Object -Unique)
+    if (-not $DryRun) {
+        foreach ($issue in $issues) {
+            if ($issue -le 0) { Fail "Issue number must be positive: $issue" }
+            $state = (gh issue view $issue --json state --jq '.state' 2>$null).Trim().ToLowerInvariant()
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($state)) {
+                Fail "Could not pre-validate issue #$issue before closing the release issue batch."
+            }
+            if ($state -ne 'open') {
+                Fail "Issue #$issue is '$state' during release issue pre-validation; no issue was closed."
+            }
+        }
+        Ok "Pre-validated $($issues.Count) release issue(s); beginning closure batch."
+        $statusState.issues.validated = @($issues)
+        Write-ReleaseStatus -Phase 'release-issues-prevalidated' -State 'running'
+    }
+    foreach ($issue in $issues) {
         if ($issue -le 0) { Fail "Issue number must be positive: $issue" }
         if ($DryRun) {
             Warn "[DRY-RUN] would comment release URL and close issue #$issue."
             continue
         }
 
-        $state = (gh issue view $issue --json state --jq '.state' 2>$null).Trim().ToLowerInvariant()
-        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($state)) {
-            Fail "Could not read issue #$issue before closing it."
-        }
-        if ($state -eq 'closed') {
-            Warn "Issue #$issue is already closed; leaving it unchanged."
-            continue
-        }
-        if ($state -ne 'open') {
-            Fail "Issue #$issue has unexpected state '$state'; refusing to close it."
-        }
-
         Invoke-Cmd 'gh' @('issue', 'comment', [string]$issue, '--body', "Released in $ReleaseUrl")
+        $statusState.issues.commented = @($statusState.issues.commented + $issue | Select-Object -Unique)
+        Write-ReleaseStatus -Phase "issue-$issue-commented" -State 'running'
         Invoke-Cmd 'gh' @('issue', 'close', [string]$issue, '--reason', 'completed')
         $verifiedState = (gh issue view $issue --json state --jq '.state' 2>$null).Trim().ToLowerInvariant()
         if ($LASTEXITCODE -ne 0 -or $verifiedState -ne 'closed') {
             Fail "Issue #$issue was not verified as closed after the release comment."
         }
+        $statusState.issues.closed = @($statusState.issues.closed + $issue | Select-Object -Unique)
+        Write-ReleaseStatus -Phase "issue-$issue-closed" -State 'running'
         Ok "Issue #$issue closed with release link."
     }
 }
@@ -234,6 +361,22 @@ if ($PSVersionTable.PSVersion.Major -lt 7 -and $pwshExe -and -not $env:GXMCP_UND
     & $pwshExe -NoProfile -File $PSCommandPath @forwarded
     exit $LASTEXITCODE
 }
+
+$labeledIssues = @(Get-LabeledReleaseIssues)
+if (-not $SkipLabeledIssues) {
+    if ($DryRun) {
+        Warn "[DRY-RUN] would populate release-issues.txt with $($labeledIssues.Count) open fixed-pending-release issue(s)."
+    } else {
+        $content = if ($labeledIssues.Count -gt 0) { (($labeledIssues | ForEach-Object { "#$($_)" }) -join [Environment]::NewLine) + [Environment]::NewLine } else { '' }
+        [IO.File]::WriteAllText($releaseIssuesPath, $content, [Text.UTF8Encoding]::new($false))
+        Ok "release-issues.txt populated from fixed-pending-release ($($labeledIssues.Count) issue(s))."
+    }
+}
+$explicitIssues = if ($null -eq $CloseIssues) { @() } else { @($CloseIssues) }
+$CloseIssues = $explicitIssues + $labeledIssues
+$CloseIssues = @(Get-ReleaseIssueNumbers)
+$statusState.issues.discovered = @($CloseIssues)
+Write-ReleaseStatus -Phase 'release-issues-collected' -State 'running'
 
 function Invoke-Cmd {
     # NOTE: do NOT name a parameter `$Args` - it collides with PowerShell's
@@ -326,6 +469,13 @@ if ($branch -ne 'main') {
     else { Fail "Releases must be cut from the main branch (current: '$branch')." }
 }
 
+Step "Snapshotting release issues"
+$releaseIssueRecords = @(Get-ReleaseIssueSnapshot)
+Write-ReleaseIssueSnapshot -Records $releaseIssueRecords
+$CloseIssues = @($releaseIssueRecords | ForEach-Object { [int]$_.number } | Select-Object -Unique)
+$statusState.issues.validated = @($releaseIssueRecords | ForEach-Object { [int]$_.number })
+Write-ReleaseStatus -Phase 'release-issues-validated' -State 'running'
+
 # Keep release-facing version, SDK-major, and documentation metadata in sync
 # before the dirty-tree gate. A clean release can therefore repair generated
 # metadata and include it in the release commit automatically.
@@ -369,6 +519,7 @@ $releaseManagedPaths = @(
     'README.md',
     'AGENTS.md',
     'docs/generated/supported-versions.md',
+    'release-issues.json',
     'src/GxMcp.Gateway/GxMcp.Gateway.csproj',
     'src/GxMcp.Worker/GxMcp.Worker.csproj',
     'src/nexus-ide/package.json',
@@ -435,6 +586,30 @@ if ($changelog -match $versionHeadingPattern) {
         Fail "CHANGELOG.md has no substantive '## Unreleased' section to promote into '## v$Version'."
     }
     Ok "CHANGELOG has release notes ready to promote into ## v$Version."
+}
+
+$unreleasedBodyMatch = [Regex]::Match(
+    $changelog,
+    '(?ms)^##[ \t]+Unreleased[ \t]*\r?\n(?<body>.*?)(?=\r?\n##[ \t]|\z)')
+$hasTrackedIssuesInUnreleased = $unreleasedBodyMatch.Success -and
+    $unreleasedBodyMatch.Groups['body'].Value -match '(?m)^###\s+Tracked issues\s*$'
+if (@($CloseIssues).Count -gt 0 -and $changelog -notmatch $versionHeadingPattern) {
+    $issueLines = @($releaseIssueRecords | ForEach-Object {
+        "- [#$($_.number)]($($_.url)) — $($_.title)"
+    }) -join "`r`n"
+    $trackedIssues = "### Tracked issues`r`n`r`n$issueLines`r`n"
+    if ($DryRun) {
+        Warn "[DRY-RUN] would add $(@($CloseIssues).Count) tracked issue link(s) to the release changelog."
+    } elseif (-not $hasTrackedIssuesInUnreleased) {
+        $updatedChangelog = [Regex]::Replace(
+            $changelog,
+            '(?m)^##[ \t]+Unreleased[ \t]*',
+            "## Unreleased`r`n`r`n$trackedIssues",
+            1)
+        [IO.File]::WriteAllText($changelogPath, $updatedChangelog, [Text.UTF8Encoding]::new($false))
+        $changelog = $updatedChangelog
+        Ok "CHANGELOG.md -> added tracked issue links."
+    }
 }
 
 # -- 2. Bump version files if needed ---------------------------------------

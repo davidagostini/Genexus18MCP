@@ -123,6 +123,32 @@ npm run test:one -- "test name pattern"
 
 Use the narrowest decisive test first, then the repository-wide checks. Known
 flaky tests are documented in the test section of `docs/agent_playbook.md`.
+
+## Debugging and validation gates
+
+- For a numbered issue, read the current issue with `gh issue view <number>` and
+  inspect local divergence before tracing code: `pwsh -NoProfile -File
+  scripts/check-upstream-drift.ps1 -BaseRef origin/main`. This command never
+  fetches or changes refs; it reports whether `origin/main` contains a likely
+  upstream fix that is absent locally.
+- Run `npm run test:live-contract` after changing live harness/configuration
+  code. It is part of `npm test` and CI; this catches duplicate KB declarations,
+  stale aliases, process ownership and missing fail-closed guards without
+  requiring a GeneXus installation.
+- For Worker/lease/KB routing changes, a local green suite is insufficient:
+  run the smallest live smoke available with `pwsh`, using an explicit KB and
+  `GXMCP_LOG_DIR`. Record `workerPid`, selection state, error count and the
+  isolated log path. A live gate that cannot run is `unavailable`, not pass.
+- Use `ripwire src --for="<specific behavior>"` before source searches, then
+  search narrowed file types (`*.cs`, `*.ps1`, `*.js`) and exclude generated
+  `bin`, `obj`, `publish`, `TestResults` and `.trx` artifacts. Broad numeric
+  searches are diagnostic noise, not evidence.
+- Prefer bounded output for routine checks: `dotnet test ...
+  --logger "console;verbosity=minimal"`. Repeat with normal verbosity only
+  when the focused check fails or no test-run banner is present.
+- Live PowerShell entry points require PowerShell 7+ and fail immediately with
+  a clear message under Windows PowerShell 5.1. Use `pwsh`, never silently
+  substitute a legacy host whose cmdlets differ.
 If a build/test fails with `MSB3027` or `MSB3021` naming the Gateway/Worker exe,
 use the scoped permission below; do not kill unrelated processes.
 

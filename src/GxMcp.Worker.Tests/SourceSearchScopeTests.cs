@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -29,6 +30,15 @@ namespace GxMcp.Worker.Tests
             svc.LoadFromEntries(entries);
             svc.MarkIndexComplete(entries.Count);
             return svc;
+        }
+
+        [Fact]
+        public void ExtractLiteralTokens_IgnoresRegexWordBoundaryEscapes()
+        {
+            var tokens = SourceSearchService.ExtractLiteralTokens(@"\bparm\b", null);
+
+            Assert.Contains("parm", tokens, StringComparer.OrdinalIgnoreCase);
+            Assert.DoesNotContain("bparm", tokens, StringComparer.OrdinalIgnoreCase);
         }
 
         [Fact]
@@ -147,6 +157,110 @@ namespace GxMcp.Worker.Tests
             var hits = (JArray)obj["result"]!["hits"]!;
             Assert.Single(hits);
             Assert.Equal("Target", hits[0]!["objectName"]!.ToString());
+        }
+
+        [Fact]
+        public void WordBoundaryPattern_DoesNotDropIndexedSourceHits()
+        {
+            var index = new IndexCacheService();
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry
+                {
+                    Name = "IndexedParm",
+                    Type = "Procedure",
+                    FullSource = "parm(in:&Value)"
+                }
+            };
+            index.LoadFromEntries(entries);
+            index.MarkIndexComplete(entries.Count);
+
+            var json = new SourceSearchService(index, objectService: null).SearchAsJson(
+                new SourceSearchCriteria
+                {
+                    Pattern = @"\bparm\b",
+                    MaxResults = 10,
+                    TimeoutMs = 30000
+                });
+
+            var result = JObject.Parse(json)["result"]!;
+            Assert.Equal(1, result["count"]!.Value<int>());
+            Assert.Equal(1, result["scannedObjects"]!.Value<int>());
+            Assert.Equal("IndexedParm", result["hits"]![0]!["objectName"]!.ToString());
+        }
+
+        [Fact]
+        public void OneCompleteSource_WithMultipleHits_IsPrioritizedBeforeSdkFallback()
+        {
+            var index = new IndexCacheService();
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry { Name = "ColdCandidate", Type = "Procedure" },
+                new SearchIndex.IndexEntry
+                {
+                    Name = "IndexedMany",
+                    Type = "Procedure",
+                    FullSource = "parm(in:&One)\nparm(in:&Two)"
+                }
+            };
+            index.LoadFromEntries(entries);
+            index.MarkIndexComplete(entries.Count);
+
+            var json = new SourceSearchService(index, objectService: null).SearchAsJson(
+                new SourceSearchCriteria
+                {
+                    Pattern = "parm",
+                    MaxResults = 2,
+                    TimeoutMs = 30000
+                });
+
+            var result = JObject.Parse(json)["result"]!;
+            Assert.Equal(2, result["count"]!.Value<int>());
+            Assert.Equal(1, result["scannedObjects"]!.Value<int>());
+            Assert.Null(result["unresolvedObjects"]);
+        }
+
+        [Fact]
+        public void CompleteSourceCandidates_FillPageBeforeSdkFallbackCandidates()
+        {
+            var index = new IndexCacheService();
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                // This candidate has no persisted source and would require the SDK.
+                new SearchIndex.IndexEntry { Name = "ColdCandidate", Type = "Procedure" },
+                new SearchIndex.IndexEntry
+                {
+                    Name = "IndexedOne",
+                    Type = "Procedure",
+                    FullSource = "parm(in:&One)"
+                },
+                new SearchIndex.IndexEntry
+                {
+                    Name = "IndexedTwo",
+                    Type = "Procedure",
+                    FullSource = "parm(in:&Two)"
+                }
+            };
+            index.LoadFromEntries(entries);
+            index.MarkIndexComplete(entries.Count);
+
+            var json = new SourceSearchService(index, objectService: null).SearchAsJson(
+                new SourceSearchCriteria
+                {
+                    Pattern = "parm",
+                    MaxResults = 2,
+                    TimeoutMs = 30000
+                });
+
+            var result = JObject.Parse(json)["result"]!;
+            Assert.Equal(2, result["count"]!.Value<int>());
+            // The complete indexed candidates fill the page before the unresolved
+            // candidate can force the SDK fallback path.
+            Assert.Equal(2, result["scannedObjects"]!.Value<int>());
+            var hits = (JArray)result["hits"]!;
+            Assert.Equal(2, hits.Count);
+            Assert.Contains(hits, hit => hit!["objectName"]!.ToString() == "IndexedOne");
+            Assert.Contains(hits, hit => hit!["objectName"]!.ToString() == "IndexedTwo");
         }
 
         [Fact]

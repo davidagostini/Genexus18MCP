@@ -2,6 +2,68 @@
 
 ## Unreleased
 
+### Fixed
+
+- Capture installer client-registration stdout and stderr separately, parse only the JSON envelope, and fail closed when it is missing or invalid instead of committing a staged config after an ambiguous registration.
+- Make primitive Attribute type application all-or-nothing: restore previously written Type, Length, and Decimals when a later SDK setter fails, preventing parser paths from persisting partial mutations.
+- Isolate async build hard-cap default assertions from an ambient `GXMCP_BUILD_TIMEOUT_SEC` override and restore the process environment after each test.
+- **`genexus_preview` browser driver resolution.** Resolve `chrome-devtools-axi` from the preview configuration, MCP profile, bundled runtime/dependencies, Worker/backend directories, and finally the effective PATH; Windows shims and quoted relative paths are supported, with preflight diagnostics when no candidate is available. Preview captures continue to support screenshot, console, exceptions, desktop emulation, and `buildFirst=false` without starting a build.
+- Reuse complete MCP source reads in `search_source` through the raw/JSON caches, with a bounded in-memory side cache for source bodies up to 2 MiB; truncated, minimized, Base64, error, and larger-than-cache payloads remain excluded from raw reuse.
+- Promote a successfully confirmed empty primary source into the `FullSource` index marker, so later scans and certified reloads skip that SDK read; null/failed reads remain unresolved and are never promoted.
+- Cache successfully confirmed empty source parts for the read-cache TTL; normal write invalidation clears positive, large-body, and negative raw entries.
+- Recognize certified sharded index slots during warm-start validation and derive Folder/Module storage keys from their scoped paths, avoiding an unnecessary full lite walk on every boot.
+- Prioritize complete `FullSource` token postings before conservative SDK fallback candidates, including multi-hit sources that can fill a capped page alone; the fallback tail remains available when indexed sources do not close the page, and source-search promotions use a 2 MiB per-entry / 8 MiB aggregate budget while preserving the prior enrichment sidecar.
+- Promote complete, non-minimized MCP `genexus_read` source payloads into the already-loaded `FullSource`/`SourceTokenIndex`, so a later Worker restart can answer the same search without reopening that object through the SDK; truncated, Base64, error, non-Source, and oversized payloads remain excluded.
+- Treat regex escape prefixes such as `\b` as syntax rather than literal-token text, so indexed `search_source` keeps valid word-boundary hits instead of filtering every candidate out.
+- Keep transient `IndexCold`, `Reindexing`, `Timeout`, and `Cancelled` envelopes out of the Gateway semantic cache.
+
+## v3.3.2 - 2026-09-11
+
+
+### Tracked issues
+
+- [#179](https://github.com/lennix1337/Genexus18MCP/issues/179) — [Bug] genexus_properties set of Attribute Type is silently ineffective — no tracking issue exists specifically for Type
+- [#180](https://github.com/lennix1337/Genexus18MCP/issues/180) — [Not retested on 3.3.0] genexus_lifecycle build: MCP channel aborts with '1800s no response/progress' while the build itself keeps running and completes
+- [#182](https://github.com/lennix1337/Genexus18MCP/issues/182) — Possível falha no install.ps1 em um checkout novo sem config.json
+- [#183](https://github.com/lennix1337/Genexus18MCP/issues/183) — doctor --mcp-smoke pode reportar falso negativo em runtime stdio-isolated
+
+
+### Fixed
+
+- Preserve UTF-8 issue titles when generating release snapshots and release notes.
+- Verify every `genexus_properties` batch write from a fresh SDK object, reject silently skipped placement/typed-only properties, and return `UnsupportedOperation` when the GeneXus SDK preserves an existing Attribute `Type` instead of changing it.
+- Make Attribute and Domain type adapters fail when requested length, decimals, or signedness cannot be applied instead of reporting partial success; align async Build All/Rebuild polling with the Worker watchdog by allowing a 2700-second Gateway hard cap.
+- Make a fresh-checkout install stage the neutral runtime config before client registration, surface the CLI registration envelope, and remove the pending config when registration fails ([#182](https://github.com/lennix1337/Genexus18MCP/issues/182)).
+- Report `doctor --mcp-smoke` as `not_applicable` for stdio-isolated runtimes without an HTTP listener instead of probing the disabled loopback port ([#183](https://github.com/lennix1337/Genexus18MCP/issues/183)).
+- Keep release issue validation compatible with GitHub's lowercase `open` state and initialize the release tag before the first status write under PowerShell strict mode.
+
+## v3.3.1 - 2026-09-11
+
+
+### Tracked issues
+
+- [#174](https://github.com/lennix1337/Genexus18MCP/issues/174) — [Enhancement] Detectar dependências locais ausentes e oferecer instalação confirmada
+- [#176](https://github.com/lennix1337/Genexus18MCP/issues/176) — [Regression] build reports false Succeeded for an ambiguous object name — real MSBuild error hidden in fullLogPath (regression after #115 fix)
+- [#177](https://github.com/lennix1337/Genexus18MCP/issues/177) — [Bug] genexus_edit part=Styles returns false WriteNotPersisted — verifyMode default not honored (same class as #100, not covered by that fix)
+- [#178](https://github.com/lennix1337/Genexus18MCP/issues/178) — [Bug] genexus_layout set_property with a multi-line Caption silently renames the control and reports an unrelated LayoutReadBackFailed
+- [#181](https://github.com/lennix1337/Genexus18MCP/issues/181) — Worker respawns with a new PID on every tool call, causing KB_NOT_OWNED and indexing never completes
+
+
+### Fixed
+
+- Keep the operational release issue list out of the release commit while
+  preserving its immutable JSON snapshot.
+- Initialize release issue snapshot state before release preparation, allowing
+  clean releases to pass PowerShell strict-mode validation.
+- Hardened live probes with bounded asynchronous stdio reads, terminating-error
+  cleanup, explicit success exit codes, and centralized KB alias canonicalization
+  with regression coverage.
+- Canonicalize session-selected KB aliases before opening the gateway lease, preventing stateful operations from failing with `KB_NOT_OWNED` after `genexus_kb action=select`.
+- Corrigido o harness live para abrir a KB de teste uma única vez e evitar `KB_AMBIGUOUS` por alias duplicada em sessões strict.
+- Add executable validation gates for live-contract coverage, upstream drift reporting, bounded .NET output, and explicit PowerShell 7 enforcement in the documented development workflow.
+- Reject multiline layout `Caption` values before SDK persistence, normalize Design System `Styles` writes by default, surface fast-path ambiguous-object build diagnostics as errors, and add actionable locked-dependency setup diagnostics for the root lint command ([#174](https://github.com/lennix1337/Genexus18MCP/issues/174), [#176](https://github.com/lennix1337/Genexus18MCP/issues/176), [#177](https://github.com/lennix1337/Genexus18MCP/issues/177), [#178](https://github.com/lennix1337/Genexus18MCP/issues/178)).
+
+
 ## v3.3.0 - 2026-09-11
 
 

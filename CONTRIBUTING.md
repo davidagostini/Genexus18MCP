@@ -38,6 +38,38 @@ npx . doctor --mcp-smoke
 
 If you only touched `cli/`, `npm test` is enough. If you touched the Gateway or Worker, you need `.\build.ps1` and a real KB to verify — there is no mock.
 
+### Local prerequisites
+
+Prepare the root package with `npm ci`; it installs the locked development
+dependencies used by `npm run lint` (`eslint` and `@eslint/js`). The lint wrapper
+reports missing local dependencies and never installs them globally. In a
+non-interactive terminal or CI, run `npm ci` explicitly before retrying.
+
+The repository routines use these external tools:
+
+| Tool | Used by | Requirement |
+|---|---|---|
+| Node.js 22+ and npm | CLI, `npm test`, `npm run lint` | Required for the root package |
+| .NET SDK 10 | Gateway/Worker builds and tests | Required for C# validation |
+| GeneXus SDK and `GX_PATH` | Worker build and live KB smoke | Required locally for Worker/live validation |
+| PowerShell 7+ | build, install, coverage and preflight scripts | Required for those scripts |
+| Git | source control, PR tooling and release checks | Required for development |
+| ripwire | architectural orientation and optional PR analysis | Optional runtime tool; required only when a preflight is run with `-RequireRipwire` |
+
+`ripwire` is not an npm or runtime dependency. When it is unavailable,
+`scripts/pr-preflight.ps1` reports `skipped` by default and fails clearly with
+`-RequireRipwire`. On Windows, install it through the documented CMake/MSVC
+route rather than running a Unix `install.sh` in PowerShell:
+
+```powershell
+git clone https://github.com/redhat-et/ripwire.git C:\Dev\Tools\ripwire
+cmake -S C:\Dev\Tools\ripwire -B C:\Dev\Tools\ripwire\build
+cmake --build C:\Dev\Tools\ripwire\build --config Release
+```
+
+Add the directory containing `ripwire.exe` to the user `PATH`. The tool is used
+for analysis only; it is never installed automatically by this repository.
+
 ### What CI runs beyond the dev loop
 
 CI (`.github/workflows/ci.yml`) also runs steps not in the dev loop above, so a green local run can still hit CI-only failures. To reproduce them locally:

@@ -14,6 +14,7 @@ namespace GxMcp.Worker.Services
 {
     public partial class LayoutService
     {
+        private static readonly char[] CaptionLineBreaks = { (char)13, (char)10 };
         private readonly ObjectService _objectService;
 
         public LayoutService(ObjectService objectService)
@@ -206,6 +207,17 @@ namespace GxMcp.Worker.Services
                         hint: "Use get_tree to enumerate the control names present in this object's layout.",
                         nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists all controls and their ControlName values.")),
                         target: target);
+
+                if (string.Equals(propertyName, "Caption", StringComparison.OrdinalIgnoreCase)
+                    && HasCaptionLineBreak(value))
+                {
+                    return Models.McpResponse.Err(
+                        code: "CaptionNewlineUnsupported",
+                        message: "Caption values cannot contain embedded line breaks.",
+                        hint: "Use a single-line Caption. GeneXus may rename the control when a multiline caption is saved.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "set_property", ["name"] = target, ["controlName"] = controlName, ["propertyName"] = "Caption", ["value"] = (value ?? string.Empty).Replace("\r", " ").Replace("\n", " ") }, "Retry with a single-line caption.")),
+                        target: target);
+                }
 
                 string attrName;
                 string previous;
@@ -1393,6 +1405,11 @@ namespace GxMcp.Worker.Services
                    string.Equals(propertyName, "innertext", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(propertyName, "nodevalue", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(propertyName, "value", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool HasCaptionLineBreak(string value)
+        {
+            return (value ?? string.Empty).IndexOfAny(CaptionLineBreaks) >= 0;
         }
 
         private static string BuildConstantCaptionTokens(string value)

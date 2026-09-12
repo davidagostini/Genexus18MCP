@@ -31,15 +31,36 @@ requires `publish.zip` on the initial published event. The Worker needs the
 local primary SDK from `config/gx-versions.json`, so the release artifact must
 built on Windows with that supported GeneXus installation.
 
-To close completed issues as part of the same release, pass them explicitly:
+At release time, all open issues labeled `fixed-pending-release` are collected
+automatically into `release-issues.txt`, included in the changelog, and closed
+after publication. To add explicit issues as well, pass them directly:
 
 ```powershell
 ./release.ps1 -Version <X.Y.Z> -CloseIssues 146,148
 ```
 
-The script reads each issue, comments the verified release URL, closes it, and
-reads the issue back to verify `state=closed`. It never infers issues from
-changelog text; omit `-CloseIssues` to leave issue state untouched.
+For a larger batch, keep one issue number per line (optional `#` and commas are
+accepted) and pass the file alongside any inline numbers:
+
+```powershell
+./release.ps1 -Version <X.Y.Z> -CloseIssuesFile ./release-issues.txt
+```
+
+The release script deduplicates the combined list and adds a `Tracked issues`
+section with links to the promoted changelog entry. In `-DryRun` it reports the
+planned links without editing the changelog. Issues are still commented and
+closed only after GitHub confirms that the release and its assets were created.
+Use `-SkipLabeledIssues` only when a release must exclude the automatic label
+collection.
+
+Before any issue mutation, the release performs a read-only pre-validation of
+the complete batch. It writes `release-issues.json` with the issue titles and
+URLs as an immutable snapshot for that version, and records discovered,
+validated, commented, and closed issue numbers in the release status file. A
+rerun for the same version reuses the existing snapshot. Use
+`-ReleaseMilestone <number>` to restrict automatic collection to one milestone.
+
+The script never infers issues from changelog text. By default it uses the explicit `fixed-pending-release` label; use `-SkipLabeledIssues` and omit `-CloseIssues`/`-CloseIssuesFile` to leave issue state untouched.
 
 Gateway, tests, and benchmarks build with the .NET 10 SDK; the Worker remains
 .NET Framework 4.8/x86 for the GeneXus SDK. The v3 corporate installer stages

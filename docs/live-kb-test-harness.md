@@ -7,6 +7,21 @@ directory called `KBTeste` is a valid explicit local target for operator-
 authorized smoke tests and Build All, but is not automatically treated as
 disposable.
 
+## Navigation and safety pointers
+
+- `scripts/test-live.ps1`: isolated configuration, build and test gates.
+- `scripts/live-build-all.ps1`: HTTP Build All probe and terminal-state polling.
+- `scripts/test_live_patch_persistence_kbteste.ps1`: disposable issue probes.
+- `Program.KbContext.cs` → `SessionKbContextStore.cs` →
+  `KbUseLeaseRegistry.cs`: session selection, canonical aliases and ownership.
+
+Live probes must use bounded asynchronous stdio reads and must not treat a
+response carrying `operationId` or `job_id` as final evidence. Disposable probes
+must also clean up Gateway/Worker processes on terminating errors.
+When an indexed read returns `IndexNotReady`, use
+`genexus_lifecycle action=status wait=10` before retrying the read; repeated
+`genexus_whoami` calls are health checks, not an index-readiness barrier.
+
 ## Provisioning prerequisite
 
 Create a synthetic KB through GeneXus or import a verified synthetic XPZ into a

@@ -139,7 +139,10 @@ namespace GxMcp.Worker.Helpers
             PropertyInfo typeProp = GetPropertyResolvingAmbiguity(t, "Type");
             PropertyInfo lenProp  = GetPropertyResolvingAmbiguity(t, "Length");
             PropertyInfo decProp  = GetPropertyResolvingAmbiguity(t, "Decimals");
-            if (typeProp == null) return false;
+            if (typeProp == null || !typeProp.CanRead || !typeProp.CanWrite) return false;
+
+            if (length.HasValue && (lenProp == null || !lenProp.CanRead || !lenProp.CanWrite)) return false;
+            if (decimals.HasValue && (decProp == null || !decProp.CanRead || !decProp.CanWrite)) return false;
 
             object enumValue;
             if (typeProp.PropertyType == typeof(string))
@@ -160,19 +163,89 @@ namespace GxMcp.Worker.Helpers
                 }
             }
 
-            try { typeProp.SetValue(attr, enumValue, null); }
-            catch { return false; }
-
-            if (length.HasValue && lenProp != null)
+            object previousType;
+            object previousLength = null;
+            object previousDecimals = null;
+            try
             {
-                try { lenProp.SetValue(attr, length.Value, null); }
-                catch { /* best-effort */ }
+                previousType = typeProp.GetValue(attr, null);
+                if (length.HasValue) previousLength = lenProp.GetValue(attr, null);
+                if (decimals.HasValue) previousDecimals = decProp.GetValue(attr, null);
+            }
+            catch
+            {
+                return false;
             }
 
-            if (decimals.HasValue && decProp != null)
+            bool typeWriteAttempted = false;
+            bool lengthWriteAttempted = false;
+            bool decimalsWriteAttempted = false;
+            try
             {
-                try { decProp.SetValue(attr, decimals.Value, null); }
-                catch { /* best-effort */ }
+                typeWriteAttempted = true;
+                typeProp.SetValue(attr, enumValue, null);
+
+                if (length.HasValue)
+                {
+                    lengthWriteAttempted = true;
+                    lenProp.SetValue(attr, length.Value, null);
+                }
+
+                if (decimals.HasValue)
+                {
+                    decimalsWriteAttempted = true;
+                    decProp.SetValue(attr, decimals.Value, null);
+                }
+
+                return true;
+            }
+            catch
+            {
+                if (decimalsWriteAttempted) RestoreProperty(decProp, attr, previousDecimals);
+                if (lengthWriteAttempted) RestoreProperty(lenProp, attr, previousLength);
+                if (typeWriteAttempted) RestoreProperty(typeProp, attr, previousType);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Applies a property-facing primitive type value to an Attribute (or to a
+        /// TransactionAttribute that exposes its underlying Attribute). The generic
+        /// property bag setter accepts the string but does not change the SDK type;
+        /// property writes must use the typed Attribute surface instead.
+        /// </summary>
+        public static bool TryApplyType(object attributeOrOccurrence, string rawType, out string error)
+        {
+            error = null;
+            if (attributeOrOccurrence == null)
+            {
+                error = "An Attribute instance is required to set Type.";
+                return false;
+            }
+
+            object attribute = attributeOrOccurrence;
+            try
+            {
+                var attributeProperty = GetPropertyUnambiguous(attributeOrOccurrence.GetType(), "Attribute");
+                var underlying = attributeProperty?.GetValue(attributeOrOccurrence, null);
+                if (underlying != null) attribute = underlying;
+            }
+            catch
+            {
+                // A raw Attribute has no occurrence-level Attribute property; keep the input.
+            }
+
+            var spec = Parse(rawType);
+            if (!spec.Recognized || string.Equals(spec.CanonicalType, "DomainReference", StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"'{rawType}' is not a primitive Attribute type. Use the Domain property for a Domain reference.";
+                return false;
+            }
+
+            if (!ApplyPrimitive(attribute, spec.CanonicalType, spec.Length, spec.Decimals))
+            {
+                error = $"The GeneXus SDK did not expose a writable Type surface for '{rawType}'.";
+                return false;
             }
 
             return true;
@@ -180,6 +253,12 @@ namespace GxMcp.Worker.Helpers
 
         private static PropertyInfo GetPropertyResolvingAmbiguity(Type type, string name)
             => GetPropertyUnambiguous(type, name);
+
+        private static void RestoreProperty(PropertyInfo property, object target, object value)
+        {
+            try { property.SetValue(target, value, null); }
+            catch { }
+        }
 
         /// <summary>
         /// Resolve a property by name on <paramref name="type"/> without throwing

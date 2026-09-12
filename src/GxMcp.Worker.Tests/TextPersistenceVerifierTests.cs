@@ -116,6 +116,7 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Help"));
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "DataSelector"));
             Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "WSDL"));
+            Assert.Equal("normalized", TextPersistenceVerifier.ResolveMode(null, "Styles"));
             Assert.Equal("exact", TextPersistenceVerifier.ResolveMode(null, "Structure"));
         }
 
@@ -125,6 +126,15 @@ namespace GxMcp.Worker.Tests
             var result = TextPersistenceVerifier.Evaluate("Event Start\r\nEndEvent\r\n", "Event Start\nEndEvent\n", "exact", "Events");
             Assert.True(result.Matches);
             Assert.Contains("EOL", result.NormalizationApplied);
+        }
+
+        [Theory]
+        [InlineData("single line", false)]
+        [InlineData("line one\nline two", true)]
+        [InlineData("line one\r\nline two", true)]
+        public void CaptionLineBreakGuard_RejectsOnlyEmbeddedLineBreaks(string value, bool expected)
+        {
+            Assert.Equal(expected, LayoutService.HasCaptionLineBreak(value));
         }
 
         [Fact]
