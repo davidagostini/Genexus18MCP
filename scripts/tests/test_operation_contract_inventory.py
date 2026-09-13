@@ -23,8 +23,8 @@ class OperationContractInventoryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
         self.assertEqual(inventory["schemaVersion"], "genexus-operation-inventory/1")
-        self.assertEqual(inventory["toolCount"], 50)
-        self.assertGreaterEqual(inventory["actionCount"], 200)
+        self.assertEqual(inventory["toolCount"], 54)
+        self.assertGreaterEqual(inventory["actionCount"], 247)
         self.assertTrue(all(row["actions"] for row in inventory["tools"]))
         for tool in inventory["tools"]:
             for action in tool["actions"]:
@@ -50,6 +50,11 @@ class OperationContractInventoryTests(unittest.TestCase):
             spec.loader.exec_module(module)
             with self.assertRaises(ValueError):
                 module.build_inventory(temp_path, module.CLASSIFIER)
+
+    def test_mode_dependent_analyze_is_registered_in_inventory(self):
+        inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+        analyze = next(row for row in inventory["tools"] if row["tool"] == "genexus_analyze")
+        self.assertEqual(analyze["actions"][0]["kind"], "modeDependent")
 
 
 if __name__ == "__main__":

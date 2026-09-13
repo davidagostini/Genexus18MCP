@@ -41,7 +41,6 @@ namespace GxMcp.Gateway
             "genexus_list_objects",
             "genexus_read",
             "genexus_inspect",
-            "genexus_analyze",
             "genexus_whoami",
             "genexus_doctor",
             "genexus_search_source",
@@ -63,6 +62,7 @@ namespace GxMcp.Gateway
         // classified by a substring such as "edit" or "create".
         private static readonly HashSet<string> ModeDependentTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
+            "genexus_analyze", // mode/fix controls whether linter analysis mutates
             "genexus_sdk_probe",
             "genexus_run_object",
             "genexus_merge"
@@ -315,6 +315,16 @@ namespace GxMcp.Gateway
 
         private static OperationKind ClassifyCanonicalTool(string toolName, JObject args)
         {
+            if (string.Equals(toolName, "genexus_analyze", StringComparison.OrdinalIgnoreCase))
+            {
+                bool linterFix = string.Equals(
+                    args["mode"]?.ToString(),
+                    "linter",
+                    StringComparison.OrdinalIgnoreCase)
+                    && args["fix"]?.ToObject<bool?>() == true;
+                return linterFix ? OperationKind.Mutating : OperationKind.ReadOnly;
+            }
+
             if (ModeDependentTools.Contains(toolName))
             {
                 if (string.Equals(toolName, "genexus_sdk_probe", StringComparison.OrdinalIgnoreCase))

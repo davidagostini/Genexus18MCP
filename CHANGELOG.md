@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## v3.4.2 - 2026-09-13
+
+
+### Tracked issues
+
+- [#186](https://github.com/lennix1337/Genexus18MCP/issues/186) — [Melhoria] Divergências entre o schema publicado e o que os routers aceitam, e um gate para travá-las
+- [#187](https://github.com/lennix1337/Genexus18MCP/issues/187) — [Bug] Com o auto-fix ativado na v3.4.1, `mode=linter fix=true` pode remover variável usada apenas no WebForm
+- [#188](https://github.com/lennix1337/Genexus18MCP/issues/188) — [Melhoria] `genexus_doc` grava os artefatos sob o diretório do executável, e eles ficam para trás na atualização do pacote
+
+
+### Fixed
+
+- Keep the published MCP contract aligned with the Analyze, Search, and Object routers: expose `genexus_analyze`'s mode-dependent `fix`, `waitTimeoutMs`, and `top`, `genexus_query.exactMatch`, `genexus_edit` `mode=ops` `module`, the existing `genexus_inspect.verbose` router option, and the intentional `deep_context` Analyze alias; refresh discovery coverage ([#186](https://github.com/lennix1337/Genexus18MCP/issues/186)).
+- Drive worker-crash retry safety from `OperationClassifier`, so mutating Analyze linter fixes and the default SDK surface probe are never replayed, while read-only modes retain the existing single retry ([#186](https://github.com/lennix1337/Genexus18MCP/issues/186)).
+- Count variables referenced only by a WebForm as used without mutating the visual part during lint reads; publish the linter `dryRun` input and explicitly reject the unsupported `mode=linter fix=true dryRun=true` combination while preserving the existing `symbol`/`snippet` fix resolution ([#187](https://github.com/lennix1337/Genexus18MCP/issues/187)).
+- Isolate `genexus_doc` wiki and visualizer artifacts under a durable per-KB scope, keep the effective `file`/`url` path in successful responses, generate collision-free graph filenames, reject path components explicitly, and make Visualizer/Health consume the active KB's canonical `IndexCacheService` snapshot ([#188](https://github.com/lennix1337/Genexus18MCP/issues/188)).
+
+### Changed
+
+- Add a fail-closed, keyed allowlist gate for undeclared parameters consumed by the Analyze, Search, and Object routers. Freeze the existing 75 top-level property-description gaps, reject new gaps, and require descriptions for every top-level `action` property. The schema remains under the existing 28,250-token budget; no bulk description cleanup is included ([#186](https://github.com/lennix1337/Genexus18MCP/issues/186)).
+
+### Internal
+
+- Contract premise for #186: `deep_context` is retained and published because the current router and plan intentionally define it as a compatibility alias of `context`; `cancelToken` remains an allowlisted Gateway-injected infrastructure field rather than a caller-facing schema property. Nested description debt remains outside this incremental gate.
+
+## v3.4.1 - 2026-09-12
+
+
+### Fixed
+
+- Keep Worker dirty tracking and per-target write timestamps independent for uncertain `WriteNotPersisted` outcomes, including partial persistence, rollback failure, and empty-persist guards; record confirmed batch variable removals ([#184](https://github.com/lennix1337/Genexus18MCP/issues/184), [#185](https://github.com/lennix1337/Genexus18MCP/issues/185)).
+- Classify `genexus_analyze mode=linter fix=true` as mutating, accept legacy `GX008` snippets when resolving variables to remove, and invalidate semantic-cache entries without changing read-only linter analysis ([#185](https://github.com/lennix1337/Genexus18MCP/issues/185)).
+
+### Changed
+
+- Run release contract, inventory, and script checks before the expensive build/test phases, and automatically select the compatible local live KB when one is available.
+
+### Internal
+
+- Separate marking an issue `fixed-pending-release` from closing it after publication, require the label before release closure, and include detached release status and log paths in the machine-readable handoff.
+
+## v3.4.0 - 2026-09-12
+
+
 ### Fixed
 
 - Capture installer client-registration stdout and stderr separately, parse only the JSON envelope, and fail closed when it is missing or invalid instead of committing a staged config after an ambiguous registration.
