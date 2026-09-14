@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Tracked issues
+
+- [#200](https://github.com/lennix1337/Genexus18MCP/issues/200) — [Melhoria] Convenção de fuso de KBObject.LastUpdate é assumida, não medida
+
+### Fixed
+
+- **KBObject.LastUpdate timezone normalization (#200)**: normalize SDK timestamps at one boundary, preserve unspecified UTC ticks without machine-offset drift, and expose observed `DateTime.Kind` diagnostics through worker health/index state.
+
 ## v3.5.0 - 2026-09-14
 
 

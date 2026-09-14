@@ -7,6 +7,7 @@ using Newtonsoft.Json.Linq;
 using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Objects;
 using Artech.Genexus.Common.Parts;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Utils;
 
 namespace GxMcp.Worker.Services
@@ -41,7 +42,8 @@ namespace GxMcp.Worker.Services
                 md.AppendLine($"# {obj.Name}");
                 md.AppendLine($"**Type:** {obj.TypeDescriptor.Name}");
                 md.AppendLine($"**Description:** {obj.Description}");
-                md.AppendLine($"**Updated:** {obj.LastUpdate:yyyy-MM-dd HH:mm}");
+                DateTime objectLastUpdate = SdkTimestamp.Read(() => obj.LastUpdate);
+                md.AppendLine($"**Updated:** {objectLastUpdate:yyyy-MM-dd HH:mm}");
                 md.AppendLine();
 
                 // 1. Business Intent & Role

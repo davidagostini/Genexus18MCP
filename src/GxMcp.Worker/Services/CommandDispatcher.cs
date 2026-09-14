@@ -1081,7 +1081,8 @@ namespace GxMcp.Worker.Services
                         : (JToken)IndexCacheService.LastFlushSuccessUtc.ToString("o"),
                     ["flushLastError"] = IndexCacheService.LastFlushErrorMessage != null
                         ? (JToken)IndexCacheService.LastFlushErrorMessage
-                        : JValue.CreateNull()
+                        : JValue.CreateNull(),
+                    ["lastUpdateTimestamp"] = SdkTimestamp.Diagnostics()
                 };
 
                 // v2.6.8: top-5 recently-changed projection. Cheap O(n) scan
@@ -1107,7 +1108,7 @@ namespace GxMcp.Worker.Services
                                 {
                                     ["name"] = e.Name,
                                     ["type"] = e.Type,
-                                    ["lastUpdate"] = e.LastUpdate.ToUniversalTime().ToString("o"),
+                                    ["lastUpdate"] = SdkTimestamp.ToIsoUtc(e.LastUpdate),
                                     ["lastModifiedBy"] = e.LastModifiedBy ?? string.Empty
                                 });
                             }

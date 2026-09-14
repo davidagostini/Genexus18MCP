@@ -1587,7 +1587,7 @@ namespace GxMcp.Worker.Services
                 ["protocol"] = ep.Protocol,
                 ["callMode"] = ep.CallMode,
                 ["path"] = ep.Path,
-                ["lastUpdate"] = ep.LastUpdate == DateTime.MinValue ? null : ep.LastUpdate.ToUniversalTime().ToString("o")
+                ["lastUpdate"] = SdkTimestamp.ToIsoUtc(ep.LastUpdate)
             };
             if (!string.IsNullOrWhiteSpace(ep.ApiName))
             {

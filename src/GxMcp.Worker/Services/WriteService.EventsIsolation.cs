@@ -134,7 +134,7 @@ namespace GxMcp.Worker.Services
                     string originalToken = EventsSaveIsolation.Token(original);
                     string originalPlacement = EventsSaveIsolation.Placement(original);
                     var revisionBefore = original.VersionId;
-                    var lastUpdateBefore = original.LastUpdate;
+                    var lastUpdateBefore = SdkTimestamp.Read(() => original.LastUpdate);
                     if (string.IsNullOrWhiteSpace(baseVersion) || originalToken != baseVersion)
                         return McpResponse.Err(code: "VersionConflict", target: target,
                             message: "The Events version changed; no save was attempted.",
@@ -263,7 +263,8 @@ namespace GxMcp.Worker.Services
                     var finalComparison = snapshot.Compare(persisted, "Events");
                     var finalOthers = EventsSaveIsolation.ChangedOthers(inventory, EventsSaveIsolation.Inventory(kb), guid);
                     bool partPersisted = EventsSaveIsolation.SourceEquivalent(EventsSaveIsolation.Source(persisted), source);
-                    bool metadataAdvanced = persisted.VersionId > revisionBefore || persisted.LastUpdate > lastUpdateBefore;
+                    DateTime persistedLastUpdate = SdkTimestamp.Read(() => persisted.LastUpdate);
+                    bool metadataAdvanced = persisted.VersionId > revisionBefore || persistedLastUpdate > lastUpdateBefore;
                     bool otherPartsIntact = finalComparison.Equal && EventsSaveIsolation.Placement(persisted) == originalPlacement;
                     receipt["partPersisted"] = partPersisted;
                     receipt["objectSaved"] = committed;
@@ -275,14 +276,14 @@ namespace GxMcp.Worker.Services
                     receipt["unexpectedChangedObjects"] = finalOthers;
                     receipt["otherObjectMetadataIntact"] = finalOthers.Count == 0;
                     receipt["revisionAfter"] = persisted.VersionId;
-                    receipt["lastUpdateAfter"] = persisted.LastUpdate.ToUniversalTime().ToString("o");
+                    receipt["lastUpdateAfter"] = SdkTimestamp.ToIsoUtc(persistedLastUpdate);
                     receipt["versionToken"] = EventsSaveIsolation.Token(persisted);
                     receipt["reReadConfirmed"] = partPersisted;
                     receipt["persisted"] = partPersisted;
                     receipt["saved"] = committed;
                     receipt["rollbackVerified"] = !committed && EventsSaveIsolation.SourceEquivalent(EventsSaveIsolation.Source(persisted), originalSource)
                         && otherPartsIntact && finalOthers.Count == 0
-                        && persisted.VersionId == revisionBefore && persisted.LastUpdate == lastUpdateBefore;
+                        && persisted.VersionId == revisionBefore && persistedLastUpdate == lastUpdateBefore;
                     receipt["verificationCompleted"] = true;
                     verifiedState = persisted;
                     if (committed && partPersisted && metadataAdvanced && otherPartsIntact && finalOthers.Count == 0)

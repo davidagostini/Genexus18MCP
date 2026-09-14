@@ -179,7 +179,7 @@ namespace GxMcp.Worker.Services
                     ["category"] = obj.GetPropertyValue<string>("WWPTemplate_Category"),
                     ["categoryOrder"] = obj.GetPropertyValue("WWPTemplate_CategoryOrder")?.ToString(),
                     ["parentGuid"] = obj.Parent?.Guid.ToString(), ["revision"] = obj.VersionId,
-                    ["lastUpdate"] = obj.LastUpdate.ToUniversalTime().ToString("o"),
+                    ["lastUpdate"] = SdkTimestamp.ToIsoUtc(SdkTimestamp.Read(() => obj.LastUpdate)),
                     ["source"] = obj.GetPropertyValue<string>(WwpTemplateXml.SourceProperty) ?? string.Empty,
                     ["isTemplate"] = true
                 };

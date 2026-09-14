@@ -578,8 +578,7 @@ namespace GxMcp.Worker.Services
                 {
                     filteredObjects = filteredObjects.Where(x =>
                     {
-                        DateTime lu;
-                        try { lu = x.Object.LastUpdate; } catch { return false; }
+                        DateTime lu = SdkTimestamp.Read(() => x.Object.LastUpdate);
                         if (lu <= DateTime.MinValue) return false; // no usable timestamp
                         if (since > DateTime.MinValue && lu < since) return false;
                         if (modifiedBefore > DateTime.MinValue && lu >= modifiedBefore) return false;
@@ -594,7 +593,7 @@ namespace GxMcp.Worker.Services
                 if (sortByLastUpdateRt)
                 {
                     orderedRuntime = filteredObjects
-                        .OrderByDescending(x => { try { return x.Object.LastUpdate; } catch { return DateTime.MinValue; } })
+                        .OrderByDescending(x => SdkTimestamp.Read(() => x.Object.LastUpdate))
                         .ThenBy(x => x.Object.Name, StringComparer.OrdinalIgnoreCase)
                         .ToList();
                 }
@@ -621,7 +620,7 @@ namespace GxMcp.Worker.Services
                     DateTime rtLastUpdate = default(DateTime);
                     DateTime rtCreatedAt = default(DateTime);
                     string rtLastModifiedBy = null;
-                    try { rtLastUpdate = item.Object.LastUpdate; } catch { }
+                    rtLastUpdate = SdkTimestamp.Read(() => item.Object.LastUpdate);
                     try { rtCreatedAt = item.Object.VersionDate; } catch { }
                     try { rtLastModifiedBy = item.Object.UserName; } catch { }
 
@@ -932,7 +931,7 @@ namespace GxMcp.Worker.Services
             // - createdAt / lastModifiedBy are verbose-only to keep default payload tight.
             if (lastUpdate > DateTime.MinValue)
             {
-                item["lastUpdate"] = lastUpdate.ToUniversalTime().ToString("o");
+                item["lastUpdate"] = SdkTimestamp.ToIsoUtc(lastUpdate);
             }
             if (isLegacyMode || verbose)
             {

@@ -1590,7 +1590,7 @@ namespace GxMcp.Worker.Services
         /// <summary>Advance the high-water-mark if <paramref name="lastUpdate"/> is newer. Lock-free.</summary>
         public void ObserveLastUpdate(DateTime lastUpdate)
         {
-            long t = lastUpdate.Ticks;
+            long t = SdkTimestamp.Normalize(lastUpdate).Ticks;
             long cur;
             while (true)
             {
@@ -1972,7 +1972,7 @@ namespace GxMcp.Worker.Services
         // a crashed indexer.
         private static DateTime SafeReadDate(Func<DateTime> read)
         {
-            try { return read(); } catch { return DateTime.MinValue; }
+            return SdkTimestamp.Read(read);
         }
 
         private static string SafeReadString(Func<string> read)
@@ -2041,7 +2041,7 @@ namespace GxMcp.Worker.Services
                 ParentFolderPath = ComposeParentFolderPath(hierarchy.ParentPath),
                 Path = hierarchy.Path,
                 Module = hierarchy.ModuleName,
-                LastUpdate = SafeReadDate(() => obj.LastUpdate),
+                LastUpdate = SdkTimestamp.Read(() => obj.LastUpdate),
                 CreatedAt = SafeReadDate(() => obj.VersionDate),
                 LastModifiedBy = SafeReadString(() => obj.UserName),
                 // This entry IS being enriched (type/embedding synchronously here; edges async

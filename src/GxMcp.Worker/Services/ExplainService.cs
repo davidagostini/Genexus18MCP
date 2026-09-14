@@ -108,7 +108,7 @@ namespace GxMcp.Worker.Services
                 string purpose = BuildPurpose(objectType, objectName, description, parms);
 
                 DateTime lastModified = DateTime.MinValue;
-                try { lastModified = obj.LastUpdate; } catch { }
+                lastModified = SdkTimestamp.Read(() => obj.LastUpdate);
 
                 var payload = new JObject
                 {
@@ -126,7 +126,7 @@ namespace GxMcp.Worker.Services
                     ["description"] = description,
                     ["lastModified"] = lastModified == DateTime.MinValue
                         ? (JToken)JValue.CreateNull()
-                        : lastModified.ToUniversalTime().ToString("o")
+                        : SdkTimestamp.ToIsoUtc(lastModified)
                 };
                 string json = Models.McpResponse.Ok(target: objectName, code: "ExplainOk", result: payload);
                 _explainCache[explainKey] = new ExplainCacheEntry

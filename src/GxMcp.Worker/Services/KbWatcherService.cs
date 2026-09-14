@@ -57,7 +57,7 @@ namespace GxMcp.Worker.Services
             _kbService = kbService;
             _onObjectChanged = onObjectChanged;
             _indexCache = indexCache;
-            _lastCheckTime = DateTime.UtcNow; // Changed to UtcNow because KBObject.LastUpdate uses UTC. This prevents an initial flood of notifications.
+            _lastCheckTime = DateTime.UtcNow; // SdkTimestamp keeps KBObject.LastUpdate on the same UTC contract.
         }
 
         public void Start()
@@ -215,7 +215,7 @@ namespace GxMcp.Worker.Services
                 
                 DateTime nextCheckTime = _lastCheckTime;
                 bool foundNewer = false;
-                var batch = new List<dynamic>();
+                var batch = new List<Tuple<dynamic, DateTime>>();
 
                 foreach (var key in (System.Collections.IEnumerable)modifiedKeys)
                 {
@@ -224,18 +224,21 @@ namespace GxMcp.Worker.Services
                         var obj = kb.DesignModel.Objects.Get((Artech.Udm.Framework.EntityKey)key);
                         if (obj == null) continue;
 
-                        if (obj.LastUpdate > _lastCheckTime)
+                        DateTime objectLastUpdate = SdkTimestamp.Read(() => obj.LastUpdate);
+                        if (objectLastUpdate == DateTime.MinValue) continue;
+
+                        if (objectLastUpdate > _lastCheckTime)
                         {
-                            if (obj.LastUpdate > nextCheckTime) 
+                            if (objectLastUpdate > nextCheckTime)
                             {
-                                nextCheckTime = obj.LastUpdate;
+                                nextCheckTime = objectLastUpdate;
                                 foundNewer = true;
                             }
-                            batch.Add(obj);
+                            batch.Add(Tuple.Create(obj, objectLastUpdate));
                         }
-                        else if (obj.LastUpdate == _lastCheckTime && !_notifiedInLastTick.Contains(obj.Guid))
+                        else if (objectLastUpdate == _lastCheckTime && !_notifiedInLastTick.Contains(obj.Guid))
                         {
-                            batch.Add(obj);
+                            batch.Add(Tuple.Create(obj, objectLastUpdate));
                         }
                     }
                     catch { }
@@ -248,14 +251,16 @@ namespace GxMcp.Worker.Services
                         _notifiedInLastTick.Clear();
                     }
 
-                    foreach (var obj in batch)
+                    foreach (var change in batch)
                     {
-                        if (obj.LastUpdate == nextCheckTime)
+                        var obj = change.Item1;
+                        DateTime objectLastUpdate = change.Item2;
+                        if (objectLastUpdate == nextCheckTime)
                         {
                             _notifiedInLastTick.Add(obj.Guid);
                         }
 
-                        Logger.Info($"External change detected: {obj.Name} ({obj.TypeDescriptor.Name}) at {obj.LastUpdate}");
+                        Logger.Info($"External change detected: {obj.Name} ({obj.TypeDescriptor.Name}) at {objectLastUpdate:o}");
                         // Fase 2: keep the in-memory index warm on live edits. The watcher
                         // thread is STA and already holds the KBObject, so UpdateEntry runs in
                         // the right context. This re-enriches the changed object (and collapses
@@ -263,7 +268,7 @@ namespace GxMcp.Worker.Services
                         // Skipped during write transactions by the IsWriteInProgress gate above.
                         try { _indexCache?.UpdateEntry((global::Artech.Architecture.Common.Objects.KBObject)obj); }
                         catch (Exception ixe) { Logger.Debug($"Watcher index update failed for {obj.Name}: {ixe.Message}"); }
-                        _onObjectChanged?.Invoke(obj.Name, obj.TypeDescriptor.Name, obj.LastUpdate);
+                        _onObjectChanged?.Invoke(obj.Name, obj.TypeDescriptor.Name, objectLastUpdate);
                     }
 
                     _lastCheckTime = nextCheckTime;

@@ -170,7 +170,7 @@ namespace GxMcp.Worker.Helpers
             {
                 var obj = Fresh(kb, guid);
                 result.Add(guid, obj.VersionId.ToString(CultureInfo.InvariantCulture) + ":"
-                    + obj.LastUpdate.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture) + ":"
+                    + SdkTimestamp.Read(() => obj.LastUpdate).Ticks.ToString(CultureInfo.InvariantCulture) + ":"
                     + obj.Parent?.Guid.ToString() + ":" + obj.Name + ":" + obj.TypeDescriptor.Id);
             }
             return result;

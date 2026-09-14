@@ -664,7 +664,7 @@ namespace GxMcp.Worker.Services
                         // forcing the user to wait for enrichment.
                         DateTime lu = DateTime.MinValue, ca = DateTime.MinValue;
                         string lub = null;
-                        try { lu = obj.LastUpdate; } catch { }
+                        lu = SdkTimestamp.Read(() => obj.LastUpdate);
                         try { ca = obj.VersionDate; } catch { }
                         try { lub = obj.UserName; } catch { }
                         // Fase 1: track the delta baseline (max LastUpdate) during the walk.
@@ -939,9 +939,10 @@ namespace GxMcp.Worker.Services
                         {
                             var obj = kb.DesignModel.Objects.Get((Artech.Udm.Framework.EntityKey)key);
                             if (obj == null) continue;
-                            if (obj.LastUpdate <= safeHwm) continue; // re-filter like KbWatcherService
+                            DateTime objectLastUpdate = SdkTimestamp.Read(() => obj.LastUpdate);
+                            if (objectLastUpdate == DateTime.MinValue || objectLastUpdate <= safeHwm) continue; // re-filter like KbWatcherService
                             _indexCacheService.UpdateEntry(obj);
-                            if (obj.LastUpdate > newHwm) newHwm = obj.LastUpdate;
+                            if (objectLastUpdate > newHwm) newHwm = objectLastUpdate;
                             changed++;
                         }
                         catch { /* skip individual object failures */ }

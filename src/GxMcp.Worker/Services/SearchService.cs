@@ -463,7 +463,7 @@ namespace GxMcp.Worker.Services
                 // v2.6.8: stringify lastUpdate once per row; null when unknown so the
                 // gateway projector can detect "no lifecycle data" cleanly.
                 string FormatLu(SearchIndex.IndexEntry e) =>
-                    e.LastUpdate > DateTime.MinValue ? e.LastUpdate.ToUniversalTime().ToString("o") : null;
+                    SdkTimestamp.ToIsoUtc(e.LastUpdate);
 
                 var resultsArr = new JArray();
                 if (isQuick)

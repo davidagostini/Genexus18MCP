@@ -7,6 +7,7 @@ using System.Reflection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Helpers;
 
 namespace GxMcp.Worker.Services
 {
@@ -257,6 +258,7 @@ namespace GxMcp.Worker.Services
         {
             int entries = 0;
             double? ageHours = null;
+            JObject timestampDiagnostics = SdkTimestamp.Diagnostics();
             if (_indexCacheService != null)
             {
                 try
@@ -291,7 +293,8 @@ namespace GxMcp.Worker.Services
             return new JObject
             {
                 ["indexEntries"] = entries,
-                ["ageHours"] = ageHours.HasValue ? (JToken)new JValue(ageHours.Value) : JValue.CreateNull()
+                ["ageHours"] = ageHours.HasValue ? (JToken)new JValue(ageHours.Value) : JValue.CreateNull(),
+                ["lastUpdateTimestamp"] = timestampDiagnostics
             };
         }
 
