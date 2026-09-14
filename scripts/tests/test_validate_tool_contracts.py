@@ -24,7 +24,7 @@ class ValidateToolContractsTests(unittest.TestCase):
         )
         counts = MODULE.validate_document(document)
         self.assertEqual(54, counts["tools"])
-        self.assertEqual(226, counts["actions"])
+        self.assertEqual(227, counts["actions"])
 
     def test_invalid_action_example_is_rejected(self):
         tool = {
@@ -106,7 +106,7 @@ public class SearchRouter {
             )
         )
         counts = MODULE.validate_descriptions(document)
-        self.assertEqual(75, counts["known_debt"])
+        self.assertEqual(74, counts["known_debt"])
         self.assertEqual(0, counts["action_debt"])
 
         query = next(tool for tool in document if tool["name"] == "genexus_query")

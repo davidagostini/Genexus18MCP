@@ -104,3 +104,10 @@ native object.
 Both `get` and `list` are SDK reads. They do not save any object and do not run
 Specify, Generate, Build, Rebuild, compilation, reorganization, publication,
 application execution, or tests. The caller's selected KB is used unchanged.
+
+## Gate de contrato
+
+O baseline deste branch é de 54 ferramentas, 227 ações e 74 descrições
+conhecidas pendentes. O CI verifica essas contagens para detectar deriva do
+schema; toda nova ação ou descrição corrigida deve atualizar schema, fixtures,
+documentação e o baseline no mesmo commit.

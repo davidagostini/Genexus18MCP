@@ -13,6 +13,7 @@
 ### Internal
 
 - Raise the tool-schema budget from 28,250 to 28,550 tokens for the documented `MasterPage` list action, canonical pagination parameters, structured reference contract, and explicit read-only guarantees (measured approximately 28,402 tokens).
+- **Contract baseline**: align the CI regression counts with the resolved MasterPage action and its reduced description debt (54 tools, 227 actions, 74 known descriptions pending).
 
 ## v3.5.0 - 2026-09-14
 
