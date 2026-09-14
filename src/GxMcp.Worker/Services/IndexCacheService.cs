@@ -1039,6 +1039,16 @@ namespace GxMcp.Worker.Services
                 {
                     list.Add(entry);
                 }
+                else
+                {
+                    // A delete+recreate keeps the same Type:Name storage key but changes
+                    // the GUID. The key-set correctly prevents a duplicate, but retaining
+                    // the old list element would make list_objects expose the deleted GUID.
+                    // Replace the element in place so hierarchy reads follow Objects[key].
+                    int existingIndex = list.FindIndex(e =>
+                        string.Equals(GetEntryStorageKey(e), entryKey, StringComparison.OrdinalIgnoreCase));
+                    if (existingIndex >= 0) list[existingIndex] = entry;
+                }
             }
             AddOrUpdateEntryInSecondaryIndexes(index, entry);
         }
@@ -1094,6 +1104,15 @@ namespace GxMcp.Worker.Services
             lock (_lock)
             {
                 if (index.GuidToKey == null || !index.GuidToKey.TryGetValue(guid, out var key)) return;
+                // GuidToKey is derived state and can briefly contain an old GUID when a
+                // delete+recreate reuses the same Type:Name key. Never let that stale map
+                // remove the live object now occupying the key.
+                if (!index.Objects.TryGetValue(key, out var current)
+                    || !string.Equals(current?.Guid, guid, StringComparison.OrdinalIgnoreCase))
+                {
+                    index.GuidToKey.TryRemove(guid, out _);
+                    return;
+                }
                 if (index.Objects.TryRemove(key, out var removed))
                 {
                     removedKey = key;
@@ -2141,6 +2160,22 @@ namespace GxMcp.Worker.Services
                 AddSourceTokens(index.SourceTokenIndex, entry);
             }
 
+            // The storage key is Type:Name, so a delete+recreate can replace a different
+            // GUID at the same key. Retire the old reverse mapping before publishing the
+            // replacement; otherwise the deletion sweep can resolve the old GUID to this
+            // live key and remove the recreated object.
+            if (previousEntry != null
+                && !string.Equals(previousEntry.Guid, entry.Guid, StringComparison.OrdinalIgnoreCase)
+                && index.GuidToKey != null
+                && !string.IsNullOrEmpty(previousEntry.Guid))
+            {
+                if (index.GuidToKey.TryGetValue(previousEntry.Guid, out var previousKey)
+                    && string.Equals(previousKey, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    index.GuidToKey.TryRemove(previousEntry.Guid, out _);
+                }
+            }
+
             // Compute Embedding
             string semanticText = $"{entry.Name} {entry.Type} {entry.Description} {entry.RootTable} {entry.ParmRule}";
             long emStart = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -2667,7 +2702,18 @@ namespace GxMcp.Worker.Services
                 idx.Objects.TryGetValue(key, out priorEntry);
                 idx.Objects[key] = e;
                 if (idx.ChildrenByParent != null) AddOrUpdateEntryInParentIndex(idx, e);
-                if (idx.GuidToKey != null && !string.IsNullOrEmpty(e.Guid)) idx.GuidToKey[e.Guid] = key;
+                if (idx.GuidToKey != null)
+                {
+                    if (priorEntry != null
+                        && !string.Equals(priorEntry.Guid, e.Guid, StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrEmpty(priorEntry.Guid)
+                        && idx.GuidToKey.TryGetValue(priorEntry.Guid, out var priorKey)
+                        && string.Equals(priorKey, key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        idx.GuidToKey.TryRemove(priorEntry.Guid, out _);
+                    }
+                    if (!string.IsNullOrEmpty(e.Guid)) idx.GuidToKey[e.Guid] = key;
+                }
                 if (idx.SourceTokenIndex != null)
                 {
                     RemoveSourceTokens(idx.SourceTokenIndex, priorEntry);

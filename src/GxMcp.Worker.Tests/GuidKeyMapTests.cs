@@ -79,5 +79,75 @@ namespace GxMcp.Worker.Tests
             }
             finally { cache.DeleteOnDiskSnapshot(); }
         }
+
+        [Fact]
+        public void AddOrUpdateBatch_deleteAndRecreate_sameName_keeps_new_guid_everywhere()
+        {
+            var cache = new IndexCacheService();
+            cache.Initialize(UniqueKbPath());
+            try
+            {
+                const string parent = "Root Module/M";
+                string oldGuid = Guid.NewGuid().ToString();
+                string newGuid = Guid.NewGuid().ToString();
+
+                cache.AddOrUpdateBatch(new[]
+                {
+                    new SearchIndex.IndexEntry
+                    {
+                        Name = "Config",
+                        Type = "File",
+                        Guid = oldGuid,
+                        ParentPath = parent
+                    }
+                });
+                cache.AddOrUpdateBatch(new[]
+                {
+                    new SearchIndex.IndexEntry
+                    {
+                        Name = "Config",
+                        Type = "File",
+                        Guid = newGuid,
+                        ParentPath = parent
+                    }
+                });
+
+                var idx = cache.GetIndex();
+                Assert.Equal(newGuid, idx.Objects["File:Config"].Guid);
+                Assert.False(idx.GuidToKey.ContainsKey(oldGuid));
+                Assert.Equal("File:Config", idx.GuidToKey[newGuid]);
+                Assert.Single(idx.ChildrenByParent[parent]);
+                Assert.Equal(newGuid, idx.ChildrenByParent[parent][0].Guid);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void RemoveEntryByGuid_stale_mapping_does_not_remove_recreated_object()
+        {
+            var cache = new IndexCacheService();
+            cache.Initialize(UniqueKbPath());
+            try
+            {
+                string oldGuid = Guid.NewGuid().ToString();
+                string newGuid = Guid.NewGuid().ToString();
+                cache.AddOrUpdateBatch(new[]
+                {
+                    new SearchIndex.IndexEntry { Name = "Config", Type = "File", Guid = newGuid }
+                });
+
+                // Reproduce the stale reverse-map state seen by the pre-fix delta sweep.
+                var idx = cache.GetIndex();
+                idx.GuidToKey[oldGuid] = "File:Config";
+
+                cache.RemoveEntryByGuid(oldGuid);
+
+                Assert.True(idx.Objects.ContainsKey("File:Config"));
+                Assert.Equal(newGuid, idx.Objects["File:Config"].Guid);
+                Assert.False(idx.GuidToKey.ContainsKey(oldGuid));
+                Assert.Equal("File:Config", idx.GuidToKey[newGuid]);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
     }
 }

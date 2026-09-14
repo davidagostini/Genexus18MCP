@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Issue #197 — delete/recreate no índice.** Atualizações que reutilizam a
+  chave `Type:Name` agora aposentam o `GuidToKey` antigo, substituem o item
+  correspondente na lista hierárquica e fazem `RemoveEntryByGuid` confirmar o
+  GUID atualmente armazenado antes de remover a entrada. Isso impede que o
+  sweep de deleção remova um objeto recriado com novo GUID. Ver
+  `docs/issue-197-guid-recreate-safety.md`.
+
 ## v3.5.0 - 2026-09-14
 
 
