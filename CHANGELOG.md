@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Tracked issues
+
+- [#196](https://github.com/lennix1337/Genexus18MCP/issues/196) — [Bug] Índice restaurado após open/worker_reload pode permanecer desatualizado sem indicador de frescor
+
+### Fixed
+
+- **Index freshness after open/reload (#196)**: start the bounded delta refresh for every opened worker, preserve the warm snapshot capture time instead of stamping `lastIndexedAt` with the process clock, re-arm bootstrap per KB alias across open/reload/respawn, and expose additive `freshness`/`lastSuccessfulScanAt` diagnostics in whoami, doctor, and list_objects.
+
 ## v3.5.0 - 2026-09-14
 
 

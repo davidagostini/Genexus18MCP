@@ -211,7 +211,7 @@ namespace GxMcp.Worker.Services
 
         // v2.3.8 (Task 1.1): unified IndexState surface so downstream services (whoami,
         // search, analyze) share a single source of truth for index readiness.
-        private IndexState _state = new IndexState { Status = "Cold", TotalObjects = 0 };
+        private IndexState _state = new IndexState { Status = "Cold", Freshness = "unknown", TotalObjects = 0 };
         private readonly object _stateLock = new object();
 
         // issue #25 #1: an index-state-change signal so a `lifecycle status wait`
@@ -241,6 +241,8 @@ namespace GxMcp.Worker.Services
                 {
                     Status = _state.Status,
                     LastIndexedAt = _state.LastIndexedAt,
+                    Freshness = _state.Freshness,
+                    LastSuccessfulScanAt = _state.LastSuccessfulScanAt,
                     TotalObjects = _state.TotalObjects,
                     Progress = _state.Progress,
                     EtaMs = _state.EtaMs,
@@ -255,6 +257,7 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Reindexing";
+                _state.Freshness = "refreshing";
                 _state.Progress = 0;
                 _state.EtaMs = null;
                 _state.LastIndexedAt = null;
@@ -288,21 +291,58 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Cold";
+                _state.Freshness = _state.LastSuccessfulScanAt.HasValue ? "stale" : "unknown";
                 _state.Progress = null;
                 _state.EtaMs = null;
             }
             SignalStateChanged();
         }
 
-        public void MarkIndexComplete(int totalObjects)
+        public void MarkIndexComplete(int totalObjects, DateTime? indexedAtUtc = null)
         {
+            DateTime completedAt = (indexedAtUtc ?? DateTime.UtcNow).ToUniversalTime();
             lock (_stateLock)
             {
                 _state.Status = "Ready";
-                _state.LastIndexedAt = DateTime.UtcNow;
+                _state.Freshness = "current";
+                _state.LastIndexedAt = completedAt;
+                _state.LastSuccessfulScanAt = completedAt;
                 _state.TotalObjects = totalObjects;
                 _state.Progress = null;
                 _state.EtaMs = null;
+            }
+            SignalStateChanged();
+        }
+
+        /// <summary>
+        /// Publishes a populated disk cache without claiming that the KB was scanned
+        /// now. The explicit warm snapshot supplies its capture time; an older cache
+        /// may have no trustworthy timestamp, in which case it remains unknown.
+        /// </summary>
+        public void MarkIndexLoaded(int totalObjects, DateTime? loadedAtUtc = null)
+        {
+            DateTime? normalized = loadedAtUtc?.ToUniversalTime();
+            lock (_stateLock)
+            {
+                _state.Status = "Ready";
+                _state.Freshness = "stale";
+                if (normalized.HasValue)
+                {
+                    _state.LastIndexedAt = normalized;
+                    _state.LastSuccessfulScanAt = normalized;
+                }
+                _state.TotalObjects = totalObjects;
+                _state.Progress = null;
+                _state.EtaMs = null;
+            }
+            SignalStateChanged();
+        }
+
+        public void MarkIndexRefreshing()
+        {
+            lock (_stateLock)
+            {
+                _state.Freshness = "refreshing";
             }
             SignalStateChanged();
         }
@@ -318,6 +358,7 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "LiteReady";
+                _state.Freshness = "refreshing";
                 _state.TotalObjects = totalObjects;
                 _state.LitePassCompletedUtc = DateTime.UtcNow;
                 _state.Progress = 1.0;
@@ -362,6 +403,7 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Enriching";
+                _state.Freshness = "refreshing";
                 _state.EnrichmentStartedUtc = DateTime.UtcNow;
                 _state.Progress = 0;
             }
@@ -794,6 +836,12 @@ namespace GxMcp.Worker.Services
                     return WarmRestoreFallback(response, "metadata-missing");
                 if (metadata.SchemaVersion != CurrentSchemaVersion)
                     return WarmRestoreFallback(response, "schema-mismatch");
+                if (string.IsNullOrWhiteSpace(metadata.CapturedAtUtc))
+                    return WarmRestoreFallback(response, "captured-at-missing");
+                if (!DateTime.TryParse(metadata.CapturedAtUtc, null,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var capturedAtUtc))
+                    return WarmRestoreFallback(response, "captured-at-invalid");
+                capturedAtUtc = capturedAtUtc.ToUniversalTime();
 
                 string expectedKb = WarmIndexSnapshot.NormalizeKbPath(kbPath);
                 string snapshotKb = WarmIndexSnapshot.NormalizeKbPath(metadata.KbPath);
@@ -840,13 +888,19 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
-                MarkIndexComplete(restored.Objects.Count);
+                MarkIndexLoaded(restored.Objects.Count, capturedAtUtc);
                 response["loaded"] = true;
                 response["fallback"] = false;
                 response["objectCount"] = restored.Objects.Count;
                 response["schemaVersion"] = metadata.SchemaVersion;
                 response["capturedAtUtc"] = metadata.CapturedAtUtc;
                 response["highWaterMarkUtc"] = metadata.HighWaterMarkUtc;
+                response["freshness"] = new Newtonsoft.Json.Linq.JObject
+                {
+                    ["status"] = "stale",
+                    ["lastSuccessfulScanAt"] = capturedAtUtc.ToString("o"),
+                    ["refresh"] = "pending"
+                };
                 Logger.Info(string.Format("[WARM-RESTORE] restored {0} objects from {1}", restored.Objects.Count, snapshotPath));
                 return response;
             }
@@ -1356,7 +1410,13 @@ namespace GxMcp.Worker.Services
                 _index = loaded;
             }
             Logger.Info(string.Format("Index loaded. Objects: {0}", loaded.Objects.Count));
-            if (loaded.Objects.Count > 0) MarkIndexComplete(loaded.Objects.Count);
+            if (loaded.Objects.Count > 0)
+            {
+                DateTime? loadedAt = loaded.LastUpdated > DateTime.MinValue
+                    ? (DateTime?)loaded.LastUpdated
+                    : null;
+                MarkIndexLoaded(loaded.Objects.Count, loadedAt);
+            }
             return loaded;
         }
 

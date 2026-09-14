@@ -636,7 +636,11 @@ namespace GxMcp.Gateway
                                     replacement.SdkReadyTask, timeoutMs: 180_000,
                                     progressToken: null, heartbeat: null,
                                     toolName: "worker_reload force").ConfigureAwait(false);
-                                if (ready) readyAliases.Add(handle.Alias);
+                                if (ready)
+                                {
+                                    readyAliases.Add(handle.Alias);
+                                    ReArmIndexBootstrapForKb(handle, "force-reload");
+                                }
                                 else failedAliases.Add(new JObject { ["alias"] = handle.Alias, ["reason"] = "sdkReadyTimeout" });
                             }
                             catch (Exception restoreEx)
@@ -756,6 +760,7 @@ namespace GxMcp.Gateway
                                 "worker_reloaded_soft",
                                 reloadKb.NormalizedAlias,
                                 _semanticCache.GetRevision(reloadKb.NormalizedAlias));
+                            ReArmIndexBootstrapForKb(reloadKb, "soft-reload");
                             BroadcastResourcesListChanged(
                                 "worker_reloaded_soft",
                                 reloadKb.NormalizedAlias,
@@ -1152,6 +1157,7 @@ namespace GxMcp.Gateway
                                 }
 
                                 var w = await _workerPool.AcquireAsync(handleToOpen, CancellationToken.None);
+                                ReArmIndexBootstrapForKb(handleToOpen, "open");
                                 // Opening a worker must not mutate the persisted default or
                                 // another MCP session's selection. Use set_default to select
                                 // this KB for the current session, or pass kb explicitly.

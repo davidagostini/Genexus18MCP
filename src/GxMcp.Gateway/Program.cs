@@ -75,6 +75,7 @@ namespace GxMcp.Gateway
             IndexBootstrapTriggerForTest = null;
             RespawnDelayForTest = null;
             Interlocked.Exchange(ref _indexBootstrapStarted, 0);
+            ClearPerKbIndexBootstrapStateForTest();
         }
         // Plan 038: minimal accessor so McpRouter (a separate class) can resolve the
         // per-request KB alias for AutoTypeInjector.CompleteName, same pattern as the two above.

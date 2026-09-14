@@ -89,6 +89,67 @@ namespace GxMcp.Gateway
             });
         }
 
+        // A gateway can own more than one worker. Reusing the process-wide
+        // one-shot for open/reload would either skip the selected KB or race two
+        // KBs against the same bootstrap. Keep the same fire-and-forget behavior,
+        // but re-arm it per normalized alias and route through the target worker.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte>
+            _indexBootstrapStartedByKb =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+
+        private static void ReArmIndexBootstrapForKb(KbHandle kb, string reason)
+        {
+            if (kb == null || string.IsNullOrWhiteSpace(kb.NormalizedAlias)) return;
+            string alias = kb.NormalizedAlias;
+            _indexBootstrapStartedByKb.TryRemove(alias, out _);
+            if (!_indexBootstrapStartedByKb.TryAdd(alias, 0)) return;
+
+            if (IndexBootstrapTriggerForTest != null)
+            {
+                IndexBootstrapTriggerForTest();
+                return;
+            }
+
+            Log($"[IndexBootstrap] firing for KB '{kb.Alias}' after {reason}");
+            _ = Task.Run(async () =>
+            {
+                KbHandle? previous = _currentKb.Value;
+                _currentKb.Value = kb;
+                try
+                {
+                    var indexCommand = new JObject
+                    {
+                        ["module"] = "KB",
+                        ["action"] = "BulkIndex",
+                        ["client"] = "mcp"
+                    };
+                    var resp = await SendWorkerCommandAsync(
+                        indexCommand,
+                        30000,
+                        "Index bootstrap timeout",
+                        wr => wr,
+                        (_, correlationId) => new JObject { ["__timeout"] = true, ["correlationId"] = correlationId },
+                        toolName: "gateway_index_bootstrap",
+                        trackOperation: false).ConfigureAwait(false);
+                    string? code = (resp?["result"] as JObject)?["code"]?.ToString();
+                    Log($"[IndexBootstrap] KB '{kb.Alias}' reply code={code ?? "<null>"}");
+                }
+                catch (Exception ex)
+                {
+                    Log($"[IndexBootstrap] KB '{kb.Alias}' failed: {ex.Message}");
+                }
+                finally
+                {
+                    _currentKb.Value = previous;
+                }
+            });
+        }
+
+        internal static void ClearPerKbIndexBootstrapStateForTest()
+        {
+            _indexBootstrapStartedByKb.Clear();
+        }
+
         private static void TriggerWorkerWarmupOnce()
         {
             if (Interlocked.CompareExchange(ref _workerWarmupStarted, 1, 0) != 0)

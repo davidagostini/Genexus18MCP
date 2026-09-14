@@ -1052,7 +1052,7 @@ namespace GxMcp.Worker.Services
                 //
                 // issue #28 item 4: hydrate the on-disk cache BEFORE reading the
                 // state. On a warm/reconnected worker _state starts "Cold" until
-                // something calls GetIndex() (lazy disk load → MarkIndexComplete →
+                // something calls GetIndex() (lazy disk load → MarkIndexLoaded →
                 // "Ready"). Because the gateway's SDK-bound short-circuit fast-fails
                 // edits on a Cold mirror BEFORE they reach the worker, GetIndex()
                 // never ran on the edit path and the state stayed Cold forever
@@ -1070,6 +1070,10 @@ namespace GxMcp.Worker.Services
                     ["totalObjects"] = st.TotalObjects,
                     ["lastIndexedAt"] = st.LastIndexedAt.HasValue
                         ? (JToken)st.LastIndexedAt.Value.ToUniversalTime().ToString("o")
+                        : JValue.CreateNull(),
+                    ["freshness"] = st.Freshness ?? "unknown",
+                    ["lastSuccessfulScanAt"] = st.LastSuccessfulScanAt.HasValue
+                        ? (JToken)st.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
                         : JValue.CreateNull(),
                     ["progress"] = st.Progress.HasValue ? (JToken)st.Progress.Value : JValue.CreateNull(),
                     ["etaMs"] = st.EtaMs.HasValue ? (JToken)st.EtaMs.Value : JValue.CreateNull(),

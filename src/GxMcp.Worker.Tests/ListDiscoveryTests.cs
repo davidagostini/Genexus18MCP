@@ -88,6 +88,25 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void List_ExposesFreshnessWithoutChangingPagination()
+        {
+            ListService.InvalidateCache();
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(new[]
+            {
+                new GxMcp.Worker.Models.SearchIndex.IndexEntry { Name = "WarmProc", Type = "Procedure" }
+            }, markReady: false);
+            var captured = new System.DateTime(2026, 9, 3, 12, 34, 56, System.DateTimeKind.Utc);
+            idx.MarkIndexLoaded(1, captured);
+
+            var obj = JObject.Parse(new ListService(idx).List(new ListCriteria { Limit = 1 }));
+
+            Assert.Equal(1, obj["pagination"]?["returned"]?.ToObject<int>());
+            Assert.Equal("stale", obj["_meta"]?["freshness"]?["status"]?.ToString());
+            Assert.Equal(captured, obj["_meta"]?["freshness"]?["lastSuccessfulScanAt"]?.ToObject<System.DateTime>().ToUniversalTime());
+        }
+
+        [Fact]
         public void List_UsesCache_WhenIndexUnchanged()
         {
             ListService.InvalidateCache();

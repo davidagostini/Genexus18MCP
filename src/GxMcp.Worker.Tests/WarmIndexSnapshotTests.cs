@@ -201,6 +201,11 @@ namespace GxMcp.Worker.Tests
                 Assert.NotNull(restored.ChildrenByParent);
                 Assert.NotNull(restored.SourceTokenIndex);
                 Assert.True(restored.SourceTokenIndex.ContainsKey("missingproc"));
+                var state = cache.GetState();
+                Assert.Equal("Ready", state.Status);
+                Assert.Equal("stale", state.Freshness);
+                Assert.NotNull(state.LastSuccessfulScanAt);
+                Assert.Equal(result["capturedAtUtc"]?.ToObject<System.DateTime>().ToUniversalTime(), state.LastSuccessfulScanAt);
             }
             finally
             {
@@ -229,6 +234,37 @@ namespace GxMcp.Worker.Tests
                 Assert.False(result["loaded"]?.ToObject<bool>() ?? false);
                 Assert.True(result["fallback"]?.ToObject<bool>());
                 Assert.Equal("schema-mismatch", result["fallbackReason"]?.ToString());
+            }
+            finally
+            {
+                WarmIndexSnapshot.SetStoreForTests(null);
+            }
+        }
+
+        [Fact]
+        public void IndexCache_rejects_warm_snapshot_without_capture_time()
+        {
+            var store = new InMemoryStore();
+            WarmIndexSnapshot.SetStoreForTests(store);
+            try
+            {
+                string dll = WriteFakeDll("capture-time-test");
+                string kbPath = @"C:\KBs\WarmMissingCapture";
+                string path = WarmIndexSnapshot.DefaultPath(kbPath);
+                var index = new SearchIndex();
+                index.Objects["Procedure:WarmProc"] = new SearchIndex.IndexEntry
+                {
+                    Name = "WarmProc", Type = "Procedure"
+                };
+                WarmIndexSnapshot.Save(path, Encoding.UTF8.GetBytes(index.ToJson()), kbPath,
+                    objectCount: 1, workerDllPath: dll, schemaVersion: IndexCacheService.CurrentSchemaVersion);
+                store.Items[path].m.WorkerDllSha256 = WarmIndexSnapshot.ComputeWorkerDllSha256();
+                store.Items[path].m.CapturedAtUtc = null;
+
+                var result = new IndexCacheService().TryRestoreWarmSnapshot(kbPath);
+
+                Assert.False(result["loaded"]?.ToObject<bool>() ?? false);
+                Assert.Equal("captured-at-missing", result["fallbackReason"]?.ToString());
             }
             finally
             {

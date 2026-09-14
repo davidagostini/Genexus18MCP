@@ -64,6 +64,35 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void MarkIndexLoaded_UsesSnapshotTimeAndMarksCacheStale()
+        {
+            var svc = new IndexCacheService();
+            var captured = new System.DateTime(2026, 9, 3, 12, 34, 56, System.DateTimeKind.Utc);
+
+            svc.MarkIndexLoaded(42, captured);
+
+            var s = svc.GetState();
+            Assert.Equal("Ready", s.Status);
+            Assert.Equal("stale", s.Freshness);
+            Assert.Equal(captured, s.LastIndexedAt);
+            Assert.Equal(captured, s.LastSuccessfulScanAt);
+        }
+
+        [Fact]
+        public void MarkIndexComplete_RecordsCurrentFreshnessAndScanTime()
+        {
+            var svc = new IndexCacheService();
+            var scanned = new System.DateTime(2026, 9, 14, 10, 20, 30, System.DateTimeKind.Utc);
+
+            svc.MarkIndexComplete(42, scanned);
+
+            var s = svc.GetState();
+            Assert.Equal("current", s.Freshness);
+            Assert.Equal(scanned, s.LastIndexedAt);
+            Assert.Equal(scanned, s.LastSuccessfulScanAt);
+        }
+
+        [Fact]
         public void MarkIndexFailed_AfterReindexStarted_ResetsToCold()
         {
             var svc = new IndexCacheService();

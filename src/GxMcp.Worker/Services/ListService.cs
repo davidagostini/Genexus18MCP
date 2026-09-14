@@ -173,7 +173,11 @@ namespace GxMcp.Worker.Services
                     return Finalize(empty.ToString(Newtonsoft.Json.Formatting.None));
                 }
 
-                string cacheKey = $"{filter}|{limit}|{offset}|{parentFilter}|{typeFilter}|{parentPathFilter}|{verbose}|{invokerNameFilter}|{invokerDescriptionFilter}|{invokerPathPrefix}|{sort}|{since:yyyyMMddHHmmss}|{modifiedBefore:yyyyMMddHHmmss}|{cursor}";
+                var freshnessForCache = _indexCacheService?.GetState();
+                string cacheFreshness = freshnessForCache == null
+                    ? string.Empty
+                    : $"{freshnessForCache.Freshness}|{freshnessForCache.LastSuccessfulScanAt?.Ticks.ToString() ?? string.Empty}";
+                string cacheKey = $"{filter}|{limit}|{offset}|{parentFilter}|{typeFilter}|{parentPathFilter}|{verbose}|{invokerNameFilter}|{invokerDescriptionFilter}|{invokerPathPrefix}|{sort}|{since:yyyyMMddHHmmss}|{modifiedBefore:yyyyMMddHHmmss}|{cursor}|{cacheFreshness}";
 
                 if (index.LastUpdated > _lastIndexTime || index.GraphRevision != _lastGraphRevision)
                 {
@@ -730,6 +734,19 @@ namespace GxMcp.Worker.Services
             // Only attach _meta if it has content
             if (meta.Count > 0)
             {
+                response["_meta"] = meta;
+            }
+
+            if (_indexCacheService != null)
+            {
+                var state = _indexCacheService.GetState();
+                meta["freshness"] = new JObject
+                {
+                    ["status"] = state.Freshness ?? "unknown",
+                    ["lastSuccessfulScanAt"] = state.LastSuccessfulScanAt.HasValue
+                        ? (JToken)state.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                        : JValue.CreateNull()
+                };
                 response["_meta"] = meta;
             }
 

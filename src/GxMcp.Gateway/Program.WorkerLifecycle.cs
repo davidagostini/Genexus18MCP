@@ -89,8 +89,7 @@ namespace GxMcp.Gateway
                             // lifecycle call — forcing the agent to re-walk. Re-arm and re-fire
                             // the one-shot: BulkIndex(force:false) reuses the persisted on-disk
                             // snapshot (delta-on-open) instead of a cold 38k re-walk.
-                            Interlocked.Exchange(ref _indexBootstrapStarted, 0);
-                            TriggerIndexBootstrapOnce();
+                            ReArmIndexBootstrapForKb(kb, "crash-respawn");
                             return;
                         }
                         catch (Exception ex)
@@ -138,8 +137,7 @@ namespace GxMcp.Gateway
                             await respawnPool!.AcquireAsync(kb, slowCts.Token).ConfigureAwait(false);
                             _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
                             Log($"[Respawn] Slow-retry respawn succeeded for KB '{kb.Alias}' (retry {slow}).");
-                            Interlocked.Exchange(ref _indexBootstrapStarted, 0);
-                            TriggerIndexBootstrapOnce();
+                            ReArmIndexBootstrapForKb(kb, "slow-respawn");
                             return;
                         }
                         catch (Exception ex)

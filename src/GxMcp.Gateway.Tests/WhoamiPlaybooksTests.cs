@@ -84,6 +84,26 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(1234, index["totalObjects"]!.ToObject<int>());
         }
 
+        [Fact]
+        public void WhoamiIndex_ExposesCacheFreshnessSeparatelyFromAvailability()
+        {
+            var captured = new System.DateTime(2026, 9, 3, 12, 34, 56, System.DateTimeKind.Utc);
+            try
+            {
+                Program.UpdateLastKnownIndexState("Ready", 1234, captured, null, null,
+                    freshness: "stale", lastSuccessfulScanAt: captured);
+
+                JObject index = (JObject)Program.BuildWhoamiPayload()["index"]!;
+                Assert.Equal("Ready", index["status"]!.ToString());
+                Assert.Equal("stale", index["freshness"]!.ToString());
+                Assert.Equal(captured.ToString("o"), index["lastSuccessfulScanAt"]?.ToString());
+            }
+            finally
+            {
+                Program.UpdateLastKnownIndexState("Cold", 0, null, null, null);
+            }
+        }
+
         // v2.8.1 regression — v2.8.0 wrapped the worker's GetIndexState reply in the canonical
         // McpResponse.Ok envelope { status:"ok", code:"IndexState", result:{ indexStatus, totalObjects } },
         // nesting the payload one level below env["result"]. The gateway read the envelope's
@@ -104,6 +124,8 @@ namespace GxMcp.Gateway.Tests
                         ["indexStatus"] = "Ready",
                         ["totalObjects"] = 2090,
                         ["lastIndexedAt"] = null,
+                        ["freshness"] = "stale",
+                        ["lastSuccessfulScanAt"] = "2026-09-03T12:34:56.0000000Z",
                         ["progress"] = null,
                         ["etaMs"] = null
                     }
@@ -115,6 +137,8 @@ namespace GxMcp.Gateway.Tests
                 JObject index = (JObject)Program.BuildWhoamiPayload()["index"]!;
                 Assert.Equal("Ready", index["status"]!.ToString());
                 Assert.Equal(2090, index["totalObjects"]!.ToObject<int>());
+                Assert.Equal("stale", index["freshness"]!.ToString());
+                Assert.Equal("2026-09-03T12:34:56.0000000Z", index["lastSuccessfulScanAt"]?.ToString());
             }
             finally
             {

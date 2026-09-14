@@ -94,6 +94,8 @@ namespace GxMcp.Gateway
             public string Status = "Cold";
             public int TotalObjects;
             public DateTime? LastIndexedAt;
+            public string Freshness = "unknown";
+            public DateTime? LastSuccessfulScanAt;
             public double? Progress;
             public int? EtaMs;
             public DateTime RefreshedAtUtc = DateTime.MinValue;
@@ -167,7 +169,7 @@ namespace GxMcp.Gateway
 
         internal static void UpdateLastKnownIndexState(string status, int totalObjects, DateTime? lastIndexedAt, double? progress, int? etaMs,
             int flushFailuresConsecutive = 0, DateTime? flushLastSuccessUtc = null, string? flushLastError = null,
-            JArray? recentlyChanged = null)
+            JArray? recentlyChanged = null, string? freshness = null, DateTime? lastSuccessfulScanAt = null)
         {
             IndexStateSnapshot? previous;
             lock (_lastKnownIndexStateLock)
@@ -178,6 +180,8 @@ namespace GxMcp.Gateway
                     Status = string.IsNullOrEmpty(status) ? "Cold" : status,
                     TotalObjects = totalObjects,
                     LastIndexedAt = lastIndexedAt,
+                    Freshness = freshness ?? "unknown",
+                    LastSuccessfulScanAt = lastSuccessfulScanAt,
                     Progress = progress,
                     EtaMs = etaMs,
                     RefreshedAtUtc = DateTime.UtcNow,
@@ -433,6 +437,10 @@ namespace GxMcp.Gateway
                 ["lastIndexedAt"] = snap.LastIndexedAt.HasValue
                     ? (JToken)snap.LastIndexedAt.Value.ToUniversalTime().ToString("o")
                     : JValue.CreateNull(),
+                ["freshness"] = snap.Freshness ?? "unknown",
+                ["lastSuccessfulScanAt"] = snap.LastSuccessfulScanAt.HasValue
+                    ? (JToken)snap.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                    : JValue.CreateNull(),
                 ["progress"] = snap.Progress.HasValue ? (JToken)snap.Progress.Value : JValue.CreateNull(),
                 ["etaMs"] = snap.EtaMs.HasValue ? (JToken)snap.EtaMs.Value : JValue.CreateNull(),
                 // PERFORMANCE (W-M2): expose flush health so a degraded snapshot is
@@ -532,6 +540,15 @@ namespace GxMcp.Gateway
                     lastIndexedAt = parsed;
                 }
             }
+            string freshness = state["freshness"]?.ToString() ?? "unknown";
+            DateTime? lastSuccessfulScanAt = null;
+            var lssTok = state["lastSuccessfulScanAt"];
+            if (lssTok != null && lssTok.Type != JTokenType.Null &&
+                DateTime.TryParse(lssTok.ToString(), null,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out var lssParsed))
+            {
+                lastSuccessfulScanAt = lssParsed;
+            }
             double? progress = state["progress"]?.ToObject<double?>();
             int? etaMs = state["etaMs"]?.ToObject<int?>();
             int flushFailuresConsecutive = state["flushFailuresConsecutive"]?.ToObject<int?>() ?? 0;
@@ -546,7 +563,8 @@ namespace GxMcp.Gateway
 
             JArray? recentlyChanged = state["recentlyChanged"] as JArray;
             UpdateLastKnownIndexState(status, totalObjects, lastIndexedAt, progress, etaMs,
-                flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged);
+                flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged,
+                freshness, lastSuccessfulScanAt);
             return true;
         }
 

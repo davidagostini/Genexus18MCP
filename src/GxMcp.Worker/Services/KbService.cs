@@ -260,6 +260,41 @@ namespace GxMcp.Worker.Services
                     Logger.Warn("Warm index restore failed: " + warmEx.Message);
                 }
 
+                // Opening a worker must not leave a restored snapshot at Ready
+                // forever. BulkIndex(false) validates the persisted baseline and
+                // starts the bounded delta (or a full rebuild when the baseline
+                // is not eligible) without blocking the open response. Keep this
+                // failure separate from restore: a refresh diagnostic must not hide
+                // a successfully restored catalogue.
+                try
+                {
+                    string refreshRaw = BulkIndex(false);
+                    if (warmReload != null)
+                    {
+                        warmReload["refresh"] = JObject.Parse(refreshRaw);
+                        var freshnessState = _indexCacheService.GetState();
+                        warmReload["freshness"] = new JObject
+                        {
+                            ["status"] = freshnessState.Freshness ?? "unknown",
+                            ["lastSuccessfulScanAt"] = freshnessState.LastSuccessfulScanAt.HasValue
+                                ? (JToken)freshnessState.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                                : JValue.CreateNull()
+                        };
+                    }
+                }
+                catch (Exception refreshEx)
+                {
+                    if (warmReload != null)
+                    {
+                        warmReload["refresh"] = new JObject
+                        {
+                            ["status"] = "error",
+                            ["message"] = refreshEx.Message
+                        };
+                    }
+                    Logger.Warn("Warm index refresh failed: " + refreshEx.Message);
+                }
+
                 sw.Stop();
                 LastOpenElapsedMs = sw.ElapsedMilliseconds;
                 Logger.Info($"[KB-OPEN] elapsedMs={sw.ElapsedMilliseconds} path={path}");
@@ -583,7 +618,12 @@ namespace GxMcp.Worker.Services
                             && validation.CanDeltaAcrossDll;
                         if (Configuration.UseDeltaOnOpen && (validation.CanDelta || dllRebaseline))
                         {
-                            try { _indexCacheService.MarkIndexComplete(loaded.Objects.Count); } catch { }
+                            try
+                            {
+                                _indexCacheService.MarkIndexLoaded(loaded.Objects.Count);
+                                _indexCacheService.MarkIndexRefreshing();
+                            }
+                            catch { }
                             _isIndexing = true;
                             StartDeltaRefreshThread(validation.HighWaterMark, loaded.Objects.Count);
                             Logger.Info($"BulkIndex(fast): warm cache delta-eligible ({loaded.Objects.Count} objects, hwm={validation.HighWaterMark:o}, dllRebaseline={dllRebaseline}) — delta refresh started.");
@@ -1072,10 +1112,10 @@ namespace GxMcp.Worker.Services
                     {
                         // v2.3.8 (post-Task 1.2 fix): warm-start path — publish Ready to
                         // IndexState so whoami stops reporting Cold while the in-memory
-                        // index is in fact populated. GetIndex() also calls MarkIndexComplete
+                        // index is in fact populated. GetIndex() also calls MarkIndexLoaded
                         // on first hydration; this is the second safety net for the case
                         // where the index was already in memory before the BulkIndex call.
-                        try { _indexCacheService.MarkIndexComplete(loaded.Objects.Count); } catch { }
+                        try { _indexCacheService.MarkIndexLoaded(loaded.Objects.Count); } catch { }
                         Logger.Info($"BulkIndex skipped — cache already populated ({loaded.Objects.Count} objects). Pass force=true to rebuild.");
                         return Models.McpResponse.Ok(
                             code: "AlreadyIndexed",

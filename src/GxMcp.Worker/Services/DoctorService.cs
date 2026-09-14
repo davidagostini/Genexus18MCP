@@ -257,6 +257,7 @@ namespace GxMcp.Worker.Services
         {
             int entries = 0;
             double? ageHours = null;
+            var state = _indexCacheService?.GetState();
             if (_indexCacheService != null)
             {
                 try
@@ -291,7 +292,11 @@ namespace GxMcp.Worker.Services
             return new JObject
             {
                 ["indexEntries"] = entries,
-                ["ageHours"] = ageHours.HasValue ? (JToken)new JValue(ageHours.Value) : JValue.CreateNull()
+                ["ageHours"] = ageHours.HasValue ? (JToken)new JValue(ageHours.Value) : JValue.CreateNull(),
+                ["freshness"] = state?.Freshness ?? "unknown",
+                ["lastSuccessfulScanAt"] = state?.LastSuccessfulScanAt.HasValue == true
+                    ? (JToken)state.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                    : JValue.CreateNull()
             };
         }
 
