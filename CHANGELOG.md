@@ -9,6 +9,7 @@
 ### Fixed
 
 - **Binary File/WikiBlob reads (#198)**: add read-only `genexus_io action=read_file_content`, backed by the SDK Wiki blob helper, with external output, bounded base64, byte count, SHA-256, and explicit unsupported-helper diagnostics.
+- **Contract baseline (#198)**: align the CI regression count with the added `read_file_content` action (54 tools, 227 actions), keeping schema and test expectations synchronized.
 
 ## v3.5.0 - 2026-09-14
 

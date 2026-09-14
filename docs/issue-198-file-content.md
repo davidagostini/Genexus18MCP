@@ -51,3 +51,10 @@ explicitamente em `outputPath` (ou o temporário interno removido ao final).
   commit/PR.
 
 Nenhuma KB, arquivo `.gx` ou artefato de usuário foi alterado.
+
+## Gate de contrato
+
+O baseline deste branch é de 54 ferramentas e 227 ações. A contagem é
+intencionalmente verificada no CI para impedir que uma nova ação seja
+publicada sem schema, fixture e documentação alinhados; alterações futuras do
+schema devem atualizar esse baseline no mesmo commit.
