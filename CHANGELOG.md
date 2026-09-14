@@ -19,6 +19,7 @@
 
 - Raise the tool-schema budget from 28,600 to 28,800 tokens for the documented `MasterPage` list action, canonical pagination parameters, structured reference contract, and explicit read-only guarantees.
 - Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type`; the early validator checks these contract views together and documents the required update points before a public action is pushed.
+- Align the CI regression counts and description-debt baseline with the resolved `MasterPage` action.
 
 ## v3.5.1 - 2026-09-15
 

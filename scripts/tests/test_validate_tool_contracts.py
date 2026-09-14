@@ -123,7 +123,7 @@ public class SearchRouter {
             )
         )
         counts = MODULE.validate_descriptions(document)
-        self.assertEqual(75, counts["known_debt"])
+        self.assertEqual(74, counts["known_debt"])
         self.assertEqual(0, counts["action_debt"])
 
         query = next(tool for tool in document if tool["name"] == "genexus_query")
