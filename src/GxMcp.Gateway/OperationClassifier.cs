@@ -104,7 +104,7 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "status" },
                     mutating: new[] { "define_api", "deploy" }),
                 ["genexus_properties"] = Contract(
-                    readOnly: new[] { "get" },
+                    readOnly: new[] { "get", "list" },
                     mutating: new[] { "set", "move" }),
                 ["genexus_structure"] = Contract(
                     readOnly: new[] { "get_visual", "get_indexes", "get_logic", "check_subtypes" },

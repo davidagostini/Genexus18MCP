@@ -76,7 +76,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_lifecycle` | `inspect`, `reorg_preview`, `status`, `result`, `snapshots-list` | `build`, `build_all`, `cancel`, `reconcile`, `specify`, `validate`, `validate-kb`, `rebuild`, `reorg`, `sync`, `index`, `snapshots-restore` |
 | `genexus_refactor` | — | `RenameAttribute`, `RenameVariable`, `RenameObject`, `ExtractProcedure`, `ExtractSubroutine`, `WWPSetCondition` |
 | `genexus_gam` | `status` | `define_api`, `deploy` |
-| `genexus_properties` | `get` | `set`, `move` |
+| `genexus_properties` | `get`, `list` | `set`, `move` |
 | `genexus_structure` | `get_visual`, `get_indexes`, `get_logic`, `check_subtypes` | `update_visual`, `create_index`, `drop_index`, `set_attribute`, `set_level`, `set_domain`, `update_group`, `move_attribute`, `remove_attribute` |
 | `genexus_authoring` | — | `add_external_method`, `add_external_property`, `add_menu_option`, `add_condition` |
 | `genexus_layout` | `get_tree`, `find_controls`, `inspect_surface`, `get_preview`, `scan_mutators`, `list_controls`, `design_system` | `set_property`, `set_properties`, `rename_printblock`, `add_printblock`, `delete_printblock` |
@@ -136,7 +136,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_structure` | active | `Structure -> GetVisualStructure | UpdateVisualStructure | GetVisualIndexes | GetLogicStructure | CheckSubtypes`; supports `type` disambiguation, `remove_attribute`, `move_attribute` |
 | `genexus_refactor` | active | `Refactor -> RenameObject | RenameAttribute | RenameVariable | ExtractProcedure | ExtractSubroutine | WWPSetCondition` |
 | `genexus_format` | active | `Formatting -> Format` |
-| `genexus_properties` | active | `Property -> Get | Set | Move` |
+| `genexus_properties` | active | `Property -> Get | List | Set | Move`; native `MasterPage` identity resolution and deterministic pagination |
 | `genexus_versioning` | active | Versioning umbrella: `History -> List | Get_Source | Save | Restore`, `Undo`, `TimeTravel`, `Blame`, `Diff` |
 | `genexus_io` | active | IO umbrella: `Asset -> Find | Read | Write`, Object Text batch `ExportKbToText | ImportTextToKb | ValidateKbTextFiles | DeleteKbObjects`, `Object -> ExportText | ImportText`, `Export -> Unified`, `ScreenshotPublish` |
 | `genexus_db` | active | Database umbrella: `DbDrift`, `DbOptimize`, `Analyze -> GetSQL / GetSqlForNavigation / GenerateSampleData`, typed Transaction records (`QueryRecords / InsertRecord / UpdateRecord`), `Types`, `ReorgImpact` |

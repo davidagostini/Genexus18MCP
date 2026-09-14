@@ -269,4 +269,6 @@ Metadata and property-reading tools (`genexus_properties`, `genexus_variable`, e
 - **Pattern and query filtering**: support `query` parameter matching both case-insensitive substrings and glob wildcards (`*` and `?`).
 - **Projections**: support `projection: "minimal" | "standard" | "full"` to control metadata payload weight (`minimal` emits compact key/value mappings; `full` includes all SDK descriptor flags).
 - **Suggestions on missing keys**: when a requested property is missing, compute nearest candidates using Levenshtein distance and return actionable `suggestions` and `nextSteps` in the error/response envelope instead of opaque failures.
+- **Native object references**: do not serialize reference wrappers with `ToString()`. `MasterPage` reads resolve the referenced WebPanel to `{ name, guid, path }`, represent an unset value with `empty: true`, and expose `verifiedByReread` after resolving the owning object again in the same request.
+- **Paged MasterPage inventory**: use `genexus_properties action=list` for Transactions/WebPanels. `query` filters object name/path, `type` narrows the object kind, and `offset`/`limit` preserve deterministic ordering. This action is read-only and must never trigger a lifecycle operation.
 

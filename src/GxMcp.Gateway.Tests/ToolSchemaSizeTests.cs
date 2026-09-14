@@ -183,7 +183,10 @@ namespace GxMcp.Gateway.Tests
             //   the explicit WebComponent-to-DropDownComponent UserAction contract,
             //   including target identity, preserved Gxobject, trigger/load metadata,
             //   and the dry-run example. Measured ~27980.
-            Assert.True(approxTokens < 28250, $"tool_definitions.json is ~{approxTokens} tokens; budget 28250.");
+            //   2026-09-14 (native MasterPage reads): 28250 → 28550 for the
+            //   genexus_properties list action, pagination fields, structured
+            //   reference contract and read-only lifecycle guarantee. Measured ~28402.
+            Assert.True(approxTokens < 28550, $"tool_definitions.json is ~{approxTokens} tokens; budget 28550.");
         }
     }
 }

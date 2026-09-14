@@ -577,7 +577,7 @@ namespace GxMcp.Gateway
                 else if (refName == "genexus_lifecycle")
                     values = new[] { "build", "build_all", "rebuild", "reorg", "validate", "sync", "index", "status", "result" };
                 else if (refName == "genexus_properties")
-                    values = new[] { "get", "set", "move" };
+                    values = new[] { "get", "list", "set", "move" };
                 else if (refName == "genexus_asset")
                     values = new[] { "find", "read", "write" };
                 else if (refName == "genexus_history")

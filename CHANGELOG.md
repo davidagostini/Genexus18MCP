@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+
+- Resolve native `MasterPage` property wrappers for Transactions and WebPanels to a canonical `target` identity (`name`, `type`, `guid`, and qualified `path`), preserve the structured value across every property response alias, explicitly represent empty references with `target: null`, and verify the resolved value by same-request reread.
+
+### Added
+
+- Add a read-only, deterministically ordered and paginated `genexus_properties action=list` inventory for Transaction/WebPanel `MasterPage` assignments, with object name/path filtering, index-first candidate paging with native fallback, and no implicit lifecycle operation.
+
+### Internal
+
+- Raise the tool-schema budget from 28,250 to 28,550 tokens for the documented `MasterPage` list action, canonical pagination parameters, structured reference contract, and explicit read-only guarantees (measured approximately 28,402 tokens).
+
 ## v3.5.0 - 2026-09-14
 
 

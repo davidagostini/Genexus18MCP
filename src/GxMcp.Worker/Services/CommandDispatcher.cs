@@ -2154,6 +2154,21 @@ namespace GxMcp.Worker.Services
         private string Handle_Property(JObject request, string method, string action, string target, string payload, JObject args)
         {
             var propType = args?["type"]?.ToString();
+            if (string.Equals(action, "List", StringComparison.OrdinalIgnoreCase))
+            {
+                return _propertyService.ListMasterPages(
+                    propType,
+                    args?["query"]?.ToString(),
+                    args?["offset"]?.ToObject<int?>() ?? 0,
+                    args?["limit"]?.ToObject<int?>() ?? 25);
+            }
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                return Models.McpResponse.Err(
+                    code: "ObjectNameRequired",
+                    message: "name is required for property get, set, and move operations.",
+                    hint: "Provide an object name, or use action=list for paged MasterPage reads.");
+            }
             if (string.Equals(action, "Move", StringComparison.OrdinalIgnoreCase))
             {
                 // NOTE: args["module"] is the routing key ("Property"), NOT a destination —

@@ -465,10 +465,11 @@ namespace GxMcp.Gateway
                 "# genexus_properties\n\n" +
                 "Read or change object-level GeneXus properties without editing the object source.\n\n" +
                 "## Actions\n" +
-                "- `get` — read current property values and version information. Filter with `propertyName` (name, comma-separated list, or * wildcard), `propertyNames[]`, `query` (search filter), or `projection` (minimal, standard, full; default full). Responses carry a flat `values` key-value map and `didYouMean` suggestions on miss.\n" +
+                "- `get` — read current property values and version information. Filter with `propertyName` (name, comma-separated list, or * wildcard), `propertyNames[]`, `query` (search filter), or `projection` (minimal, standard, full; default full). `MasterPage` is returned as a resolved `{name, guid, path}` reference, explicitly marks an empty value, and reports same-request reread verification. Structured values remain structured in `value`, `values`, and `properties`.\n" +
+                "- `list` — list `MasterPage` for Transactions and WebPanels. Filter object names/paths with `query`, narrow with `type=Transaction|WebPanel`, and continue with `offset`, `limit`, `hasMore`, and `nextOffset`. Ordering is deterministic by type, path, name, and GUID.\n" +
                 "- `set` — assign one or more named properties and verify the saved values.\n" +
                 "- `move` — move an object to another module or folder.\n\n" +
-                "`get` is read-only. `set` and `move` mutate the KB; use the version token when a concurrent IDE edit must not be overwritten.\n",
+                "`get` and `list` are read-only and never trigger Specify, Generate, Build, Rebuild, compilation, reorganization, publication, execution, or tests. `set` and `move` mutate the KB; use the version token when a concurrent IDE edit must not be overwritten.\n",
 
             ["genexus_authoring"] =
                 "# genexus_authoring\n\n" +

@@ -346,6 +346,14 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void GenexusProperties_List_IsReadOnly()
+        {
+            Assert.True(OperationClassifier.IsReadOnly(
+                "genexus_properties",
+                new JObject { ["action"] = "list", ["type"] = "Transaction" }));
+        }
+
+        [Fact]
         public void DocumentedDryRunActions_AreReadOnlyOnlyWhenPreviewing()
         {
             Assert.True(OperationClassifier.IsReadOnly("genexus_properties", new JObject { ["action"] = "move", ["dryRun"] = true }));

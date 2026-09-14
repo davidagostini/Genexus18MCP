@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Artech.Architecture.Common.Objects;
+using Artech.Genexus.Common.CustomTypes;
 using Artech.Genexus.Common.Objects;
 using Artech.Common.Properties;
 using Artech.Genexus.Common.Parts;
@@ -130,6 +131,34 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        private static bool RequestIncludesMasterPage(
+            string controlName,
+            string propertyName,
+            IEnumerable<string> propertyNames,
+            string projection,
+            string query)
+        {
+            if (!string.IsNullOrEmpty(controlName)) return false;
+
+            var requested = new List<string>();
+            if (!string.IsNullOrWhiteSpace(propertyName))
+            {
+                requested.AddRange(propertyName.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(value => value.Trim()));
+            }
+            if (propertyNames != null)
+            {
+                requested.AddRange(propertyNames.Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value.Trim()));
+            }
+
+            if (!string.IsNullOrWhiteSpace(query))
+                return MatchesWildcardOrQuery("MasterPage", query.Trim());
+            if (requested.Count > 0)
+                return requested.Any(value => MatchesWildcardOrQuery("MasterPage", value));
+            return !string.Equals(projection, "minimal", StringComparison.OrdinalIgnoreCase);
+        }
+
         public string GetProperties(
             string target,
             string controlName = null,
@@ -146,10 +175,19 @@ namespace GxMcp.Worker.Services
 
                 string ck = CacheKey(obj, controlName);
                 JObject fullPropsResult = null;
-                lock (_propertyCacheLock)
+                bool resolveMasterPage = IsMasterPageOwner(obj) && RequestIncludesMasterPage(
+                    controlName,
+                    propertyName,
+                    propertyNames,
+                    projection,
+                    query);
+                if (!resolveMasterPage)
                 {
-                    if (_propertyCache.TryGetValue(ck, out var hit) && hit.expiresAt > DateTime.UtcNow)
-                        fullPropsResult = (JObject)hit.propsResult.DeepClone();
+                    lock (_propertyCacheLock)
+                    {
+                        if (_propertyCache.TryGetValue(ck, out var hit) && hit.expiresAt > DateTime.UtcNow)
+                            fullPropsResult = (JObject)hit.propsResult.DeepClone();
+                    }
                 }
 
                 if (fullPropsResult == null)
@@ -162,16 +200,41 @@ namespace GxMcp.Worker.Services
                     }
 
                     fullPropsResult = SerializeProperties(container);
-                    lock (_propertyCacheLock)
+
+                    if (resolveMasterPage)
                     {
-                        _propertyCache[ck] = (DateTime.UtcNow.AddSeconds(PropertyCacheTtlSeconds), (JObject)fullPropsResult.DeepClone());
+                        bool propertyPresent = TryReadNativeProperty(obj, "MasterPage", out object rawValue);
+                        JObject masterPageProperty = FindProperty(fullPropsResult, "MasterPage");
+                        JObject masterPage = ResolveMasterPageWithReread(obj, rawValue, propertyPresent);
+                        if (masterPageProperty != null)
+                        {
+                            masterPageProperty["value"] = masterPage;
+                        }
+                        else
+                        {
+                            ((JArray)fullPropsResult["properties"]).Add(new JObject
+                            {
+                                ["name"] = "MasterPage",
+                                ["value"] = masterPage,
+                                ["type"] = "Artech.Genexus.Common.CustomTypes.WebPanelReference",
+                                ["readOnly"] = true
+                            });
+                        }
+                    }
+
+                    if (!resolveMasterPage)
+                    {
+                        lock (_propertyCacheLock)
+                        {
+                            _propertyCache[ck] = (DateTime.UtcNow.AddSeconds(PropertyCacheTtlSeconds), (JObject)fullPropsResult.DeepClone());
+                        }
                     }
                 }
 
                 string versionToken = null;
                 try { versionToken = WriteService.ComputeVersionToken(obj); } catch { }
 
-                return ShapeGetPropertiesResult(
+                string response = ShapeGetPropertiesResult(
                     fullPropsResult,
                     target,
                     controlName,
@@ -180,11 +243,369 @@ namespace GxMcp.Worker.Services
                     projection,
                     versionToken,
                     query);
+                return resolveMasterPage ? AttachObjectIdentity(response, obj) : response;
             }
             catch (Exception ex)
             {
                 return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
             }
+        }
+
+        public string ListMasterPages(string typeFilter = null, string query = null, int offset = 0, int limit = 25)
+        {
+            if (offset < 0)
+                return Models.McpResponse.Err("InvalidOffset", "offset must be greater than or equal to 0.", "Use offset=0 for the first page.");
+            if (limit < 1 || limit > 100)
+                return Models.McpResponse.Err("InvalidLimit", "limit must be between 1 and 100.", "Use limit=25 for the default page size.");
+            var requestedTypes = new HashSet<string>(
+                (typeFilter ?? "Transaction,WebPanel").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(value => value.Trim()),
+                StringComparer.OrdinalIgnoreCase);
+            if (requestedTypes.Count == 0 || requestedTypes.Any(type =>
+                !string.Equals(type, "Transaction", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(type, "WebPanel", StringComparison.OrdinalIgnoreCase)))
+                return Models.McpResponse.Err(
+                    "UnsupportedObjectType",
+                    "MasterPage batch reads support only Transaction and WebPanel objects.",
+                    "Pass type=Transaction, type=WebPanel, or omit type to include both.");
+
+            try
+            {
+                var kb = _objectService.GetKbService()?.GetKB();
+                KBModel model = kb?.DesignModel;
+                if (model == null)
+                    return Models.McpResponse.Err("KbNotOpen", "KB is not open.", "Open or select the KB before listing MasterPage values.");
+
+                var objectMatcher = BuildPropertyMatcher(query?.Trim());
+                var candidates = GetMasterPageCandidates(model, requestedTypes, out string catalogSource)
+                    .Where(item => objectMatcher(item.Name) || objectMatcher(item.Path))
+                    .OrderBy(item => item.Type, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.Guid, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                int total = candidates.Count;
+                var items = new JArray();
+                if (offset < total)
+                {
+                    foreach (var candidate in candidates.Skip(offset).Take(limit))
+                    {
+                        KBObject candidateObject = candidate.Object ?? _objectService.FindObject(candidate.Entry);
+                        var item = (JObject)candidate.Identity.DeepClone();
+                        item["name"] = candidate.Name;
+                        item["type"] = candidate.Type;
+                        item["path"] = candidate.Path;
+                        if (candidateObject == null)
+                        {
+                            item["masterPage"] = UnavailableMasterPage(error: "IndexedObjectUnavailable");
+                        }
+                        else
+                        {
+                            bool propertyPresent = TryReadNativeProperty(candidateObject, "MasterPage", out object rawValue);
+                            item["masterPage"] = ResolveMasterPageWithReread(candidateObject, rawValue, propertyPresent);
+                        }
+                        items.Add(item);
+                    }
+                }
+                int consumed = offset + items.Count;
+                bool hasMore = consumed < total;
+
+                var result = new JObject
+                {
+                    ["propertyName"] = "MasterPage",
+                    ["catalogSource"] = catalogSource,
+                    ["types"] = new JArray(requestedTypes.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)),
+                    ["query"] = string.IsNullOrWhiteSpace(query) ? JValue.CreateNull() : new JValue(query.Trim()),
+                    ["count"] = items.Count,
+                    ["offset"] = offset,
+                    ["limit"] = limit,
+                    ["total"] = total,
+                    ["hasMore"] = hasMore,
+                    ["nextOffset"] = hasMore ? new JValue(consumed) : JValue.CreateNull(),
+                    ["pagination"] = new JObject
+                    {
+                        ["offset"] = offset,
+                        ["limit"] = limit,
+                        ["returned"] = items.Count,
+                        ["total"] = total,
+                        ["hasMore"] = hasMore,
+                        ["nextOffset"] = hasMore ? new JValue(consumed) : JValue.CreateNull()
+                    },
+                    ["items"] = items
+                };
+                return Models.McpResponse.Ok(code: "MasterPagesListed", result: result);
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    "MasterPageListFailed",
+                    ex.Message,
+                    "Confirm that the KB is open and that its DesignModel is available.");
+            }
+        }
+
+        private sealed class MasterPageCandidate
+        {
+            internal KBObject Object;
+            internal Models.SearchIndex.IndexEntry Entry;
+            internal JObject Identity;
+            internal string Name;
+            internal string Type;
+            internal string Path;
+            internal string Guid;
+        }
+
+        private List<MasterPageCandidate> GetMasterPageCandidates(
+            KBModel model,
+            HashSet<string> requestedTypes,
+            out string source)
+        {
+            try
+            {
+                var indexCache = _objectService.GetKbService()?.GetIndexCache();
+                var index = indexCache?.TryGetLoadedIndex();
+                string status = indexCache?.GetState()?.Status;
+                bool complete = string.Equals(status, "Ready", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "LiteReady", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "Enriching", StringComparison.OrdinalIgnoreCase);
+                if (complete && index?.Objects != null)
+                {
+                    source = "index";
+                    return index.FindByTypes(requestedTypes).Where(entry => entry != null).Select(entry =>
+                    {
+                        string path = string.IsNullOrWhiteSpace(entry.Path) ? entry.Name : entry.Path;
+                        var identity = new JObject
+                        {
+                            ["guid"] = string.IsNullOrWhiteSpace(entry.Guid) ? JValue.CreateNull() : new JValue(entry.Guid),
+                            ["path"] = path
+                        };
+                        if (!string.IsNullOrWhiteSpace(entry.EntityKey)) identity["entityKey"] = entry.EntityKey;
+                        return new MasterPageCandidate
+                        {
+                            Entry = entry,
+                            Identity = identity,
+                            Name = entry.Name,
+                            Type = entry.Type,
+                            Path = path,
+                            Guid = entry.Guid ?? string.Empty
+                        };
+                    }).ToList();
+                }
+            }
+            catch { }
+
+            source = "native";
+            return model.Objects.GetAll().Cast<KBObject>()
+                .Where(obj => obj != null && requestedTypes.Contains(obj.TypeDescriptor?.Name ?? string.Empty))
+                .Select(obj =>
+                {
+                    JObject identity = BuildObjectIdentity(obj);
+                    return new MasterPageCandidate
+                    {
+                        Object = obj,
+                        Identity = identity,
+                        Name = obj.Name,
+                        Type = obj.TypeDescriptor.Name,
+                        Path = identity["path"]?.ToString() ?? obj.Name ?? string.Empty,
+                        Guid = identity["guid"]?.ToString() ?? string.Empty
+                    };
+                }).ToList();
+        }
+
+        private static JObject EmptyMasterPage(bool propertyPresent)
+        {
+            return new JObject
+            {
+                ["propertyPresent"] = propertyPresent,
+                ["resolved"] = true,
+                ["empty"] = true,
+                ["target"] = JValue.CreateNull(),
+                ["name"] = JValue.CreateNull(),
+                ["guid"] = JValue.CreateNull(),
+                ["path"] = JValue.CreateNull()
+            };
+        }
+
+        private static JObject UnavailableMasterPage(string error = null, string rawType = null, string entityKey = null)
+        {
+            var result = new JObject
+            {
+                ["propertyPresent"] = error == null,
+                ["resolved"] = false,
+                ["empty"] = false,
+                ["target"] = JValue.CreateNull(),
+                ["name"] = JValue.CreateNull(),
+                ["guid"] = JValue.CreateNull(),
+                ["path"] = JValue.CreateNull()
+            };
+            if (error != null)
+            {
+                result["readError"] = error;
+                result["verifiedByReread"] = false;
+            }
+            if (rawType != null) result["rawType"] = rawType;
+            if (entityKey != null) result["entityKey"] = entityKey;
+            return result;
+        }
+
+        private static bool IsMasterPageOwner(KBObject obj)
+        {
+            string type = null;
+            try { type = obj?.TypeDescriptor?.Name; } catch { }
+            return string.Equals(type, "Transaction", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(type, "WebPanel", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private JObject BuildObjectIdentity(KBObject obj, string fallbackPath = null)
+        {
+            var identity = _objectService.BuildObjectIdentity(obj) ?? new JObject();
+            if (identity["guid"] == null)
+            {
+                try { identity["guid"] = obj.Guid.ToString(); } catch { identity["guid"] = JValue.CreateNull(); }
+            }
+            if (identity["path"] == null)
+            {
+                string path = null;
+                try { path = ReflectionHelper.TryGetMember(obj, "QualifiedName")?.ToString(); } catch { }
+                identity["path"] = string.IsNullOrWhiteSpace(path)
+                    ? (string.IsNullOrWhiteSpace(fallbackPath) ? obj.Name : fallbackPath)
+                    : path;
+            }
+            return identity;
+        }
+
+        private string AttachObjectIdentity(string response, KBObject obj)
+        {
+            try
+            {
+                var envelope = JObject.Parse(response);
+                if (!string.Equals(envelope["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase)
+                    || !(envelope["result"] is JObject result)) return response;
+
+                JObject identity = BuildObjectIdentity(obj);
+                result["name"] = obj.Name;
+                result["type"] = obj.TypeDescriptor?.Name;
+                result["guid"] = identity["guid"]?.DeepClone() ?? JValue.CreateNull();
+                result["path"] = identity["path"]?.DeepClone() ?? new JValue(obj.Name);
+                return envelope.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch { return response; }
+        }
+
+        private static JObject FindProperty(JObject serialized, string propertyName)
+        {
+            var properties = serialized?["properties"] as JArray;
+            return properties?.OfType<JObject>().FirstOrDefault(property =>
+                string.Equals(property["name"]?.ToString(), propertyName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private JObject ResolveMasterPageWithReread(KBObject owner, object initialValue, bool initialPresent)
+        {
+            JObject first = DescribeMasterPageReference(owner, initialValue, initialPresent);
+            KBObject rereadObject = TryRereadObject(owner, out bool rereadAvailable);
+            object rereadValue = null;
+            bool rereadPresent = rereadAvailable && TryReadNativeProperty(rereadObject, "MasterPage", out rereadValue);
+            JObject second = DescribeMasterPageReference(rereadObject ?? owner, rereadValue, rereadPresent);
+            bool verified = rereadAvailable && MasterPageIdentityEquals(first, second);
+
+            first["verifiedByReread"] = verified;
+            if (!verified)
+            {
+                first["rereadAvailable"] = rereadAvailable;
+                first["reread"] = second;
+            }
+            return first;
+        }
+
+        private JObject DescribeMasterPageReference(KBObject owner, object rawValue, bool propertyPresent)
+        {
+            var result = new JObject { ["propertyPresent"] = propertyPresent };
+            if (!propertyPresent || rawValue == null)
+                return EmptyMasterPage(propertyPresent);
+
+            if (!(rawValue is WebPanelReference reference))
+                return UnavailableMasterPage(rawType: rawValue.GetType().FullName);
+
+            // GeneXus 18 U11/U12/U16 all expose the selected WebPanel through ObjKey.
+            var key = reference.ObjKey;
+            if (IsEmptyMasterPageReference(reference))
+                return EmptyMasterPage(propertyPresent);
+
+            KBObject referenced = null;
+            try { referenced = owner?.Model?.Objects?.Get(key); } catch { }
+            if (referenced == null)
+                return UnavailableMasterPage(rawType: rawValue.GetType().FullName, entityKey: key.ToString());
+
+            string qualifiedName = null;
+            try { qualifiedName = reference.GetFullQualifyName(owner?.Model); } catch { }
+            if (qualifiedName == "(none)") qualifiedName = null;
+            JObject identity = BuildObjectIdentity(referenced, qualifiedName);
+            result["resolved"] = true;
+            result["empty"] = false;
+            result["name"] = referenced.Name;
+            result["guid"] = identity["guid"]?.DeepClone() ?? JValue.CreateNull();
+            result["path"] = identity["path"]?.DeepClone() ?? new JValue(referenced.Name);
+            result["target"] = new JObject
+            {
+                ["name"] = result["name"]?.DeepClone() ?? JValue.CreateNull(),
+                ["type"] = "MasterPage",
+                ["guid"] = result["guid"]?.DeepClone() ?? JValue.CreateNull(),
+                ["path"] = result["path"]?.DeepClone() ?? JValue.CreateNull()
+            };
+            return result;
+        }
+
+        private static bool IsEmptyMasterPageReference(WebPanelReference reference)
+        {
+            return reference?.ObjKey == null || reference.ObjKey.Id == 0;
+        }
+
+        private static bool TryReadNativeProperty(KBObject obj, string propertyName, out object value)
+        {
+            value = null;
+            if (obj == null) return false;
+            try
+            {
+                dynamic container = obj;
+                if (container.Properties == null) return false;
+                foreach (dynamic property in container.Properties)
+                {
+                    string name = null;
+                    try { name = property.Name?.ToString(); } catch { }
+                    if (!string.Equals(name, propertyName, StringComparison.OrdinalIgnoreCase)) continue;
+                    try { value = property.Value; } catch { value = null; }
+                    return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static KBObject TryRereadObject(KBObject owner, out bool rereadAvailable)
+        {
+            rereadAvailable = false;
+            if (owner == null) return null;
+            try
+            {
+                KBObject fresh = owner.Model?.Objects?.Get(owner.Key);
+                if (fresh != null) { rereadAvailable = true; return fresh; }
+            }
+            catch { }
+            try
+            {
+                KBObject fresh = owner.Model?.Objects?.Get(owner.Guid);
+                if (fresh != null) { rereadAvailable = true; return fresh; }
+            }
+            catch { }
+            return owner;
+        }
+
+        private static bool MasterPageIdentityEquals(JObject first, JObject second)
+        {
+            if (first == null || second == null) return false;
+            string[] fields = { "propertyPresent", "resolved", "empty", "name", "guid", "path", "target" };
+            return fields.All(field => JToken.DeepEquals(first[field], second[field]));
         }
 
         internal static int Levenshtein(string a, string b)
@@ -283,6 +704,27 @@ namespace GxMcp.Worker.Services
             return BuildPropertyMatcher(pattern)(propName);
         }
 
+        private static JToken ClonePropertyValue(JObject property)
+        {
+            JToken value = property?["value"];
+            return value == null || value.Type == JTokenType.Null
+                // Preserve the legacy empty-string representation for ordinary
+                // null property values; structured values (notably MasterPage)
+                // still pass through unchanged.
+                ? new JValue(string.Empty)
+                : value.DeepClone();
+        }
+
+        private static string PropertiesReadOk(string target, JObject result)
+        {
+            var properties = result?["properties"] as JArray;
+            JObject masterPageProperty = properties?.OfType<JObject>().FirstOrDefault(property =>
+                string.Equals(property["name"]?.ToString(), "MasterPage", StringComparison.OrdinalIgnoreCase));
+            if (masterPageProperty != null)
+                result["masterPage"] = ClonePropertyValue(masterPageProperty);
+            return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: result);
+        }
+
         internal static string ShapeGetPropertiesResult(
             JObject fullPropsResult,
             string target,
@@ -348,7 +790,7 @@ namespace GxMcp.Worker.Services
                         matchedProps.Add((JObject)p.DeepClone());
                         if (!string.IsNullOrEmpty(n) && valuesMap[n] == null)
                         {
-                            valuesMap[n] = p["value"]?.ToString() ?? "";
+                            valuesMap[n] = ClonePropertyValue(p);
                         }
                     }
                 }
@@ -393,7 +835,7 @@ namespace GxMcp.Worker.Services
                 {
                     queryResult["versionToken"] = versionToken;
                 }
-                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: queryResult);
+                return PropertiesReadOk(target, queryResult);
             }
 
             // Single property mode
@@ -441,12 +883,12 @@ namespace GxMcp.Worker.Services
                 }
 
                 string matchedName = matched["name"]?.ToString() ?? targetPropName;
-                string matchedValue = matched["value"]?.ToString() ?? "";
+                JToken matchedValue = ClonePropertyValue(matched);
                 var singleResult = new JObject
                 {
                     ["propertyName"] = matchedName,
-                    ["value"] = matchedValue,
-                    ["values"] = new JObject { [matchedName] = matchedValue },
+                    ["value"] = matchedValue.DeepClone(),
+                    ["values"] = new JObject { [matchedName] = matchedValue.DeepClone() },
                     ["property"] = (JObject)matched.DeepClone(),
                     ["properties"] = new JArray { (JObject)matched.DeepClone() }
                 };
@@ -454,7 +896,7 @@ namespace GxMcp.Worker.Services
                 {
                     singleResult["versionToken"] = versionToken;
                 }
-                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: singleResult);
+                return PropertiesReadOk(target, singleResult);
             }
 
             // Multi-property mode
@@ -478,7 +920,7 @@ namespace GxMcp.Worker.Services
                                 matchedArray.Add((JObject)p.DeepClone());
                                 if (!string.IsNullOrEmpty(n) && valuesMap[n] == null)
                                 {
-                                    valuesMap[n] = p["value"]?.ToString() ?? "";
+                                    valuesMap[n] = ClonePropertyValue(p);
                                 }
                             }
                             break;
@@ -535,7 +977,7 @@ namespace GxMcp.Worker.Services
                 {
                     multiResult["versionToken"] = versionToken;
                 }
-                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: multiResult);
+                return PropertiesReadOk(target, multiResult);
             }
 
             // Projection mode: minimal
@@ -551,7 +993,7 @@ namespace GxMcp.Worker.Services
                         filteredProps.Add((JObject)p.DeepClone());
                         if (valuesMap[n] == null)
                         {
-                            valuesMap[n] = p["value"]?.ToString() ?? "";
+                            valuesMap[n] = ClonePropertyValue(p);
                         }
                     }
                 }
@@ -565,7 +1007,7 @@ namespace GxMcp.Worker.Services
                 {
                     projResult["versionToken"] = versionToken;
                 }
-                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: projResult);
+                return PropertiesReadOk(target, projResult);
             }
 
             // Projection mode: standard
@@ -581,7 +1023,7 @@ namespace GxMcp.Worker.Services
                         filteredProps.Add((JObject)p.DeepClone());
                         if (valuesMap[n] == null)
                         {
-                            valuesMap[n] = p["value"]?.ToString() ?? "";
+                            valuesMap[n] = ClonePropertyValue(p);
                         }
                     }
                 }
@@ -595,7 +1037,7 @@ namespace GxMcp.Worker.Services
                 {
                     projResult["versionToken"] = versionToken;
                 }
-                return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: projResult);
+                return PropertiesReadOk(target, projResult);
             }
 
             // Full / Default mode
@@ -605,7 +1047,7 @@ namespace GxMcp.Worker.Services
                 var n = p["name"]?.ToString();
                 if (!string.IsNullOrEmpty(n) && allValuesMap[n] == null)
                 {
-                    allValuesMap[n] = p["value"]?.ToString() ?? "";
+                    allValuesMap[n] = ClonePropertyValue(p);
                 }
             }
             var fullResult = (JObject)(fullPropsResult?.DeepClone() ?? new JObject { ["properties"] = new JArray() });
@@ -614,7 +1056,7 @@ namespace GxMcp.Worker.Services
             {
                 fullResult["versionToken"] = versionToken;
             }
-            return Models.McpResponse.Ok(target: target, code: "PropertiesRead", result: fullResult);
+            return PropertiesReadOk(target, fullResult);
         }
 
         public string SetProperty(string target, string propName, string value, string controlName = null, string typeFilter = null)
