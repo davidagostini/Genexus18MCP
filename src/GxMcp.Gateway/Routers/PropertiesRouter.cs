@@ -64,6 +64,19 @@ namespace GxMcp.Gateway.Routers
                 };
             }
 
+            if (action.Equals("list", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return new
+                {
+                    module = "Property",
+                    action = "List",
+                    type = args?["type"]?.ToString(),
+                    query = args?["query"]?.ToString(),
+                    offset = args?["offset"]?.ToObject<int?>() ?? 0,
+                    limit = args?["limit"]?.ToObject<int?>() ?? 25
+                };
+            }
+
             var propNameToken = args?["propertyName"];
             var propNamesToken = args?["propertyNames"];
             if (propNamesToken == null && propNameToken is JArray)

@@ -5,9 +5,11 @@
 ### Added
 
 - Add the typed WorkWithPlus `set_table_type` operation. It resolves an existing table through the native PatternInstance tree, changes only `type`, preserves children/bindings/events/metadata, and verifies the PatternInstance reread plus parent projection with exact rollback on divergence.
+- Add a read-only, deterministically ordered and paginated `genexus_properties action=list` inventory for Transaction/WebPanel `MasterPage` assignments, with object name/path filtering, index-first candidate paging with native fallback, and no implicit lifecycle operation.
 
 ### Fixed
 
+- Resolve native `MasterPage` property wrappers for Transactions and WebPanels to a canonical `target` identity (`name`, `type`, `guid`, and qualified `path`), preserve the structured value across every property response alias, explicitly represent empty references with `target: null`, and verify the resolved value by same-request reread.
 - Describe the `read_blob` output controls (`outputPath`, `includeBase64`, and `overwrite`) so the schema validator accepts the published tool contract.
 - Keep `compile_check` preview and execution aligned on target resolution and caller controls, including Transaction `_bc` companions, EntityKey-safe `Type:Name`/GUID execution, fail-closed caller evidence, async environment forwarding, and compact polling metadata ([#202](https://github.com/lennix1337/Genexus18MCP/issues/202)).
 - Replace the stale lifecycle `stop-worker` guidance with the supported `genexus_worker_reload` soft/hard flow, validate hard binary swaps, and add reverse help/schema coverage ([#203](https://github.com/lennix1337/Genexus18MCP/issues/203)).
@@ -15,7 +17,8 @@
 
 ### Internal
 
-- Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type`; the early validator now checks the schema and capabilities table together, and the project workflow documents all contract views required before pushing a public action.
+- Raise the tool-schema budget from 28,600 to 28,800 tokens for the documented `MasterPage` list action, canonical pagination parameters, structured reference contract, and explicit read-only guarantees.
+- Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type`; the early validator checks these contract views together and documents the required update points before a public action is pushed.
 
 ## v3.5.1 - 2026-09-15
 

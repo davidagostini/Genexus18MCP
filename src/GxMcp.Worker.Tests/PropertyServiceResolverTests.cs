@@ -68,6 +68,94 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void MasterPageValue_RemainsStructuredAcrossResponseAliases()
+        {
+            var masterPage = new JObject
+            {
+                ["propertyPresent"] = true,
+                ["resolved"] = true,
+                ["empty"] = false,
+                ["name"] = "ApplicationMasterPage",
+                ["guid"] = "11111111-2222-3333-4444-555555555555",
+                ["path"] = "UI/ApplicationMasterPage",
+                ["target"] = new JObject
+                {
+                    ["name"] = "ApplicationMasterPage",
+                    ["type"] = "MasterPage",
+                    ["guid"] = "11111111-2222-3333-4444-555555555555",
+                    ["path"] = "UI/ApplicationMasterPage"
+                },
+                ["verifiedByReread"] = true
+            };
+            var input = new JObject
+            {
+                ["properties"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["name"] = "MasterPage",
+                        ["value"] = masterPage,
+                        ["type"] = "Artech.Genexus.Common.CustomTypes.WebPanelReference"
+                    }
+                }
+            };
+
+            string raw = PropertyService.ShapeGetPropertiesResult(
+                input,
+                target: "OrderEntry",
+                propertyName: "MasterPage");
+
+            var result = JObject.Parse(raw)["result"] as JObject;
+            Assert.NotNull(result);
+            Assert.Equal(JTokenType.Object, result["value"]?.Type);
+            Assert.Equal("ApplicationMasterPage", result["value"]?["name"]?.ToString());
+            Assert.Equal(JTokenType.Object, result["values"]?["MasterPage"]?.Type);
+            Assert.Equal(JTokenType.Object, result["property"]?["value"]?.Type);
+            Assert.Equal(JTokenType.Object, result["masterPage"]?.Type);
+            Assert.Equal("ApplicationMasterPage", result["masterPage"]?["target"]?["name"]?.ToString());
+            Assert.Equal("MasterPage", result["masterPage"]?["target"]?["type"]?.ToString());
+            Assert.True(result["masterPage"]?["verifiedByReread"]?.Value<bool>());
+        }
+
+        [Fact]
+        public void EmptyMasterPage_RemainsExplicitlyEmpty()
+        {
+            var input = new JObject
+            {
+                ["properties"] = new JArray
+                {
+                    new JObject
+                    {
+                        ["name"] = "MasterPage",
+                        ["value"] = new JObject
+                        {
+                            ["propertyPresent"] = true,
+                            ["resolved"] = true,
+                            ["empty"] = true,
+                            ["target"] = JValue.CreateNull(),
+                            ["name"] = JValue.CreateNull(),
+                            ["guid"] = JValue.CreateNull(),
+                            ["path"] = JValue.CreateNull(),
+                            ["verifiedByReread"] = true
+                        }
+                    }
+                }
+            };
+
+            string raw = PropertyService.ShapeGetPropertiesResult(
+                input,
+                target: "OrderEntry",
+                propertyName: "MasterPage");
+
+            var masterPage = JObject.Parse(raw)["result"]?["masterPage"] as JObject;
+            Assert.NotNull(masterPage);
+            Assert.True(masterPage["empty"]?.Value<bool>());
+            Assert.True(masterPage["resolved"]?.Value<bool>());
+            Assert.Equal(JTokenType.Null, masterPage["target"]?.Type);
+            Assert.Equal(JTokenType.Null, masterPage["name"]?.Type);
+        }
+
+        [Fact]
         public void SingleProperty_NotFound_ReturnsDidYouMeanSuggestions_AndNextSteps()
         {
             string raw = PropertyService.ShapeGetPropertiesResult(

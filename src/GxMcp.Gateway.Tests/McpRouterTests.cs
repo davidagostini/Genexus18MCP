@@ -614,6 +614,24 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesListTool_WithPagination()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"list","type":"Transaction","query":"Order*","offset":10,"limit":10}}}"""
+            );
+
+            var json = JObject.FromObject(McpRouter.ConvertToolCall(request)!);
+
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("List", json["action"]?.ToString());
+            Assert.Equal("Transaction", json["type"]?.ToString());
+            Assert.Equal("Order*", json["query"]?.ToString());
+            Assert.Equal(10, json["offset"]?.Value<int>());
+            Assert.Equal(10, json["limit"]?.Value<int>());
+            Assert.Null(json["target"]);
+        }
+
+        [Fact]
         public void ConvertToolCall_ShouldMapPropertiesGetTool_WithPropertyNamesArray()
         {
             var request = JObject.Parse(

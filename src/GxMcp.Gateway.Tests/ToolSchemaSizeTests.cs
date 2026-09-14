@@ -186,7 +186,10 @@ namespace GxMcp.Gateway.Tests
             //   2026-09-14 (native WWP table type): 28250 → 28600 for the typed
             //   set_table_type operation, path identity, preservation guarantees,
             //   and dry-run example. Measured ~28385.
-            Assert.True(approxTokens < 28600, $"tool_definitions.json is ~{approxTokens} tokens; budget 28600.");
+            //   2026-09-14 (native MasterPage reads): 28600 → 28800 for the
+            //   genexus_properties list action, pagination fields, structured
+            //   reference contract and read-only lifecycle guarantee. Measured ~28612.
+            Assert.True(approxTokens < 28800, $"tool_definitions.json is ~{approxTokens} tokens; budget 28800.");
         }
     }
 }

@@ -352,7 +352,7 @@ produced by `DataSelectorStructurePart.ToString()` on U16.
 **Data model & structure authoring**
 - `genexus_structure` — read/write the data model: `get_visual`/`get_logic`, `update_visual` (structure DSL), `create_index`/`drop_index` (unique/non-unique indexes — the GeneXus way to enforce uniqueness), `set_attribute` (Formula, subtype, Title/ColumnTitle, IsCollection, basedOnDomain), `set_level` (level Description/Image attribute), `set_domain` (edit an existing Domain's enum values / base type). For `create_index`, `dryRun:true` validates and returns the projected diff without saving; use the `versionToken` from `get_indexes` as `baseVersion` for concurrency protection. A real write is re-read and verified exactly, with snapshot rollback on failure. It never triggers Specify, Generate, Build, Rebuild, compilation, reorganization, execution, or tests.
 - `genexus_authoring` — members of object types the structure DSL doesn't cover: `add_external_method`/`add_external_property` (External Objects), `add_menu_option` (Menus)
-- `genexus_properties` — read/update object-level properties
+- `genexus_properties` — read/update object-level properties; `get` resolves `MasterPage` references and `list` provides deterministic paged `MasterPage` reads for Transactions/WebPanels ([guide](docs/master-page-property-read.md))
 - `genexus_generator_reference` — list/preview/add/remove native .NET generator references with managed-assembly validation, optimistic concurrency, save/re-read verification, and exact full-snapshot rollback; never runs lifecycle actions implicitly
 
 **Refactor, patterns & compare**

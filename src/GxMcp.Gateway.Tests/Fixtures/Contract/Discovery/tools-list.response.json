@@ -3362,13 +3362,21 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read/update object properties. action=get|set|move. move snapshots every persisted part, checks baseVersion, verifies inside the SDK transaction and after commit, and rolls back divergence. Use destination for a Folder/Module or targetModule for a Module; destKind disambiguates equal names. dryRun does not save or change the token. Move never runs lifecycle, compilation, execution, or tests. Description is the WebPanel/Popup title-bar text. Use genexus_layout set_property for layout controls.",
+      "description": "Read/update object properties. action=get|list|set|move. get resolves MasterPage references to name, GUID and path; list returns deterministic paged MasterPage reads for Transactions and WebPanels. Read actions never run lifecycle, compilation, execution, or tests. move snapshots every persisted part, checks baseVersion, verifies inside the SDK transaction and after commit, and rolls back divergence. Use destination for a Folder/Module or targetModule for a Module; destKind disambiguates equal names. dryRun does not save or change the token. Description is the WebPanel/Popup title-bar text. Use genexus_layout set_property for layout controls.",
       "inputSchema": {
         "examples": [
           {
             "action": "get",
             "name": "MyPanel",
-            "propertyName": "Description"
+            "propertyName": "MasterPage",
+            "type": "WebPanel"
+          },
+          {
+            "action": "list",
+            "limit": 25,
+            "offset": 0,
+            "query": "Order*",
+            "type": "Transaction"
           },
           {
             "action": "get",
@@ -3392,9 +3400,10 @@
         ],
         "properties": {
           "action": {
-            "description": "Object-property operation to read or change metadata or move the object.",
+            "description": "Object-property operation. get/list are read-only; set/move change metadata.",
             "enum": [
               "get",
+              "list",
               "set",
               "move"
             ],
@@ -3428,8 +3437,22 @@
             "description": "KB alias.",
             "type": "string"
           },
+          "limit": {
+            "default": 25,
+            "description": "list: number of objects per page.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
           "name": {
+            "description": "Object name. Required for get, set and move; omitted for list.",
             "type": "string"
+          },
+          "offset": {
+            "default": 0,
+            "description": "list: zero-based result offset. Continue from nextOffset while hasMore is true.",
+            "minimum": 0,
+            "type": "integer"
           },
           "projection": {
             "description": "action=get: compact property subset (minimal, standard, full). Defaults to full.",
@@ -3456,7 +3479,7 @@
             "type": "array"
           },
           "query": {
-            "description": "action=get: filter property names by substring or * wildcard.",
+            "description": "get: filter property names by substring or * wildcard. list: filter object name/path by substring or wildcard.",
             "type": "string"
           },
           "rollbackOnFailure": {
@@ -3468,7 +3491,7 @@
             "type": "string"
           },
           "type": {
-            "description": "Optional object type disambiguator.",
+            "description": "Object type disambiguator. list supports Transaction, WebPanel, or a comma-separated combination; omission includes both.",
             "type": "string"
           },
           "validationMode": {
@@ -3483,8 +3506,7 @@
           }
         },
         "required": [
-          "action",
-          "name"
+          "action"
         ],
         "type": "object"
       },
