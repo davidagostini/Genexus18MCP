@@ -291,6 +291,13 @@ namespace GxMcp.Gateway
                             var paramsObj = request["params"] as JObject;
                             var argsObj = paramsObj?["arguments"] as JObject;
                             kbArg = argsObj?["kb"]?.ToString();
+                            // worker_reload also accepts alias as an explicit target. Keep
+                            // the alias form for compatibility with the gateway's own
+                            // lifecycle vocabulary, while still routing the worker by the
+                            // resolved session context below.
+                            if (string.IsNullOrWhiteSpace(kbArg)
+                                && string.Equals(toolNameForResolver, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase))
+                                kbArg = argsObj?["alias"]?.ToString();
                             // Strip `kb` from worker-bound args (worker is single-KB scoped).
                             argsObj?.Remove("kb");
                         }
@@ -699,20 +706,17 @@ namespace GxMcp.Gateway
                         };
                     }
                     string? reloadAlias = args?["alias"]?.ToString();
-                    KbHandle? reloadKb = null;
-                    if (!string.IsNullOrWhiteSpace(reloadAlias))
-                    {
-                        reloadKb = _workerPool.ListOpen().FirstOrDefault(h =>
-                            string.Equals(h.NormalizedAlias, reloadAlias.ToLowerInvariant(), StringComparison.OrdinalIgnoreCase));
-                    }
-                    else
-                    {
-                        reloadKb = _workerPool.ListOpen().FirstOrDefault();
-                    }
+                    KbHandle? reloadKb = ResolveWorkerReloadTarget(
+                        reloadAlias, _currentKb.Value, _workerPool.ListOpen());
                     if (reloadKb == null)
                     {
                         return BuildToolTextResponse(idToken,
-                            new JObject { ["status"] = "NoWorker", ["detail"] = "No open KB worker found to reload." },
+                            new JObject
+                            {
+                                ["status"] = "NoWorker",
+                                ["detail"] = "No open KB worker was selected for reload.",
+                                ["hint"] = "Select the intended KB with genexus_kb action=select alias=<alias>, or pass kb=<alias> (or alias=<alias>) explicitly. A worker is never chosen by list order."
+                            },
                             isError: false, toolName: toolName, toolArgs: args);
                     }
                     // mode=hard: sourceDir carries new worker binaries to swap in. The gateway

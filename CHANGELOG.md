@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Issue #199 — `worker_reload` respeita a KB selecionada.** O reload suave
+  deixa de usar o primeiro Worker aberto quando há múltiplas KBs, passa a
+  considerar `kb`/`alias` como alvo explícito e retorna uma orientação clara
+  quando nenhuma KB foi selecionada. Ver
+  `docs/issue-199-worker-reload-kb-selection.md`.
+
 ## v3.5.0 - 2026-09-14
 
 

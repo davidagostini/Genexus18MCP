@@ -4843,10 +4843,14 @@
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Reload worker. modes: soft (drain+respawn), warm (restore validated index snapshot + soft respawn), hard (copy sourceDir+respawn). force=true: gateway kills directly. See tool-help.",
+      "description": "Reload worker. Select a KB or pass kb in multi-KB sessions. See tool-help.",
       "inputSchema": {
         "examples": [
           {
+            "mode": "soft"
+          },
+          {
+            "kb": "warehouse",
             "mode": "soft"
           },
           {
@@ -4855,6 +4859,10 @@
           }
         ],
         "properties": {
+          "alias": {
+            "description": "Backward-compatible alias for the KB reload target.",
+            "type": "string"
+          },
           "drainTimeoutMs": {
             "description": "Soft only; default 30000.",
             "type": "integer"
@@ -4862,6 +4870,10 @@
           "force": {
             "description": "Bypass drain; gateway kills + respawns. Use when worker is wedged.",
             "type": "boolean"
+          },
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
           },
           "mode": {
             "enum": [
