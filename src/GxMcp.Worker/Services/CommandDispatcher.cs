@@ -1485,6 +1485,16 @@ namespace GxMcp.Worker.Services
                     args?["type"]?.ToString(),
                     args?["overwrite"]?.ToObject<bool?>() ?? false);
             }
+            if (action == "ReadFileContent")
+            {
+                return _objectService.ReadFileContent(
+                    target,
+                    args?["type"]?.ToString(),
+                    args?["outputPath"]?.ToString(),
+                    args?["maxBytes"]?.ToObject<int?>(),
+                    args?["includeBase64"]?.ToObject<bool?>() ?? false,
+                    args?["overwrite"]?.ToObject<bool?>() ?? false);
+            }
             if (action == "ImportText") return _objectService.ImportObjectFromText(target, args?["inputPath"]?.ToString() ?? args?["path"]?.ToString(), args?["part"]?.ToString(), args?["type"]?.ToString());
             if (action == "ExportTextBatch" || action == "ImportTextBatch"
                 || action == "ValidateTextBatch" || action == "DeleteTextBatch")

@@ -76,6 +76,30 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void File_content_read_forwards_binary_options_without_mutating_caller()
+        {
+            var args = JObject.Parse(@"{
+                action: 'read_file_content',
+                name: 'ConfigFile',
+                type: 'File',
+                outputPath: 'C:\\tmp\\config.json',
+                maxBytes: 4096,
+                includeBase64: true,
+                overwrite: false
+            }");
+
+            var routed = JObject.FromObject(new OperationsRouter().ConvertToolCall("genexus_io", args)!);
+
+            Assert.Equal("Object", (string?)routed["module"]);
+            Assert.Equal("ReadFileContent", (string?)routed["action"]);
+            Assert.Equal("ConfigFile", (string?)routed["target"]);
+            Assert.Equal("File", (string?)routed["params"]?["type"]);
+            Assert.Equal(4096, (int?)routed["params"]?["maxBytes"]);
+            Assert.True((bool?)routed["params"]?["includeBase64"]);
+            Assert.Equal("read_file_content", (string?)args["action"]);
+        }
+
+        [Fact]
         public void Delete_object_forwards_typed_atomic_safety_contract()
         {
             var converted = new OperationsRouter().ConvertToolCall("genexus_delete_object", JObject.Parse(@"{
@@ -119,6 +143,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_io", "asset_find", "Asset", "Find")]
         [InlineData("genexus_io", "asset_read", "Asset", "Read")]
         [InlineData("genexus_io", "asset_write", "Asset", "Write")]
+        [InlineData("genexus_io", "read_file_content", "Object", "ReadFileContent")]
         [InlineData("genexus_io", "export_part", "Object", "ExportText")]
         [InlineData("genexus_io", "import_part", "Object", "ImportText")]
         [InlineData("genexus_io", "export_kb_to_text", "Object", "ExportTextBatch")]

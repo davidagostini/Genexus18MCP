@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Tracked issues
+
+- [#198](https://github.com/lennix1337/Genexus18MCP/issues/198) — [Melhoria] Não há como ler o conteúdo (bytes) de um File (WikiFileKBObject)
+
+### Fixed
+
+- **Binary File/WikiBlob reads (#198)**: add read-only `genexus_io action=read_file_content`, backed by the SDK Wiki blob helper, with external output, bounded base64, byte count, SHA-256, and explicit unsupported-helper diagnostics.
+
 ## v3.5.0 - 2026-09-14
 
 

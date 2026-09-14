@@ -2281,7 +2281,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "IO umbrella for assets, Object Text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write | export_part|import_part (single part) | export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects (official GeneXus for Agents Object Text parity) | export_unified|screenshot_publish|ocr.",
+      "description": "IO umbrella for assets, Object Text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write|read_file_content | export_part|import_part (single part) | export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects (official GeneXus for Agents Object Text parity) | export_unified|screenshot_publish|ocr.",
       "inputSchema": {
         "examples": [
           {
@@ -2313,6 +2313,7 @@
               "asset_find",
               "asset_read",
               "asset_write",
+              "read_file_content",
               "export_part",
               "import_part",
               "export_kb_to_text",
@@ -2345,6 +2346,10 @@
             "description": "asset_find: inline file content.",
             "type": "boolean"
           },
+          "includeBase64": {
+            "description": "inline base64.",
+            "type": "boolean"
+          },
           "inputPath": {
             "description": "import_part: source file; import_text_to_kb/validate_kb_text_files: manifest or directory.",
             "type": "string"
@@ -2358,7 +2363,7 @@
             "type": "integer"
           },
           "maxBytes": {
-            "description": "asset_read: max bytes to return.",
+            "description": "asset_read/read_file_content: byte limit.",
             "type": "integer"
           },
           "module": {
@@ -2370,7 +2375,7 @@
             "type": "string"
           },
           "outputPath": {
-            "description": "export_part: destination file; export_kb_to_text: destination directory.",
+            "description": "read_file_content/export_part: output; export_kb_to_text: directory.",
             "type": "string"
           },
           "overwrite": {

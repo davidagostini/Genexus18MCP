@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
+using System.Security.Cryptography;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Descriptors;
 using Artech.Genexus.Common.Objects;
@@ -3872,6 +3873,213 @@ namespace GxMcp.Worker.Services
             }
             catch { return null; }
             return "";
+        }
+
+        /// <summary>
+        /// Read the binary payload of a GeneXus WikiFile/File object. The normal
+        /// part serializer is textual and only returns the WikiBlob metadata XML,
+        /// so this path calls the SDK's read-only BlobKBObjectHelper through
+        /// reflection. Reflection keeps the worker loadable across GX11/GX12/GX16
+        /// when the helper's concrete assembly signature differs.
+        /// </summary>
+        public string ReadFileContent(string target, string typeFilter = null,
+            string outputPath = null, int? maxBytes = null, bool includeBase64 = false,
+            bool overwrite = false)
+        {
+            string temporaryPath = null;
+            try
+            {
+                if (string.IsNullOrWhiteSpace(outputPath) && !includeBase64)
+                    return McpResponse.Err(
+                        code: "FileContentDestinationRequired",
+                        message: "Provide outputPath or includeBase64=true to receive File content.",
+                        hint: "The SDK payload is binary; metadata XML is never returned as file content.",
+                        target: target);
+
+                var obj = FindObject(target, typeFilter);
+                if (obj == null) return FormatReadNotFound(target);
+
+                string objectType = obj.TypeDescriptor?.Name ?? obj.GetType().Name;
+                if (!string.Equals(objectType, "File", StringComparison.OrdinalIgnoreCase)
+                    && obj.GetType().Name.IndexOf("WikiFile", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    return McpResponse.Err(
+                        code: "NotAFileObject",
+                        message: $"'{obj.Name}' is {objectType}, not a GeneXus File/WikiFile object.",
+                        hint: "Pass type=File and target a File object.",
+                        target: target);
+                }
+
+                object blobPart = FindWikiBlobPart(obj);
+                if (blobPart == null)
+                {
+                    return McpResponse.Err(
+                        code: "WikiBlobUnavailable",
+                        message: "The File object does not expose a WikiBlob part through the loaded SDK.",
+                        hint: "Check availableParts and the GeneXus SDK major; no metadata XML was treated as binary content.",
+                        target: obj.Name,
+                        extra: new JObject
+                        {
+                            ["availableParts"] = new JArray(GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(obj)),
+                            ["sdkHelper"] = "Artech.Genexus.Common.Wiki.BlobKBObjectHelper.SaveWikiBlobPartFile"
+                        });
+                }
+
+                MethodInfo saveMethod = FindWikiBlobSaveMethod(blobPart);
+                if (saveMethod == null)
+                {
+                    return McpResponse.Err(
+                        code: "WikiBlobHelperUnavailable",
+                        message: "The loaded GeneXus SDK does not expose SaveWikiBlobPartFile for this WikiBlob part.",
+                        hint: "Install the matching GeneXus SDK package or use an SDK major with the Wiki blob helper.",
+                        target: obj.Name,
+                        extra: new JObject
+                        {
+                            ["sdkHelper"] = "Artech.Genexus.Common.Wiki.BlobKBObjectHelper.SaveWikiBlobPartFile",
+                            ["sdkAssembly"] = blobPart.GetType().Assembly.FullName
+                        });
+                }
+
+                string fullOutputPath;
+                if (!string.IsNullOrWhiteSpace(outputPath))
+                {
+                    fullOutputPath = Path.GetFullPath(outputPath);
+                    if (File.Exists(fullOutputPath) && !overwrite)
+                        return McpResponse.Err(
+                            code: "FileAlreadyExists",
+                            message: "Output file already exists. Set overwrite=true to replace it.",
+                            hint: "Pass overwrite=true only when replacing that external file is intended.",
+                            target: fullOutputPath);
+
+                    string directory = Path.GetDirectoryName(fullOutputPath);
+                    if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+                        Directory.CreateDirectory(directory);
+                }
+                else
+                {
+                    temporaryPath = Path.Combine(Path.GetTempPath(), "gxmcp-file-" + Guid.NewGuid().ToString("N") + ".bin");
+                    fullOutputPath = temporaryPath;
+                }
+
+                saveMethod.Invoke(null, new object[] { blobPart, fullOutputPath });
+                if (!File.Exists(fullOutputPath))
+                    throw new IOException("The SDK helper returned without creating the requested output file.");
+
+                var info = new FileInfo(fullOutputPath);
+                int inlineLimit = Math.Max(1024, Math.Min(maxBytes ?? 1048576, 8388608));
+                byte[] inlineBytes = includeBase64 ? ReadPrefix(fullOutputPath, Math.Min(info.Length, inlineLimit)) : null;
+                var result = new JObject
+                {
+                    ["name"] = obj.Name,
+                    ["type"] = objectType,
+                    ["guid"] = obj.Guid.ToString(),
+                    ["bytes"] = info.Length,
+                    ["sha256"] = ComputeSha256(fullOutputPath),
+                    ["source"] = "sdk:BlobKBObjectHelper.SaveWikiBlobPartFile",
+                    ["contentType"] = "application/octet-stream"
+                };
+                if (!string.IsNullOrWhiteSpace(outputPath))
+                    result["outputPath"] = fullOutputPath;
+                if (includeBase64)
+                {
+                    result["contentBase64"] = Convert.ToBase64String(inlineBytes);
+                    result["inlineBytes"] = inlineBytes.LongLength;
+                    result["inlineTruncated"] = info.Length > inlineBytes.LongLength;
+                    result["maxBytes"] = inlineLimit;
+                }
+
+                return McpResponse.Ok(target: obj.Name, code: "FileContentRead", result: result);
+            }
+            catch (TargetInvocationException ex)
+            {
+                string message = ex.InnerException?.Message ?? ex.Message;
+                return McpResponse.Err(
+                    code: "WikiBlobReadFailed",
+                    message: "The GeneXus SDK could not materialize the File bytes: " + message,
+                    hint: "Confirm the File has a WikiBlob payload and the SDK major matches the opened KB.",
+                    target: target);
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "WikiBlobReadFailed",
+                    message: "File content read failed: " + ex.Message,
+                    hint: "Confirm the target is a File and outputPath is writable.",
+                    target: target);
+            }
+            finally
+            {
+                if (temporaryPath != null)
+                {
+                    try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); } catch { }
+                }
+            }
+        }
+
+        private static object FindWikiBlobPart(KBObject obj)
+        {
+            try
+            {
+                foreach (KBObjectPart part in obj.Parts)
+                {
+                    string name = part.GetType().Name;
+                    string fullName = part.GetType().FullName ?? string.Empty;
+                    if (string.Equals(name, "WikiBlobPart", StringComparison.OrdinalIgnoreCase)
+                        || fullName.IndexOf("WikiBlobPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return part;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static MethodInfo FindWikiBlobSaveMethod(object blobPart)
+        {
+            Type helperType = null;
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    helperType = assembly.GetType("Artech.Genexus.Common.Wiki.BlobKBObjectHelper", false);
+                    if (helperType != null) break;
+                }
+                catch { }
+            }
+            if (helperType == null) helperType = blobPart.GetType().Assembly.GetType("Artech.Genexus.Common.Wiki.BlobKBObjectHelper", false);
+            if (helperType == null) return null;
+
+            return helperType.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .Where(m => string.Equals(m.Name, "SaveWikiBlobPartFile", StringComparison.Ordinal)
+                    && m.GetParameters().Length == 2
+                    && m.GetParameters()[1].ParameterType == typeof(string)
+                    && m.GetParameters()[0].ParameterType.IsInstanceOfType(blobPart))
+                .OrderBy(m => m.ToString(), StringComparer.Ordinal)
+                .FirstOrDefault();
+        }
+
+        private static byte[] ReadPrefix(string path, long length)
+        {
+            var bytes = new byte[(int)length];
+            int offset = 0;
+            using (var stream = File.OpenRead(path))
+            {
+                while (offset < bytes.Length)
+                {
+                    int read = stream.Read(bytes, offset, bytes.Length - offset);
+                    if (read <= 0) break;
+                    offset += read;
+                }
+            }
+            if (offset == bytes.Length) return bytes;
+            Array.Resize(ref bytes, offset);
+            return bytes;
+        }
+
+        private static string ComputeSha256(string path)
+        {
+            using (var sha = SHA256.Create())
+            using (var stream = File.OpenRead(path))
+                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
         }
 
         public string ExportObjectToText(string target, string outputPath, string partName = null, string typeFilter = null, bool overwrite = false)

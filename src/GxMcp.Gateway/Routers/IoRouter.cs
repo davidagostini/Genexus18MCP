@@ -57,6 +57,22 @@ namespace GxMcp.Gateway.Routers
                         overwrite = args?["overwrite"]?.ToObject<bool?>() ?? false
                     };
 
+                case "read_file_content":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ReadFileContent",
+                        target = args?["name"]?.ToString(),
+                        @params = new JObject
+                        {
+                            ["type"] = args?["type"]?.ToString(),
+                            ["outputPath"] = args?["outputPath"],
+                            ["maxBytes"] = args?["maxBytes"],
+                            ["includeBase64"] = args?["includeBase64"],
+                            ["overwrite"] = args?["overwrite"]
+                        }
+                    };
+
                 case "import_part":
                     return new
                     {

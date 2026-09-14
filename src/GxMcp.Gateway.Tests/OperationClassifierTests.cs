@@ -184,6 +184,28 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void FileContentInlineReadIsSafeButExternalOutputIsNot()
+        {
+            var inline = new JObject
+            {
+                ["action"] = "read_file_content",
+                ["includeBase64"] = true
+            };
+            var external = new JObject
+            {
+                ["action"] = "read_file_content",
+                ["outputPath"] = "exports\\asset.bin"
+            };
+
+            Assert.True(OperationClassifier.IsReadOnly("genexus_io", inline));
+            Assert.False(OperationClassifier.IsMutationCandidate("genexus_io", inline));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_io", external));
+            Assert.True(OperationClassifier.IsMutationCandidate("genexus_io", external));
+            Assert.Equal(OperationClassifier.OperationKind.Unknown,
+                OperationClassifier.Describe("genexus_io", external).Kind);
+        }
+
+        [Fact]
         public void ReadOnlyActionTools_ClassifiedAsReadOnly()
         {
             Assert.True(OperationClassifier.IsReadOnly("genexus_security", new JObject { ["action"] = "scan_native" }));

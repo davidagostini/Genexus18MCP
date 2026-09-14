@@ -95,7 +95,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_browser` | `smoke`, `a11y`, `wcag`, `capture`, `cross`, `preview` | — |
 | `genexus_db` | `drift_check`, `drift_report`, `optimize_analyze`, `optimize_suggest`, `optimize_report`, `sql_ddl`, `sql_navigation`, `records_query`, `types_list`, `types_describe`, `types_validate`, `reorg_impact`, `reorg_preview` | `sample_data`, `records_insert`, `records_update`, `translations_import` |
 | `genexus_versioning` | `history_list`, `history_get`, `time_travel`, `blame`, `diff`, `diff_generated` | `history_save`, `history_restore`, `undo` |
-| `genexus_io` | `asset_find`, `asset_read`, `ocr`, `validate_kb_text_files` | `asset_write`, `export_part`, `import_part`, `export_kb_to_text`, `import_text_to_kb`, `delete_kb_objects`, `export_unified`, `screenshot_publish` |
+| `genexus_io` | `asset_find`, `asset_read`, `read_file_content`, `ocr`, `validate_kb_text_files` | `asset_write`, `export_part`, `import_part`, `export_kb_to_text`, `import_text_to_kb`, `delete_kb_objects`, `export_unified`, `screenshot_publish` |
 | `genexus_variable` | — | `add`, `delete`, `modify` |
 | `genexus_telemetry` | `executions`, `watch_event`, `friction_tail`, `learning_report`, `logs`, `profile_analyze`, `profile_hotspots`, `profile_correlate` | `friction_append` |
 | `genexus_create` | `sd_panel_inspect` | `object`, `object_atomic`, `popup`, `sd_panel_create`, `sd_panel_edit`, `save_as`, `scaffold`, `translate`, `sample`, `template`, `curl_procedure` |
@@ -138,7 +138,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_format` | active | `Formatting -> Format` |
 | `genexus_properties` | active | `Property -> Get | Set | Move` |
 | `genexus_versioning` | active | Versioning umbrella: `History -> List | Get_Source | Save | Restore`, `Undo`, `TimeTravel`, `Blame`, `Diff` |
-| `genexus_io` | active | IO umbrella: `Asset -> Find | Read | Write`, Object Text batch `ExportKbToText | ImportTextToKb | ValidateKbTextFiles | DeleteKbObjects`, `Object -> ExportText | ImportText`, `Export -> Unified`, `ScreenshotPublish` |
+| `genexus_io` | active | IO umbrella: `Asset -> Find | Read | Write`, `Object -> ReadFileContent | ExportText | ImportText`, Object Text batch `ExportKbToText | ImportTextToKb | ValidateKbTextFiles | DeleteKbObjects`, `Export -> Unified`, `ScreenshotPublish` |
 | `genexus_db` | active | Database umbrella: `DbDrift`, `DbOptimize`, `Analyze -> GetSQL / GetSqlForNavigation / GenerateSampleData`, typed Transaction records (`QueryRecords / InsertRecord / UpdateRecord`), `Types`, `ReorgImpact` |
 | `genexus_layout` | active | WebForm control tree, layout properties, printblock management |
 | `genexus_edit_form` | active | Semantic WebForm element manipulation |

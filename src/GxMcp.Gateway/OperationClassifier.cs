@@ -155,7 +155,7 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "history_list", "history_get", "time_travel", "blame", "diff", "diff_generated" },
                     mutating: new[] { "history_save", "history_restore", "undo" }),
                 ["genexus_io"] = Contract(
-                    readOnly: new[] { "asset_find", "asset_read", "ocr", "validate_kb_text_files" },
+                    readOnly: new[] { "asset_find", "asset_read", "read_file_content", "ocr", "validate_kb_text_files" },
                     mutating: new[] { "asset_write", "export_part", "import_part", "export_kb_to_text", "import_text_to_kb", "delete_kb_objects", "export_unified", "screenshot_publish" }),
                 ["genexus_variable"] = Contract(
                     readOnly: Array.Empty<string>(),
@@ -573,6 +573,15 @@ namespace GxMcp.Gateway
 
         private static bool HasKnownSideEffects(string toolName, string? action, JObject? args)
         {
+            if (string.Equals(toolName, "genexus_io", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(action, "read_file_content", StringComparison.OrdinalIgnoreCase))
+            {
+                // Reading the KB remains read-only. Supplying outputPath also
+                // writes an external file, so keep that call out of the safe
+                // cache/retry path.
+                return !string.IsNullOrWhiteSpace(args?["outputPath"]?.ToString());
+            }
+
             if (!string.Equals(toolName, "genexus_browser", StringComparison.OrdinalIgnoreCase)
                 || !string.Equals(action, "preview", StringComparison.Ordinal))
             {
