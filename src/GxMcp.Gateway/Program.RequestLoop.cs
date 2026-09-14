@@ -1151,6 +1151,10 @@ namespace GxMcp.Gateway
                                     throw new ArgumentException("Provide 'path' (ad-hoc) or 'alias' of a KB declared in config.Environment.KBs[].");
                                 }
 
+                                // Opening an alias can point it at a different KB path after a
+                                // close/reopen. Drop only this alias's mirror before the worker
+                                // is used so whoami cannot show the previous KB's state.
+                                InvalidateLastKnownIndexState(handleToOpen.NormalizedAlias);
                                 var w = await _workerPool.AcquireAsync(handleToOpen, CancellationToken.None);
                                 // Opening a worker must not mutate the persisted default or
                                 // another MCP session's selection. Use set_default to select
@@ -1191,6 +1195,7 @@ namespace GxMcp.Gateway
                                     throw new ArgumentException("Missing 'alias' for action=close.");
                                 }
                                 bool closed = _workerPool.Close(alias!);
+                                InvalidateLastKnownIndexState(alias!);
                                 // The alias may be reopened against a different KB later;
                                 // never let cached name/type resolutions cross that boundary.
                                 InvalidateFullNameTypeMap(alias!);
@@ -2115,8 +2120,8 @@ namespace GxMcp.Gateway
                     // indexing, and it doubles as an escape hatch when the mirror is wrong.
                     if (IsIndexDependentTool(tName))
                     {
-                        IndexStateSnapshot idxSnap;
-                        lock (_lastKnownIndexStateLock) { idxSnap = _lastKnownIndexState; }
+                        string? indexAlias = _currentKb.Value?.NormalizedAlias;
+                        IndexStateSnapshot idxSnap = GetLastKnownIndexState(indexAlias);
                         bool indexUsable = IsIndexUsableForReads(idxSnap);
                         if (!indexUsable)
                         {
@@ -2134,7 +2139,7 @@ namespace GxMcp.Gateway
                                 || (DateTime.UtcNow - idxSnap.RefreshedAtUtc).TotalSeconds > 2;
                             if (cacheStale && await TryRefreshIndexStateFromWorkerAsync(timeoutMs: 1200))
                             {
-                                lock (_lastKnownIndexStateLock) { idxSnap = _lastKnownIndexState; }
+                                idxSnap = GetLastKnownIndexState(indexAlias);
                                 indexUsable = IsIndexUsableForReads(idxSnap);
                             }
                         }

@@ -6,9 +6,8 @@ using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway.Tests
 {
-    // Tests that read or mutate Program._lastKnownIndexState (a process-wide static mirror)
-    // must not run in parallel with each other, or one test's transient status value leaks
-    // into another's assertions. Membership in this collection serializes them.
+    // Tests that read or mutate Program's index-state mirror must not run in parallel
+    // with each other, or one test's transient state can leak into another's assertions.
     [CollectionDefinition("IndexStateMirror", DisableParallelization = true)]
     public sealed class IndexStateMirrorCollection { }
 
@@ -189,6 +188,38 @@ namespace GxMcp.Gateway.Tests
 
             // Reset so we don't pollute other tests that rely on default Cold/0.
             Program.UpdateLastKnownIndexState("Cold", 0, null, null, null);
+        }
+
+        [Fact]
+        public void Whoami_IndexMirror_IsolatedPerKb()
+        {
+            const string ordersSession = "index-mirror-orders";
+            const string warehouseSession = "index-mirror-warehouse";
+            Program.ClearLastKnownIndexStateForTest();
+            Program.SetSessionSelectedKb(ordersSession, "orders");
+            Program.SetSessionSelectedKb(warehouseSession, "warehouse");
+            try
+            {
+                var ordersIndexed = new DateTime(2026, 9, 14, 12, 0, 0, DateTimeKind.Utc);
+                var warehouseIndexed = new DateTime(2026, 9, 14, 12, 1, 0, DateTimeKind.Utc);
+                Program.UpdateLastKnownIndexState("orders", "Ready", 11, ordersIndexed, null, null);
+                Program.UpdateLastKnownIndexState("warehouse", "Reindexing", 22, warehouseIndexed, 0.25, 9000);
+
+                JObject orders = Program.BuildWhoamiPayload(false, ordersSession);
+                JObject warehouse = Program.BuildWhoamiPayload(false, warehouseSession);
+
+                Assert.Equal("Ready", orders["index"]?["status"]?.ToString());
+                Assert.Equal(11, orders["index"]?["totalObjects"]?.ToObject<int>());
+                Assert.Equal("Reindexing", warehouse["index"]?["status"]?.ToString());
+                Assert.Equal(22, warehouse["index"]?["totalObjects"]?.ToObject<int>());
+                Assert.Equal("warehouse", warehouse["kb"]?["active"]?.ToString());
+            }
+            finally
+            {
+                Program.ClearSessionSelectedKb(ordersSession);
+                Program.ClearSessionSelectedKb(warehouseSession);
+                Program.ClearLastKnownIndexStateForTest();
+            }
         }
     }
 }

@@ -107,8 +107,30 @@ namespace GxMcp.Gateway
             // another round-trip — refreshed every TryRefreshIndexStateFromWorkerAsync.
             public JArray? RecentlyChanged;
         }
-        private static IndexStateSnapshot _lastKnownIndexState = new IndexStateSnapshot();
-        private static readonly object _lastKnownIndexStateLock = new object();
+        // Keep the mirror keyed by the resolved KB. The gateway serves several workers
+        // in one process, so a process-wide last writer would make whoami and the
+        // SDK-bound fast-fail path report whichever KB happened to finish indexing last.
+        private const string UnscopedIndexStateKey = "<unscoped>";
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, IndexStateSnapshot> _lastKnownIndexStateByKb
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, IndexStateSnapshot>(StringComparer.OrdinalIgnoreCase);
+
+        private static string IndexStateKey(string? kbAlias) =>
+            string.IsNullOrWhiteSpace(kbAlias) ? UnscopedIndexStateKey : kbAlias.Trim();
+
+        private static IndexStateSnapshot GetLastKnownIndexState(string? kbAlias = null)
+        {
+            string key = IndexStateKey(kbAlias);
+            return _lastKnownIndexStateByKb.GetOrAdd(key, _ => new IndexStateSnapshot());
+        }
+
+        internal static void ClearLastKnownIndexStateForTest()
+            => _lastKnownIndexStateByKb.Clear();
+
+        internal static void InvalidateLastKnownIndexState(string? kbAlias)
+        {
+            if (!string.IsNullOrWhiteSpace(kbAlias))
+                _lastKnownIndexStateByKb.TryRemove(IndexStateKey(kbAlias), out _);
+        }
 
         // Per-KB database configuration (DataStores). Read once per KB via the worker
         // on first whoami after open; cached until the gateway restarts or KB switches.
@@ -168,27 +190,32 @@ namespace GxMcp.Gateway
         internal static void UpdateLastKnownIndexState(string status, int totalObjects, DateTime? lastIndexedAt, double? progress, int? etaMs,
             int flushFailuresConsecutive = 0, DateTime? flushLastSuccessUtc = null, string? flushLastError = null,
             JArray? recentlyChanged = null)
+            => UpdateLastKnownIndexState(ResolveIndexStateAlias(), status, totalObjects, lastIndexedAt, progress, etaMs,
+                flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged);
+
+        internal static void UpdateLastKnownIndexState(string? kbAlias, string status, int totalObjects, DateTime? lastIndexedAt, double? progress, int? etaMs,
+            int flushFailuresConsecutive = 0, DateTime? flushLastSuccessUtc = null, string? flushLastError = null,
+            JArray? recentlyChanged = null)
         {
             IndexStateSnapshot? previous;
-            lock (_lastKnownIndexStateLock)
+            string key = IndexStateKey(kbAlias);
+            previous = GetLastKnownIndexState(kbAlias);
+            var current = new IndexStateSnapshot
             {
-                previous = _lastKnownIndexState;
-                _lastKnownIndexState = new IndexStateSnapshot
-                {
-                    Status = string.IsNullOrEmpty(status) ? "Cold" : status,
-                    TotalObjects = totalObjects,
-                    LastIndexedAt = lastIndexedAt,
-                    Progress = progress,
-                    EtaMs = etaMs,
-                    RefreshedAtUtc = DateTime.UtcNow,
-                    FlushFailuresConsecutive = flushFailuresConsecutive,
-                    FlushLastSuccessUtc = flushLastSuccessUtc,
-                    FlushLastError = flushLastError,
-                    // Preserve prior recentlyChanged when the caller doesn't pass a fresh
-                    // value — search/lifecycle pushes update telemetry without it.
-                    RecentlyChanged = recentlyChanged ?? _lastKnownIndexState?.RecentlyChanged
-                };
-            }
+                Status = string.IsNullOrEmpty(status) ? "Cold" : status,
+                TotalObjects = totalObjects,
+                LastIndexedAt = lastIndexedAt,
+                Progress = progress,
+                EtaMs = etaMs,
+                RefreshedAtUtc = DateTime.UtcNow,
+                FlushFailuresConsecutive = flushFailuresConsecutive,
+                FlushLastSuccessUtc = flushLastSuccessUtc,
+                FlushLastError = flushLastError,
+                // Preserve prior recentlyChanged when the caller doesn't pass a fresh
+                // value — search/lifecycle pushes update telemetry without it.
+                RecentlyChanged = recentlyChanged ?? previous.RecentlyChanged
+            };
+            _lastKnownIndexStateByKb[key] = current;
             // Keep AutoTypeInjector's name→type map warm whenever we get fresh index data.
             // Plan 038: scope the refresh to the KB it actually came from. This feeder runs
             // from whoami's own dispatch (a meta-tool — _currentKb is null there), so fall
@@ -246,6 +273,54 @@ namespace GxMcp.Gateway
             }
             catch { }
             return null;
+        }
+
+        // Resolve the same target that whoami exposes as kb.active. Meta-tool requests do
+        // not populate _currentKb, so use the session selection and the resolver's strict /
+        // legacy rules before reading or refreshing the mirror. Returning null is deliberate
+        // when strict mode has multiple possible KBs: an unscoped snapshot must never be
+        // presented as if it belonged to an arbitrary worker.
+        private static string? ResolveIndexStateAlias(string? sessionId = null)
+        {
+            string? current = _currentKb.Value?.NormalizedAlias;
+            if (!string.IsNullOrWhiteSpace(current)) return current;
+
+            string? selected = !string.IsNullOrWhiteSpace(sessionId)
+                ? GetSessionSelectedKb(sessionId!)
+                : null;
+            if (!string.IsNullOrWhiteSpace(selected)) return selected;
+            if (_activeConfig == null) return null;
+
+            try
+            {
+                var open = _workerPool?.ListOpen() ?? Array.Empty<KbHandle>();
+                bool legacy = string.Equals(_activeConfig.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
+                string? configured = _activeConfig.Environment?.RawDefaultKb ?? _activeConfig.Environment?.DefaultKb;
+
+                if (!legacy)
+                {
+                    if (open.Count == 1
+                        && (string.IsNullOrWhiteSpace(configured)
+                            || string.Equals(configured, open[0].Alias, StringComparison.OrdinalIgnoreCase)))
+                        return open[0].NormalizedAlias;
+                    return null;
+                }
+
+                if (!string.IsNullOrWhiteSpace(configured))
+                {
+                    var configuredOpen = open.FirstOrDefault(k =>
+                        string.Equals(k.Alias, configured, StringComparison.OrdinalIgnoreCase));
+                    if (configuredOpen != null) return configuredOpen.NormalizedAlias;
+                    if (open.Count == 1) return open[0].NormalizedAlias;
+                    var declared = _activeConfig.Environment?.KBs?.FirstOrDefault(k =>
+                        string.Equals(k.Alias, configured, StringComparison.OrdinalIgnoreCase));
+                    if (declared != null) return new KbHandle(declared.Alias, declared.Path).NormalizedAlias;
+                }
+
+                if (open.Count == 1) return open[0].NormalizedAlias;
+                return _activeConfig.Environment?.KBs?.FirstOrDefault()?.Alias;
+            }
+            catch { return null; }
         }
 
         // Root-cause fix: name→type map fed from the FULL index. The top-5
@@ -422,10 +497,9 @@ namespace GxMcp.Gateway
                 || string.Equals(s, "UltraLiteReady", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static JObject BuildIndexBlock()
+        private static JObject BuildIndexBlock(string? kbAlias = null)
         {
-            IndexStateSnapshot snap;
-            lock (_lastKnownIndexStateLock) { snap = _lastKnownIndexState; }
+            IndexStateSnapshot snap = GetLastKnownIndexState(kbAlias);
             return new JObject
             {
                 ["status"] = snap.Status,
@@ -458,9 +532,18 @@ namespace GxMcp.Gateway
         // Called from BuildWhoamiPayloadAsync; on success refreshes _lastKnownIndexState
         // so subsequent timeouts/worker outages still see the last good value.
         // Short timeout (1500ms): whoami is supposed to be near-instant.
-        private static async Task<bool> TryRefreshIndexStateFromWorkerAsync(int timeoutMs = 1500)
+        private static async Task<bool> TryRefreshIndexStateFromWorkerAsync(int timeoutMs = 1500, string? kbAlias = null)
         {
             if (_workerPool == null) return false;
+            kbAlias ??= ResolveIndexStateAlias();
+            KbHandle? previousKb = _currentKb.Value;
+            if (!string.IsNullOrWhiteSpace(kbAlias))
+            {
+                KbHandle? target = _workerPool.ListOpen()
+                    .FirstOrDefault(k => string.Equals(k.NormalizedAlias, kbAlias, StringComparison.OrdinalIgnoreCase));
+                if (target == null) return false;
+                _currentKb.Value = target;
+            }
             try
             {
                 var cmd = new JObject
@@ -483,12 +566,16 @@ namespace GxMcp.Gateway
                 JObject? result = env["result"] as JObject;
                 if (result == null) return false;
 
-                return ApplyIndexStateFromWorkerResult(result);
+                return ApplyIndexStateFromWorkerResult(result, kbAlias);
             }
             catch (Exception ex)
             {
                 Log($"[Whoami] index state fetch failed; using cached snapshot: {ex.Message}");
                 return false;
+            }
+            finally
+            {
+                _currentKb.Value = previousKb;
             }
         }
 
@@ -498,6 +585,9 @@ namespace GxMcp.Gateway
         // the JSON-RPC result the worker returned for the GetIndexState command.
         // Returns true when a state was applied.
         internal static bool ApplyIndexStateFromWorkerResult(JObject workerResult)
+            => ApplyIndexStateFromWorkerResult(workerResult, null);
+
+        internal static bool ApplyIndexStateFromWorkerResult(JObject workerResult, string? kbAlias)
         {
             if (workerResult == null) return false;
 
@@ -545,7 +635,7 @@ namespace GxMcp.Gateway
             string? flushLastError = state["flushLastError"]?.Type == JTokenType.Null ? null : state["flushLastError"]?.ToString();
 
             JArray? recentlyChanged = state["recentlyChanged"] as JArray;
-            UpdateLastKnownIndexState(status, totalObjects, lastIndexedAt, progress, etaMs,
+            UpdateLastKnownIndexState(kbAlias, status, totalObjects, lastIndexedAt, progress, etaMs,
                 flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged);
             return true;
         }
@@ -653,8 +743,8 @@ namespace GxMcp.Gateway
             // index status is far better UX than a 1.5s blocking call. Search/lifecycle
             // paths refresh the snapshot whenever they receive new telemetry, so the
             // cache stays warm during real use.
-            IndexStateSnapshot snap;
-            lock (_lastKnownIndexStateLock) { snap = _lastKnownIndexState; }
+            string? indexAlias = ResolveIndexStateAlias(sessionId);
+            IndexStateSnapshot snap = GetLastKnownIndexState(indexAlias);
             bool cacheFresh = snap.RefreshedAtUtc != DateTime.MinValue
                 && (DateTime.UtcNow - snap.RefreshedAtUtc).TotalSeconds < 15;
 
@@ -674,7 +764,7 @@ namespace GxMcp.Gateway
                 // path (index/lifecycle progress) will overwrite the placeholder
                 // with real data as soon as it arrives. Net effect on the bench:
                 // first whoami pays ~400ms once, subsequent calls drop to ms-range.
-                bool refreshed = await TryRefreshIndexStateFromWorkerAsync(timeoutMs: 400).ConfigureAwait(false);
+                bool refreshed = await TryRefreshIndexStateFromWorkerAsync(timeoutMs: 400, kbAlias: indexAlias).ConfigureAwait(false);
                 // DB info is stable; fetch once per KB and cache forever. Await on first
                 // whoami of a session so the database block populates inline; subsequent
                 // calls short-circuit on the cache and pay nothing. The timeout is generous
@@ -684,21 +774,18 @@ namespace GxMcp.Gateway
                 await TryRefreshDatabaseInfoFromWorkerAsync(timeoutMs: 3000).ConfigureAwait(false);
                 if (!refreshed)
                 {
-                    lock (_lastKnownIndexStateLock)
+                    IndexStateSnapshot current = GetLastKnownIndexState(indexAlias);
+                    if (current.RefreshedAtUtc == DateTime.MinValue)
                     {
-                        if (_lastKnownIndexState.RefreshedAtUtc == DateTime.MinValue)
+                        // Stamp a "Cold" placeholder only for this KB. A slow worker for
+                        // one KB must not make whoami suppress refreshes for every other KB.
+                        _lastKnownIndexStateByKb[IndexStateKey(indexAlias)] = new IndexStateSnapshot
                         {
-                            // Stamp a "Unknown" placeholder. Status stays Cold so the
-                            // agent can still see that the index hasn't reported yet;
-                            // we just stop hammering the round-trip every call.
-                            _lastKnownIndexState = new IndexStateSnapshot
-                            {
-                                Status = "Cold",
-                                TotalObjects = 0,
-                                RefreshedAtUtc = DateTime.UtcNow,
-                                RecentlyChanged = _lastKnownIndexState?.RecentlyChanged
-                            };
-                        }
+                            Status = "Cold",
+                            TotalObjects = 0,
+                            RefreshedAtUtc = DateTime.UtcNow,
+                            RecentlyChanged = current.RecentlyChanged
+                        };
                     }
                 }
             }
@@ -1215,7 +1302,7 @@ namespace GxMcp.Gateway
                 },
                 // v2.3.8 Task 1.2: surface index readiness so agents know whether to
                 // call `lifecycle action=index` before relying on search/analyze.
-                ["index"] = BuildIndexBlock(),
+                ["index"] = BuildIndexBlock(activeAlias),
                 // Per-KB database configuration. SQL-generating tools should default to
                 // database.default.dialect (oracle / sqlserver / mysql / postgres / db2 / …)
                 // instead of guessing. Populated once per session via the worker, cached
@@ -1231,7 +1318,7 @@ namespace GxMcp.Gateway
                 // Heuristics inspect KB / index / worker / update state and emit
                 // {tool, args, why} triples matching the canonical envelope's
                 // nextSteps shape. Empty when state is healthy + nothing pending.
-                ["suggestedNext"] = BuildSuggestedNextBlock(kbPath, kbExists, kbValid)
+                ["suggestedNext"] = BuildSuggestedNextBlock(kbPath, kbExists, kbValid, activeAlias)
             };
 
             // A post-timeout mutation is never retried implicitly. Surface the
@@ -1442,7 +1529,7 @@ namespace GxMcp.Gateway
             }
         }
 
-        internal static JArray BuildSuggestedNextBlock(string? kbPath, bool kbExists, bool kbValid)
+        internal static JArray BuildSuggestedNextBlock(string? kbPath, bool kbExists, bool kbValid, string? kbAlias = null)
         {
             var arr = new JArray();
             try
@@ -1476,8 +1563,7 @@ namespace GxMcp.Gateway
                 // search / list / impact will all return empty until indexed — but a
                 // BUILT index with 0 objects is a genuinely empty KB, so the nudge must
                 // not loop force=true reindexing forever (there is nothing to index).
-                IndexStateSnapshot snap;
-                lock (_lastKnownIndexStateLock) { snap = _lastKnownIndexState; }
+                IndexStateSnapshot snap = GetLastKnownIndexState(kbAlias);
                 var indexSuggestion = BuildIndexSuggestion(snap.Status, snap.TotalObjects);
                 if (indexSuggestion != null) arr.Add(indexSuggestion);
 

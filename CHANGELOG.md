@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Gateway index-state isolation ([#201](https://github.com/lennix1337/Genexus18MCP/issues/201))**: keep `whoami` and the index-readiness guard keyed by normalized KB alias, invalidate only the affected alias on open/close, and never fall back to an arbitrary worker in strict multi-KB sessions.
+
 ## v3.5.0 - 2026-09-14
 
 

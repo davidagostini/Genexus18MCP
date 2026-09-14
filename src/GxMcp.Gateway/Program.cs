@@ -71,6 +71,7 @@ namespace GxMcp.Gateway
             try { _workerPool?.StopAll(); } catch { }
             _workerPool = null;
             _kbResolver = null;
+            ClearLastKnownIndexStateForTest();
             _pendingRequests.Clear();
             IndexBootstrapTriggerForTest = null;
             RespawnDelayForTest = null;
