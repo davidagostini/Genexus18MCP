@@ -16,6 +16,9 @@ namespace GxMcp.Gateway.Routers
         public static string? Str(JObject? args, string key) =>
             args?[key]?.ToString();
 
+        public static string? Part(JObject? args) =>
+            Str(args, "part") ?? Str(args, "partName");
+
         public static int? Int(JObject? args, string key) =>
             args?[key]?.ToObject<int?>();
 

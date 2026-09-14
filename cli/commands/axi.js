@@ -1522,7 +1522,8 @@ async function runInteractiveInit(ctx) {
                 meta: {
                     patchedClients: patchResult.patched,
                     failedClients: patchResult.failed,
-                    skippedClients: patchResult.skipped || []
+                    skippedClients: patchResult.skipped || [],
+                    verifiedClients: patchResult.verified || []
                 }
             }
         };
@@ -1844,6 +1845,7 @@ async function handleInit(options, ctx) {
                     patchedClients: patchResult.patched,
                     failedClients: patchResult.failed,
                     skippedClients: patchResult.skipped || [],
+                    verifiedClients: patchResult.verified || [],
                     smokeSkipped: !!options.noSmoke,
                     warmed: !!warm && warm.status === 'pass'
                 }
@@ -2137,9 +2139,25 @@ async function handleClients(subcommand, options, ctx) {
             help.push(`Register installed-but-unregistered agents: genexus-mcp clients add --clients ${installedUnregistered.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
         }
         const stale = rows.filter((r) => r.commandStale);
-        if (stale.length > 0) {
-            help.push(`These clients point at a missing gateway exe (will fail to connect) — re-register: genexus-mcp clients add --clients ${stale.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
+        const missingLaunchers = stale.filter((r) => r.launcherStructuralState === 'missing');
+        const invalidLaunchers = stale.filter((r) =>
+            r.launcherSemanticState === 'invalid' && r.launcherStructuralState !== 'missing'
+        );
+        if (missingLaunchers.length > 0) {
+            help.push(`These clients point at a missing gateway exe (will fail to connect) — re-register: genexus-mcp clients add --clients ${missingLaunchers.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
         }
+        if (invalidLaunchers.length > 0) {
+            help.push(`These clients have a known-invalid MCP launcher (check command and args) — re-register: genexus-mcp clients add --clients ${invalidLaunchers.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
+        }
+        const otherStale = stale.filter((r) =>
+            r.launcherStructuralState !== 'missing' && r.launcherSemanticState !== 'invalid'
+        );
+        if (otherStale.length > 0) {
+            help.push(`These clients have a stale launcher — re-register: genexus-mcp clients add --clients ${otherStale.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
+        }
+        const semanticValidCount = rows.filter((r) => r.launcherSemanticState === 'valid').length;
+        const semanticInvalidCount = rows.filter((r) => r.launcherSemanticState === 'invalid').length;
+        const semanticUnknownCount = rows.filter((r) => r.launcherSemanticState === 'unknown').length;
         for (const r of rows) {
             if (r.installed && !r.writeSupported && r.note) help.push(`${r.name}: ${r.note}`);
         }
@@ -2148,7 +2166,15 @@ async function handleClients(subcommand, options, ctx) {
             envelope: {
                 ok: {
                     clients: rows,
-                    summary: { total: rows.length, installed: installedCount, registered: registeredCount, serverName }
+                    summary: {
+                        total: rows.length,
+                        installed: installedCount,
+                        registered: registeredCount,
+                        semanticValid: semanticValidCount,
+                        semanticInvalid: semanticInvalidCount,
+                        semanticUnknown: semanticUnknownCount,
+                        serverName
+                    }
                 },
                 help
             }
@@ -2214,7 +2240,11 @@ async function handleClients(subcommand, options, ctx) {
                 envelope: {
                     ok: { action: 'clients.add', configPath, serverName, patchedClients: patch.patched, patchedCount: patch.patched.length },
                     help,
-                    meta: { failedClients: patch.failed, skippedClients: patch.skipped }
+                    meta: {
+                        failedClients: patch.failed,
+                        skippedClients: patch.skipped,
+                        verifiedClients: patch.verified || []
+                    }
                 }
             };
         }

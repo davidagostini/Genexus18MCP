@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## v3.4.3 - 2026-09-13
+
+
+### Tracked issues
+
+- [#189](https://github.com/lennix1337/Genexus18MCP/issues/189) — [Bug] `genexus_versioning history_save`/`history_restore` usam diretório compartilhado entre KBs, e o restore pode escrever o Source de uma KB em outra
+- [#190](https://github.com/lennix1337/Genexus18MCP/issues/190) — [Bug] clients classifica launcher sem entrypoint como registrado e não obsoleto
+- [#191](https://github.com/lennix1337/Genexus18MCP/issues/191) — [Bug] install.ps1 imprime snippet manual com a chave legada genexus
+- [#192](https://github.com/lennix1337/Genexus18MCP/issues/192) — [Bug / follow-up #146] recover(force=true) rejeitado com KB_NOT_OWNED em strict enquanto whoami/open ainda reportam KB selecionada
+
+
+### Fixed
+
+- Distinguish a session-selected KB alias from its live ownership lease: preserve `KB_LEASE_EXPIRED` through stateful recovery, report `leaseState`/`leaseActive` in `whoami`, `genexus_kb list/open/select`, and direct expired sessions to create a fresh context with explicit `select` ([#192](https://github.com/lennix1337/Genexus18MCP/issues/192)).
+- Classify registered MCP launchers locally by command semantics, so `node.exe` without an entrypoint is reported as invalid with an actionable reason while existing Gateway and `npx genexus-mcp` launchers remain valid; preserve registration, command/args, stale flag, and exit-code compatibility ([#190](https://github.com/lennix1337/Genexus18MCP/issues/190)).
+- Use the default `genexus18mcp` key in the manual MCP snippet printed by `install.ps1`, while retaining the packaged Gateway executable and `args: []` ([#191](https://github.com/lennix1337/Genexus18MCP/issues/191)).
+- Isolate versioning edit snapshots under the active KB, preserve `part`/`versionId` routing, and report legacy shared snapshots without restoring them automatically ([#189](https://github.com/lennix1337/Genexus18MCP/issues/189)).
+
+### Internal
+
+- Add a bounded integration preflight with combined commit/index/worktree contract checks, explicit phase timeouts, serial solution tests, and an external JSON summary; harden PR ripwire and GitHub JSON readers against empty or inconsistent output.
+- Make live-harness teardown idempotent through `DisposeAsync`, separate warm RPC latency from initialization/open/settle timing, and persist PID/state/error diagnostics for every live run.
+
 ## v3.4.2 - 2026-09-13
 
 

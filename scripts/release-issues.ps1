@@ -46,14 +46,51 @@ function Assert-ReleaseIssueAction {
     }
 }
 
-function Get-ReleaseIssueData {
-    param([Parameter(Mandatory = $true)][int]$IssueNumber)
+function Get-GhJson {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string]$GhPath = 'gh'
+    )
 
-    $raw = @(gh issue view ([string]$IssueNumber) --json state,labels 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $raw.Count -eq 0) {
-        throw "Could not read issue #$IssueNumber."
+    $raw = @(& $GhPath @Arguments 2>&1 | ForEach-Object { $_.ToString() })
+    if ($LASTEXITCODE -ne 0) {
+        throw "gh $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
-    return (($raw -join [Environment]::NewLine) | ConvertFrom-Json)
+    $text = $raw -join [Environment]::NewLine
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw "gh $($Arguments -join ' ') returned empty output."
+    }
+    try {
+        $value = $text | ConvertFrom-Json
+    } catch {
+        throw "gh $($Arguments -join ' ') returned invalid JSON."
+    }
+    if ($null -eq $value) {
+        throw "gh $($Arguments -join ' ') returned a null JSON value."
+    }
+    return $value
+}
+
+function Get-ReleaseIssueData {
+    param(
+        [Parameter(Mandatory = $true)][int]$IssueNumber,
+        [string]$GhPath = 'gh'
+    )
+
+    $issue = Get-GhJson -GhPath $GhPath -Arguments @(
+        'issue', 'view', ([string]$IssueNumber),
+        '--json', 'number,title,body,state,labels,comments'
+    )
+    if ($null -eq $issue.number -or [int]$issue.number -ne $IssueNumber) {
+        throw "GitHub returned issue number '$($issue.number)' while reading #$IssueNumber."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$issue.title)) {
+        throw "GitHub returned no title while reading issue #$IssueNumber."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$issue.state)) {
+        throw "GitHub returned no state while reading issue #$IssueNumber."
+    }
+    return $issue
 }
 
 function Invoke-ReleaseIssueCommand {

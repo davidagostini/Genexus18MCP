@@ -358,7 +358,7 @@ Write-Host ""
 Write-Host "Manual MCP snippet (for any client not auto-registered):" -ForegroundColor Cyan
 Write-Host '{'
 Write-Host '  "mcpServers": {'
-Write-Host '    "genexus": {'
+Write-Host '    "genexus18mcp": {'
 Write-Host "      ""command"": ""$($gatewayExePath -replace '\\', '\\')"","
 Write-Host '      "args": []'
 Write-Host '    }'

@@ -78,7 +78,11 @@ $OutputEncoding = $utf8
 $root = $PSScriptRoot
 . (Join-Path $root 'scripts\gx-version-catalog.ps1')
 $gxCatalog = Get-GxVersionCatalog -Root $root
+$releaseDryRunBeforeIssueHelpers = $DryRun
+$releaseCloseIssuesBeforeIssueHelpers = $CloseIssues
 . (Join-Path $root 'scripts/release-issues.ps1') -DefineOnly
+$DryRun = $releaseDryRunBeforeIssueHelpers
+$CloseIssues = $releaseCloseIssuesBeforeIssueHelpers
 $statusToken = if ([string]::IsNullOrWhiteSpace($Version)) { 'pending' } else { $Version -replace '[^0-9A-Za-z.-]', '-' }
 if ([string]::IsNullOrWhiteSpace($StatusFile)) {
     $StatusFile = Join-Path $env:TEMP ("gxmcp-release-status-$statusToken-$PID.json")

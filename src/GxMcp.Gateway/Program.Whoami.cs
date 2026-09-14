@@ -871,6 +871,10 @@ namespace GxMcp.Gateway
             string? sessionSelected = !string.IsNullOrWhiteSpace(sessionId)
                 ? GetSessionSelectedKb(sessionId!)
                 : null;
+            string leaseState = !string.IsNullOrWhiteSpace(sessionId)
+                ? GetSessionLeaseState(sessionId!)
+                : "none";
+            bool leaseActive = string.Equals(leaseState, "active", StringComparison.Ordinal);
             string selectionSource = "none";
             string selectionState = "absent";
             bool contextRequired = false;
@@ -906,7 +910,7 @@ namespace GxMcp.Gateway
                     if (available.TryGetValue(sessionSelected, out var matchedHandle))
                     {
                         selectionState = "valid";
-                        contextRequired = false;
+                        contextRequired = !leaseActive;
                         activeAlias = sessionSelected;
                         kbPath = matchedHandle.Path;
                     }
@@ -1014,6 +1018,8 @@ namespace GxMcp.Gateway
                     ["sessionSelection"] = sessionSelected,
                     ["selectionSource"] = selectionSource,
                     ["selectionState"] = selectionState,
+                    ["leaseState"] = leaseState,
+                    ["leaseActive"] = leaseActive,
                     ["startupDefault"] = startupDefault,
                     ["persistedFallback"] = startupDefault,
                     ["default"] = startupDefault,

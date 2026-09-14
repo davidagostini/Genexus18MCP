@@ -43,7 +43,17 @@ $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'scripts\live-harness.ps1')
 $gxCatalog = Get-GxVersionCatalog -Root $root
 
+function Show-LiveSummary {
+    $summaryPath = $env:GXMCP_LIVE_SUMMARY_PATH
+    if ([string]::IsNullOrWhiteSpace($summaryPath) -or -not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
+        return
+    }
+    Write-Host "Live summary: $summaryPath" -ForegroundColor DarkGray
+    Get-Content -LiteralPath $summaryPath | ForEach-Object { Write-Host "  $_" }
+}
+
 function Fail-Live([string]$Message, [int]$ExitCode = 1) {
+    Show-LiveSummary
     Write-Error "live=unavailable; Live gate failed: $Message"
     exit $ExitCode
 }
@@ -134,7 +144,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $GxPath 'Artech.Architecture.Common.
 }
 
 $savedEnvironment = @{}
-foreach ($key in @('GXMCP_TEST_KB', 'GX_PATH', 'GX_PROGRAM_DIR', 'GX_MCP_PORT', 'GX_MCP_STDIO', 'GX_CONFIG_PATH', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LIVE_RPC_TIMEOUT_MS')) {
+foreach ($key in @('GXMCP_TEST_KB', 'GX_PATH', 'GX_PROGRAM_DIR', 'GX_MCP_PORT', 'GX_MCP_STDIO', 'GX_CONFIG_PATH', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'GXMCP_LIVE_SUMMARY_PATH')) {
     $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key)
 }
 try {
@@ -197,6 +207,7 @@ $env:GXMCP_LOG_DIR = $gatewayLogDirectory
 $env:GXMCP_LIVE_GATEWAY_EXE = $gatewayExe
 $env:GXMCP_LIVE_RPC_TIMEOUT_MS = ($RpcTimeoutSeconds * 1000).ToString()
 $env:GX_CONFIG_PATH = Join-Path $runDirectory 'config.json'
+$env:GXMCP_LIVE_SUMMARY_PATH = Join-Path $runDirectory 'live-summary.json'
 $liveFixtureAlias = 'live-fixture'
 @{
     GeneXus = @{ InstallationPath = $GxPath; WorkerExecutable = (Join-Path $root 'publish\worker\GxMcp.Worker.exe') }
@@ -327,8 +338,10 @@ if ($RunBenchmark) {
     Write-Host "Benchmark output: $BenchmarkOut" -ForegroundColor Green
 }
 
+Show-LiveSummary
 Write-Host "`nLive gate completed." -ForegroundColor Green
 } finally {
+    Show-LiveSummary
     foreach ($key in $savedEnvironment.Keys) {
         [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key])
     }

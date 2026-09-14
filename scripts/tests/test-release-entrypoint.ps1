@@ -14,6 +14,11 @@ $canonicalSource = Get-Content -LiteralPath (Join-Path $root 'release.ps1') -Raw
 if ($canonicalSource -notmatch '\$numericVersion' -or $canonicalSource -notmatch 'AssemblyVersion>.*numericVersion\.0') {
     throw 'Canonical release entrypoint must keep prerelease assembly versions numeric.'
 }
+$helperImport = $canonicalSource.IndexOf("release-issues.ps1') -DefineOnly", [StringComparison]::Ordinal)
+$helperRestore = $canonicalSource.IndexOf('$DryRun = $releaseDryRunBeforeIssueHelpers', [StringComparison]::Ordinal)
+if ($helperImport -lt 0 -or $helperRestore -lt $helperImport) {
+    throw 'Canonical release entrypoint must restore DryRun after importing issue helpers.'
+}
 
 $output = & pwsh -NoProfile -File (Join-Path $root 'scripts\release.ps1') -NoBump 2>&1
 if ($LASTEXITCODE -eq 0 -or ($output -join "`n") -notmatch 'NoBump.*no longer supported') {

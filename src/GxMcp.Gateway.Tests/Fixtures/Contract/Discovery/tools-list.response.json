@@ -4752,6 +4752,10 @@
             "description": "Object part name, e.g. Source, Rules, Events.",
             "type": "string"
           },
+          "partName": {
+            "description": "Legacy alias for part on history actions.",
+            "type": "string"
+          },
           "right": {
             "description": "diff: right-side text or snapshot label.",
             "type": "string"

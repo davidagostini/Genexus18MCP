@@ -876,29 +876,217 @@ function listSupportedClientIds() {
     return getClientConfigTargets().map((c) => c.id);
 }
 
-// Judge whether a registered launcher command is healthy. npx/node/genexus-mcp
-// shims resolve at runtime so we can't fault them; any other launcher referenced
-// by an explicit path (a separator in the command) that no longer exists on disk
-// is the classic "Failed to connect / still on old version" cause after an
-// install dir moved or was cleaned — covers .exe, .bat, .cmd, .sh, extensionless.
-function clientCommandHealth(entry, client = null) {
-    if (!entry || !entry.command) return { stale: false, reason: null };
-    const cmd = String(entry.command);
-    if (/(^|[\\/])(npx|npx\.cmd|node|node\.exe|genexus-mcp|genexus-mcp\.cmd)$/i.test(cmd)) {
-        return { stale: false, reason: null };
-    }
-    if (/[\\/]/.test(cmd) && !fs.existsSync(cmd)) {
-        return { stale: true, reason: 'configured launcher does not exist on disk' };
-    }
-    if (client && client.preferDirectGateway && /GxMcp\.Gateway\.exe$/i.test(cmd)) {
-        const currentPackageGateway = getGatewayExePath();
-        if (fs.existsSync(currentPackageGateway) && normalizeExePath(cmd) !== normalizeExePath(currentPackageGateway)) {
-            return { stale: true, reason: 'configured launcher points at a different package gateway; re-register the client' };
-        }
-    }
-    return { stale: false, reason: null };
+// The list command is intentionally local: it does not spawn a configured
+// launcher or perform an MCP handshake. These states keep registration, path
+// presence, and known command semantics separate while retaining commandStale
+// as the actionable compatibility flag for a missing/known-invalid launcher.
+function normalizeLauncherToken(value) {
+    return String(value || '').trim().replace(/^['"]|['"]$/g, '');
 }
 
+function launcherBaseName(command) {
+    const token = normalizeLauncherToken(command);
+    const lastSlash = Math.max(token.lastIndexOf('/'), token.lastIndexOf('\\'));
+    return token.slice(lastSlash + 1).toLowerCase();
+}
+
+function launcherHasExplicitPath(command) {
+    const token = normalizeLauncherToken(command);
+    return token.includes('/') || token.includes('\\');
+}
+
+function hasKnownNpxPackage(args) {
+    return Array.isArray(args) && args.some((arg) =>
+        typeof arg === 'string' && /^genexus-mcp(?:@[^\s]+)?$/i.test(arg.trim())
+    );
+}
+
+function nodeEntrypointInfo(args) {
+    if (!Array.isArray(args) || args.length === 0) return { state: 'missing', value: null };
+
+    for (let i = 0; i < args.length; i += 1) {
+        const arg = typeof args[i] === 'string' ? args[i].trim() : '';
+        if (!arg) continue;
+        if (arg === '--') {
+            return args[i + 1]
+                ? { state: 'entrypoint', value: args[i + 1] }
+                : { state: 'missing', value: null };
+        }
+        if (arg.startsWith('-')) {
+            // Inline/evaluated Node programs may start MCP, but their semantics
+            // cannot be established without executing them. Keep them unknown.
+            if (/^(?:-e|-p|--eval(?:=|$)|--print(?:=|$)|--check(?:=|$))/.test(arg)) {
+                return { state: 'indeterminate', value: null };
+            }
+            continue;
+        }
+        return { state: 'entrypoint', value: arg };
+    }
+
+    return { state: 'missing', value: null };
+}
+
+function isKnownNodeEntrypoint(entrypoint) {
+    const normalized = normalizeLauncherToken(entrypoint).replace(/\\/g, '/').toLowerCase();
+    return normalized === 'cli/run.js' || normalized.endsWith('/cli/run.js');
+}
+
+function clientCommandHealth(entry, client = null, { fs: fileSystem = fs } = {}) {
+    const unknown = {
+        stale: false,
+        reason: null,
+        structuralState: 'indeterminate',
+        semanticState: 'unknown',
+        semanticReason: null
+    };
+    const invalid = (reason, structuralState = 'present') => ({
+        stale: true,
+        reason,
+        structuralState,
+        semanticState: 'invalid',
+        semanticReason: reason
+    });
+    const valid = (structuralState = 'present') => ({
+        stale: false,
+        reason: null,
+        structuralState,
+        semanticState: 'valid',
+        semanticReason: null
+    });
+    const missingLauncherReason = 'configured launcher does not exist on disk';
+
+    if (entry === null || entry === undefined) {
+        return {
+            stale: false,
+            reason: null,
+            structuralState: 'not-registered',
+            semanticState: 'not-applicable',
+            semanticReason: null
+        };
+    }
+    if (typeof entry !== 'object') {
+        return invalid('configured local MCP entry has no command or URL', 'invalid');
+    }
+    if (entry.url || entry.type === 'http' || entry.type === 'sse' || entry.type === 'remote') {
+        return {
+            stale: false,
+            reason: null,
+            structuralState: 'not-applicable',
+            semanticState: 'not-applicable',
+            semanticReason: null
+        };
+    }
+
+    const command = normalizeLauncherToken(entry.command);
+    if (!command) return invalid('configured local MCP entry has no command', 'invalid');
+
+    const args = Array.isArray(entry.args) ? entry.args : [];
+    const baseName = launcherBaseName(command);
+    const explicitPath = launcherHasExplicitPath(command);
+    const exists = explicitPath ? fileSystem.existsSync(command) : null;
+    const knownRuntimeLauncher = baseName === 'npx'
+        || baseName === 'npx.cmd'
+        || baseName === 'node'
+        || baseName === 'node.exe'
+        || baseName === 'genexus-mcp'
+        || baseName === 'genexus-mcp.cmd'
+        || baseName === 'start_mcp.bat'
+        || baseName === 'gxmcp.gateway.exe';
+    const structuralState = explicitPath
+        ? (exists ? 'present' : 'missing')
+        : (knownRuntimeLauncher ? 'present' : 'indeterminate');
+
+    if (baseName === 'gxmcp.gateway.exe') {
+        if (!explicitPath) {
+            return {
+                ...unknown,
+                semanticReason: 'direct Gateway launcher must use an explicit path that can be checked locally'
+            };
+        }
+        if (!exists) return invalid(missingLauncherReason, 'missing');
+        if (client && client.preferDirectGateway) {
+            const currentPackageGateway = getGatewayExePath();
+            if (fs.existsSync(currentPackageGateway) && normalizeExePath(command) !== normalizeExePath(currentPackageGateway)) {
+                return {
+                    ...valid('present'),
+                    stale: true,
+                    reason: 'configured launcher points at a different package gateway; re-register the client'
+                };
+            }
+        }
+        return valid('present');
+    }
+
+    if (baseName === 'npx' || baseName === 'npx.cmd') {
+        if (!exists && explicitPath) return invalid(missingLauncherReason, 'missing');
+        if (hasKnownNpxPackage(args)) return valid(structuralState);
+        if (args.length === 0) {
+            return invalid('npx launcher requires the genexus-mcp package in args (for example -y genexus-mcp@latest)', structuralState);
+        }
+        return {
+            ...unknown,
+            structuralState,
+            semanticReason: 'npx launcher package is not recognized as genexus-mcp'
+        };
+    }
+
+    if (baseName === 'node' || baseName === 'node.exe') {
+        if (!exists && explicitPath) return invalid(missingLauncherReason, 'missing');
+        const entrypoint = nodeEntrypointInfo(args);
+        if (entrypoint.state === 'missing') {
+            return invalid('node launcher requires a CLI entrypoint in args (for example cli/run.js)', structuralState);
+        }
+        if (entrypoint.state === 'indeterminate') {
+            return {
+                ...unknown,
+                structuralState,
+                semanticReason: 'node launcher uses an evaluated entrypoint that cannot be verified locally'
+            };
+        }
+        if (!isKnownNodeEntrypoint(entrypoint.value)) {
+            return {
+                ...unknown,
+                structuralState,
+                semanticReason: 'node entrypoint is not recognized as the genexus-mcp CLI'
+            };
+        }
+        if (!fileSystem.existsSync(normalizeLauncherToken(entrypoint.value))) {
+            return invalid(`configured node entrypoint does not exist on disk: ${entrypoint.value}`, structuralState);
+        }
+        return valid(structuralState);
+    }
+
+    if (baseName === 'genexus-mcp' || baseName === 'genexus-mcp.cmd') {
+        if (!exists && explicitPath) return invalid(missingLauncherReason, 'missing');
+        return valid(structuralState);
+    }
+    if (baseName === 'start_mcp.bat' && explicitPath) {
+        if (!exists) return invalid(missingLauncherReason, 'missing');
+        return valid('present');
+    }
+
+    if (explicitPath && !exists) {
+        return {
+            ...unknown,
+            stale: true,
+            reason: missingLauncherReason,
+            structuralState: 'missing',
+            semanticReason: 'launcher command is not recognized locally; run doctor for runtime validation'
+        };
+    }
+    if (explicitPath) {
+        return {
+            ...unknown,
+            structuralState: 'present',
+            semanticReason: 'launcher command is not recognized locally; run doctor for runtime validation'
+        };
+    }
+    return {
+        ...unknown,
+        structuralState,
+        semanticReason: 'launcher command cannot be classified without a known local command shape'
+    };
+}
 function buildManualClientSetup(client, targetConfigPath = null) {
     return {
         mode: 'manual',
@@ -945,7 +1133,11 @@ function clientsStatus(opts = {}) {
             writeSupported: client.writeSupported !== false,
             configPath: client.path,
             command: entry && entry.command ? entry.command : null,
+            args: entry && Array.isArray(entry.args) ? entry.args : [],
             url: entry && entry.url ? entry.url : null,
+            launcherStructuralState: health.structuralState,
+            launcherSemanticState: health.semanticState,
+            launcherSemanticReason: health.semanticReason,
             commandStale: health.stale,
             commandStaleReason: health.reason || (isThirdParty ? 'configured as third-party / HTTP MCP server (e.g. official GeneXus MCP)' : null),
             detectedAt: det.markerHit || (det.hasConfig ? client.path : null),
@@ -1000,6 +1192,7 @@ function patchClientConfig(targetConfigPath, opts = {}) {
     const patched = [];
     const failed = [];
     const skipped = [];
+    const verified = [];
 
     for (const client of candidates) {
         // Detect-only agents can't be auto-written; surface
@@ -1029,24 +1222,38 @@ function patchClientConfig(targetConfigPath, opts = {}) {
         }
         try {
             fileSystem.mkdirSync(path.dirname(client.path), { recursive: true });
-            applyClientEntry(client, getLauncher(client), targetConfigPath, {
+            const launcher = getLauncher(client);
+            applyClientEntry(client, launcher, targetConfigPath, {
                 serverName,
                 force,
                 globalConfig: Boolean(opts.globalConfig),
                 fs: fileSystem
             });
-            // Read-back: confirm the entry is actually present and the file still
-            // parses, so a silently-corrupted write is reported as a failure.
-            if (!readClientCommandEntry(client, serverName, { fs: fileSystem })) {
+            // Read-back: confirm the entry is actually present, the file still
+            // parses, and the generated command is a known valid local launcher.
+            const writtenEntry = readClientCommandEntry(client, serverName, { fs: fileSystem });
+            if (!writtenEntry) {
                 throw new Error(`post-write verification failed (${serverName} entry not found after write)`);
             }
+            const health = clientCommandHealth(writtenEntry, client, { fs: fileSystem });
+            if (health.semanticState !== 'valid') {
+                const reason = health.semanticReason || health.reason || `launcher semantic state is ${health.semanticState}`;
+                throw new Error(`post-write verification failed (${reason})`);
+            }
+            verified.push({
+                client: client.name,
+                command: writtenEntry.command || null,
+                args: Array.isArray(writtenEntry.args) ? writtenEntry.args : [],
+                launcherStructuralState: health.structuralState,
+                launcherSemanticState: health.semanticState
+            });
             patched.push(client.name);
         } catch (err) {
             failed.push({ client: client.name, reason: err && err.message ? err.message : 'Unknown error' });
         }
     }
 
-    return { patched, failed, skipped };
+    return { patched, failed, skipped, verified };
 }
 
 function unpatchClientConfig(opts = {}) {

@@ -128,6 +128,13 @@ namespace GxMcp.Gateway
 
         private static JObject BuildStableKbContextError(string code, string message)
         {
+            string hint = string.Equals(code, "KB_LEASE_EXPIRED", StringComparison.OrdinalIgnoreCase)
+                ? "The session's KB lease expired. Run genexus_kb action=select for the intended alias to create a fresh context, then retry."
+                : string.Equals(code, "KB_LEASE_INVALID", StringComparison.OrdinalIgnoreCase)
+                    ? "The session's KB lease is invalid for this context. Run genexus_kb action=select for the intended alias to create a fresh context, then retry."
+                    : string.Equals(code, "KB_NOT_OWNED", StringComparison.OrdinalIgnoreCase)
+                        ? "This session does not own an active KB lease. Run genexus_kb action=select for the intended alias, or pass kb explicitly."
+                        : "Select and open a KB in this session before retrying the stateful operation.";
             return new JObject
             {
                 ["status"] = "error",
@@ -135,7 +142,7 @@ namespace GxMcp.Gateway
                 {
                     ["code"] = code,
                     ["message"] = message,
-                    ["hint"] = "Select and open a KB in this session before retrying the stateful operation."
+                    ["hint"] = hint
                 }
             };
         }
@@ -157,10 +164,15 @@ namespace GxMcp.Gateway
             }
             catch (KbLeaseValidationException ex)
             {
-                return BuildStableKbContextError(
-                    string.Equals(ex.Code, "KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase)
-                        ? "KB_CONTEXT_REQUIRED" : "KB_NOT_OWNED",
-                    ex.Message);
+                string stableCode = ex.Code switch
+                {
+                    "KB_CONTEXT_REQUIRED" => "KB_CONTEXT_REQUIRED",
+                    "KB_NOT_OWNED" => "KB_NOT_OWNED",
+                    "KB_LEASE_INVALID" => "KB_LEASE_INVALID",
+                    "KB_LEASE_EXPIRED" => "KB_LEASE_EXPIRED",
+                    _ => "KB_LEASE_INVALID"
+                };
+                return BuildStableKbContextError(stableCode, ex.Message);
             }
         }
 
@@ -828,6 +840,10 @@ namespace GxMcp.Gateway
                                 string? selectedAlias = sessionContextEnabled
                                     ? GetSessionSelectedKb(sessionId)
                                     : null;
+                                string selectedLeaseState = !string.IsNullOrWhiteSpace(selectedAlias) && sessionContextEnabled
+                                    ? GetSessionLeaseState(sessionId)
+                                    : "none";
+                                bool selectedLeaseActive = string.Equals(selectedLeaseState, "active", StringComparison.Ordinal);
                                 var activeHandle = !string.IsNullOrWhiteSpace(selectedAlias)
                                     ? openKbs.FirstOrDefault(k =>
                                         string.Equals(k.Alias, selectedAlias, StringComparison.OrdinalIgnoreCase))
@@ -858,6 +874,9 @@ namespace GxMcp.Gateway
                                         })),
                                     ["activeKb"] = selectedAlias ?? activeHandle?.Alias ?? configuredAlias,
                                     ["selectedKb"] = selectedAlias,
+                                    ["leaseState"] = selectedLeaseState,
+                                    ["leaseActive"] = selectedLeaseActive,
+                                    ["contextRequired"] = !string.IsNullOrWhiteSpace(selectedAlias) && !selectedLeaseActive,
                                     ["maxOpenKbs"] = _activeConfig?.Server?.MaxOpenKbs ?? 3,
                                     ["defaultKb"] = configuredAlias,
                                     ["declaredKbs"] = JArray.FromObject(
@@ -947,13 +966,17 @@ namespace GxMcp.Gateway
                                 }
 
                                 SetSessionSelectedKb(sessionId, resolvedAlias, resolvedPath ?? resolvedAlias);
+                                string sessionLeaseState = GetSessionLeaseState(sessionId);
+                                bool sessionLeaseActive = string.Equals(sessionLeaseState, "active", StringComparison.Ordinal);
 
                                 payload = new JObject
                                 {
                                     ["selectedKb"] = resolvedAlias,
                                     ["path"] = resolvedPath,
                                     ["scope"] = "session",
-                                    ["persisted"] = false
+                                    ["persisted"] = false,
+                                    ["leaseState"] = sessionLeaseState,
+                                    ["leaseActive"] = sessionLeaseActive
                                 };
                                 break;
                             }
@@ -1141,13 +1164,20 @@ namespace GxMcp.Gateway
                                     selectedAfterOpen,
                                     handleToOpen.Alias,
                                     StringComparison.OrdinalIgnoreCase);
+                                string openedLeaseState = selected && sessionContextEnabled
+                                    ? GetSessionLeaseState(sessionId)
+                                    : "none";
+                                bool openedLeaseActive = string.Equals(openedLeaseState, "active", StringComparison.Ordinal);
                                 payload = new JObject
                                 {
                                     ["opened"] = handleToOpen.Alias,
                                     ["path"] = handleToOpen.Path,
                                     ["workerPid"] = w?.Pid,
                                     ["selected"] = selected,
-                                    ["active"] = selected
+                                    ["active"] = selected,
+                                    ["leaseState"] = openedLeaseState,
+                                    ["leaseActive"] = openedLeaseActive,
+                                    ["contextRequired"] = selected && !openedLeaseActive
                                 };
                                 if (!selected)
                                 {

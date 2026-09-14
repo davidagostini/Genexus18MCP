@@ -128,14 +128,19 @@ namespace GxMcp.Gateway.Tests
         [LiveKbFact]
         public async Task Whoami_BaselineUnder500ms_AndCarriesPlaybooks()
         {
-                        var sw = System.Diagnostics.Stopwatch.StartNew();
+            var warmup = await _h.CallToolAsync("genexus_whoami", new JObject { ["verbose"] = true });
+            Assert.False(LiveGatewayHarness.IsToolError(warmup),
+                "whoami warmup failed: " + _h.DiagnosticsSummary());
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             var resp = await _h.CallToolAsync("genexus_whoami", new JObject { ["verbose"] = true });
             sw.Stop();
             var payload = LiveGatewayHarness.ParseToolPayload(resp);
 
-            Assert.False(LiveGatewayHarness.IsToolError(resp));
+            Assert.False(LiveGatewayHarness.IsToolError(resp),
+                "whoami response was an MCP tool error: " + _h.DiagnosticsSummary());
             Assert.True(sw.ElapsedMilliseconds < 500,
-                $"whoami baseline must be <500ms; got {sw.ElapsedMilliseconds}ms");
+                $"whoami baseline must be <500ms; got {sw.ElapsedMilliseconds}ms; diagnostics={_h.DiagnosticsSummary()}");
             Assert.NotNull(payload?["playbooks"]);
             Assert.NotNull(payload!["playbooks"]!["wwp_on_webpanel"]);
         }

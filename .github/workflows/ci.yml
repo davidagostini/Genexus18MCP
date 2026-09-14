@@ -58,6 +58,8 @@ jobs:
             'scripts/install.ps1',
             'scripts/install-transaction.ps1',
             'scripts/test-live.ps1',
+            'scripts/integration-preflight.ps1',
+            'scripts/read-issue.ps1',
             'scripts/check-upstream-drift.ps1',
             'scripts/test-live-matrix.ps1',
             'scripts/check-build-warning-baseline.ps1'
@@ -74,6 +76,7 @@ jobs:
           ./scripts/check-build-warning-baseline.ps1 -ValidateOnly
           ./scripts/tests/test-upstream-drift.ps1
           ./scripts/tests/test-live-matrix.test.ps1
+          ./scripts/tests/test-integration-preflight.ps1
           ./scripts/tests/sdk-validation-contract.tests.ps1
           ./scripts/tests/install-contract.tests.ps1
           python -c "import ast, pathlib; ast.parse(pathlib.Path('scripts/bench-live-http.py').read_text(encoding='utf-8')); print('benchmark-python: valid')"

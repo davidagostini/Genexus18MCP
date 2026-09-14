@@ -12,6 +12,7 @@ $tests = @(
     'test-release-orchestration.ps1',
     'test-release-preflight.ps1',
     'test-pr-preflight-ripwire.ps1',
+    'test-integration-preflight.ps1',
     'test-release-status.ps1',
     'test-warning-baseline.ps1',
     'test-live-matrix.test.ps1'

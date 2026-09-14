@@ -189,6 +189,54 @@ namespace GxMcp.Gateway.Tests
             Assert.True((bool?)routed["params"]?["rollbackOnFailure"]);
         }
 
+        [Fact]
+        public void History_restore_forwards_part_snapshot_version_and_safety_flags()
+        {
+            var args = new JObject
+            {
+                ["action"] = "history_restore",
+                ["name"] = "SampleObject",
+                ["part"] = "Events",
+                ["versionId"] = 42,
+                ["snapshot"] = "latest",
+                ["discard"] = true,
+                ["dryRun"] = true
+            };
+
+            foreach (var routed in new object?[]
+            {
+                new VersioningRouter().ConvertToolCall("genexus_versioning", args),
+                new OperationsRouter().ConvertToolCall("genexus_versioning", args)
+            })
+            {
+                var json = JObject.FromObject(routed!);
+                Assert.Equal("History", (string?)json["module"]);
+                Assert.Equal("restore", (string?)json["action"]);
+                Assert.Equal("Events", (string?)json["part"]);
+                Assert.Equal(42, (int?)json["versionId"]);
+                Assert.Equal("latest", (string?)json["snapshot"]);
+                Assert.True((bool?)json["discard"]);
+                Assert.True((bool?)json["dryRun"]);
+            }
+        }
+
+        [Fact]
+        public void History_save_accepts_legacy_partName_alias_without_dropping_it()
+        {
+            var args = new JObject
+            {
+                ["action"] = "history_save",
+                ["name"] = "SampleObject",
+                ["partName"] = "Events"
+            };
+
+            var routed = JObject.FromObject(new VersioningRouter().ConvertToolCall("genexus_versioning", args)!);
+            Assert.Equal("Events", (string?)routed["part"]);
+
+            var tools = JArray.Parse(File.ReadAllText(FindToolDefinitionsJson()));
+            AssertSchemaProperty(tools, "genexus_versioning", "partName");
+        }
+
         [Theory]
         [InlineData("linter", "Linter", "linter")]
         [InlineData("navigation", "Analyze", "GetNavigation")]

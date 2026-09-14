@@ -2093,7 +2093,7 @@ namespace GxMcp.Worker.Services
                 int verId = args?["versionId"]?.ToObject<int?>() ?? 0;
                 // v2.6.6 Stream H (FR#28) — forward discard + snapshot + part
                 // so HistoryService can route restore through EditSnapshotStore.
-                string partName = args?["part"]?.ToString();
+                string partName = args?["part"]?.ToString() ?? args?["partName"]?.ToString();
                 string snapshotToken = args?["snapshot"]?.ToString();
                 bool discard = args?["discard"]?.ToObject<bool?>() ?? false;
                 // Item 21 (friction 2026-05-22): dryRun=true returns the

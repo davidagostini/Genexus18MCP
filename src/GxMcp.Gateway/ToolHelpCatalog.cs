@@ -336,10 +336,10 @@ namespace GxMcp.Gateway
                 "# genexus_versioning\n\n" +
                 "KB version history, git integration, and rollback umbrella.\n\n" +
                 "## Actions\n" +
-                "- `history_list` — list saved versions and timestamps for an object.\n" +
-                "- `history_get` — retrieve source or XML of a specific historic versionId.\n" +
-                "- `history_save` — explicitly snapshot current object state into local history.\n" +
-                "- `history_restore` — restore an object to a prior snapshot or version; pass `discard: true` for IDE 'Discard changes' parity.\n" +
+                "- `history_list` — list SDK versions plus KB-scoped edit snapshots; legacy shared `.history` files are visible but marked non-restorable. Pass `part` (or legacy alias `partName`) to scope a part.\n" +
+                "- `history_get` — retrieve source of a specific historic `versionId` and requested part; unsupported parts are rejected explicitly.\n" +
+                "- `history_save` — explicitly snapshot the current part under the active KB's isolated snapshot root.\n" +
+                "- `history_restore` — restore a prior KB-scoped snapshot or the explicit SDK `versionId`; pass `discard: true` for IDE 'Discard changes' parity. Legacy shared snapshots are reported but never selected automatically.\n" +
                 "- `undo` — revert the last N edits performed via MCP.\n" +
                 "- `time_travel` — recover object bytes from past git commits (`at: '<sha/ISO>'`).\n" +
                 "- `blame` — git blame annotations for object parts or files.\n" +

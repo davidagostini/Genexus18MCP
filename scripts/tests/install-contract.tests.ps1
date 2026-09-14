@@ -132,6 +132,16 @@ try {
     Assert-True ($localInstallerSource.Contains('no valid JSON envelope')) 'local installer fails closed when the CLI envelope is missing or invalid'
     Assert-True ($localInstallerSource.Contains('Remove-StagedConfig $stagedConfigPath')) 'failed registration removes the staged config'
     Assert-True ($localInstallerSource.Contains('Move-Item -LiteralPath $stagedConfigPath -Destination $configPath -Force')) 'successful registration commits the staged config'
+    $manualSnippetStart = $localInstallerSource.IndexOf('Write-Host "Manual MCP snippet', [StringComparison]::Ordinal)
+    $manualSnippetEnd = $localInstallerSource.IndexOf('Write-Host "Re-run client registration anytime with:', [StringComparison]::Ordinal)
+    Assert-True ($manualSnippetStart -ge 0 -and $manualSnippetEnd -gt $manualSnippetStart) 'manual MCP snippet block is present'
+    $manualSnippet = $localInstallerSource.Substring($manualSnippetStart, $manualSnippetEnd - $manualSnippetStart)
+    $hasDefaultName = $manualSnippet.Contains('Write-Host ''    "genexus18mcp": {''')
+    $hasLegacyName = $manualSnippet.Contains('Write-Host ''    "genexus": {''')
+    $usesPackagedGateway = $manualSnippet.Contains('$gatewayExePath')
+    $keepsEmptyArgs = $manualSnippet.Contains('Write-Host ''      "args": []''')
+    Assert-True ($hasDefaultName -and -not $hasLegacyName -and $usesPackagedGateway -and $keepsEmptyArgs) 'manual MCP snippet uses genexus18mcp with the packaged gateway and empty args'
+    $passed++
     $stagePosition = $localInstallerSource.IndexOf('Save-JsonFile $stagedConfigPath $config', [StringComparison]::Ordinal)
     $clientPosition = $localInstallerSource.IndexOf('$cliRunPath, "clients", "add"', [StringComparison]::Ordinal)
     $commitPosition = $localInstallerSource.IndexOf('Move-Item -LiteralPath $stagedConfigPath -Destination $configPath -Force', [StringComparison]::Ordinal)

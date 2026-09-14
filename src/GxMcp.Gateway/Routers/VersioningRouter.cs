@@ -24,18 +24,19 @@ namespace GxMcp.Gateway.Routers
             switch (action)
             {
                 case "history_list":
-                    return new { module = "History", action = "list", target = name, part = RouterArgs.Str(args, "part") };
+                    return new { module = "History", action = "list", target = name, part = RouterArgs.Part(args) };
                 case "history_get":
-                    return new { module = "History", action = "get_source", target = name, versionId = RouterArgs.Int(args, "versionId"), part = RouterArgs.Str(args, "part") };
+                    return new { module = "History", action = "get_source", target = name, versionId = RouterArgs.Int(args, "versionId"), part = RouterArgs.Part(args) };
                 case "history_save":
-                    return new { module = "History", action = "save", target = name, part = RouterArgs.Str(args, "part") };
+                    return new { module = "History", action = "save", target = name, part = RouterArgs.Part(args) };
                 case "history_restore":
                     return new
                     {
                         module = "History",
                         action = "restore",
                         target = name,
-                        part = RouterArgs.Str(args, "part"),
+                        part = RouterArgs.Part(args),
+                        versionId = RouterArgs.Int(args, "versionId"),
                         snapshot = RouterArgs.Str(args, "snapshot"),
                         discard = RouterArgs.Bool(args, "discard"),
                         dryRun = RouterArgs.Bool(args, "dryRun")

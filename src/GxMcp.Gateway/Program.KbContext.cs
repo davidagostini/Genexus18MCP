@@ -25,6 +25,37 @@ namespace GxMcp.Gateway
             return _sessionKbContexts.Get(sessionId);
         }
 
+        internal static string GetSessionLeaseState(string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId)
+                || !_sessionKbContexts.TryGetSnapshot(sessionId, out var snapshot)
+                || snapshot?.Lease == null)
+                return "none";
+
+            var lease = _kbLeases.Get(snapshot.Lease.Token);
+            if (lease == null)
+                return "invalid";
+            if (!string.Equals(lease.OwnerScopeId, snapshot.OwnerScopeId, StringComparison.Ordinal))
+                return "other-owner";
+            if (lease.State == KbUseLeaseState.Expired)
+                return "expired";
+            if (lease.State != KbUseLeaseState.Active)
+            {
+                return lease.State switch
+                {
+                    KbUseLeaseState.Revoked => "revoked",
+                    KbUseLeaseState.Released => "released",
+                    _ => "invalid"
+                };
+            }
+            if (!string.Equals(lease.KbId, snapshot.KbId, StringComparison.Ordinal)
+                || lease.ContextGeneration != snapshot.ContextGeneration
+                || !string.Equals(lease.Identity, snapshot.Lease.Identity, StringComparison.Ordinal))
+                return "invalid";
+
+            return "active";
+        }
+
         private static void InitializeSessionKbContext(string sessionId)
         {
             if (string.IsNullOrWhiteSpace(sessionId)) return;

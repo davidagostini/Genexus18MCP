@@ -29,8 +29,16 @@ if ($productionSource -notmatch [regex]::Escape("ResolutionPolicy = 'strict'")) 
 if ($productionSource -match 'DefaultKb\s*=|KBs\s*=') {
     throw 'The live config must not auto-open a second KB alias.'
 }
-foreach ($requiredText in @('GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'Assert-LiveGatewayMaster', '-filter $TestFilter')) {
+foreach ($requiredText in @('GXMCP_LIVE_GATEWAY_EXE', 'GXMCP_LOG_DIR', 'GXMCP_LIVE_RPC_TIMEOUT_MS', 'GXMCP_LIVE_SUMMARY_PATH', 'live-summary.json', 'Show-LiveSummary', 'Assert-LiveGatewayMaster', '-filter $TestFilter')) {
     if ($productionSource -notmatch [regex]::Escape($requiredText)) { throw "Live entrypoint lost required harness guard: $requiredText" }
+}
+$harnessSource = Get-Content (Join-Path $root 'src/GxMcp.Gateway.Tests/LiveGatewayHarness.cs') -Raw
+foreach ($requiredText in @('DisposeAsync()', 'Dispose();', 'gxmcp-live-summary/1', 'gatewayPid', 'workerPid', 'initializeMs', 'kbOpenMs', 'coldStartMs', 'rpcMs', 'queueWaitMs', 'phase', 'selectionState', 'errorCount', 'File.Move(temporary')) {
+    if ($harnessSource -notmatch [regex]::Escape($requiredText)) { throw "Live harness lost structured lifecycle diagnostics: $requiredText" }
+}
+$whoamiSource = Get-Content (Join-Path $root 'src/GxMcp.Gateway.Tests/E2ELiveSmokeTests.cs') -Raw
+foreach ($requiredText in @('whoami warmup failed', 'DiagnosticsSummary()', 'whoami baseline must be <500ms')) {
+    if ($whoamiSource -notmatch [regex]::Escape($requiredText)) { throw "Whoami live gate lost warm/cold separation marker: $requiredText" }
 }
 $patchProbeSource = Get-Content (Join-Path $root 'scripts/test_live_patch_persistence_kbteste.ps1') -Raw
 foreach ($requiredText in @('ReadLineAsync', 'pendingRead', 'Stop-LiveProbeProcess', 'Remove-LiveProbeObjects', 'Assert-TerminalToolResult', 'Read-Ready', 'Get-PayloadValue', "action='index'", 'trap')) {

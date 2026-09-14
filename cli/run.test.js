@@ -30,8 +30,19 @@ const { handleInit, resolveMcpSmokeTarget } = require('./commands/axi');
 const cliPath = path.join(__dirname, 'run.js');
 const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
 fs.writeFileSync(path.join(testGxPath, 'genexus.exe'), '');
-const testGatewayEnv = { GENEXUS_MCP_GATEWAY_EXE: process.execPath };
-test.after(() => fs.rmSync(testGxPath, { recursive: true, force: true }));
+const testGatewayPath = path.join(os.tmpdir(), `genexus-mcp-test-${process.pid}`, 'GxMcp.Gateway.exe');
+fs.mkdirSync(path.dirname(testGatewayPath), { recursive: true });
+if (process.platform === 'win32') {
+    fs.copyFileSync(process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe', testGatewayPath);
+} else {
+    fs.writeFileSync(testGatewayPath, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(testGatewayPath, 0o755);
+}
+const testGatewayEnv = { GENEXUS_MCP_GATEWAY_EXE: testGatewayPath };
+test.after(() => {
+    fs.rmSync(testGxPath, { recursive: true, force: true });
+    fs.rmSync(testGatewayPath, { force: true });
+});
 
 function runCli(args, opts = {}) {
     const spawnOptions = {
@@ -1639,6 +1650,125 @@ test('clients list flags a registered command pointing at a missing launcher as 
     assert.ok(parsed.help.some((h) => h.includes('missing gateway exe')), 'help should call out the stale client');
 
     fs.rmSync(tempRoot, { recursive: true, force: true });
+});
+
+test('clients list separates a registered node launcher without an entrypoint from semantic validity', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-node-no-entrypoint-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const codexCfg = path.join(env.HOME, '.codex', 'config.toml');
+        fs.mkdirSync(path.dirname(codexCfg), { recursive: true });
+        const nodeCommand = process.execPath.replace(/\\/g, '\\\\').replace(/"/g, '\\\\"');
+        fs.writeFileSync(codexCfg, [
+            '[mcp_servers.genexus18mcp]',
+            `command = "${nodeCommand}"`,
+            'args = []',
+            ''
+        ].join('\n'));
+
+        const result = runCli(['clients', '--format', 'json'], { env });
+        assert.equal(result.status, 0, 'clients diagnostics retain the successful list exit code');
+        const parsed = JSON.parse(result.stdout);
+        const codex = parsed.ok.clients.find((client) => client.id === 'codex-cli');
+        assert.ok(codex, 'Codex CLI should be listed');
+        assert.equal(codex.registered, true, 'the config entry remains registered');
+        assert.equal(codex.command, process.execPath, 'the effective command is reported');
+        assert.deepEqual(codex.args, [], 'the effective args are reported');
+        assert.equal(codex.launcherStructuralState, 'present', 'node.exe exists locally');
+        assert.equal(codex.launcherSemanticState, 'invalid', 'node.exe without an entrypoint cannot start MCP');
+        assert.match(codex.launcherSemanticReason, /entrypoint/i, 'the reason tells the operator what is missing');
+        assert.equal(codex.commandStale, true, 'known invalid launcher is actionable through the existing stale flag');
+        assert.match(codex.commandStaleReason, /entrypoint/i);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('clients list validates existing Gateway and known npx launchers locally', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-known-launchers-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const gatewayPath = path.join(tempRoot, 'publish', 'GxMcp.Gateway.exe');
+        const antigravityCfg = path.join(tempRoot, '.gemini', 'antigravity', 'mcp_config.json');
+        const cursorCfg = path.join(tempRoot, '.cursor', 'mcp.json');
+        const codexCfg = path.join(tempRoot, '.codex', 'config.toml');
+        const nodeEntrypoint = path.join(__dirname, 'run.js');
+        fs.mkdirSync(path.dirname(gatewayPath), { recursive: true });
+        fs.mkdirSync(path.dirname(antigravityCfg), { recursive: true });
+        fs.mkdirSync(path.dirname(cursorCfg), { recursive: true });
+        fs.mkdirSync(path.dirname(codexCfg), { recursive: true });
+        fs.writeFileSync(gatewayPath, 'gateway');
+        fs.writeFileSync(antigravityCfg, JSON.stringify({
+            mcpServers: { genexus18mcp: { command: gatewayPath, args: [] } }
+        }, null, 2));
+        fs.writeFileSync(cursorCfg, JSON.stringify({
+            mcpServers: { genexus18mcp: { command: 'npx.cmd', args: ['-y', 'genexus-mcp@latest'] } }
+        }, null, 2));
+        const nodeCommand = process.execPath.replace(/\\/g, '\\\\');
+        const nodeScript = nodeEntrypoint.replace(/\\/g, '\\\\');
+        fs.writeFileSync(codexCfg, [
+            '[mcp_servers.genexus18mcp]',
+            `command = "${nodeCommand}"`,
+            `args = ["${nodeScript}"]`,
+            ''
+        ].join('\n'));
+
+        const result = runCli(['clients', '--format', 'json'], {
+            env: { ...env, GENEXUS_MCP_GATEWAY_EXE: gatewayPath }
+        });
+        assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+        const parsed = JSON.parse(result.stdout);
+        const gateway = parsed.ok.clients.find((client) => client.id === 'antigravity');
+        const npx = parsed.ok.clients.find((client) => client.id === 'cursor');
+        assert.ok(gateway && npx, 'both configured clients should be listed');
+
+        assert.equal(gateway.registered, true);
+        assert.equal(gateway.command, gatewayPath);
+        assert.deepEqual(gateway.args, []);
+        assert.equal(gateway.launcherStructuralState, 'present');
+        assert.equal(gateway.launcherSemanticState, 'valid');
+        assert.equal(gateway.commandStale, false);
+
+        assert.equal(npx.registered, true);
+        assert.equal(npx.command, 'npx.cmd');
+        assert.deepEqual(npx.args, ['-y', 'genexus-mcp@latest']);
+        assert.equal(npx.launcherStructuralState, 'present');
+        assert.equal(npx.launcherSemanticState, 'valid');
+        assert.equal(npx.commandStale, false);
+
+        const node = parsed.ok.clients.find((client) => client.id === 'codex-cli');
+        assert.ok(node, 'Codex CLI should be listed');
+        assert.equal(node.command, process.execPath);
+        assert.deepEqual(node.args, [nodeEntrypoint]);
+        assert.equal(node.launcherStructuralState, 'present');
+        assert.equal(node.launcherSemanticState, 'valid');
+        assert.equal(node.commandStale, false);
+        assert.equal(parsed.ok.summary.semanticInvalid, 0);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('clients list keeps an existing unrecognized launcher indeterminate', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-unknown-launcher-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const cursorCfg = path.join(tempRoot, '.cursor', 'mcp.json');
+        fs.mkdirSync(path.dirname(cursorCfg), { recursive: true });
+        fs.writeFileSync(cursorCfg, JSON.stringify({
+            mcpServers: { genexus18mcp: { command: 'custom-mcp-launcher', args: ['--stdio'] } }
+        }, null, 2));
+
+        const result = runCli(['clients', '--format', 'json'], { env });
+        assert.equal(result.status, 0);
+        const cursor = JSON.parse(result.stdout).ok.clients.find((client) => client.id === 'cursor');
+        assert.equal(cursor.registered, true);
+        assert.equal(cursor.launcherStructuralState, 'indeterminate');
+        assert.equal(cursor.launcherSemanticState, 'unknown');
+        assert.equal(cursor.commandStale, false, 'unknown commands are not treated as invalid');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('clients list marks an Antigravity launcher from an old package cache as stale', () => {

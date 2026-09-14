@@ -44,7 +44,19 @@ namespace GxMcp.Gateway.Tests
         private readonly StringBuilder _stderrBuf = new StringBuilder();
         private readonly object _diagnosticsGate = new object();
         private readonly string? _gatewayLogPath;
+        private readonly string? _summaryPath = Environment.GetEnvironmentVariable("GXMCP_LIVE_SUMMARY_PATH");
+        private int? _gatewayPid;
+        private int? _workerPid;
+        private string? _lastKbAlias;
+        private string? _lastSelectionState;
+        private string? _lastLeaseState;
+        private long _initializeMs;
+        private long _kbOpenMs;
+        private long _settleMs;
+        private long _lastRpcMs;
+        private long? _lastQueueWaitMs;
         private bool _initialized;
+        private int _disposed;
 
         public LiveGatewayHarness()
         {
@@ -93,6 +105,7 @@ namespace GxMcp.Gateway.Tests
             try
             {
                 _process.Start();
+                _gatewayPid = _process.Id;
                 AssertProcessImage(_process, exe);
             }
             catch
@@ -217,6 +230,87 @@ namespace GxMcp.Gateway.Tests
                 $"gatewayLog={gatewayLogPath ?? "<unknown>"}; stderrTail={safeStderr}";
         }
 
+        internal string DiagnosticsSummary()
+            => GetDiagnosticsSnapshot().ToString(Newtonsoft.Json.Formatting.None);
+
+        private JObject GetDiagnosticsSnapshot(string cleanupStatus = "active", bool? processExited = null)
+        {
+            bool exited = processExited ?? IsGatewayProcessExited();
+            return new JObject
+            {
+                ["schemaVersion"] = "gxmcp-live-summary/1",
+                ["gatewayPid"] = _gatewayPid.HasValue ? new JValue(_gatewayPid.Value) : JValue.CreateNull(),
+                ["workerPid"] = _workerPid.HasValue ? new JValue(_workerPid.Value) : JValue.CreateNull(),
+                ["initialized"] = _initialized,
+                ["phase"] = _initialized ? "ready" : (_gatewayPid.HasValue ? "startup" : "not-started"),
+                ["initializeMs"] = _initializeMs,
+                ["kbOpenMs"] = _kbOpenMs,
+                ["settleMs"] = _settleMs,
+                ["coldStartMs"] = _initializeMs + _kbOpenMs + _settleMs,
+                ["rpcMs"] = _lastRpcMs,
+                ["queueWaitMs"] = _lastQueueWaitMs.HasValue ? new JValue(_lastQueueWaitMs.Value) : JValue.CreateNull(),
+                ["kbAlias"] = _lastKbAlias ?? (JToken)JValue.CreateNull(),
+                ["selectionState"] = _lastSelectionState ?? (JToken)JValue.CreateNull(),
+                ["leaseState"] = _lastLeaseState ?? (JToken)JValue.CreateNull(),
+                ["processExited"] = exited,
+                ["cleanup"] = cleanupStatus,
+                ["errorCount"] = CountGatewayErrors(_gatewayLogPath),
+                ["gatewayLogPath"] = _gatewayLogPath ?? (JToken)JValue.CreateNull()
+            };
+        }
+
+        private bool IsGatewayProcessExited()
+        {
+            if (_process == null) return true;
+            try { return _process.HasExited; }
+            catch { return true; }
+        }
+
+        private static int? CountGatewayErrors(string? logPath)
+        {
+            if (string.IsNullOrWhiteSpace(logPath) || !File.Exists(logPath)) return null;
+            try
+            {
+                int count = 0;
+                foreach (var line in File.ReadLines(logPath))
+                {
+                    if (Regex.IsMatch(line, @"(?i)\b(error|exception)\b")) count++;
+                }
+                return count;
+            }
+            catch { return null; }
+        }
+
+        private void WriteDiagnosticsSummary(string cleanupStatus, bool processExited)
+        {
+            if (string.IsNullOrWhiteSpace(_summaryPath)) return;
+            try
+            {
+                string? parent = Path.GetDirectoryName(_summaryPath);
+                if (!string.IsNullOrWhiteSpace(parent)) Directory.CreateDirectory(parent);
+                string temporary = _summaryPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                File.WriteAllText(
+                    temporary,
+                    GetDiagnosticsSnapshot(cleanupStatus, processExited).ToString(Newtonsoft.Json.Formatting.None) + Environment.NewLine,
+                    new UTF8Encoding(false));
+                File.Move(temporary, _summaryPath, true);
+            }
+            catch { }
+        }
+
+        private void RecordPayloadDiagnostics(JObject response)
+        {
+            var payload = ParseToolPayload(response);
+            if (payload == null) return;
+            if (payload["workerPid"]?.Type == JTokenType.Integer)
+                _workerPid = payload["workerPid"]!.Value<int>();
+            _lastKbAlias = payload["kbAlias"]?.ToString() ?? _lastKbAlias;
+            _lastSelectionState = payload["selectionState"]?.ToString() ?? _lastSelectionState;
+            _lastLeaseState = payload["leaseState"]?.ToString() ?? _lastLeaseState;
+            if (payload["queueWaitMs"]?.Type == JTokenType.Integer)
+                _lastQueueWaitMs = payload["queueWaitMs"]!.Value<long>();
+        }
+
         private static string SanitizeDiagnostics(string? value)
         {
             if (string.IsNullOrWhiteSpace(value)) return "<empty>";
@@ -234,12 +328,15 @@ namespace GxMcp.Gateway.Tests
         {
             if (_initialized) return; // IClassFixture: only initialize once per class
             if (_process == null) return; // GXMCP_TEST_KB unset: harness is a no-op
+            var initializeWatch = Stopwatch.StartNew();
             var init = await RpcAsync("initialize", new JObject
             {
                 ["protocolVersion"] = "2024-11-05",
                 ["capabilities"] = new JObject(),
                 ["clientInfo"] = new JObject { ["name"] = "xunit-harness", ["version"] = "1" }
             }, timeoutMs: 30_000);
+            initializeWatch.Stop();
+            _initializeMs = initializeWatch.ElapsedMilliseconds;
             if (init?["result"] == null)
                 throw new InvalidOperationException("Gateway initialize did not return a result. stderr: " + _stderrBuf);
             // Send notifications/initialized (no response expected)
@@ -248,31 +345,51 @@ namespace GxMcp.Gateway.Tests
             string? testKb = Environment.GetEnvironmentVariable("GXMCP_TEST_KB");
             if (!string.IsNullOrEmpty(testKb))
             {
+                var openWatch = Stopwatch.StartNew();
                 await CallToolAsync("genexus_kb", new JObject
                 {
                     ["action"] = "open",
                     ["path"] = testKb
                 }, timeoutMs: 60_000);
+                openWatch.Stop();
+                _kbOpenMs = openWatch.ElapsedMilliseconds;
             }
             // Allow worker bootstrap to settle (BulkIndex etc.)
+            var settleWatch = Stopwatch.StartNew();
             await Task.Delay(3000);
+            settleWatch.Stop();
+            _settleMs = settleWatch.ElapsedMilliseconds;
             _initialized = true;
+            WriteDiagnosticsSummary("active", processExited: false);
         }
 
-        // IAsyncLifetime contract — xunit calls this once when the fixture is
-        // torn down. Currently a no-op (Dispose handles the heavy lifting);
-        // kept here so future async cleanup (e.g. waiting for in-flight writes
-        // to flush) has a hook to grow into without breaking callers.
-        public Task DisposeAsync() => Task.CompletedTask;
+        // IAsyncLifetime contract — xunit may use this path instead of
+        // IDisposable when the fixture is torn down. Keep cleanup idempotent
+        // so either lifecycle path releases the Gateway and its Worker.
+        public Task DisposeAsync()
+        {
+            Dispose();
+            return Task.CompletedTask;
+        }
 
         public async Task<JObject> CallToolAsync(string name, JObject args, int timeoutMs = 0)
         {
-            var resp = await RpcAsync("tools/call", new JObject
+            var watch = Stopwatch.StartNew();
+            try
             {
-                ["name"] = name,
-                ["arguments"] = args ?? new JObject()
-            }, timeoutMs);
-            return resp;
+                var resp = await RpcAsync("tools/call", new JObject
+                {
+                    ["name"] = name,
+                    ["arguments"] = args ?? new JObject()
+                }, timeoutMs);
+                RecordPayloadDiagnostics(resp);
+                return resp;
+            }
+            finally
+            {
+                watch.Stop();
+                _lastRpcMs = watch.ElapsedMilliseconds;
+            }
         }
 
         public static JObject? ParseToolPayload(JObject toolResponse)
@@ -315,7 +432,8 @@ namespace GxMcp.Gateway.Tests
                 string stderr;
                 lock (_diagnosticsGate) { stderr = _stderrBuf.ToString(); }
                 throw new TimeoutException(BuildRpcTimeoutDiagnostics(
-                    method, timeoutMs, processExited, stderr, _gatewayLogPath));
+                    method, timeoutMs, processExited, stderr, _gatewayLogPath) +
+                    $"; lifecycle={DiagnosticsSummary()}");
             }
             return await tcs.Task;
         }
@@ -347,15 +465,24 @@ namespace GxMcp.Gateway.Tests
 
         public void Dispose()
         {
-            if (_process == null) return;
-            StopOwnedProcess(_process);
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            var process = Interlocked.Exchange(ref _process, null);
+            if (process == null)
+            {
+                WriteDiagnosticsSummary("not-started", processExited: true);
+                return;
+            }
+            bool stopped = StopOwnedProcess(process);
+            WriteDiagnosticsSummary(stopped ? "passed" : "failed", stopped);
         }
 
-        internal static void StopOwnedProcess(Process process)
+        internal static bool StopOwnedProcess(Process process)
         {
+            bool stopped = false;
             try
             {
-                process.StandardInput.Close();
+                if (process.HasExited) return true;
+                try { process.StandardInput.Close(); } catch { }
                 // 2s grace lets the worker release the KB lock + drain its
                 // EditSnapshotStore writes. 500ms was too aggressive — the
                 // shared SDK state outlived the kill and crashed the next
@@ -365,9 +492,14 @@ namespace GxMcp.Gateway.Tests
                     process.Kill(entireProcessTree: true);
                     process.WaitForExit(5000);
                 }
+                stopped = process.HasExited;
             }
-            catch { }
-            process.Dispose();
+            catch
+            {
+                try { stopped = process.HasExited; } catch { }
+            }
+            finally { process.Dispose(); }
+            return stopped;
         }
     }
 }
