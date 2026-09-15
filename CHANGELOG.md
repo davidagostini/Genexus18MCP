@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v3.5.2 - 2026-09-15
+
+
+### Tracked issues
+
+- [#202](https://github.com/lennix1337/Genexus18MCP/issues/202) — [Bug] compile_check aceita preview não executável e ignora callers/callerCap
+- [#203](https://github.com/lennix1337/Genexus18MCP/issues/203) — [Contrato] help de genexus_lifecycle anuncia stop-worker, mas schema e router não expõem a action
+- [#204](https://github.com/lennix1337/Genexus18MCP/issues/204) — [Bug] genexus_io read_blob não respeita overwrite=true ao exportar para arquivo existente (v3.5.1)
+
+
 ### Added
 
 - Add the typed WorkWithPlus `set_table_type` operation. It resolves an existing table through the native PatternInstance tree, changes only `type`, preserves children/bindings/events/metadata, and verifies the PatternInstance reread plus parent projection with exact rollback on divergence.

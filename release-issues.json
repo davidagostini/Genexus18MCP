@@ -1,13 +1,13 @@
 {
   "schema": "gxmcp-release-issues/1",
-  "version": "3.5.1",
-  "tag": "v3.5.1",
-  "collectedAtUtc": "2026-09-15T03:22:29.2084449Z",
+  "version": "3.5.2",
+  "tag": "v3.5.2",
+  "collectedAtUtc": "2026-09-15T18:36:51.9859187Z",
   "issues": [
     {
-      "number": 196,
-      "title": "[Bug] Índice restaurado após open/worker_reload pode permanecer desatualizado sem indicador de frescor",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/196",
+      "number": 202,
+      "title": "[Bug] compile_check aceita preview não executável e ignora callers/callerCap",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/202",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -15,9 +15,9 @@
       "milestone": null
     },
     {
-      "number": 197,
-      "title": "[Bug] list_objects pode devolver GUID obsoleto; sweep de deleção pode remover objeto recriado",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/197",
+      "number": 203,
+      "title": "[Contrato] help de genexus_lifecycle anuncia stop-worker, mas schema e router não expõem a action",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/203",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -25,39 +25,9 @@
       "milestone": null
     },
     {
-      "number": 198,
-      "title": "[Melhoria] Não há como ler o conteúdo (bytes) de um File (WikiFileKBObject)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/198",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 199,
-      "title": "[Bug] genexus_worker_reload não-executável após open sem select e ignora a KB do lease com várias KBs",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/199",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 200,
-      "title": "[Melhoria] Convenção de fuso de KBObject.LastUpdate é assumida, não medida",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/200",
-      "state": "open",
-      "labels": [
-        "fixed-pending-release"
-      ],
-      "milestone": null
-    },
-    {
-      "number": 201,
-      "title": "[Bug] Espelho de estado do índice no gateway é process-wide e não isolado por KB",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/201",
+      "number": 204,
+      "title": "[Bug] genexus_io read_blob não respeita overwrite=true ao exportar para arquivo existente (v3.5.1)",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/204",
       "state": "open",
       "labels": [
         "fixed-pending-release"
