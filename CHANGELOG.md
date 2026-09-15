@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- Make `LiveGatewayHarness` poll adaptively for worker search index readiness instead of relying on a fixed 3-second delay, preventing cold-start E2E test failures on fresh builds.
+- Stage Gateway build outputs outside the publish tree in `build.ps1` to prevent intermediate `temp_gw` directory pollution from corrupting published artifacts.
+
+### Internal
+
+- Document the release preflight resume fast path (`-SkipBuild -SkipTests`) in `docs/release_protocol.md` for cases where test suites have already passed for the exact commit.
+- Document in `AGENTS.md` that `GxMcp.Gateway.exe` is a stdio-based MCP process without interactive CLI flags.
+
 ## v3.5.2 - 2026-09-15
 
 

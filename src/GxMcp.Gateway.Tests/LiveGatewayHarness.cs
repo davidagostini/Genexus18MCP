@@ -356,7 +356,23 @@ namespace GxMcp.Gateway.Tests
             }
             // Allow worker bootstrap to settle (BulkIndex etc.)
             var settleWatch = Stopwatch.StartNew();
-            await Task.Delay(3000);
+            var deadline = DateTime.UtcNow.AddSeconds(60);
+            while (DateTime.UtcNow < deadline)
+            {
+                var probe = await CallToolAsync("genexus_list_objects", new JObject
+                {
+                    ["limit"] = 1
+                }, timeoutMs: 15_000);
+                var payload = ParseToolPayload(probe);
+                string? code = payload?["code"]?.ToString();
+                string? status = payload?["status"]?.ToString();
+                if (!string.Equals(code, "IndexNotReady", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(status, "Indexing", StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+                await Task.Delay(500);
+            }
             settleWatch.Stop();
             _settleMs = settleWatch.ElapsedMilliseconds;
             _initialized = true;

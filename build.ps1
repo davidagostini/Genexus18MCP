@@ -1,4 +1,4 @@
-﻿# GeneXus MCP - Build & Deploy Script
+# GeneXus MCP - Build & Deploy Script
 # ==========================================
 
 [CmdletBinding()]
@@ -132,12 +132,16 @@ if (-not [string]::IsNullOrWhiteSpace($Version)) {
 
 # 2. Build Gateway (.NET 10)
 Write-Host "   > Building Gateway (Release)..."
-$tempGw = Join-Path $publishDir "temp_gw"
-Invoke-DotNet (@("publish", $gatewayProject, "-c", "Release", "--nologo", "-o", $tempGw) + $versionArguments) "Gateway publish failed."
-
-if (Test-Path $tempGw) {
-    Copy-Item "$tempGw\*" "$publishDir" -Force -Recurse
-    Remove-Item $tempGw -Recurse -Force
+$tempGw = Join-Path ([IO.Path]::GetTempPath()) ("gxmcp_gw_publish_" + [guid]::NewGuid().ToString("N"))
+try {
+    Invoke-DotNet (@("publish", $gatewayProject, "-c", "Release", "--nologo", "-o", $tempGw) + $versionArguments) "Gateway publish failed."
+    if (Test-Path $tempGw) {
+        Copy-Item "$tempGw\*" "$publishDir" -Force -Recurse
+    }
+} finally {
+    if (Test-Path $tempGw) {
+        Remove-Item $tempGw -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host "   > Building Gateway (Debug)..."

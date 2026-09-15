@@ -164,6 +164,7 @@ hot-swap with:
 genexus_worker_reload mode=hard sourceDir=<repoRoot>\src\GxMcp.Worker\bin\Debug
 ```
 
+- `GxMcp.Gateway.exe` is a long-running stdio JSON-RPC server and does not accept interactive CLI flags such as `--help`. Running it directly without redirected stdio or via an unsupported command hangs waiting on stdin. Use `genexus-mcp` CLI commands or test harness entry points (`LiveGatewayHarness`, `scripts/test-live.ps1`) to interact with the Gateway.
 If the next call reports a stale pipe or crashed Worker, reconnect `/mcp` once.
 For a version smoke, call `genexus_whoami` and verify
 `geneXus.versionMatches=true`, `matchedMajor`, and `supportedMajors`; the

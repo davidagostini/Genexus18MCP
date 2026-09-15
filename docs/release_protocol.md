@@ -149,7 +149,17 @@ target version heading is absent, promotes that section, verifies the exact
 version heading, and refuses to publish generic release notes.
 If a local build fails after the metadata commit, leave that untagged commit in
 place, fix the cause, and rerun the same version; do not manually rewrite the
-manifest or tag a different source tree.
+manifest or tag a different source tree. If the full solution test suite and
+warning baseline have already run and passed in the preflight for that exact
+commit and version, and only post-build packaging or transient live-environment
+gates required remediation, rerun with `-SkipBuild -SkipTests` (the release
+script still enforces the Release warning baseline and executable version stamp
+checks independently):
+
+```powershell
+./release.ps1 -Version <X.Y.Z> -SkipBuild -SkipTests
+```
+
 If a tag already has a GitHub Release without `publish.zip`, the same command
 resumes with an asset upload and preserves the existing release record.
 
