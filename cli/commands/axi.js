@@ -36,6 +36,7 @@ const {
     DEFAULT_MCP_SERVER_NAME
 } = require('../lib/config');
 const { getStdioErrorLogPath } = require('../lib/stdio-diagnostics');
+const { getPackageVersion } = require('../lib/update-check');
 
 function resolveClientIds(options) {
     if (!options || !options.clients) return null;
@@ -2483,6 +2484,13 @@ function commandHelpMap() {
                 'genexus-mcp update --channel next   # check the @next dist-tag'
             ]
         },
+        version: {
+            usage: 'genexus-mcp --version | -v | version [--format toon|json|text]',
+            examples: [
+                'genexus-mcp --version          # prints the bare version (scripts/CI)',
+                'genexus-mcp -v --format json   # axi-cli/1 envelope with ok.version'
+            ]
+        },
         layout: {
             usage: 'genexus-mcp layout status [--title "GeneXus"] [--format ...] OR genexus-mcp layout run --action <focus|activate-layout|activate-tab|send-keys|type-text|click> [--tab "Layout"] [--keys "..."] [--text "..."] [--x N --y N] [--title "..."] [--format ...] OR genexus-mcp layout inspect [--tab "Layout"] [--limit N] [--full] [--title "..."] [--format ...]',
             examples: ['genexus-mcp layout status --format json', 'genexus-mcp layout run --action activate-tab --tab "Layout" --format json', 'genexus-mcp layout inspect --tab Layout --format json']
@@ -2518,6 +2526,34 @@ async function handleHome(_options, ctx) {
     };
 }
 
+// Issue #207: `genexus-mcp --version` / `-v` / `version` used to fall through to the
+// gateway passthrough (which never answers that token) and exit 0 with no output — a
+// silent false positive for install checks. The package version is read from the same
+// helper the update flow uses.
+// `deps` is an injection seam so the unreadable-package.json path is testable.
+async function handleVersion(_options, ctx, deps = {}) {
+    const readVersion = deps.getPackageVersion || getPackageVersion;
+    const version = readVersion();
+    if (!version) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                'Could not read the genexus-mcp package version (package.json missing or unreadable).',
+                ctx.EXIT_CODES.ERROR,
+                ['Reinstall the CLI (`genexus-mcp update`) so package.json can be read.'],
+                'version_unavailable'
+            )
+        };
+    }
+    return {
+        exitCode: ctx.EXIT_CODES.OK,
+        envelope: {
+            ok: { version },
+            help: []
+        }
+    };
+}
+
 async function handleHelp(targetCommand, ctx) {
     const binPath = collapseHome(process.argv[1] || process.execPath);
     const map = commandHelpMap();
@@ -2547,7 +2583,7 @@ async function handleHelp(targetCommand, ctx) {
                 bin: binPath,
                 command: 'genexus-mcp',
                 description: 'GeneXus MCP launcher and AXI-oriented utility CLI',
-                commands: ['home', 'axi home', 'status', 'doctor', 'tools list', 'config show', 'config create', 'layout status', 'layout run', 'layout inspect', 'init', 'whoami', 'uninstall', 'kb list', 'kb add', 'kb remove', 'kb switch', 'llm help', 'update', 'help'],
+                commands: ['home', 'axi home', 'status', 'doctor', 'tools list', 'config show', 'config create', 'layout status', 'layout run', 'layout inspect', 'init', 'whoami', 'uninstall', 'kb list', 'kb add', 'kb remove', 'kb switch', 'llm help', 'update', 'version', 'help'],
                 defaults: { format: 'toon', limit: 100 }
             },
             help: [
@@ -2660,6 +2696,7 @@ module.exports = {
     handleLlmHelp,
     handleLayout,
     handleHelp,
+    handleVersion,
     usageEnvelope,
     operationalErrorEnvelope,
     resolveMcpSmokeTarget,

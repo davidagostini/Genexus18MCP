@@ -44,6 +44,58 @@ namespace GxMcp.Gateway.Routers
             }
         }
 
+        /// <summary>
+        /// Issue #205/#206: reject `scope` / `indentation` on every form except the abbreviated
+        /// mode=patch replace shorthand. The rejection is a coded usage error
+        /// (`ScopeUnsupportedPatchForm` / `IndentationUnsupportedPatchForm`) raised before any
+        /// normalization to `context`/`content`, so the protection can never be silently
+        /// dropped — and never a partially-applied write.
+        /// </summary>
+        private static void RejectProtectedOptionsUnlessAbbreviatedPatch(JObject? args)
+        {
+            if (args == null) return;
+            // Only the object shape is routed as the abbreviated patch form (the same check the
+            // Patch routing below makes), so anything else — including a JSON string — falls
+            // through to the fail-closed rejection instead of dropping the protection.
+            JObject patchObj = args["patch"] as JObject;
+            JToken? scopeTok = patchObj?["scope"] ?? args["scope"];
+            JToken? indentationTok = patchObj?["indentation"] ?? args["indentation"];
+            if (scopeTok == null && indentationTok == null) return;
+
+            bool hasScope = scopeTok != null;
+            bool objectShaped = (scopeTok == null || scopeTok is JObject)
+                && (indentationTok == null || indentationTok is JObject);
+            bool hasTargets = args["targets"] is JArray;
+            bool hasParts = args["parts"] is JArray partsArr && partsArr.Count > 0;
+            bool hasOperation = !string.IsNullOrWhiteSpace(args["operation"]?.ToString());
+            bool abbreviatedPatchForm = objectShaped
+                && patchObj != null
+                && (patchObj["find"] != null || patchObj["replace"] != null)
+                && string.Equals(args["mode"]?.ToString(), "patch", StringComparison.OrdinalIgnoreCase)
+                && !hasTargets && !hasParts && !hasOperation
+                && args["changeSet"] == null;
+            if (abbreviatedPatchForm)
+            {
+                // The form is supported; the anchors still have to be usable. A scope without a
+                // start anchor would silently search the whole part, so it is rejected up front
+                // too (issue #205 rule 1), before any read.
+                if (scopeTok is JObject scopeObj && string.IsNullOrWhiteSpace(scopeObj["start"]?.ToString()))
+                {
+                    throw new UsageException(
+                        "ScopeStartRequired",
+                        "patch.scope.start is required; a scope without a start anchor would silently search the whole part. "
+                        + "No write was attempted.");
+                }
+                return;
+            }
+
+            throw new UsageException(
+                hasScope ? "ScopeUnsupportedPatchForm" : "IndentationUnsupportedPatchForm",
+                $"patch.{(hasScope ? "scope" : "indentation")} is supported only in the abbreviated mode=patch form "
+                + "(patch={find,replace}); it cannot be combined with operation, mode=ops, targets[], parts[], "
+                + "Insert_After or Append, and it must be a JSON object. No write was attempted.");
+        }
+
         public object? ConvertToolCall(string toolName, JObject? args)
         {
             string? nameArg = args?["name"]?.ToString();
@@ -126,6 +178,12 @@ namespace GxMcp.Gateway.Routers
 
                 case "genexus_edit":
                 {
+                    // Issue #205/#206: `scope` / `indentation` are honored only by the
+                    // abbreviated mode=patch form. Evaluated before ANY routing decision
+                    // (changeSet / targets / parts / ops / JSON-Patch) so the protection can
+                    // never be silently dropped while the call is normalized to context/content.
+                    RejectProtectedOptionsUnlessAbbreviatedPatch(args);
+
                     if (args?["changeSet"] is JObject)
                     {
                         return new {
@@ -268,12 +326,14 @@ namespace GxMcp.Gateway.Routers
                         string opFromObj = null;
                         string contextFromObj = null;
                         string payloadFromObj = null;
+                        JObject patchObject = null;
                         if (patchTok is JObject patchObj)
                         {
                             var find = patchObj["find"]?.ToString();
                             var replace = patchObj["replace"]?.ToString();
                             if (find != null || replace != null)
                             {
+                                patchObject = patchObj;
                                 contextFromObj = find;
                                 payloadFromObj = replace ?? string.Empty;
                                 opFromObj = "Replace";
@@ -321,7 +381,15 @@ namespace GxMcp.Gateway.Routers
                             autoDeclareVariables = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false,
                             // Events complete-save contract: keep the flag on the Patch
                             // command so the worker can capture/compare the full object.
-                            requireObjectSave = args?["requireObjectSave"]?.ToObject<bool?>() ?? false
+                            requireObjectSave = args?["requireObjectSave"]?.ToObject<bool?>() ?? false,
+                            // Issues #205/#206: forward the opt-in protections. `patchShorthand`
+                            // records that the caller used the abbreviated {find,replace} form,
+                            // which is the only form allowed to carry them; without it a
+                            // normalized `operation=Replace` is indistinguishable from an
+                            // explicit operation and the worker must reject the pair.
+                            scope = patchObject?["scope"] ?? args?["scope"],
+                            indentation = patchObject?["indentation"] ?? args?["indentation"],
+                            patchShorthand = patchObject != null
                         };
                     }
                     else

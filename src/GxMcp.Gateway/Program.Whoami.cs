@@ -441,13 +441,16 @@ namespace GxMcp.Gateway
         // publishes "Ready" here when indexing finishes; the two must not be conflated.)
         private static bool IsIndexUsableForReads(IndexStateSnapshot snap)
         {
-            // Usability is decided by the index STATUS alone, not the object count. A
-            // Ready/LiteReady/Enriching index with 0 objects is a legitimately-built EMPTY
-            // KB (the lite walk completed and found no model objects — e.g. a KB whose
-            // LocalDB model is missing): the worker's ListService/SearchService return an
-            // honest empty listing there, so reads must be forwarded, not fast-failed with
-            // IndexNotReady (which left agents looping `lifecycle action=index force=true`
-            // on empty KBs forever). Only Cold / Reindexing / unknown states block.
+            // Issue #209 (policy A): the predicate is a conjunction of STATUS and FRESHNESS.
+            // The object count still does not participate — a Ready/LiteReady/Enriching index
+            // with 0 objects is a legitimately-built EMPTY KB (the lite walk completed and
+            // found no model objects — e.g. a KB whose LocalDB model is missing): the worker's
+            // ListService/SearchService return an honest empty listing there, so reads must be
+            // forwarded, not fast-failed with IndexNotReady (which left agents looping
+            // `lifecycle action=index force=true` on empty KBs forever).
+            // The freshness arm is what makes the gate fail-closed: a snapshot restored from a
+            // warm start is Ready but stale/refreshing, and the delta that republishes
+            // Freshness=current is what the caller waits for (see IndexWaitPolicy).
             if (snap == null) return false;
             string s = snap.Status ?? string.Empty;
             string freshness = string.IsNullOrWhiteSpace(snap.Freshness)

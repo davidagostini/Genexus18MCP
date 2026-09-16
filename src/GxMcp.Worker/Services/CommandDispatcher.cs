@@ -988,6 +988,12 @@ namespace GxMcp.Worker.Services
                 // blocking here never stalls the STA thread.
                 int waitSec = args?["wait"]?.ToObject<int?>() ?? 0;
                 string since = args?["since"]?.ToString();
+                // Issue #209 (policy A): `freshness` makes the fail-closed gate awaitable.
+                // MarkIndexRestored publishes Status=Ready with Freshness=stale on a warm
+                // start, so a Status-only wait either returned immediately (no `since`) or
+                // could only time out (`since=Ready`) while the delta was still running.
+                string wantFreshness = args?["freshness"]?.ToString();
+                bool waitSatisfied = false;
                 if (waitSec > 0)
                 {
                     // Issue #27 item 3 (DX): two block modes.
@@ -998,17 +1004,16 @@ namespace GxMcp.Worker.Services
                     //    without hand-rolling a since-chained poll loop. A Cold+idle
                     //    index simply times out at its current state — the caller
                     //    then knows to trigger an index build.
-                    bool waitForReady = string.IsNullOrEmpty(since);
                     var sw = System.Diagnostics.Stopwatch.StartNew();
                     long budgetMs = waitSec * 1000L;
                     while (true)
                     {
                         _indexCacheService.ArmStateSignal();
-                        string cur = _indexCacheService.GetState()?.Status ?? "Cold";
-                        bool done = waitForReady
-                            ? string.Equals(cur, "Ready", StringComparison.OrdinalIgnoreCase)
-                            : !string.Equals(cur, since, StringComparison.OrdinalIgnoreCase);
-                        if (done) break;
+                        if (Models.IndexWaitPolicy.IsSatisfied(_indexCacheService.GetState(), since, wantFreshness))
+                        {
+                            waitSatisfied = true;
+                            break;
+                        }
                         long remaining = budgetMs - sw.ElapsedMilliseconds;
                         if (remaining <= 0) break;
                         // Cap each wait so a missed signal still re-checks promptly.
@@ -1020,6 +1025,17 @@ namespace GxMcp.Worker.Services
                 // prose, not a stable enum).
                 var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus());
                 statusJson["indexStatus"] = _indexCacheService.GetState()?.Status ?? "Cold";
+                // Issue #209: a bounded wait reports whether its target was actually reached,
+                // so the caller can distinguish "index is current now" from "timed out".
+                if (waitSec > 0)
+                {
+                    statusJson["waitSatisfied"] = waitSatisfied;
+                    if (!string.IsNullOrEmpty(wantFreshness)) statusJson["waitFreshness"] = wantFreshness;
+                    if (!waitSatisfied)
+                    {
+                        statusJson["waitHint"] = "Wait budget elapsed before the target state. Re-issue action=status wait=<seconds> freshness=current, or force a rebuild with action=index force=true.";
+                    }
+                }
                 // Issue #27 item 1: attach the most-recent terminal build outcome so
                 // this plain status call answers "did my last build pass?" without a jobId.
                 var lastBuild = BuildService.GetLatestBuildSummary();
@@ -1693,6 +1709,12 @@ namespace GxMcp.Worker.Services
                 // unsafe writes on NoMatch and surfaces the diagnostic
                 // envelope, so the two are observationally equivalent in
                 // mode=patch and we don't need a third branch.
+                // Issue #205/#206: a protection that arrives as a non-object would be dropped by
+                // the `as JObject` casts below and the patch applied UNBOUNDED — the gateway
+                // rejects that shape, and this keeps the same guarantee for a direct worker call.
+                string protectionTypeError = CheckPatchProtectionTokenTypes(args, target);
+                if (protectionTypeError != null) return protectionTypeError;
+
                 string validateMode = args?["validate"]?.ToString();
                 bool dryRunArg = args?["dryRun"]?.ToObject<bool?>() ?? false;
                 bool validateOnly = string.Equals(validateMode, "only", StringComparison.OrdinalIgnoreCase)
@@ -1714,11 +1736,35 @@ namespace GxMcp.Worker.Services
                     args?["baseVersion"]?.ToString(),
                     args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
                     args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false,
-                    args?["requireObjectSave"]?.ToObject<bool?>() ?? false);
+                    args?["requireObjectSave"]?.ToObject<bool?>() ?? false,
+                    // Issue #205/#206: opt-in protections for the textual replace path.
+                    args?["scope"] as JObject,
+                    args?["indentation"] as JObject,
+                    args?["patchShorthand"]?.ToObject<bool?>() ?? false);
                 // issue #60 — validationMode="specify" runs the inline Specify pass after the
                 // write and surfaces structured diagnostics (or rolls back).
                 patchResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(patchResp, target, args, args?["part"]?.ToString());
                 return VisualVerifyResponseHook.MaybeAttach(args, patchResp, _visualVerifyService);
+            }
+            return null;
+        }
+
+        // Issue #205/#206: same codes the gateway uses, so one rejection reads the same on both
+        // surfaces. Returns null when the tokens are absent, null or objects (the only shapes the
+        // opt-in form accepts).
+        internal static string CheckPatchProtectionTokenTypes(JObject args, string target)
+        {
+            if (args == null) return null;
+            foreach (string name in new[] { "scope", "indentation" })
+            {
+                var token = args[name];
+                if (token == null || token.Type == JTokenType.Null || token is JObject) continue;
+                bool scopeForm = name == "scope";
+                return Models.McpResponse.Err(
+                    code: scopeForm ? "ScopeUnsupportedPatchForm" : "IndentationUnsupportedPatchForm",
+                    message: $"patch.{name} must be a JSON object; this value would be ignored and the patch applied without the protection. No write was attempted.",
+                    hint: $"Send patch.{{{(scopeForm ? "scope:{start,end}" : "indentation:{mode:'validate'}")}}} inside the abbreviated mode=patch form.",
+                    target: target);
             }
             return null;
         }

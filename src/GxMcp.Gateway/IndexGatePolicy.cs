@@ -36,6 +36,54 @@ namespace GxMcp.Gateway
             };
         }
 
+        // Issue #209 (policy A): the gate stays fail-closed, but its envelope must be
+        // observable, awaitable and retryable — it names the index state, points at the one
+        // call that waits for freshness=current, and always carries a retry hint (the worker's
+        // ETA when it has one, mirroring the SourceSearchService fallback otherwise).
+        internal const int DefaultIndexRetryAfterMs = 5000;
+
+        internal static JObject BuildIndexNotReadyEnvelopeForTest(
+            string? status, string? freshness, int totalObjects, double? progress, int? etaMs)
+            => BuildIndexNotReadyEnvelope(status, freshness, totalObjects, progress, etaMs);
+
+        private static JObject BuildIndexNotReadyEnvelope(
+            string? status, string? freshness, int totalObjects, double? progress, int? etaMs)
+        {
+            var envelope = new JObject
+            {
+                ["status"] = "Indexing",
+                ["code"] = "IndexNotReady",
+                // Report the REAL index status (as whoami's index block does) — the freshness
+                // field below is what explains why the gate is closed. The previous
+                // `freshness == current ? status : "Refreshing"` reported "Refreshing" for a
+                // cold start too, so the two surfaces disagreed about the same state.
+                ["indexStatus"] = status ?? "Cold",
+                ["freshness"] = freshness ?? "stale",
+                ["totalObjects"] = totalObjects,
+                ["message"] = BuildIndexingMessage(status, progress, etaMs),
+                // A Cold/Unknown index is idle — nothing will reach freshness=current by itself
+                // (a failed warm-start delta lands here after its retries are exhausted), so the
+                // hint has to name the manual recovery in the same turn instead of sending the
+                // caller into a wait that can only time out. Mirrors whoami's indexSuggestion.
+                ["hint"] = "Wait instead of polling: genexus_lifecycle action=status wait=30 freshness=current, "
+                    + "then re-issue this tool. genexus_whoami observes progress but does not block."
+                    + (IsStalledIndexStatus(status)
+                        ? " This index is not progressing on its own — if that wait times out, recover with genexus_lifecycle action=index force=true."
+                        : string.Empty),
+                ["retryAfterMs"] = etaMs ?? DefaultIndexRetryAfterMs
+            };
+            if (progress != null) envelope["progress"] = progress.Value;
+            if (etaMs != null) envelope["etaMs"] = etaMs.Value;
+            return envelope;
+        }
+
+        // Cold is the index state machine's "not built / failed" value (MarkIndexFailed publishes
+        // it), and Unknown is the default the gateway uses before any state is known.
+        private static bool IsStalledIndexStatus(string? status)
+            => string.IsNullOrWhiteSpace(status)
+               || string.Equals(status, "Cold", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, "Unknown", StringComparison.OrdinalIgnoreCase);
+
         internal static bool IsTransientResponseForCacheForTest(JObject? response)
             => IsTransientResponseForCache(response);
 

@@ -152,7 +152,11 @@ namespace GxMcp.Worker.Services
                         ["freshness"] = indexState?.Freshness ?? "stale",
                         ["totalObjects"] = indexState?.TotalObjects ?? 0,
                         ["message"] = BuildIndexingMessage(indexState),
-                        ["hint"] = "Call genexus_whoami to observe progress, then re-issue list_objects."
+                        // Issue #209 (policy A): the gate is fail-closed, so the envelope must be
+                        // awaitable + retryable rather than a dead end. Mirrors the retryAfterMs
+                        // precedent in SourceSearchService.
+                        ["hint"] = "Wait for the index with genexus_lifecycle action=status wait=30 freshness=current, then re-issue list_objects (genexus_whoami observes progress).",
+                        ["retryAfterMs"] = indexState?.EtaMs ?? 5000
                     };
                     if (indexState?.Progress != null) envelope["progress"] = indexState.Progress.Value;
                     if (indexState?.EtaMs != null) envelope["etaMs"] = indexState.EtaMs.Value;

@@ -156,7 +156,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false, string verifyMode = null, string baseVersion = null, bool rollbackOnFailure = false, bool autoInjectVariables = false, bool requireObjectSave = false)
+        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false, string verifyMode = null, string baseVersion = null, bool rollbackOnFailure = false, bool autoInjectVariables = false, bool requireObjectSave = false, JObject scope = null, JObject indentation = null, bool patchShorthand = false)
         {
             string guardedPartName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
             partName = guardedPartName;
@@ -207,6 +207,24 @@ namespace GxMcp.Worker.Services
                             ["objectSaved"] = false,
                             ["metadataUpdated"] = false
                         });
+                }
+
+                // Issue #205/#206: `scope` and `indentation` are honored ONLY by the abbreviated
+                // mode=patch form (`patch: {find, replace}`). The gateway already rejects the
+                // incompatible forms before normalizing them to context/content; this second gate
+                // exists so the protection can never be silently dropped if a call reaches the
+                // worker by another route. It runs before any SDK read: a rejected form must not
+                // touch the KB at all.
+                if ((scope != null || indentation != null)
+                    && !(patchShorthand && string.Equals(NormalizeOperation(operation), "replace", StringComparison.OrdinalIgnoreCase)))
+                {
+                    bool scopeForm = scope != null;
+                    return Models.McpResponse.Err(
+                        code: scopeForm ? "ScopeUnsupportedPatchForm" : "IndentationUnsupportedPatchForm",
+                        message: $"patch.{(scopeForm ? "scope" : "indentation")} is supported only in the abbreviated mode=patch form "
+                            + "(patch={find,replace}). It cannot be combined with operation, mode=ops, targets[], parts[], Insert_After or Append. No write was attempted.",
+                        hint: "Drop the option, or express the edit as patch={find,replace}.",
+                        target: target);
                 }
 
                 // Probe pattern-shadow warning ONCE before doing any work. If the agent
@@ -331,6 +349,10 @@ namespace GxMcp.Worker.Services
                     return BuildPatchResult("Error", partName, normalizedOperation, expectedCount, 0, "expectedCount must be >= 1.");
                 }
 
+                // The gate above already accepted this form, so the protections are live here.
+                bool protectedPatch = scope != null || indentation != null;
+                PatchTextEditor.ScopedReplaceOutcome scopedOutcome = null;
+
                 var patchStopwatch = Stopwatch.StartNew();
                 switch (normalizedOperation)
                 {
@@ -344,7 +366,19 @@ namespace GxMcp.Worker.Services
                             return BuildPatchResult("NoChange", partName, normalizedOperation, expectedCount, 1, "Patch content is identical to context. Write skipped.");
                         }
 
-                        updatedSource = TryReplace(sourceLines, contextLines ?? new string[0], workContent, expectedCount, out status, out details, out matchCount, replaceAll);
+                        if (protectedPatch)
+                        {
+                            scopedOutcome = RunScopedReplace(target, sourceLines, scope, contextLines ?? new string[0], workContent, expectedCount, replaceAll, out string scopeError);
+                            if (scopeError != null) return scopeError;
+                            updatedSource = scopedOutcome.UpdatedSource;
+                            status = scopedOutcome.Status;
+                            details = scopedOutcome.Details;
+                            matchCount = scopedOutcome.MatchCount;
+                        }
+                        else
+                        {
+                            updatedSource = TryReplace(sourceLines, contextLines ?? new string[0], workContent, expectedCount, out status, out details, out matchCount, replaceAll);
+                        }
                         break;
 
                     case "insert_after":
@@ -396,7 +430,18 @@ namespace GxMcp.Worker.Services
                             workSource = originalSource.Replace("\r\n", "\n").Replace("\r", "\n");
                             sourceLines = workSource.Split('\n');
                             patchStopwatch.Restart();
-                            if (normalizedOperation == "replace")
+                            if (protectedPatch)
+                            {
+                                // The refreshed source can move the anchors, so the scope is
+                                // re-resolved against the new content before re-matching.
+                                scopedOutcome = RunScopedReplace(target, sourceLines, scope, contextLines ?? new string[0], workContent, expectedCount, replaceAll, out string retryError);
+                                if (retryError != null) return retryError;
+                                updatedSource = scopedOutcome.UpdatedSource;
+                                status = scopedOutcome.Status;
+                                details = scopedOutcome.Details;
+                                matchCount = scopedOutcome.MatchCount;
+                            }
+                            else if (normalizedOperation == "replace")
                             {
                                 updatedSource = TryReplace(sourceLines, contextLines ?? new string[0], workContent, expectedCount, out status, out details, out matchCount, replaceAll);
                             }
@@ -429,6 +474,12 @@ namespace GxMcp.Worker.Services
                     string failedDetails = string.IsNullOrWhiteSpace(details)
                         ? $"Context not found. Ensure the context matches a unique block in the source code.{dbg}"
                         : details;
+                    // Issue #205: a scope-bounded miss is not a typo in `find` — say so, so the
+                    // caller knows a match elsewhere in the part does not satisfy the scope.
+                    if (scope != null && scopedOutcome != null)
+                    {
+                        failedDetails += $" The search was limited to the patch.scope region (lines {scopedOutcome.EditableStartLine + 1}–{scopedOutcome.EditableEndLineExclusive + 1} of {sourceLines.Length}); a match outside those lines does not satisfy the scope.";
+                    }
 
                     // Friction 2026-05-22: distinguish "match truly absent" from
                     // "a sibling write to this same target landed before us".
@@ -633,6 +684,59 @@ namespace GxMcp.Worker.Services
                     return AttachTimings(missingVersion, readMs, patchMs, 0, sourceFromCache);
                 }
 
+                // Issue #206: `indentation.mode=validate` decides BEFORE the save whether the
+                // replacement carries the same base indentation as the located match. A dry run
+                // reports the evidence so it can be reviewed without failing; a real write stops
+                // here with IndentationMismatch / IndentationNotComparable and persists nothing.
+                JObject indentationEvidence = null;
+                if (indentation != null && scopedOutcome != null && string.Equals(status, "Applied", StringComparison.OrdinalIgnoreCase))
+                {
+                    string indentCode = CheckIndentation(sourceLines, scopedOutcome, workContent, out string indentMessage, out indentationEvidence);
+                    if (indentCode != null)
+                    {
+                        indentationEvidence["code"] = indentCode;
+                        indentationEvidence["validated"] = false;
+                        indentationEvidence["blockedWrite"] = !dryRun;
+                        if (!dryRun)
+                        {
+                            return Models.McpResponse.Err(
+                                code: indentCode,
+                                message: indentMessage,
+                                hint: "Send `replace` with the same leading tabs/spaces as the matched line, or omit patch.indentation to insert the text literally.",
+                                target: target,
+                                extra: new JObject
+                                {
+                                    ["part"] = partName,
+                                    ["saved"] = false,
+                                    ["persisted"] = false,
+                                    ["indentation"] = indentationEvidence
+                                });
+                        }
+                    }
+                    else
+                    {
+                        indentationEvidence["validated"] = true;
+                    }
+                }
+
+                // Issue #205 rule 6: line evidence for the scope, 1-based with an exclusive end.
+                JObject scopeEvidence = null;
+                if (scope != null && scopedOutcome != null)
+                {
+                    scopeEvidence = new JObject
+                    {
+                        ["editableStartLine"] = scopedOutcome.EditableStartLine + 1,
+                        ["editableEndLineExclusive"] = scopedOutcome.EditableEndLineExclusive + 1,
+                        ["scopeEndsAtEof"] = scopedOutcome.EndsAtEof,
+                        ["totalLines"] = sourceLines.Length
+                    };
+                    if (scopedOutcome.Matches.Count > 0)
+                    {
+                        scopeEvidence["matchStartLine"] = scopedOutcome.Matches[0].StartLine + 1;
+                        scopeEvidence["matchEndLineExclusive"] = scopedOutcome.Matches[0].EndLineExclusive + 1;
+                    }
+                }
+
                 if (dryRun)
                 {
                     string dryRunResult = BuildPatchResult("Applied", partName, normalizedOperation, expectedCount, matchCount, "Dry-run succeeded. Write skipped.");
@@ -665,6 +769,8 @@ namespace GxMcp.Worker.Services
                             dryRunBody["matchedCount"] = matchCount;
                         }
                         dryRunBody["implicitOperations"] = new JArray();
+                        if (scopeEvidence != null) dryRunBody["scope"] = scopeEvidence;
+                        if (indentationEvidence != null) dryRunBody["indentation"] = indentationEvidence;
                         if (!string.IsNullOrWhiteSpace(snapshotVersion)) dryRunBody["versionToken"] = snapshotVersion;
                         dryRunBody["verification"] = new JObject
                         {
@@ -990,6 +1096,10 @@ namespace GxMcp.Worker.Services
                     if (pn == "status" || pn == "action" || pn == "target") continue;
                     if (resultObj[pn] == null) resultObj[pn] = prop.Value;
                 }
+                // Issues #205/#206: keep the scope/indentation evidence on the write envelope too,
+                // so a persisted edit is as auditable as its preview.
+                if (scopeEvidence != null) resultObj["scope"] = scopeEvidence;
+                if (indentationEvidence != null) resultObj["indentation"] = indentationEvidence;
                 if (returnPostState && finalSuccess && updatedSource != null)
                     resultObj["post_state"] = GxMcp.Worker.Services.JsonPatchService.BuildPostState(
                         originalSource,
@@ -1068,6 +1178,163 @@ namespace GxMcp.Worker.Services
             return PatchTextEditor.TryReplace(
                 sourceLines, contextLines, newContent, expectedCount,
                 out status, out details, out matchCount, replaceAll);
+        }
+
+        // Issue #205: resolve the scope anchors and run the slice-bounded matching pipeline.
+        // `error` receives an already-built error envelope when the anchors are unusable; a
+        // status failure (NoMatch/Ambiguous) comes back on the outcome instead, so the normal
+        // failure reporting (near matches, stale detection) still runs.
+        private static PatchTextEditor.ScopedReplaceOutcome RunScopedReplace(
+            string target,
+            string[] sourceLines,
+            JObject scope,
+            string[] contextLines,
+            string content,
+            int expectedCount,
+            bool replaceAll,
+            out string error)
+        {
+            error = null;
+            int scopeStart = 0;
+            int scopeEnd = sourceLines.Length;
+            bool endsAtEof = true;
+
+            if (scope != null)
+            {
+                string startAnchor = scope["start"]?.ToString();
+                if (string.IsNullOrEmpty(startAnchor))
+                {
+                    error = Models.McpResponse.Err(
+                        code: "ScopeStartRequired",
+                        message: "patch.scope.start is required; a scope without a start anchor would silently search the whole part.",
+                        hint: "Provide patch.scope={start:\"<complete line before the region>\"} (optionally end). No write was attempted.",
+                        target: target);
+                    return null;
+                }
+
+                string endAnchor = scope["end"]?.ToString();
+                var startLines = PatchTextEditor.SplitAnchorLines(startAnchor);
+                var endLines = string.IsNullOrEmpty(endAnchor) ? null : PatchTextEditor.SplitAnchorLines(endAnchor);
+
+                var resolved = PatchTextEditor.ResolveScope(sourceLines, startLines, endLines, out string anchorCode, out string anchorMessage);
+                if (resolved == null)
+                {
+                    error = Models.McpResponse.Err(
+                        code: anchorCode,
+                        message: anchorMessage,
+                        hint: "Anchors must be complete lines of the part (only CRLF/LF are normalized) and must be unique; extend a short anchor with more lines when it is ambiguous. No write was attempted.",
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["scope"] = new JObject
+                            {
+                                ["start"] = startAnchor,
+                                ["end"] = endAnchor != null ? (JToken)endAnchor : JValue.CreateNull()
+                            }
+                        });
+                    return null;
+                }
+
+                scopeStart = resolved.StartLine;
+                scopeEnd = resolved.EndLineExclusive;
+                endsAtEof = resolved.EndsAtEof;
+            }
+
+            var outcome = PatchTextEditor.ReplaceWithinScope(sourceLines, scopeStart, scopeEnd, contextLines, content, expectedCount, replaceAll);
+            outcome.EditableStartLine = scopeStart;
+            outcome.EditableEndLineExclusive = scopeEnd;
+            outcome.EndsAtEof = endsAtEof;
+            return outcome;
+        }
+
+        // Issue #206: compare the base indentation of each match site against the indentation
+        // the replacement will actually have there. Only the first line of `replace` is
+        // considered; tabs and spaces are compared as distinct characters.
+        internal static string CheckIndentation(
+            string[] sourceLines,
+            PatchTextEditor.ScopedReplaceOutcome outcome,
+            string workContent,
+            out string message,
+            out JObject evidence)
+        {
+            message = null;
+            evidence = new JObject();
+            var replacementLines = NormalizeEol(workContent).Split('\n');
+            string firstLine = replacementLines.Length > 0 ? replacementLines[0] : string.Empty;
+            string received = LeadingWhitespace(firstLine);
+            evidence["receivedPrefix"] = PatchTextEditor.ShowControlChars(received);
+            evidence["strategy"] = outcome.Matches.Count > 0 ? outcome.Matches[0].Strategy : string.Empty;
+
+            if (firstLine.Trim().Length == 0)
+            {
+                evidence["comparable"] = false;
+                message = "patch.indentation.mode=validate needs a first line of `replace` with a non-whitespace character; an empty or whitespace-only first line has no base indentation to validate.";
+                return "IndentationNotComparable";
+            }
+
+            var sites = new JArray();
+            foreach (var span in outcome.Matches)
+            {
+                string sourceLine = span.StartLine >= 0 && span.StartLine < sourceLines.Length ? sourceLines[span.StartLine] : string.Empty;
+                string baseIndent = LeadingWhitespace(sourceLine);
+                string preserved = span.StartColumn > 0 && span.StartColumn <= sourceLine.Length
+                    ? sourceLine.Substring(0, span.StartColumn)
+                    : string.Empty;
+                var site = new JObject
+                {
+                    ["matchStartLine"] = span.StartLine + 1,
+                    ["matchEndLineExclusive"] = span.EndLineExclusive + 1,
+                    ["strategy"] = span.Strategy,
+                    ["expectedPrefix"] = PatchTextEditor.ShowControlChars(baseIndent),
+                    ["preservedPrefix"] = PatchTextEditor.ShowControlChars(preserved),
+                    ["receivedPrefix"] = PatchTextEditor.ShowControlChars(received)
+                };
+
+                // Comparable only when the match starts at the line start (nothing preserved)
+                // or immediately after the whole base indentation. Mid-content / mid-indent
+                // starts have no equivalent position by design.
+                bool comparable = preserved.Length == 0 || string.Equals(preserved, baseIndent, StringComparison.Ordinal);
+                if (!comparable)
+                {
+                    site["comparable"] = false;
+                    sites.Add(site);
+                    evidence["sites"] = sites;
+                    evidence["comparable"] = false;
+                    message = "The matched text starts inside the line content or in the middle of its indentation, so there is no base indentation to compare against. Make `find` start at a line start or right after the full indentation.";
+                    return "IndentationNotComparable";
+                }
+
+                string resulting = preserved + received;
+                bool matches = string.Equals(resulting, baseIndent, StringComparison.Ordinal);
+                site["resultingPrefix"] = PatchTextEditor.ShowControlChars(resulting);
+                site["comparable"] = true;
+                site["matches"] = matches;
+                sites.Add(site);
+                if (!matches)
+                {
+                    evidence["sites"] = sites;
+                    evidence["comparable"] = true;
+                    message = $"The replacement's base indentation ({PatchTextEditor.ShowControlChars(resulting)}) differs from the matched line's ({PatchTextEditor.ShowControlChars(baseIndent)}). Send `replace` with the same leading tabs/spaces, or drop patch.indentation to insert the text literally.";
+                    return "IndentationMismatch";
+                }
+            }
+
+            evidence["sites"] = sites;
+            evidence["comparable"] = true;
+            return null;
+        }
+
+        private static string LeadingWhitespace(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            int i = 0;
+            while (i < value.Length && (value[i] == ' ' || value[i] == '\t')) i++;
+            return value.Substring(0, i);
+        }
+
+        private static string NormalizeEol(string value)
+        {
+            return (value ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n");
         }
 
         private string TryInsertAfter(string[] sourceLines, string[] contextLines, string newContent, int expectedCount, out string status, out string details, out int matchCount)

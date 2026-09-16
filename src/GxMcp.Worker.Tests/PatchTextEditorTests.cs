@@ -195,6 +195,313 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(JTokenType.Null, rollback["error"]?.Type);
         }
 
+        // ── Issue #205: patch.scope — bounded search region ──────────────────────
+
+        private static Services.PatchTextEditor.ScopeSlice ResolveScope(
+            string[] source, string start, string end, out string code)
+        {
+            return Services.PatchTextEditor.ResolveScope(
+                source,
+                Services.PatchTextEditor.SplitAnchorLines(start),
+                end == null ? null : Services.PatchTextEditor.SplitAnchorLines(end),
+                out code,
+                out _);
+        }
+
+        [Fact]
+        public void ResolveScope_AnchorsDelimitRegionAndStayOutsideIt()
+        {
+            var source = new[] { "Case BancoCodigo = \"033\"", "  A", "  B", "Case BancoCodigo = \"237\"" };
+
+            var slice = ResolveScope(source, "Case BancoCodigo = \"033\"", "Case BancoCodigo = \"237\"", out string code);
+
+            Assert.Null(code);
+            Assert.Equal(1, slice.StartLine);         // after the start anchor's last line
+            Assert.Equal(3, slice.EndLineExclusive);  // before the end anchor's first line
+            Assert.False(slice.EndsAtEof);
+        }
+
+        [Fact]
+        public void ResolveScope_WithoutEndAnchor_RunsToEof()
+        {
+            var source = new[] { "anchor", "A", "B" };
+
+            var slice = ResolveScope(source, "anchor", null, out string code);
+
+            Assert.Null(code);
+            Assert.Equal(1, slice.StartLine);
+            Assert.Equal(source.Length, slice.EndLineExclusive);
+            Assert.True(slice.EndsAtEof);
+        }
+
+        [Fact]
+        public void ResolveScope_EmptyRegionBetweenAdjacentAnchors_IsValid()
+        {
+            var source = new[] { "anchor", "end" };
+
+            var slice = ResolveScope(source, "anchor", "end", out string code);
+
+            Assert.Null(code);
+            Assert.Equal(1, slice.StartLine);
+            Assert.Equal(1, slice.EndLineExclusive);
+        }
+
+        [Fact]
+        public void ResolveScope_AmbiguousAnchor_IsReported()
+        {
+            var source = new[] { "same", "A", "same", "B" };
+
+            var slice = ResolveScope(source, "same", null, out string code);
+
+            Assert.Null(slice);
+            Assert.Equal("ScopeAnchorAmbiguous", code);
+        }
+
+        [Fact]
+        public void ResolveScope_MissingAnchor_IsReported()
+        {
+            var slice = ResolveScope(new[] { "A", "B" }, "nope", null, out string code);
+
+            Assert.Null(slice);
+            Assert.Equal("ScopeAnchorNotFound", code);
+        }
+
+        [Fact]
+        public void ResolveScope_MidLineAnchor_IsNotComparable()
+        {
+            // The anchor exists as text but does not occupy complete lines.
+            var slice = ResolveScope(new[] { "  Case X = 1 // Banco B", "B" }, "Case X = 1", null, out string code);
+
+            Assert.Null(slice);
+            Assert.Equal("ScopeAnchorNotComparable", code);
+        }
+
+        [Fact]
+        public void ResolveScope_AnchorNotFoundWhenOnlyIndentationDiffers()
+        {
+            // Only CRLF/LF are normalized: a tab/space difference is NOT a match.
+            var slice = ResolveScope(new[] { "\tCase X = 1", "B" }, "  Case X = 1", null, out string code);
+
+            Assert.Null(slice);
+            Assert.Equal("ScopeAnchorNotFound", code);
+        }
+
+        [Fact]
+        public void ResolveScope_TrailingLineBreakIsTolerated()
+        {
+            // A caller pasting the anchor line out of a read output includes its terminator;
+            // that terminator is not an extra anchor line.
+            var slice = ResolveScope(new[] { "anchor", "A" }, "anchor\r\n", null, out string code);
+
+            Assert.Null(code);
+            Assert.Equal(1, slice.StartLine);
+
+            var multiLine = ResolveScope(new[] { "a", "b", "c" }, "a\nb\n", null, out string multiCode);
+            Assert.Null(multiCode);
+            Assert.Equal(2, multiLine.StartLine);
+        }
+
+        [Fact]
+        public void ResolveScope_BlankLineAnchorStillCountsAsALine()
+        {
+            // "a\n\n" is the line `a` followed by one EMPTY line: two anchor lines, not one.
+            var slice = ResolveScope(new[] { "a", "", "tail" }, "a\n\n", null, out string code);
+
+            Assert.Null(code);
+            Assert.Equal(2, slice.StartLine);
+        }
+
+        [Fact]
+        public void ResolveScope_EndAnchorIsSearchedOnlyAfterStart()
+        {
+            // `B` appears before the start anchor too; only the suffix occurrence counts.
+            var source = new[] { "B", "start", "A", "B" };
+
+            var slice = ResolveScope(source, "start", "B", out string code);
+
+            Assert.Null(code);
+            Assert.Equal(2, slice.StartLine);
+            Assert.Equal(3, slice.EndLineExclusive);
+        }
+
+        [Fact]
+        public void ReplaceWithinScope_OnlyTheScopedBranchChanges()
+        {
+            // Two equivalent branches; the intended change targets the third line block only.
+            var source = new[]
+            {
+                "if Banco = \"A\"",
+                "  msg(\"x\")",
+                "end",
+                "if Banco = \"B\"",
+                "  msg(\"x\")",
+                "end"
+            };
+            var slice = ResolveScope(source, "if Banco = \"B\"", null, out string code);
+            Assert.Null(code);
+
+            var outcome = Services.PatchTextEditor.ReplaceWithinScope(
+                source, slice.StartLine, slice.EndLineExclusive, new[] { "  msg(\"x\")" }, "  msg(\"y\")", 1, false);
+
+            Assert.Equal("Applied", outcome.Status);
+            Assert.Equal(1, outcome.MatchCount);
+            Assert.Single(outcome.Matches);
+            Assert.Equal(4, outcome.Matches[0].StartLine);          // original line numbering
+            Assert.Equal(5, outcome.Matches[0].EndLineExclusive);
+            Assert.Equal(0, outcome.Matches[0].StartColumn);
+            var lines = outcome.UpdatedSource.Split('\n');
+            Assert.Equal("  msg(\"x\")", lines[1]);                 // Banco A untouched
+            Assert.Equal("  msg(\"y\")", lines[4]);                 // Banco B changed
+        }
+
+        [Fact]
+        public void ReplaceWithinScope_FindOutsideScopeDoesNotMatch()
+        {
+            var source = new[] { "target", "start", "other" };
+            var slice = ResolveScope(source, "start", null, out _);
+
+            var outcome = Services.PatchTextEditor.ReplaceWithinScope(
+                source, slice.StartLine, slice.EndLineExclusive, new[] { "target" }, "new", 1, false);
+
+            Assert.Equal("NoMatch", outcome.Status);
+            Assert.Null(outcome.UpdatedSource);
+            Assert.Empty(outcome.Matches);
+        }
+
+        [Fact]
+        public void ReplaceWithinScope_ReplaceAllAppliesOnlyInsideTheScope()
+        {
+            var source = new[] { "same", "start", "same", "same" };
+            var slice = ResolveScope(source, "start", null, out _);
+
+            var outcome = Services.PatchTextEditor.ReplaceWithinScope(
+                source, slice.StartLine, slice.EndLineExclusive, new[] { "same" }, "new", 1, true);
+
+            Assert.Equal("Applied", outcome.Status);
+            Assert.Equal(2, outcome.MatchCount);
+            Assert.Equal(2, outcome.Matches.Count);
+            Assert.Equal(new[] { 2, 3 }, outcome.Matches.ConvertAll(m => m.StartLine).ToArray());
+            var lines = outcome.UpdatedSource.Split('\n');
+            Assert.Equal("same", lines[0]);   // outside the scope
+            Assert.Equal("start", lines[1]);
+            Assert.Equal("new", lines[2]);
+            Assert.Equal("new", lines[3]);
+        }
+
+        [Fact]
+        public void ReplaceWithinScope_NormalizedStrategyReportsOriginalLines()
+        {
+            // The source line differs from `find` in internal whitespace, so the exact path
+            // misses and the fuzzy (whitespace-normalized) strategy applies — it must report
+            // the ORIGINAL line numbers, not slice-relative ones.
+            var source = new[] { "start", "\tmsg(\"x\",  y)", "end" };
+            var slice = ResolveScope(source, "start", "end", out _);
+
+            var outcome = Services.PatchTextEditor.ReplaceWithinScope(
+                source, slice.StartLine, slice.EndLineExclusive, new[] { "msg(\"x\", y)" }, "\tmsg(\"x\", y)", 1, false);
+
+            Assert.Equal("Applied", outcome.Status);
+            Assert.Single(outcome.Matches);
+            Assert.Equal("fuzzy", outcome.Matches[0].Strategy);
+            Assert.Equal(1, outcome.Matches[0].StartLine);
+            Assert.Equal(2, outcome.Matches[0].EndLineExclusive);
+            Assert.Equal(0, outcome.Matches[0].StartColumn);
+            Assert.Equal("\tmsg(\"x\", y)", outcome.UpdatedSource.Split('\n')[1]);
+            Assert.Equal("start", outcome.UpdatedSource.Split('\n')[0]);
+        }
+
+        [Fact]
+        public void ReplaceWithinScope_ReportsMatchColumnForMidLineFind()
+        {
+            var source = new[] { "start", "\t\tmsg(\"x\");", "end" };
+            var slice = ResolveScope(source, "start", "end", out _);
+
+            var outcome = Services.PatchTextEditor.ReplaceWithinScope(
+                source, slice.StartLine, slice.EndLineExclusive, new[] { "msg(\"x\");" }, "msg(\"y\");", 1, false);
+
+            Assert.Equal("Applied", outcome.Status);
+            Assert.Equal(2, outcome.Matches[0].StartColumn);
+        }
+
+        [Fact]
+        public void ReplaceWithinScope_WhitespaceNormalizedStrategyReportsOriginalLines()
+        {
+            // The context splits its lines in a different place than the source, so no line
+            // window matches fuzzy; only the whitespace-collapsed comparison does.
+            var source = new[] { "start", "x y", "z", "end" };
+            var slice = ResolveScope(source, "start", "end", out _);
+
+            var outcome = Services.PatchTextEditor.ReplaceWithinScope(
+                source, slice.StartLine, slice.EndLineExclusive, new[] { "x", "y z" }, "new", 1, false);
+
+            Assert.Equal("Applied", outcome.Status);
+            Assert.Equal("whitespace-normalized", outcome.Matches[0].Strategy);
+            Assert.Equal(1, outcome.Matches[0].StartLine);         // original line numbering
+            Assert.Equal(3, outcome.Matches[0].EndLineExclusive);
+            Assert.Equal("start\nnew\nend", outcome.UpdatedSource);
+        }
+
+        [Fact]
+        public void ReplaceWithinScope_NormalizedStrategyCannotEscapeTheBoundary()
+        {
+            // The whitespace-collapsed match exists only OUTSIDE the scope: the slice is taken
+            // before every strategy runs, so the normalized path cannot reach across it.
+            var source = new[] { "x y", "z", "start", "other" };
+            var slice = ResolveScope(source, "start", null, out _);
+
+            var outcome = Services.PatchTextEditor.ReplaceWithinScope(
+                source, slice.StartLine, slice.EndLineExclusive, new[] { "x", "y z" }, "new", 1, false);
+
+            Assert.Equal("NoMatch", outcome.Status);
+            Assert.Null(outcome.UpdatedSource);
+        }
+
+        // Issue #206 rule 1 (validate must not change which match the current algorithms
+        // select): the indentation-only path runs the whole-part slice through the same
+        // pipeline, so its verdict and output must equal the unscoped path's for every
+        // strategy, including the ambiguous and no-match ones.
+        [Theory]
+        [InlineData("before\nold one\nold two\nafter", "old one\nold two", "new one\nnew two", 1, false)]
+        [InlineData("old\nold\nold", "old", "new", 3, false)]
+        [InlineData("old\nold\nold", "old", "new", 1, false)]
+        [InlineData("old\nold\nold", "old", "new", 1, true)]
+        [InlineData("  if (x) {\n    DoOld();\n  }", "if (x) {\n\tDoOld();\n}", "new body", 1, false)]
+        [InlineData("x y\nz", "x\ny z", "new", 1, false)]
+        [InlineData("nothing here", "absent", "new", 1, false)]
+        public void ReplaceWithinScope_WholePartSliceMatchesUnscopedBehaviour(
+            string sourceText, string contextText, string content, int expectedCount, bool replaceAll)
+        {
+            var source = sourceText.Split('\n');
+            var context = contextText.Split('\n');
+
+            string unscoped = Services.PatchTextEditor.TryReplace(
+                source, context, content, expectedCount, out string unscopedStatus, out string unscopedDetails, out int unscopedCount, replaceAll);
+            var scoped = Services.PatchTextEditor.ReplaceWithinScope(
+                source, 0, source.Length, context, content, expectedCount, replaceAll);
+
+            Assert.Equal(unscopedStatus, scoped.Status);
+            Assert.Equal(unscopedCount, scoped.MatchCount);
+            // A failure reports an empty string unscoped and null scoped; both mean "nothing to write".
+            Assert.Equal(unscoped ?? string.Empty, scoped.UpdatedSource ?? string.Empty);
+            // The success detail is empty on both paths; the Ambiguous/NoMatch details differ by
+            // design (the scoped text names the region), so only a non-empty check is shared.
+            Assert.Equal(unscopedStatus == "Applied", string.IsNullOrEmpty(scoped.Details));
+        }
+
+        [Fact]
+        public void ReplaceWithinScope_WholePartSliceMatchesUnscopedBehaviour_ExactBlock()
+        {
+            var source = new[] { "before", "old one", "old two", "after" };
+
+            var outcome = Services.PatchTextEditor.ReplaceWithinScope(
+                source, 0, source.Length, new[] { "old one", "old two" }, "new one\nnew two", 1, false);
+
+            Assert.Equal("Applied", outcome.Status);
+            Assert.Equal("before\nnew one\nnew two\nafter", outcome.UpdatedSource);
+            Assert.Equal(1, outcome.Matches[0].StartLine);
+            Assert.Equal(3, outcome.Matches[0].EndLineExclusive);
+        }
+
         [Fact]
         public void Receipt_DivergentFreshRead_DoesNotClaimConfirmation()
         {

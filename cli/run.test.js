@@ -2046,6 +2046,84 @@ test('gateway passthrough remains intact when no AXI subcommand is used', () => 
     removeTempPath(tempRoot, { recursive: true, force: true });
 });
 
+test('parseArgs recognizes every version alias as a command token', () => {
+    const { parseArgs } = require('./index');
+    for (const alias of ['--version', '-v', 'version']) {
+        const parsed = parseArgs([alias]);
+        assert.equal(parsed.command, 'version', `${alias} must route to the version command`);
+        assert.deepEqual(parsed.unknownFlags, [], `${alias} must not be reported as an unknown flag`);
+    }
+    // Version aliases are consumed as command tokens, so the remaining flags are parsed.
+    assert.equal(parseArgs(['version', '--format', 'json']).options.format, 'json');
+    assert.equal(parseArgs(['-v', '--format', 'json']).options.format, 'json');
+    assert.equal(parseArgs(['--version', '--format', 'json']).options.format, 'json');
+    // Arbitrary passthrough arguments stay in the passthrough lane.
+    assert.equal(parseArgs(['hello', 'world']).command, null);
+});
+
+test('version aliases print the package version without entering gateway passthrough', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-version-'));
+    const fakeConfig = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(fakeConfig, JSON.stringify({ ok: true }));
+
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+    // Pointing the gateway exe at the Node binary makes a regression loud: a leaked
+    // passthrough of `--version` would print Node's version instead of the package's.
+    const env = { GX_CONFIG_PATH: fakeConfig, GENEXUS_MCP_GATEWAY_EXE: process.execPath };
+
+    try {
+        for (const alias of [['--version'], ['-v'], ['version']]) {
+            const result = runCli(alias, { env });
+            assert.equal(result.status, 0, `${alias.join(' ')} must exit 0`);
+            assert.equal(result.stdout.trim(), pkg.version, `${alias.join(' ')} must print the package version`);
+        }
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('version --format json returns an axi-cli/1 envelope for every alias', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+
+    for (const args of [
+        ['version', '--format', 'json'],
+        ['-v', '--format', 'json'],
+        ['--version', '--format', 'json']
+    ]) {
+        const result = runCli(args);
+        assert.equal(result.status, 0, `${args.join(' ')} must exit 0`);
+        const parsed = JSON.parse(result.stdout);
+        assert.equal(parsed.ok.version, pkg.version);
+        assert.equal(parsed.meta.schemaVersion, 'axi-cli/1');
+        assert.equal(parsed.meta.command, 'version');
+    }
+});
+
+test('version rejects unknown flags instead of printing a version', () => {
+    const result = runCli(['version', '--bogus']);
+    assert.equal(result.status, 2);
+    assert.match(result.stdout, /Unknown flag: --bogus/);
+});
+
+test('version --help documents the command', () => {
+    const result = runCli(['version', '--help', '--format', 'json']);
+    assert.equal(result.status, 0);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.ok.command, 'version');
+    assert.match(parsed.ok.usage, /--version/);
+});
+
+test('version fails loudly when the package version cannot be read', async () => {
+    const { handleVersion } = require('./commands/axi');
+    const result = await handleVersion({}, { EXIT_CODES: { OK: 0, ERROR: 1, USAGE: 2 } }, {
+        getPackageVersion: () => null
+    });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.envelope.error.code, 'version_unavailable');
+    assert.match(result.envelope.error.message, /package\.json/);
+});
+
 test('stdio launcher persists the last child stderr when the gateway exits non-zero', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-stdio-crash-'));
     try {

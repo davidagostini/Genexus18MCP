@@ -121,6 +121,70 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void FlushAndStampSidecar_PreservesPreviousSidecarWhenFlushCannotCertify()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "StampProbe") });
+                cache.ObserveLastUpdate(DateTime.UtcNow.AddMinutes(-30));
+                Assert.True(cache.FlushAndStampSidecar(1, "test"), IndexCacheService.LastFlushErrorMessage ?? "no error");
+
+                var stamped = cache.ValidateOnDiskCache();
+                Assert.True(stamped.MetaPresent);
+                DateTime baseline = stamped.HighWaterMark;
+
+                // A newer hwm observed, but the flush cannot certify it (pointer file held).
+                cache.ObserveLastUpdate(DateTime.UtcNow);
+                cache.AddOrUpdateBatch(new[] { Entry("Procedure", "StampProbe2") });
+                using (File.Open(cache.SnapshotPointerPathForTest, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    // Issue #208: ignoring FlushNow()'s false verdict here would stamp a hwm the
+                    // on-disk body does not contain, and the next warm start would skip these
+                    // objects until they were edited again.
+                    Assert.False(cache.FlushAndStampSidecar(2, "test", timeoutMs: 100));
+                }
+
+                var preserved = cache.ValidateOnDiskCache();
+                Assert.True(preserved.MetaPresent);
+                Assert.Equal(baseline, preserved.HighWaterMark);
+
+                // Once the flush can certify, the sidecar advances with the body.
+                Assert.True(cache.FlushAndStampSidecar(2, "test"));
+                Assert.True(cache.ValidateOnDiskCache().HighWaterMark > baseline);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void FlushAndStampSidecar_DoesNotCreateSidecarWithoutCertifiedFlush()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "NoSidecarProbe") });
+                cache.ObserveLastUpdate(DateTime.UtcNow);
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                Assert.False(cache.ValidateOnDiskCache().MetaPresent);
+
+                cache.AddOrUpdateBatch(new[] { Entry("Procedure", "NoSidecarProbe2") });
+                using (File.Open(cache.SnapshotPointerPathForTest, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    Assert.False(cache.FlushAndStampSidecar(2, "test", timeoutMs: 100));
+                }
+
+                var validation = cache.ValidateOnDiskCache();
+                Assert.False(validation.MetaPresent);
+                Assert.False(validation.CanDelta);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
         public void SourcePromotion_PreservesCertifiedSidecarAcrossSnapshotGeneration()
         {
             string kbPath = UniqueKbPath();

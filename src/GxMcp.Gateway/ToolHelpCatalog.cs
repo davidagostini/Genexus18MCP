@@ -47,7 +47,7 @@ namespace GxMcp.Gateway
                 "- `rebuild` — forced Rebuild All (`ForceRebuild=true`) and remains compatible with directed targets.\n" +
                 "- `validate` — inline validation/specifier check. Returns the result in the same call; it does not currently use the background-job path.\n" +
                 "- `index` — rebuilds the search index. Pass `force=true` to ignore the on-disk cache.\n" +
-                "- `status` — accepts either a `taskId` or `job_id` via `target`; pass `wait_seconds > 0` to long-poll up to 600s.\n" +
+                "- `status` — accepts either a `taskId` or `job_id` via `target`; pass `wait_seconds > 0` to long-poll up to 600s. Without `target`, `wait` blocks on the search index and `freshness` sets the target state: `freshness='current'` waits for a warm-start delta refresh to finish (a snapshot restored from the warm cache is `Ready` but `stale`, so a status-only wait returns immediately). The reply carries `waitSatisfied` so a timeout is distinguishable from success.\n" +
                 "- `result` — fetch the completion payload of a finished operation.\n" +
                 "- `inspect` — read the redacted durable mutation journal for an operation key after a lost response; it never replays the write.\n" +
                 "- `reconcile` — close an unknown mutation fence only after an independent read and explicit `confirmed: true` verification; use a fresh key for any later write.\n" +
@@ -68,6 +68,7 @@ namespace GxMcp.Gateway
                 "- `{ action: 'build', target: 'InvoiceProc' }`\n" +
                 "- `{ action: 'status', target: 'op:abc123', wait_seconds: 600 }`\n" +
                 "- `{ action: 'build', target: 'InvoiceProc', wait_until_done: true }`\n" +
+                "- `{ action: 'status', wait: 30, freshness: 'current' }`  # block until the index is current\n" +
                 "- `{ action: 'index', force: true }`\n",
 
             ["genexus_worker_reload"] =
@@ -89,7 +90,12 @@ namespace GxMcp.Gateway
                 "- Either `name` (single object) **or** `targets` (array) — never both.\n" +
                 "- `mode`: `full` (replace whole part) or `patch` (Replace/Insert_After/Append over a context anchor).\n" +
                 "- `mode: 'ops'` applies semantic operations; for modular objects pass `module` to select the Transaction module.\n" +
-                "- `dryRun: true` first for either mode. A preview is synchronous, never calls Save, and never starts a lifecycle action.\n\n" +
+                "- `dryRun: true` first for either mode. A preview is synchronous, never calls Save, and never starts a lifecycle action.\n" +
+                "- `patch={find,replace}` is the abbreviated textual replace form; it is also the only form that accepts the two opt-in protections below. Combining either protection with `operation`, `mode=ops`, `targets[]`, `parts[]`, `Insert_After` or `Append` is rejected before anything is normalized (`ScopeUnsupportedPatchForm` / `IndentationUnsupportedPatchForm`) — a protection is never silently ignored.\n\n" +
+                "## Opt-in patch protections\n" +
+                "- `patch.scope={start,end}` bounds where `find` may match. The editable region is the complete lines between the anchors (after `start`'s last line, before `end`'s first line; to EOF when `end` is omitted) and the anchors themselves are never edited. Each anchor must be a unique complete line of the part — only CRLF/LF are normalized, so a tab/space difference is still a miss. Codes: `ScopeStartRequired`, `ScopeAnchorNotFound`, `ScopeAnchorAmbiguous`, `ScopeAnchorNotComparable`. Use it when a similar block repeats elsewhere in the part (e.g. one branch per database).\n" +
+                "- `patch.indentation={mode:'validate'}` compares the replacement's base indentation against the matched line's before persisting (tabs and spaces are distinct; nothing is reformatted, `replace` is inserted literally). A match starting mid-content or mid-indent, or a blank first line in `replace`, is `IndentationNotComparable`; a differing base indent is `IndentationMismatch` and nothing is written. With `replaceAll=true` every match is validated.\n" +
+                "- Both protections report line evidence (1-based, exclusive end): `result.scope.editableStartLine`/`editableEndLineExclusive`/`scopeEndsAtEof`/`matchStartLine`, and `result.indentation.sites[].expectedPrefix`/`preservedPrefix`/`receivedPrefix`. A `dryRun` reports the verdict without failing so it can be reviewed first.\n\n" +
                 "## Output\n" +
                 "- Returns `post_state.diff` (unified diff) by default.\n" +
                 "- `verbose: true` adds slices with ±15 lines of context.\n" +

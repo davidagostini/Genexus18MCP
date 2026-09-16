@@ -26,6 +26,7 @@ const {
     handleLlmHelp,
     handleLayout,
     handleHelp,
+    handleVersion,
     usageEnvelope,
     commandHelpMap
 } = require('./commands/axi');
@@ -63,7 +64,19 @@ const GLOBAL_DEFAULTS = {
     help: false
 };
 
-const KNOWN_COMMANDS = new Set(['status', 'doctor', 'tools', 'config', 'init', 'setup', 'whoami', 'uninstall', 'kb', 'clients', 'help', 'home', 'axi', 'llm', 'layout', 'update']);
+// Single source of truth for command routing: cli/run.js imports both sets so the
+// AXI-vs-passthrough decision (stdout vs stderr for unhandled errors) cannot drift
+// from the parser again — issue #207 was caused by two hand-synced copies.
+const KNOWN_COMMANDS = new Set(['status', 'doctor', 'tools', 'config', 'init', 'setup', 'whoami', 'uninstall', 'kb', 'clients', 'help', 'home', 'axi', 'llm', 'layout', 'update', 'version']);
+
+// Version query aliases. `-v` deliberately is NOT an alias of `--help`/`-h`: those
+// return immediately, while the version aliases are command tokens so that remaining
+// flags (`-v --format json`) are still parsed and honored (issue #207).
+const VERSION_ALIASES = new Set(['version', '-v', '--version']);
+
+function isKnownCommandToken(token) {
+    return KNOWN_COMMANDS.has(token) || VERSION_ALIASES.has(token);
+}
 
 function parseArgs(argv) {
     const result = {
@@ -79,7 +92,8 @@ function parseArgs(argv) {
     if (tokens.length === 0) return result;
 
     const first = tokens[0];
-    if (!KNOWN_COMMANDS.has(first) && !first.startsWith('--')) {
+    const versionIntent = VERSION_ALIASES.has(first);
+    if (!versionIntent && !KNOWN_COMMANDS.has(first) && !first.startsWith('--')) {
         return result;
     }
 
@@ -89,7 +103,13 @@ function parseArgs(argv) {
         return result;
     }
 
-    if (KNOWN_COMMANDS.has(first)) {
+    if (versionIntent) {
+        // Treat the alias as a consumed command token and keep parsing the remaining
+        // flags, so `version --format json`, `-v --format json` and `--version --format json`
+        // all reach the format validation instead of falling through to passthrough.
+        result.command = 'version';
+        tokens.shift();
+    } else if (KNOWN_COMMANDS.has(first)) {
         result.command = first === 'setup' ? 'init' : first;
         tokens.shift();
     }
@@ -534,7 +554,9 @@ function resolveMetaCommand(parsed, targetHelp) {
 async function main(argv) {
     const parsed = parseArgs(argv);
 
-    if (parsed.command !== 'update') {
+    // `version` is a quiet query: no update-check banner (it would corrupt the raw
+    // version string scripts read) and no launcher config side effects.
+    if (parsed.command !== 'update' && parsed.command !== 'version') {
         startBackgroundUpdateCheck({ quiet: parsed.options.quiet });
     }
 
@@ -566,6 +588,19 @@ async function main(argv) {
         const helpResult = await handleHelp(targetHelp, ctx);
         writeStructured(process.stdout, withCommandMeta(helpResult.envelope, resolveMetaCommand(parsed, targetHelp)), parsed.options.format);
         return helpResult.exitCode;
+    }
+
+    if (parsed.command === 'version') {
+        const versionResult = await handleVersion(parsed.options, ctx);
+        // Default formats print the bare version so `genexus-mcp --version` is usable
+        // from scripts/CI; only --format json opts into the axi-cli/1 envelope.
+        if (versionResult.exitCode === EXIT_CODES.OK
+            && (parsed.options.format === 'toon' || parsed.options.format === 'text')) {
+            process.stdout.write(`${versionResult.envelope.ok.version}\n`);
+        } else {
+            writeStructured(process.stdout, withCommandMeta(versionResult.envelope, 'version'), parsed.options.format);
+        }
+        return versionResult.exitCode;
     }
 
     let result;
@@ -682,6 +717,9 @@ module.exports = {
     main,
     parseArgs,
     EXIT_CODES,
+    KNOWN_COMMANDS,
+    VERSION_ALIASES,
+    isKnownCommandToken,
     renderOutput,
     formatToonObject
 };

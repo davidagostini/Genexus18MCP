@@ -2224,19 +2224,11 @@ namespace GxMcp.Gateway
                         }
                         if (!indexUsable)
                         {
-                            var indexingEnvelope = new JObject
-                            {
-                                ["status"] = "Indexing",
-                                ["code"] = "IndexNotReady",
-                                ["indexStatus"] = idxSnap?.Freshness == "current" ? idxSnap.Status : "Refreshing",
-                                ["freshness"] = idxSnap?.Freshness ?? "stale",
-                                ["totalObjects"] = idxSnap?.TotalObjects ?? 0,
-                                ["message"] = BuildIndexingMessage(idxSnap?.Status, idxSnap?.Progress, idxSnap?.EtaMs),
-                                ["hint"] = "Call genexus_whoami to observe progress, then re-issue this tool."
-                            };
-                            if (idxSnap?.Progress != null) indexingEnvelope["progress"] = idxSnap.Progress.Value;
-                            if (idxSnap?.EtaMs != null) indexingEnvelope["etaMs"] = idxSnap.EtaMs.Value;
-                            return BuildToolResultContent(indexingEnvelope, false, tName, tArgs);
+                            return BuildToolResultContent(
+                                BuildIndexNotReadyEnvelope(
+                                    idxSnap?.Status, idxSnap?.Freshness, idxSnap?.TotalObjects ?? 0,
+                                    idxSnap?.Progress, idxSnap?.EtaMs),
+                                false, tName, tArgs);
                         }
                     }
 

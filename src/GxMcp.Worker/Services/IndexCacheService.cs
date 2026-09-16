@@ -1669,6 +1669,29 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // Issue #208: the sidecar stamps the persisted high-water-mark, so it may only be
+        // written for a body the flush actually certified. Ignoring FlushNow()'s verdict let a
+        // timed-out flush stamp a hwm the body did not contain, and the next warm start's delta
+        // then skipped those objects until they were edited again. Returning false leaves the
+        // previous sidecar (and its older hwm) in place, so the next warm start re-delivers the
+        // delta — the same degradation used when a worker dies mid-enrichment (body, no sidecar).
+        // Only the PERSISTED claim is held back: the in-memory index (and therefore this session's
+        // reads) stays current, because the refresh did merge its objects; it is the on-disk body
+        // that lags until the next flush or warm-start delta re-delivers them.
+        public bool FlushAndStampSidecar(int objectCount, string label = null, int timeoutMs = 30000)
+        {
+            if (!FlushNow(timeoutMs))
+            {
+                Logger.Warn(
+                    "[INDEX-META] sidecar NOT stamped" + (string.IsNullOrEmpty(label) ? string.Empty : " (" + label + ")")
+                    + ": flush did not certify the dirty state within " + timeoutMs + "ms"
+                    + (string.IsNullOrEmpty(LastFlushErrorMessage) ? string.Empty : " (" + LastFlushErrorMessage + ")")
+                    + " — keeping the previous sidecar so the next warm start re-processes this refresh (see whoami index.flushHealth).");
+                return false;
+            }
+            return WriteMetaSidecar(objectCount);
+        }
+
         // ===== Fase 1: persistible incremental index (version stamp + high-water-mark + delta-on-open) =====
 
         // Bump whenever IndexEntry's serialized shape changes. A mismatch on warm start
@@ -1766,9 +1789,9 @@ namespace GxMcp.Worker.Services
         /// Persist the validation sidecar. Call AFTER a body flush, only when the body is in a
         /// trustworthy (fully-enriched or delta-merged) state. Atomic temp-then-Replace/Move.
         /// </summary>
-        public void WriteMetaSidecar(int objectCount)
+        public bool WriteMetaSidecar(int objectCount)
         {
-            WriteMetaSidecarAt(Path.GetDirectoryName(_metaPath), objectCount, Path.GetFileName(_metaPath));
+            return WriteMetaSidecarAt(Path.GetDirectoryName(_metaPath), objectCount, Path.GetFileName(_metaPath));
         }
 
         private bool WriteMetaSidecarAt(string directory, int objectCount, string fileName = "meta.json")

@@ -128,10 +128,10 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_query` | active | `Search -> Query` |
 | `genexus_list_objects` | active | `List -> Objects` |
 | `genexus_read` | active | `Read -> ExtractSource`; `targets[]` plural form routes to `Batch -> BatchRead` |
-| `genexus_edit` | active | `Write`, `SemanticOps -> Apply` (mode=ops), `JsonPatch -> Apply` (mode=patch + array), or legacy `Patch -> Apply` (mode=patch + string); `targets[]` plural form routes to `Batch -> MultiEdit` |
+| `genexus_edit` | active | `Write`, `SemanticOps -> Apply` (mode=ops), `JsonPatch -> Apply` (mode=patch + array), or `Patch -> Apply` (mode=patch + string, and the abbreviated `patch={find,replace}` form that additionally accepts `patch.scope` / `patch.indentation`); `targets[]` plural form routes to `Batch -> MultiEdit`, `parts[]` to `Batch -> BatchEdit`, `changeSet` to `Mutation -> ChangeSet` |
 | `genexus_inspect` | active | `Analyze -> GetConversionContext` |
 | `genexus_analyze` | active | `Analyze`, `Linter`, or `UI` depending on mode |
-| `genexus_lifecycle` | active | `Build`, `KB`, or `Validation` depending on action (specify, compile_check, build, build_all, rebuild, index, status, result, reorg, validate) |
+| `genexus_lifecycle` | active | `Build`, `KB`, or `Validation` depending on action (specify, compile_check, build, build_all, rebuild, index, status, result, reorg, validate); index `status` waits accept `wait`/`since`/`freshness` and report `waitSatisfied` |
 | `genexus_create` | active | Object creation umbrella: Transaction, Procedure, WebPanel, SDT, API, Domain, Popup, SDPanel, SaveAs, Template, `object_atomic` |
 | `genexus_structure` | active | `Structure -> GetVisualStructure | UpdateVisualStructure | GetVisualIndexes | GetLogicStructure | CheckSubtypes`; supports `type` disambiguation, `remove_attribute`, `move_attribute` |
 | `genexus_refactor` | active | `Refactor -> RenameObject | RenameAttribute | RenameVariable | ExtractProcedure | ExtractSubroutine | WWPSetCondition` |

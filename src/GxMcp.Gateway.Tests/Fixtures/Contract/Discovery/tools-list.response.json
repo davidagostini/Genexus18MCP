@@ -1407,6 +1407,19 @@
               "find": "error(",
               "replace": "msg("
             }
+          },
+          {
+            "mode": "patch",
+            "name": "Customer",
+            "part": "Source",
+            "patch": {
+              "find": "old",
+              "replace": "new",
+              "scope": {
+                "end": "// Proximo banco",
+                "start": "// Banco B"
+              }
+            }
           }
         ],
         "properties": {
@@ -1510,6 +1523,10 @@
             "description": "WebForm only: persist despite SDK WebForm validation errors; response includes validationOverridden=true.",
             "type": "boolean"
           },
+          "indentation": {
+            "description": "patch.indentation may also be passed at the top level. Honored ONLY by the abbreviated patch={find,replace} form; combined with operation, mode=ops, targets[], parts[], Insert_After or Append the call is rejected with IndentationUnsupportedPatchForm and nothing is written.",
+            "type": "object"
+          },
           "kb": {
             "description": "KB alias.",
             "type": "string"
@@ -1590,7 +1607,52 @@
             "type": "array"
           },
           "patch": {
-            "description": "Shorthand for {find,replace}. Equivalent to operation=Replace + context=find + content=replace."
+            "additionalProperties": true,
+            "description": "Shorthand for {find,replace} on mode=patch: find is the exact existing text, replace is inserted literally (no auto-indentation). Optional opt-in protections: scope bounds the search region, indentation validates the replacement's base indent. Both apply ONLY to this shape — never with operation, mode=ops, targets[], parts[], Insert_After or Append.",
+            "properties": {
+              "find": {
+                "description": "Exact existing text to find. Real line breaks; tabs/spaces must match the part.",
+                "type": "string"
+              },
+              "indentation": {
+                "description": "Validates the base indentation of the located match against the first line of replace before persisting; tabs and spaces are distinct and nothing is reformatted. With replaceAll=true every match is validated. Errors: IndentationMismatch, IndentationNotComparable.",
+                "properties": {
+                  "mode": {
+                    "description": "validate: block the write when the replacement's base indentation differs from the matched line's.",
+                    "enum": [
+                      "validate"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "mode"
+                ],
+                "type": "object"
+              },
+              "replace": {
+                "description": "Replacement text, inserted literally.",
+                "type": "string"
+              },
+              "scope": {
+                "description": "Region delimited by complete-line anchors: editable starts after scope.start's last line and ends before scope.end's first line (EOF when end is omitted). Anchors stay outside the region, are compared with only CRLF/LF normalized, and must each be unique. Errors: ScopeStartRequired, ScopeAnchorNotFound, ScopeAnchorAmbiguous, ScopeAnchorNotComparable. The response reports editableStartLine, editableEndLineExclusive and scopeEndsAtEof.",
+                "properties": {
+                  "end": {
+                    "description": "Optional. Unique complete-line anchor starting immediately after the editable region. Omitted = region runs to EOF.",
+                    "type": "string"
+                  },
+                  "start": {
+                    "description": "Required. Unique complete-line anchor ending immediately before the editable region.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "start"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "object"
           },
           "replaceAll": {
             "description": "patch mode only. Apply to ALL occurrences instead of requiring expectedCount to match exactly.",
@@ -1608,6 +1670,10 @@
           "rollbackOnFailure": {
             "description": "Explicit rollback only: restore a valid pre-write snapshot when post-save verification or validationMode=specify fails. No rollback occurs when false or omitted.",
             "type": "boolean"
+          },
+          "scope": {
+            "description": "patch.scope may also be passed at the top level. Honored ONLY by the abbreviated patch={find,replace} form; combined with operation, mode=ops, targets[], parts[], Insert_After or Append the call is rejected with ScopeUnsupportedPatchForm and nothing is written.",
+            "type": "object"
           },
           "targets": {
             "description": "Multi-target Source/Rules writes. Each target may include expectedVersion/baseVersion; all versions are checked before the first write.",
@@ -2872,6 +2938,15 @@
           "force": {
             "description": "Index: full SDK rescan (clears snapshot).",
             "type": "boolean"
+          },
+          "freshness": {
+            "description": "Status: freshness target for the wait. With wait and no since, the call blocks until the index status is Ready AND freshness matches, then reports waitSatisfied. Use freshness=current to wait for a warm-start delta refresh to finish (a snapshot restored from the warm cache is Ready but stale, so a status-only wait returns immediately).",
+            "enum": [
+              "current",
+              "stale",
+              "refreshing"
+            ],
+            "type": "string"
           },
           "includeCallees": {
             "description": "Build: expand call graph so callees compile first (default transitive).",

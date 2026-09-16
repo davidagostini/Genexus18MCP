@@ -186,7 +186,12 @@ namespace GxMcp.Gateway.Tests
             //   2026-09-14 (native WWP table type): 28250 → 28600 for the typed
             //   set_table_type operation, path identity, preservation guarantees,
             //   and dry-run example. Measured ~28385.
-            Assert.True(approxTokens < 28600, $"tool_definitions.json is ~{approxTokens} tokens; budget 28600.");
+            //   2026-09-15 (issues #205/#206/#209 protections): 28600 → 29400 for the
+            //   genexus_edit patch={find,replace} object schema (scope anchors and
+            //   indentation validation, including their error codes and line evidence),
+            //   the top-level scope/indentation aliases the router consumes, and
+            //   genexus_lifecycle's freshness wait target. Measured ~29147.
+            Assert.True(approxTokens < 29400, $"tool_definitions.json is ~{approxTokens} tokens; budget 29400.");
         }
     }
 }

@@ -75,6 +75,69 @@ namespace GxMcp.Worker.Tests
             Assert.Null(s.EtaMs);
         }
 
+        // Issue #209 (policy A): the fail-closed freshness gate has to be awaitable, or the
+        // only documented escape from it is a manual reindex. These pin the wait predicate
+        // that `genexus_lifecycle action=status wait=... freshness=...` evaluates.
+        [Fact]
+        public void Wait_WithoutFreshnessTarget_KeepsStatusOnlySemantics()
+        {
+            // A restored snapshot is Ready + stale: a Status-only wait still returns
+            // immediately, which is exactly the behaviour callers could already rely on.
+            var warmStart = new IndexState { Status = "Ready", Freshness = "stale" };
+            Assert.True(IndexWaitPolicy.IsSatisfied(warmStart, null, null));
+            Assert.True(IndexWaitPolicy.IsSatisfied(warmStart, null, string.Empty));
+        }
+
+        [Fact]
+        public void Wait_ForCurrentFreshness_BlocksOnRestoredSnapshotAndCompletesOnDeltaRefresh()
+        {
+            var warmStart = new IndexState { Status = "Ready", Freshness = "stale" };
+            Assert.False(IndexWaitPolicy.IsSatisfied(warmStart, null, "current"));
+
+            // The delta refresh republishes Freshness=current without changing Status — the
+            // transition a Status-only wait could never observe.
+            var afterDelta = new IndexState { Status = "Ready", Freshness = "current" };
+            Assert.True(IndexWaitPolicy.IsSatisfied(afterDelta, null, "current"));
+        }
+
+        [Fact]
+        public void Wait_ForCurrentFreshness_SinceReadyStillRequiresFreshness()
+        {
+            // `since=Ready` on a warm start: the status has not LEFT Ready, so the wait must
+            // keep blocking until freshness reaches the target (the old behaviour waited out
+            // the entire budget and then reported nothing).
+            var refreshing = new IndexState { Status = "Ready", Freshness = "refreshing" };
+            Assert.False(IndexWaitPolicy.IsSatisfied(refreshing, "Ready", "current"));
+
+            // A failed delta publishes Cold/stale. That leaves `since=Ready`, so a
+            // status-only wait would report success — the freshness target keeps the
+            // wait honest and the caller learns about the failure from the timeout payload.
+            var failed = new IndexState { Status = "Cold", Freshness = "stale" };
+            Assert.False(IndexWaitPolicy.IsSatisfied(failed, "Ready", "current"));
+            Assert.True(IndexWaitPolicy.IsSatisfied(failed, "Ready", null));
+        }
+
+        [Fact]
+        public void Wait_TreatsMissingStateAsCold()
+        {
+            var cold = new IndexState { Status = "Cold" };
+            // Legacy semantics: no `since` blocks until Ready; `since` blocks until the
+            // state LEAVES that value. An absent state must behave like an explicit Cold
+            // state in both modes.
+            Assert.False(IndexWaitPolicy.IsSatisfied(null, null, null));
+            Assert.False(IndexWaitPolicy.IsSatisfied(null, "Cold", null));
+            Assert.True(IndexWaitPolicy.IsSatisfied(null, "Reindexing", null));
+            foreach (var since in new[] { null, "", "Cold", "Ready", "Reindexing", "Refreshing" })
+            {
+                Assert.Equal(
+                    IndexWaitPolicy.IsSatisfied(cold, since, null),
+                    IndexWaitPolicy.IsSatisfied(null, since, null));
+            }
+
+            // A freshness target can never be met while the state is unknown.
+            Assert.False(IndexWaitPolicy.IsSatisfied(null, null, "current"));
+        }
+
         [Fact]
         public void LoadFromEntries_TransitionsToReady_NoMarkComplete()
         {

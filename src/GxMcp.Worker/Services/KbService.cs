@@ -592,7 +592,11 @@ namespace GxMcp.Worker.Services
                                 result: new JObject
                                 {
                                     ["objects"] = loaded.Objects.Count,
-                                    ["hint"] = "Index is usable now from the warm cache; objects changed since last index are being refreshed in the background."
+                                    // Issue #209: the warm cache is RESTORED, not certified. Index-dependent
+                                    // reads stay blocked by the gateway gate until the delta republishes
+                                    // Freshness=current, so the hint must not promise otherwise — it names
+                                    // the wait that observes completion (whoami only reports progress).
+                                    ["hint"] = "Snapshot restored from the warm cache; objects changed since the last index are being refreshed in the background. Index-dependent reads stay blocked until freshness=current — wait with genexus_lifecycle action=status wait=30 freshness=current (genexus_whoami observes progress)."
                                 });
                         }
                         Logger.Info($"BulkIndex(fast): cache present but not delta-eligible (canDelta={validation.CanDelta} canDeltaAcrossDll={validation.CanDeltaAcrossDll} metaPresent={validation.MetaPresent} schemaMatch={validation.SchemaMatch} dllMatch={validation.DllMatch}) — full rebuild to re-establish the delta baseline.");
@@ -747,7 +751,10 @@ namespace GxMcp.Worker.Services
                     // every warm start would full-rebuild. Writing it here makes warm start
                     // delta-eligible immediately; DeltaRefreshOnOpen resumes enrichment for any
                     // entries still flagged IsEnriched=false.
-                    try { _indexCacheService.FlushNow(); _indexCacheService.WriteMetaSidecar(_totalCount); }
+                    // Issue #208: stamp the sidecar only when the flush certified all dirty state;
+                    // a timed-out flush keeps the previous sidecar (older hwm) instead of
+                    // claiming changes the on-disk body does not contain.
+                    try { _indexCacheService.FlushAndStampSidecar(_totalCount, "lite-complete"); }
                     catch (Exception fx) { Logger.Warn("Lite-complete flush/sidecar failed: " + fx.Message); }
 
                     // Wire the enrichment queue BEFORE starting the background drain, so callers
@@ -817,8 +824,9 @@ namespace GxMcp.Worker.Services
                             // sidecar — its presence marks the on-disk body as delta-eligible.
                             try
                             {
-                                _indexCacheService.FlushNow();
-                                _indexCacheService.WriteMetaSidecar(_totalCount);
+                                // Issue #208: the sidecar is stamped only when the flush certified
+                                // all dirty state; a timeout must not advance the persisted hwm.
+                                _indexCacheService.FlushAndStampSidecar(_totalCount, "final-enrich");
                             }
                             catch (Exception fx) { Logger.Warn("Final enrich flush/sidecar failed: " + fx.Message); }
                             enrichSw.Stop();
@@ -918,7 +926,14 @@ namespace GxMcp.Worker.Services
                 try
                 {
                     dynamic kb = GetKB();
-                    if (kb == null) { _currentStatus = "Error: KB not open"; return; }
+                    if (kb == null)
+                    {
+                        // Issue #209: a delta that cannot even start must leave an observable
+                        // terminal state (Cold/stale), not just a descriptive status string.
+                        _currentStatus = "Error: KB not open";
+                        try { _indexCacheService.MarkIndexFailed(); } catch { }
+                        return;
+                    }
 
                     // Wire the on-demand enrichment queue NOW (lazy OR eager) so AnalyzeService can
                     // PromoteAsync a target after a warm-start restart. The lite pass is the only
@@ -984,7 +999,7 @@ namespace GxMcp.Worker.Services
                     _indexCacheService.ObserveLastUpdate(newHwm);
                     _indexCacheService.MarkIndexComplete(effectiveCount);
                     // Persist the merged body + refreshed sidecar (advances the hwm baseline).
-                    try { _indexCacheService.FlushNow(); _indexCacheService.WriteMetaSidecar(effectiveCount); }
+                    try { _indexCacheService.FlushAndStampSidecar(effectiveCount, "delta-refresh"); }
                     catch (Exception fx) { Logger.Warn("Delta refresh flush/sidecar failed: " + fx.Message); }
 
                     sw.Stop();
@@ -1009,17 +1024,23 @@ namespace GxMcp.Worker.Services
                             .GetAwaiter().GetResult();
                         int resumedCount = _indexCacheService.GetIndex().Objects.Count;
                         _indexCacheService.MarkIndexComplete(resumedCount);
-                        try { _indexCacheService.FlushNow(); _indexCacheService.WriteMetaSidecar(resumedCount); }
+                        try { _indexCacheService.FlushAndStampSidecar(resumedCount, "delta-resume-enrich"); }
                         catch (Exception fx) { Logger.Warn("Resume-enrich flush/sidecar failed: " + fx.Message); }
                         Logger.Info($"[DELTA-RESUME-ENRICH-DONE] enriched={pendingEnrich.Count} {IndexCacheService.GetEnrichTimingSummary()}");
                     }
 
+                    Interlocked.Exchange(ref _deltaRetryAttempt, 0);
                     _currentStatus = "Complete";
                 }
                 catch (Exception ex)
                 {
+                    // Issue #209 (policy A): a failed delta used to leave the index at
+                    // Freshness=refreshing forever, indistinguishable from a refresh still in
+                    // progress, with nothing pointing at the manual recovery path.
                     Logger.Error("[DELTA-REFRESH-FAIL] error=" + ex.Message);
                     _currentStatus = "Error: " + ex.Message;
+                    try { _indexCacheService.MarkIndexFailed(); } catch { }
+                    ScheduleDeltaRetry(highWaterMark, loadedCount);
                 }
                 finally { _isIndexing = false; }
             })
@@ -1030,6 +1051,56 @@ namespace GxMcp.Worker.Services
             };
             deltaThread.SetApartmentState(ApartmentState.STA);
             deltaThread.Start();
+        }
+
+        // Issue #209 (policy A): bounded self-healing for a failed warm-start delta. The delta
+        // is the only path that advances the persisted high-water-mark, so a transient SDK
+        // failure must not need a human to notice and run `action=index force=true`.
+        private int _deltaRetryAttempt;
+        private const int DeltaRetryMaxAttempts = 3;
+        private static readonly int[] DeltaRetryBackoffMs = { 5000, 15000, 60000 };
+
+        private void ScheduleDeltaRetry(DateTime highWaterMark, int loadedCount)
+        {
+            int attempt = Interlocked.Increment(ref _deltaRetryAttempt);
+            if (attempt > DeltaRetryMaxAttempts)
+            {
+                Logger.Error(
+                    $"[DELTA-RETRY] giving up after {DeltaRetryMaxAttempts} attempts — the index stays Cold/stale. "
+                    + "Recover with genexus_lifecycle action=index force=true.");
+                return;
+            }
+
+            int delayMs = DeltaRetryBackoffMs[Math.Min(attempt - 1, DeltaRetryBackoffMs.Length - 1)];
+            Logger.Warn($"[DELTA-RETRY] scheduling attempt {attempt}/{DeltaRetryMaxAttempts} in {delayMs}ms.");
+
+            var retryThread = new Thread(() =>
+            {
+                try
+                {
+                    Thread.Sleep(delayMs);
+                    // A full rebuild (or an explicit action=index) supersedes the retry.
+                    if (_isIndexing)
+                    {
+                        Logger.Info("[DELTA-RETRY] an index run is already in progress — retry dropped.");
+                        return;
+                    }
+                    if (GetKB() == null)
+                    {
+                        Logger.Warn("[DELTA-RETRY] KB is no longer open — retry abandoned.");
+                        return;
+                    }
+                    StartDeltaRefreshThread(highWaterMark, loadedCount);
+                }
+                catch (Exception ex) { Logger.Warn("[DELTA-RETRY] scheduling failed: " + ex.Message); }
+            })
+            {
+                IsBackground = true,
+                Priority = ThreadPriority.BelowNormal,
+                Name = "GxMcp-DeltaRetry"
+            };
+            retryThread.SetApartmentState(ApartmentState.STA);
+            retryThread.Start();
         }
 
         // v2.3.8 (post-self-review) — force flag closes the "stale snapshot" gap.

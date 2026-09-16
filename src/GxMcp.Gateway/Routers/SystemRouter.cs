@@ -124,11 +124,15 @@ namespace GxMcp.Gateway.Routers
                                 int idxWait = args?["wait"]?.ToObject<int?>() ?? 0;
                                 if (idxWait < 0) idxWait = 0;
                                 if (idxWait > 300) idxWait = 300;
+                                // Issue #209 (policy A): forward `freshness` so the wait can
+                                // target Freshness=current (a Status-only wait cannot observe the
+                                // warm-start delta that republishes it).
                                 return new {
                                     module = "KB",
                                     action = "GetIndexStatus",
                                     wait = idxWait,
-                                    since = args?["since"]?.ToString()
+                                    since = args?["since"]?.ToString(),
+                                    freshness = args?["freshness"]?.ToString()
                                 };
                             }
                         case "result":
