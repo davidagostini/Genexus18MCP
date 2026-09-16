@@ -176,6 +176,37 @@ function buildStatusData(cwd) {
     return { ready, configFound, gatewayExeFound, kbLooksValid, configPath, gatewayExePath, kbPath, gxPath, configSource };
 }
 
+const PROBE_EXIT_GRACE_MS = 2000;
+
+// Stop a probe child and wait for it to actually exit. On Windows child.kill()
+// only signals the direct process and returns before the OS releases the
+// executable image, so reporting success right after kill() left the exe file
+// handle open (Issue #211: the shared gateway stub in cli/run.test.js made the
+// suite teardown fail with EPERM while every assertion passed). Resolves true
+// once the child exited, false when it did not within the bounded grace.
+function stopProbeChild(child, graceMs = PROBE_EXIT_GRACE_MS) {
+    return new Promise((resolve) => {
+        if (!child || child.exitCode !== null || child.signalCode !== null) {
+            resolve(true);
+            return;
+        }
+        let settled = false;
+        const finish = (exited) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(exited);
+        };
+        const timer = setTimeout(() => finish(false), graceMs);
+        child.once('exit', () => finish(true));
+        try {
+            child.kill();
+        } catch {
+            finish(true);
+        }
+    });
+}
+
 async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, label, successDetail }) {
     const gatewayExePath = getGatewayExePath();
 
@@ -209,17 +240,25 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
             });
 
             child.once('spawn', () => {
-                setTimeout(() => {
-                    try { child.kill(); } catch { }
-                    finish({ status: 'pass', detail: successDetail });
+                setTimeout(async () => {
+                    const exited = await stopProbeChild(child);
+                    if (exited) {
+                        finish({ status: 'pass', detail: successDetail });
+                    } else {
+                        finish({ status: 'warn', detail: `${label}: process did not exit after the stop signal; it may still hold the gateway exe.` });
+                    }
                 }, spawnHoldMs);
             });
 
-            setTimeout(() => {
-                if (!done) {
-                    try { child.kill(); } catch { }
-                    finish({ status: 'warn', detail: `${label} timed out; process was force-stopped.` });
-                }
+            setTimeout(async () => {
+                if (done) return;
+                const exited = await stopProbeChild(child);
+                finish({
+                    status: 'warn',
+                    detail: exited
+                        ? `${label} timed out; process was force-stopped.`
+                        : `${label} timed out and did not exit after the stop signal; it may still hold the gateway exe.`
+                });
             }, timeoutMs);
         } catch (err) {
             finish({ status: 'fail', detail: `${label} threw: ${err.message}` });
@@ -1344,6 +1383,7 @@ function buildClientLauncherHelp(patchResult) {
     }
     if (patched.length > 0 && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
         help.push('Windows launcher paths may resolve under the npm cache and be blocked by AppLocker/SRP. Use scripts/install.ps1 for a stable whitelisted path.');
+        help.push('Working from a local checkout? Register the clients with the checkout gateway from the repo root instead: `$env:GENEXUS_MCP_GATEWAY_EXE="<repoRoot>\\publish\\GxMcp.Gateway.exe"; node cli\\run.js clients add --clients <ids>` (or re-run `.\\install.ps1`). Avoid `npx @latest clients add` there, because it rewrites the registration to this npm package\'s launcher; validate with the same checkout CLI (`node cli\\run.js clients` / `doctor`).');
     }
     return help;
 }
@@ -1939,6 +1979,7 @@ async function probeWorkerStartup({ configPath, observeMs = 2500 }) {
         };
 
         let child;
+        let stopping = false;
         try {
             child = spawn(gatewayExePath, [], {
                 stdio: ['ignore', 'pipe', 'pipe'],
@@ -1957,6 +1998,9 @@ async function probeWorkerStartup({ configPath, observeMs = 2500 }) {
         });
 
         child.once('exit', (code) => {
+            // The observation timeout stops the gateway itself; that deliberate
+            // signal is reported by the timeout branch, not as a crash.
+            if (stopping) return;
             if (code === 0) {
                 finish({ status: 'pass', detail: 'Worker smoke: gateway exited cleanly during observation window.' });
             } else {
@@ -1970,10 +2014,15 @@ async function probeWorkerStartup({ configPath, observeMs = 2500 }) {
             }
         });
 
-        setTimeout(() => {
-            try { child.kill(); } catch { }
-            // Still alive after observeMs → worker bootstrapped without crashing.
-            finish({ status: 'pass', detail: `Worker smoke: gateway stayed alive for ${observeMs}ms with KB and GX configured.` });
+        setTimeout(async () => {
+            stopping = true;
+            const exited = await stopProbeChild(child);
+            if (exited) {
+                // Still alive after observeMs → worker bootstrapped without crashing.
+                finish({ status: 'pass', detail: `Worker smoke: gateway stayed alive for ${observeMs}ms with KB and GX configured.` });
+            } else {
+                finish({ status: 'warn', detail: 'Worker smoke: gateway did not exit after the stop signal; it may still hold the gateway exe.' });
+            }
         }, observeMs);
     });
 }
@@ -2150,11 +2199,12 @@ async function handleClients(subcommand, options, ctx) {
         if (invalidLaunchers.length > 0) {
             help.push(`These clients have a known-invalid MCP launcher (check command and args) — re-register: genexus-mcp clients add --clients ${invalidLaunchers.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
         }
-        const otherStale = stale.filter((r) =>
-            r.launcherStructuralState !== 'missing' && r.launcherSemanticState !== 'invalid'
-        );
-        if (otherStale.length > 0) {
-            help.push(`These clients have a stale launcher — re-register: genexus-mcp clients add --clients ${otherStale.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
+        // A launcher that exists but is not this CLI's gateway is a different working
+        // install (checkout, fixed-path, other package cache), so it is reported as
+        // informational drift instead of a stale registration that needs repair.
+        const driftedLaunchers = rows.filter((r) => r.launcherPathDrift && !r.commandStale);
+        if (driftedLaunchers.length > 0) {
+            help.push(`Note: ${driftedLaunchers.map((r) => r.name).join(', ')} point at a gateway that is not this CLI's (informational — the launcher exists and is valid). Re-register with this CLI only if you want them to track it: genexus-mcp clients add --clients ${driftedLaunchers.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
         }
         const semanticValidCount = rows.filter((r) => r.launcherSemanticState === 'valid').length;
         const semanticInvalidCount = rows.filter((r) => r.launcherSemanticState === 'invalid').length;

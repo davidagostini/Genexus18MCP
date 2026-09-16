@@ -41,6 +41,7 @@ Entry points:
 Neutral installer/runtime setup:
 - `genexus-mcp config create --config-scope neutral --output <path> --gx <path> --worker <path> --gateway-mode stdio-isolated --resolution-policy strict`
 - `genexus-mcp clients add --all-clients` (or `--clients opencode,codex-cli,vscode,antigravity,gemini-cli`)
+- From a **local checkout**, register/repair harnesses with the checkout CLI and gateway instead of `npx`: from the repo root `$env:GENEXUS_MCP_GATEWAY_EXE='<repoRoot>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --all-clients` (or `./install.ps1`), then validate with `node cli\run.js clients` / `node cli\run.js doctor`. Reserve the `npx genexus-mcp@latest …` forms for installs that have no local `publish\`; see the startup-failure section for the stale-path case.
 - `genexus-mcp config migrate --from <legacy.json> --output <neutral.json>` is the only configuration migration path. It copies runtime fields into the neutral schema (`ConfigSchemaVersion: 2`, `GatewayMode`, `GeneXus`, `Server`, and `Environment.ResolutionPolicy`), writes an atomic source backup, verifies the destination by read-back, and rolls back an existing destination if verification fails. The JSON receipt reports `backupPath`, `readBack`, `rolledBack`, `migrated`, and `notMigrated`.
 - Legacy KB fields (`Environment.KBPath`, `KBs`, `DefaultKb`, `ActiveKb`) are deliberately not migrated because neutral configs are KB-free. Use `--reject-non-migratable` to fail before writing when any are present.
 - `init` and `clients add` never migrate or rewrite an existing config automatically. `kb add`, `kb remove`, and `kb switch` remain the legacy catalog flow: they mutate the `Environment` catalog in the config selected by `GX_CONFIG_PATH` or the current directory. Neutral runtimes use explicit per-session MCP KB selection instead.
@@ -75,6 +76,28 @@ current package's gateway executable directly when available; if `genexus-mcp cl
 marks that path stale, re-register it with `npx genexus-mcp@latest clients add --clients antigravity`.
 Do not infer an npx incompatibility or switch to a global npm install before reading
 this file.
+
+**Local checkout.** If you run clients from a repo checkout that has a local `publish\`,
+re-register and validate with that same checkout CLI so the harness keeps pointing at
+its gateway:
+
+```powershell
+# from the repo root
+$env:GENEXUS_MCP_GATEWAY_EXE = "<repoRoot>\publish\GxMcp.Gateway.exe"
+node cli\run.js clients add --clients <id>   # or re-run .\install.ps1
+node cli\run.js clients --format json        # validate
+node cli\run.js doctor --mcp-smoke --format json
+```
+
+`clients` and `doctor` only validate — neither rewrites a launcher. Running
+`npx genexus-mcp@latest clients add` from the checkout (or its help line) rewrites the
+client to the npm-cache launcher, which is what actually moves a harness off the
+checkout; that is the reason to keep install, validation, and repair on one CLI/env.
+Reading back a checkout registration with a different CLI is safe and informative: a
+client that points at another *existing* gateway is reported as `launcherPathDrift`
+with `commandStale: false`, not as stale, because the launcher is valid. `doctor`'s
+`client_config_sync` check still warns when the configured exe is not the packaged one
+(the broader, explicit drift check across every client).
 
 ## MCP Contract (LLM-facing)
 

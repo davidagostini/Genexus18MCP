@@ -937,21 +937,27 @@ function clientCommandHealth(entry, client = null, { fs: fileSystem = fs } = {})
         reason: null,
         structuralState: 'indeterminate',
         semanticState: 'unknown',
-        semanticReason: null
+        semanticReason: null,
+        pathDrift: false,
+        pathDriftReason: null
     };
     const invalid = (reason, structuralState = 'present') => ({
         stale: true,
         reason,
         structuralState,
         semanticState: 'invalid',
-        semanticReason: reason
+        semanticReason: reason,
+        pathDrift: false,
+        pathDriftReason: null
     });
     const valid = (structuralState = 'present') => ({
         stale: false,
         reason: null,
         structuralState,
         semanticState: 'valid',
-        semanticReason: null
+        semanticReason: null,
+        pathDrift: false,
+        pathDriftReason: null
     });
     const missingLauncherReason = 'configured launcher does not exist on disk';
 
@@ -961,7 +967,9 @@ function clientCommandHealth(entry, client = null, { fs: fileSystem = fs } = {})
             reason: null,
             structuralState: 'not-registered',
             semanticState: 'not-applicable',
-            semanticReason: null
+            semanticReason: null,
+            pathDrift: false,
+            pathDriftReason: null
         };
     }
     if (typeof entry !== 'object') {
@@ -973,7 +981,9 @@ function clientCommandHealth(entry, client = null, { fs: fileSystem = fs } = {})
             reason: null,
             structuralState: 'not-applicable',
             semanticState: 'not-applicable',
-            semanticReason: null
+            semanticReason: null,
+            pathDrift: false,
+            pathDriftReason: null
         };
     }
 
@@ -1004,13 +1014,21 @@ function clientCommandHealth(entry, client = null, { fs: fileSystem = fs } = {})
             };
         }
         if (!exists) return invalid(missingLauncherReason, 'missing');
+        // A gateway exe that exists at a different absolute path is a *different,
+        // working* install — a local checkout's publish/ copy, a fixed-path install,
+        // or another package cache — not a broken registration. Reporting it as
+        // `stale` made `npx genexus-mcp clients` tell a checkout operator to
+        // re-register, which rewrote the harness away from the checkout gateway
+        // (Issue #210). The drift is still surfaced (as `pathDrift`, never `stale`)
+        // and doctor's `client_config_sync` check keeps the "not this CLI's packaged
+        // gateway" warning with its own remediation.
         if (client && client.preferDirectGateway) {
             const currentPackageGateway = getGatewayExePath();
-            if (fs.existsSync(currentPackageGateway) && normalizeExePath(command) !== normalizeExePath(currentPackageGateway)) {
+            if (fileSystem.existsSync(currentPackageGateway) && normalizeExePath(command) !== normalizeExePath(currentPackageGateway)) {
                 return {
                     ...valid('present'),
-                    stale: true,
-                    reason: 'configured launcher points at a different package gateway; re-register the client'
+                    pathDrift: true,
+                    pathDriftReason: `configured gateway differs from this CLI's gateway (${currentPackageGateway})`
                 };
             }
         }
@@ -1138,6 +1156,8 @@ function clientsStatus(opts = {}) {
             launcherStructuralState: health.structuralState,
             launcherSemanticState: health.semanticState,
             launcherSemanticReason: health.semanticReason,
+            launcherPathDrift: health.pathDrift,
+            launcherPathDriftReason: health.pathDriftReason,
             commandStale: health.stale,
             commandStaleReason: health.reason || (isThirdParty ? 'configured as third-party / HTTP MCP server (e.g. official GeneXus MCP)' : null),
             detectedAt: det.markerHit || (det.hasConfig ? client.path : null),

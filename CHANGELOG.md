@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`genexus-mcp clients` no longer reports a valid gateway from another install as stale ([#210](https://github.com/lennix1337/Genexus18MCP/issues/210)).** `clientCommandHealth` classified any `GxMcp.Gateway.exe` that differed from the running CLI's own `getGatewayExePath()` as stale *even when it existed*, so reading back a checkout registration with `npx genexus-mcp clients` (or an npm registration with the checkout CLI) produced a stale Antigravity with a "re-register the client" remediation — following it moved the harness off the checkout gateway. `stale` now means only "this registration cannot start MCP" (missing file, node launcher without an entrypoint, unrecognized shape); a different-but-existing gateway is reported as `launcherPathDrift` + `launcherPathDriftReason` with `commandStale: false` and `launcherSemanticState: valid`, and `clients` surfaces it as an informational `Note:` line instead of a repair instruction (the now-unreachable "stale launcher" help bucket was removed). The "not this CLI's packaged gateway" warning keeps its home in `doctor`'s `client_config_sync` check, which already covers every client rather than Antigravity alone.
+- **The CLI spawn probes wait for the child to exit instead of returning while it is still terminating ([#211](https://github.com/lennix1337/Genexus18MCP/issues/211)).** `spawnGatewayProbe` (the `gateway_spawn_probe` check in `init`/`doctor`) and `probeWorkerStartup` called `child.kill()` and reported success immediately; on Windows `kill()` only signals the direct process and returns before the OS releases the executable image, so a still-terminating probe kept the exe locked and `npm test` failed in the `test.after` cleanup with `EPERM` while every assertion passed. Both now await the child's `exit` (bounded by a 2s grace) and report `warn` when the process does not exit, and the worker smoke no longer misreads its own stop signal as a crash. `cli/run.test.js` teardown terminates only processes launched from its own temp dir (never a machine-wide `GxMcp.Gateway.exe` sweep), extends the Windows removal backoff to 8 attempts (10→640 ms), and removes the parent `genexus-mcp-test-<pid>` directory it used to leave behind.
+
+### Internal
+
+- **Documented the local-checkout client registration flow ([#210](https://github.com/lennix1337/Genexus18MCP/issues/210)).** `AGENTS.md`'s harness-sync matrix and `docs/llm_cli_mcp_playbook.md` gained an explicit checkout branch (register/repair with `GENEXUS_MCP_GATEWAY_EXE` + `node cli\run.js clients add` or `.\install.ps1`, then validate/repair with the checkout CLI) so `npx @latest clients add` is no longer the only remediation offered there — that path rewrites a checkout harness back to the npm-cache launcher. The matrix row for `install.ps1` was also corrected: it registers with `clients add --all-clients` (not `init --write-clients`), takes `-GeneXusPath`/`-SkipClientConfig`, and writes no `Environment.KBPath`. `init`'s post-patch help (`buildClientLauncherHelp`) now names the checkout alternative next to the npx one.
+
 ## v3.5.3 - 2026-09-15
 
 

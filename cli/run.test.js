@@ -39,6 +39,7 @@ if (process.platform === 'win32') {
     fs.chmodSync(testGatewayPath, 0o755);
 }
 const testGatewayEnv = { GENEXUS_MCP_GATEWAY_EXE: testGatewayPath };
+const testGatewayDir = path.dirname(testGatewayPath);
 
 const RETRYABLE_REMOVE_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 function waitForRemoveRetry(delayMs) {
@@ -49,7 +50,7 @@ function removeTempPath(targetPath, options = {}, deps = {}) {
     const fsImpl = deps.fsImpl || fs;
     const platform = deps.platform || process.platform;
     const sleep = deps.sleep || waitForRemoveRetry;
-    const maxAttempts = platform === 'win32' ? 5 : 1;
+    const maxAttempts = platform === 'win32' ? 8 : 1;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
@@ -58,14 +59,38 @@ function removeTempPath(targetPath, options = {}, deps = {}) {
         } catch (error) {
             const retryable = RETRYABLE_REMOVE_CODES.has(error?.code);
             if (!retryable || attempt === maxAttempts) throw error;
-            sleep(10 * (2 ** (attempt - 1)));
+            sleep(Math.min(10 * (2 ** (attempt - 1)), 1000));
         }
     }
 }
 
+// Issue #211 teardown safety net: a probe child that outlives its terminate
+// signal keeps the stubbed GxMcp.Gateway.exe image mapped, which turns the
+// cleanup rmSync into EPERM. Terminate only processes started from this test's
+// own temp dir — never a machine-wide GxMcp.Gateway.exe sweep, which would hit
+// other checkouts and the operator's own gateways.
+function stopLingeringGatewayStubs(dirPath, deps = {}) {
+    const platform = deps.platform || process.platform;
+    const run = deps.run || ((command, args) => spawnSync(command, args, { encoding: 'utf8', windowsHide: true }));
+    if (platform !== 'win32') return false;
+
+    const escapedDir = String(dirPath).replace(/'/g, "''");
+    const script = [
+        "$ErrorActionPreference = 'SilentlyContinue'",
+        `Get-CimInstance Win32_Process -Filter "Name = 'GxMcp.Gateway.exe'"`,
+        `Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetDirectoryName($_.ExecutablePath) -eq '${escapedDir}') }`,
+        'ForEach-Object { Stop-Process -Id $_.ProcessId -Force }'
+    ].join(' | ');
+    try {
+        run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
+    } catch { }
+    return true;
+}
+
 test.after(() => {
     removeTempPath(testGxPath, { recursive: true, force: true });
-    removeTempPath(testGatewayPath, { force: true });
+    stopLingeringGatewayStubs(testGatewayDir);
+    removeTempPath(testGatewayDir, { recursive: true, force: true });
 });
 
 function runCli(args, opts = {}) {
@@ -106,6 +131,58 @@ test('temporary cleanup retries transient Windows removal errors', () => {
         platform: 'win32',
         sleep: () => assert.fail('non-retryable cleanup errors must not sleep')
     }), permanentError);
+});
+
+test('windows cleanup retries keep growing the backoff up to the attempt budget', () => {
+    const sleeps = [];
+    let attempts = 0;
+    const lockedFs = {
+        rmSync() {
+            attempts += 1;
+            throw Object.assign(new Error('file is still in use'), { code: 'EBUSY' });
+        }
+    };
+
+    assert.throws(() => removeTempPath('fixture', { force: true }, {
+        fsImpl: lockedFs,
+        platform: 'win32',
+        sleep: (delayMs) => sleeps.push(delayMs)
+    }));
+
+    assert.equal(attempts, 8);
+    assert.deepEqual(sleeps, [10, 20, 40, 80, 160, 320, 640]);
+});
+
+test('lingering gateway stub cleanup stays scoped to the test temp dir', () => {
+    const posixCalls = [];
+    const ranOnPosix = stopLingeringGatewayStubs('C:\\Temp\\genexus-mcp-test-1', {
+        platform: 'linux',
+        run: (command, args) => posixCalls.push([command, args])
+    });
+    assert.equal(ranOnPosix, false);
+    assert.deepEqual(posixCalls, [], 'non-Windows teardown must not spawn a shell');
+
+    const windowsCalls = [];
+    const ranOnWindows = stopLingeringGatewayStubs('C:\\Temp\\genexus-mcp-test-1', {
+        platform: 'win32',
+        run: (command, args) => windowsCalls.push([command, args])
+    });
+    assert.equal(ranOnWindows, true);
+    assert.equal(windowsCalls.length, 1);
+    assert.equal(windowsCalls[0][0], 'powershell.exe');
+
+    const script = windowsCalls[0][1].join(' ');
+    assert.ok(script.includes("GxMcp.Gateway.exe"), 'must target the stubbed gateway image');
+    assert.ok(script.includes('C:\\Temp\\genexus-mcp-test-1'), 'must be scoped to the test temp dir');
+    assert.ok(!script.includes('Stop-Process -Name'), 'must never terminate by process name machine-wide');
+});
+
+test('a failed stub cleanup does not mask the test result', () => {
+    const ran = stopLingeringGatewayStubs('C:\\Temp\\genexus-mcp-test-1', {
+        platform: 'win32',
+        run: () => { throw new Error('powershell unavailable'); }
+    });
+    assert.equal(ran, true);
 });
 
 test('status returns structured json envelope with schema version', () => {
@@ -1821,26 +1898,30 @@ test('clients list keeps an existing unrecognized launcher indeterminate', () =>
         assert.equal(cursor.launcherStructuralState, 'indeterminate');
         assert.equal(cursor.launcherSemanticState, 'unknown');
         assert.equal(cursor.commandStale, false, 'unknown commands are not treated as invalid');
+        assert.equal(cursor.launcherPathDrift, false, 'drift fields are always present in the payload');
+        assert.equal(cursor.launcherPathDriftReason, null);
     } finally {
         removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });
 
-test('clients list marks an Antigravity launcher from an old package cache as stale', () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-antigravity-stale-'));
+test('clients list reports a checkout gateway as path drift, not as stale', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-checkout-drift-'));
     try {
         const env = sandboxHomeEnv(tempRoot);
+        // A checkout install registers the client against the checkout's own
+        // publish/ gateway while this CLI compares against its own gateway.
+        const checkoutGateway = path.join(tempRoot, 'checkout', 'publish', 'GxMcp.Gateway.exe');
         const currentGateway = path.join(tempRoot, 'current', 'GxMcp.Gateway.exe');
-        const oldGateway = path.join(tempRoot, 'old-cache', 'GxMcp.Gateway.exe');
+        fs.mkdirSync(path.dirname(checkoutGateway), { recursive: true });
         fs.mkdirSync(path.dirname(currentGateway), { recursive: true });
-        fs.mkdirSync(path.dirname(oldGateway), { recursive: true });
+        fs.writeFileSync(checkoutGateway, 'checkout');
         fs.writeFileSync(currentGateway, 'current');
-        fs.writeFileSync(oldGateway, 'old');
 
         const antigravityCfg = path.join(tempRoot, '.gemini', 'antigravity', 'mcp_config.json');
         fs.mkdirSync(path.dirname(antigravityCfg), { recursive: true });
         fs.writeFileSync(antigravityCfg, JSON.stringify({
-            mcpServers: { genexus18mcp: { command: oldGateway, args: [] } }
+            mcpServers: { genexus18mcp: { command: checkoutGateway, args: [] } }
         }, null, 2));
 
         const result = runCli(['clients', '--format', 'json'], {
@@ -1849,8 +1930,39 @@ test('clients list marks an Antigravity launcher from an old package cache as st
         assert.equal(result.status, 0);
         const parsed = JSON.parse(result.stdout);
         const antigravity = parsed.ok.clients.find((client) => client.id === 'antigravity');
-        assert.equal(antigravity.commandStale, true);
-        assert.match(antigravity.commandStaleReason, /different package gateway/);
+        assert.equal(antigravity.commandStale, false, 'an existing gateway from another install is not broken');
+        assert.equal(antigravity.launcherStructuralState, 'present');
+        assert.equal(antigravity.launcherSemanticState, 'valid');
+        assert.equal(antigravity.launcherPathDrift, true, 'the drift is still reported');
+        assert.match(antigravity.launcherPathDriftReason, /differs from this CLI's gateway/);
+        assert.ok(parsed.help.some((h) => h.startsWith('Note:')), 'drift is informational, not a repair instruction');
+        assert.ok(!parsed.help.some((h) => h.includes('missing gateway exe')), 'a valid launcher must not be listed as missing');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('clients list marks the same gateway as this CLI without drift', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-same-gateway-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const gatewayPath = path.join(tempRoot, 'publish', 'GxMcp.Gateway.exe');
+        fs.mkdirSync(path.dirname(gatewayPath), { recursive: true });
+        fs.writeFileSync(gatewayPath, 'gateway');
+        const cursorCfg = path.join(tempRoot, '.cursor', 'mcp.json');
+        fs.mkdirSync(path.dirname(cursorCfg), { recursive: true });
+        fs.writeFileSync(cursorCfg, JSON.stringify({
+            mcpServers: { genexus18mcp: { command: gatewayPath, args: [] } }
+        }, null, 2));
+
+        const result = runCli(['clients', '--format', 'json'], {
+            env: { ...env, GENEXUS_MCP_GATEWAY_EXE: gatewayPath }
+        });
+        assert.equal(result.status, 0);
+        const cursor = JSON.parse(result.stdout).ok.clients.find((client) => client.id === 'cursor');
+        assert.equal(cursor.commandStale, false);
+        assert.equal(cursor.launcherPathDrift, false);
+        assert.equal(cursor.launcherPathDriftReason, null);
     } finally {
         removeTempPath(tempRoot, { recursive: true, force: true });
     }
