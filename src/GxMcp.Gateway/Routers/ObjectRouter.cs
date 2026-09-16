@@ -57,7 +57,7 @@ namespace GxMcp.Gateway.Routers
             // Only the object shape is routed as the abbreviated patch form (the same check the
             // Patch routing below makes), so anything else — including a JSON string — falls
             // through to the fail-closed rejection instead of dropping the protection.
-            JObject patchObj = args["patch"] as JObject;
+            JObject? patchObj = args["patch"] as JObject;
             JToken? scopeTok = patchObj?["scope"] ?? args["scope"];
             JToken? indentationTok = patchObj?["indentation"] ?? args["indentation"];
             if (scopeTok == null && indentationTok == null) return;
@@ -323,10 +323,10 @@ namespace GxMcp.Gateway.Routers
                         // string form was implemented, so callers got
                         // "'context' (old_string) is required for Replace" even with a valid object.
                         // Map find→context and replace→payload to reuse the existing patch pipeline.
-                        string opFromObj = null;
-                        string contextFromObj = null;
-                        string payloadFromObj = null;
-                        JObject patchObject = null;
+                        string? opFromObj = null;
+                        string? contextFromObj = null;
+                        string? payloadFromObj = null;
+                        JObject? patchObject = null;
                         if (patchTok is JObject patchObj)
                         {
                             var find = patchObj["find"]?.ToString();

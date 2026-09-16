@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v3.5.3 - 2026-09-15
+
+
+### Tracked issues
+
+- [#205](https://github.com/lennix1337/Genexus18MCP/issues/205) — Sugestão: delimitar escopo de genexus_edit mode=patch
+- [#206](https://github.com/lennix1337/Genexus18MCP/issues/206) — Sugestão: validar indentação em genexus_edit mode=patch
+- [#207](https://github.com/lennix1337/Genexus18MCP/issues/207) — [Bug] genexus-mcp --version/-v/ersion encerram com exit 0 sem imprimir a versão
+- [#208](https://github.com/lennix1337/Genexus18MCP/issues/208) — Bug: WriteMetaSidecar incondicional pula objetos alterados em warm start
+- [#209](https://github.com/lennix1337/Genexus18MCP/issues/209) — Freshness gate: decisão de política e janela de bloqueio inconsistente (follow-up #196)
+
+
 ### Added
 
 - **`genexus_edit mode=patch` accepts `patch.scope` — a bounded search region ([#205](https://github.com/lennix1337/Genexus18MCP/issues/205)).** The abbreviated `patch={find,replace}` form now takes `scope={start,end}`, two complete-line anchors that delimit where `find` may match; the editable region is the whole lines between them (after `start`'s last line, before `end`'s first line, or to EOF when `end` is omitted) and the anchors are never edited. Anchors are compared with only CRLF/LF normalized (a trailing line break is treated as the anchor's own terminator) and must each be unique. Scope misuse fails closed without writing: `ScopeStartRequired`, `ScopeAnchorNotFound`, `ScopeAnchorAmbiguous`, `ScopeAnchorNotComparable`. Every matching strategy (exact, fuzzy, whitespace-normalized, EOL-normalized) is applied *inside* the slice only, `expectedCount`/`replaceAll` count only in-scope occurrences, and the response reports `editableStartLine`, `editableEndLineExclusive`, `scopeEndsAtEof` and the first match's lines. This is the case an agent hits when a part has two similar business blocks (e.g. one `Do Case` branch per database) and the intended edit must land in one of them.
