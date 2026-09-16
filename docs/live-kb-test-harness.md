@@ -206,7 +206,15 @@ alongside benchmark JSON in ignored `scratchpad/`. Compare only equivalent
 populations. Never count failed operations as fast successful samples.
 
 The benchmark stores successful response-byte p50/p95 alongside latency and
-never includes failed or skipped calls in either population. The existing Worker gate currently checks SDK type resolution only. Real
+never includes failed or skipped calls in either population.
+
+Latency runs over one keep-alive connection (`http_post` in
+`scripts/bench-live-http.py`); do not reintroduce a connection per call. A
+CPython socket operation carrying a timeout waits through `select()` on Windows,
+whose granularity is the ~15.6ms system timer, so roughly one sample in three
+used to measure the client's own connect while the gateway answered those calls
+in ~1ms. Baselines recorded before that change are not comparable and must be
+re-captured. The existing Worker gate currently checks SDK type resolution only. Real
 write/reopen persistence, pattern parity, mandatory-scenario/no-skip enforcement,
 and cold/warm baseline captures remain required by plan 074; manifests are
 optional benchmark metadata and are not required to use a local KB.

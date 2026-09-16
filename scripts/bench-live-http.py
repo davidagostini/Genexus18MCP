@@ -29,6 +29,13 @@ Latency hygiene: measure on a freshly restarted gateway. An op that exceeds the
 worker, serializing every later call behind it (every op then times out at 50s).
 If a run shows uniform ~50s timeouts, restart the gateway and re-run.
 
+Transport: every call shares one keep-alive connection (see http_post). Do not
+switch back to a connection per call: a CPython socket operation carrying a
+timeout waits through select() on Windows, whose granularity is the ~15.6ms
+system timer, so roughly one sample in three used to measure client-side connect
+instead of the server — the gateway answered those same calls in ~1ms while the
+harness reported p95 ~22ms, and relative p50/p95 gates compared that timer.
+
 Comparison mode: run with --compare <baseline.json> (the --out file of an
 earlier run) and the harness prints a per-op p50/p95 delta table plus a
 mean-delta and a >+25% p50 regression warning. Typical workflow:
@@ -38,13 +45,13 @@ mean-delta and a >+25% p50 regression warning. Typical workflow:
 """
 import argparse
 from dataclasses import dataclass
+import http.client
 import json
 import os
 import statistics
 import sys
 import time
-import urllib.request
-import urllib.error
+import urllib.parse
 
 BASE = "http://127.0.0.1:5000/mcp"
 MAX_ITERATIONS = 20
@@ -109,32 +116,96 @@ class RpcMeasurement:
         yield self.envelope
 
 
+class HttpResponse:
+    """Transport result: status, headers and the raw body bytes."""
+
+    __slots__ = ("status", "headers", "body")
+
+    def __init__(self, status, headers, body):
+        self.status = status
+        self.headers = headers
+        self.body = body
+
+
+_connection = None
+_connection_target = None
+
+
+def _endpoint(base):
+    parsed = urllib.parse.urlsplit(base)
+    return parsed.hostname or "127.0.0.1", parsed.port or 80, parsed.path or "/"
+
+
+def _close_connection():
+    global _connection, _connection_target
+    connection, _connection = _connection, None
+    _connection_target = None
+    if connection is not None:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+def http_post(payload, session_id=None, timeout=180):
+    """POST to the gateway over ONE persistent connection.
+
+    Opening a fresh TCP connection per call is not a neutral measurement here:
+    on Windows a CPython socket operation that carries a timeout waits through
+    ``select()``, whose wait granularity is the system timer, so about one call
+    in three paid ~15.6ms of client-side connect. Isolated on the same port:
+    those spikes vanish when the socket has no timeout (blocking connect p95
+    0.42ms) and never appear in a .NET client (fresh-connection HttpClient p95
+    1.59ms), while the gateway logged ~1ms per call throughout — yet the harness
+    reported p95 ~22ms, so p50/p95 gates were comparing the client's timer.
+    Reusing the connection keeps every sample on the server's cost, and
+    reconnects once when the server drops an idle socket.
+
+    Retrying is safe for this harness only: every op in the catalog is read-only
+    or a dry run, so a retry cannot persist anything.
+    """
+    global _connection, _connection_target
+    host, port, path = _endpoint(BASE)
+    target = (host, port)
+    headers = {"Accept": "application/json, text/event-stream",
+               "Content-Type": "application/json"}
+    if session_id:
+        headers["MCP-Session-Id"] = session_id
+    last_error = None
+    for _ in range(2):
+        if _connection is None or _connection_target != target:
+            _close_connection()
+            _connection = http.client.HTTPConnection(host, port, timeout=timeout)
+            _connection_target = target
+        else:
+            _connection.timeout = timeout
+            if _connection.sock is not None:
+                _connection.sock.settimeout(timeout)
+        try:
+            _connection.request("POST", path, body=payload, headers=headers)
+            response = _connection.getresponse()
+            body = response.read()
+            return HttpResponse(response.status, response.headers, body)
+        except (http.client.HTTPException, OSError) as error:
+            last_error = error
+            _close_connection()
+    raise last_error
+
+
 def rpc(session_id, method, params, timeout=180, is_notification=False):
     req_body = {"jsonrpc": "2.0", "method": method, "params": params}
     if not is_notification:
         req_body["id"] = 1
     body = json.dumps(req_body).encode()
-    req = urllib.request.Request(BASE, data=body, method="POST",
-                                 headers={
-                                     "Accept": "application/json, text/event-stream",
-                                     "Content-Type": "application/json",
-                                 })
-    if session_id:
-        req.add_header("MCP-Session-Id", session_id)
     t0 = time.perf_counter()
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw_bytes = resp.read()
-            raw = raw_bytes.decode("utf-8", errors="replace")
-            status_code = getattr(resp, "status", None)
-    except urllib.error.HTTPError as e:
-        try:
-            error_bytes = e.read()
-        except Exception:
-            error_bytes = b""
-        return RpcMeasurement((time.perf_counter() - t0) * 1000.0,
-                              {"__http_error__": e.code}, len(error_bytes), e.code)
+    response = http_post(body, session_id, timeout)
     elapsed = (time.perf_counter() - t0) * 1000.0
+    raw_bytes = response.body
+    raw = raw_bytes.decode("utf-8", errors="replace")
+    status_code = response.status
+    if isinstance(status_code, int) and status_code >= 400:
+        return RpcMeasurement(elapsed, {"__http_error__": status_code},
+                              len(raw_bytes), status_code)
     response_bytes = len(raw_bytes)
     # JSON-in-JSON: result.content[0].text holds the worker envelope
     try:
@@ -493,7 +564,7 @@ def main():
     unknown = [o for o in ops if o not in ALL_OPS]
     if unknown:
         print(f"FATAL: unknown op(s) {unknown}; catalog: {ALL_OPS}")
-        sys.exit(2)
+        return 2
 
     global BASE
     BASE = f"http://127.0.0.1:{args.port}/mcp"
@@ -502,18 +573,17 @@ def main():
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                        "params": {"protocolVersion": "2025-03-26", "capabilities": {},
                                   "clientInfo": {"name": "bench-live-http", "version": "1.0"}}}).encode()
-    req = urllib.request.Request(BASE, data=body, method="POST",
-                                 headers={"Accept": "application/json, text/event-stream",
-                                          "Content-Type": "application/json"})
     t0 = time.perf_counter()
-    session_id = None
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        session_id = resp.headers.get("MCP-Session-Id")
-        resp.read()
+    response = http_post(body, None, 30)
+    session_id = response.headers.get("MCP-Session-Id")
     el = (time.perf_counter() - t0) * 1000.0
+    if response.status >= 400:
+        print("FATAL: initialize returned HTTP " + str(response.status) + ": "
+              + response.body[:400].decode("utf-8", errors="replace"))
+        return 2
     if not session_id:
         print("FATAL: no MCP-Session-Id in initialize response")
-        sys.exit(2)
+        return 2
     print(f"initialize: {el:.0f}ms session: {session_id}")
 
     rpc(session_id, "notifications/initialized", {}, is_notification=True)
@@ -526,7 +596,7 @@ def main():
     }, timeout=240)
     if isinstance(inner, dict) and "__http_error__" in inner:
         print(f"open KB: HTTP {inner['__http_error__']}")
-        sys.exit(2)
+        return 2
     status = (inner or {}).get("status", "?")
     print(f"open KB {args.kb}: {el:.0f}ms status={status}")
 

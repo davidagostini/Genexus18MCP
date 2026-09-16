@@ -1,4 +1,5 @@
 import contextlib
+import http.client
 import importlib.util
 import io
 import json
@@ -18,8 +19,8 @@ class BenchmarkGateTests(unittest.TestCase):
     def run_main(self, measured, extra=None, operation="whoami"):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result.json"
-            response = unittest.mock.MagicMock()
-            response.__enter__.return_value.headers.get.return_value = "test-session"
+            def http_post(payload, session_id=None, timeout=180):
+                return bench.HttpResponse(200, {"MCP-Session-Id": "test-session"}, b"{}")
             calls = 0
 
             def rpc(session, method, params, **kwargs):
@@ -38,7 +39,7 @@ class BenchmarkGateTests(unittest.TestCase):
             argv = ["bench", "--ops", operation, "--iterations", "1", "--out", str(output)]
             with patch.object(bench.sys, "argv", argv + (extra or [])), \
                     patch.object(bench, "rpc", rpc), \
-                    patch.object(bench.urllib.request, "urlopen", return_value=response), \
+                    patch.object(bench, "http_post", http_post), \
                     patch.object(bench.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
                 result = bench.main()
             return result, json.loads(output.read_text()) if output.exists() else None
@@ -148,24 +149,103 @@ class BenchmarkGateTests(unittest.TestCase):
                 {"ops": {"whoami": stats}}, 25)
         self.assertIsNone(result)
 
+    def serving(self, body, status=200):
+        """Patch the transport with a canned response body (or HTTP status)."""
+        return patch.object(bench, "http_post",
+                            lambda payload, session_id=None, timeout=180:
+                            bench.HttpResponse(status, {}, body))
+
     def test_rpc_preserves_outer_error_even_with_successful_text(self):
-        response = unittest.mock.MagicMock()
         for outer in (
                 {"error": {"code": -32603}},
                 {"result": {"isError": True, "content": [{"text": '{"status":"ok"}'}]}}):
-            response.__enter__.return_value.read.return_value = json.dumps(outer).encode()
-            with patch.object(bench.urllib.request, "urlopen", return_value=response):
+            with self.serving(json.dumps(outer).encode()):
                 _, envelope = bench.rpc("s", "tools/call", {})
             self.assertFalse(bench.envelope_is_ok(envelope))
 
     def test_rpc_accepts_structured_content(self):
-        response = unittest.mock.MagicMock()
-        response.__enter__.return_value.read.return_value = b'{"result":{"structuredContent":{"status":"ok"}}}'
-        with patch.object(bench.urllib.request, "urlopen", return_value=response):
+        with self.serving(b'{"result":{"structuredContent":{"status":"ok"}}}'):
             measurement = bench.rpc("s", "tools/call", {})
             _, envelope = measurement
         self.assertTrue(bench.envelope_is_ok(envelope))
         self.assertGreater(measurement.response_bytes, 0)
+
+    def test_rpc_reports_an_http_error_status_as_an_envelope(self):
+        with self.serving(b"backend unavailable", status=503):
+            measurement = bench.rpc("s", "tools/call", {})
+            _, envelope = measurement
+        self.assertEqual({"__http_error__": 503}, envelope)
+        self.assertFalse(bench.envelope_is_ok(envelope))
+        self.assertEqual(503, measurement.status_code)
+
+    class FakeConnection:
+        """Stands in for http.client.HTTPConnection so pooling is observable."""
+
+        created = []
+        fail_first_request = False
+
+        def __init__(self, host, port, timeout=None):
+            type(self).created.append((host, port))
+            self.sock = None
+            self.timeout = timeout
+            self.requests = []
+
+        def request(self, method, path, body=None, headers=None):
+            if type(self).fail_first_request and len(type(self).created) == 1:
+                raise http.client.RemoteDisconnected("server closed the idle socket")
+            self.requests.append((method, path, headers))
+
+        def getresponse(self):
+            return type(self).FakeResponse()
+
+        def close(self):
+            pass
+
+        class FakeResponse:
+            status = 200
+            headers = {"MCP-Session-Id": "pooled"}
+
+            @staticmethod
+            def read():
+                # A full JSON-RPC envelope, exactly like the gateway's HTTP response.
+                inner = '{"status":"ok","connected":true,"kb":{}}'
+                return json.dumps({"jsonrpc": "2.0", "id": 1,
+                                   "result": {"content": [{"type": "text", "text": inner}]}}).encode()
+
+    def use_fake_connections(self, fail_first=False):
+        self.FakeConnection.created = []
+        self.FakeConnection.fail_first_request = fail_first
+        bench._close_connection()
+        self.addCleanup(bench._close_connection)
+        return patch.object(bench.http.client, "HTTPConnection", self.FakeConnection)
+
+    def test_rpc_reuses_one_persistent_connection(self):
+        with self.use_fake_connections():
+            for _ in range(3):
+                _, envelope = bench.rpc("s", "tools/call", {})
+                self.assertTrue(bench.envelope_is_ok(envelope))
+        self.assertEqual(1, len(self.FakeConnection.created),
+                        "a connection per call re-introduces the select() timer tax")
+
+    def test_rpc_reconnects_once_after_a_dropped_connection(self):
+        with self.use_fake_connections(fail_first=True):
+            _, envelope = bench.rpc("s", "tools/call", {})
+        self.assertTrue(bench.envelope_is_ok(envelope))
+        self.assertEqual(2, len(self.FakeConnection.created))
+
+    def test_rpc_surfaces_a_persistent_transport_failure(self):
+        class AlwaysFailing(self.FakeConnection):
+            def request(self, method, path, body=None, headers=None):
+                raise OSError("connection refused")
+
+        AlwaysFailing.created = []
+        bench._close_connection()
+        self.addCleanup(bench._close_connection)
+        with patch.object(bench.http.client, "HTTPConnection", AlwaysFailing):
+            with self.assertRaises(OSError):
+                bench.rpc("s", "tools/call", {})
+        self.assertEqual(2, len(AlwaysFailing.created),
+                         "a failed retry must surface the error instead of looping")
 
     def test_skipped_dry_run_fails(self):
         code, report = self.run_main({"status": "error"}, operation="edit_dryrun")
