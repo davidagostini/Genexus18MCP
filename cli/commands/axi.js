@@ -181,14 +181,26 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
 
     return await new Promise((resolve) => {
         let done = false;
+        let holdTimer = null;
+        let timeoutTimer = null;
+        let stopPromise = null;
+        let child = null;
         const finish = (result) => {
             if (done) return;
             done = true;
+            if (holdTimer) clearTimeout(holdTimer);
+            if (timeoutTimer) clearTimeout(timeoutTimer);
             resolve(result);
         };
 
+        const stopAndFinish = (result) => {
+            if (done) return;
+            if (!stopPromise) stopPromise = terminateChild(child, Math.max(1000, timeoutMs));
+            stopPromise.then(() => finish(result));
+        };
+
         try {
-            const child = spawn(gatewayExePath, ['--axi-spawn-probe'], {
+            child = spawn(gatewayExePath, ['--axi-spawn-probe'], {
                 stdio: 'ignore',
                 windowsHide: true,
                 env
@@ -209,22 +221,49 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
             });
 
             child.once('spawn', () => {
-                setTimeout(() => {
-                    try { child.kill(); } catch { }
-                    finish({ status: 'pass', detail: successDetail });
+                holdTimer = setTimeout(() => {
+                    stopAndFinish({ status: 'pass', detail: successDetail });
                 }, spawnHoldMs);
             });
 
-            setTimeout(() => {
+            timeoutTimer = setTimeout(() => {
                 if (!done) {
-                    try { child.kill(); } catch { }
-                    finish({ status: 'warn', detail: `${label} timed out; process was force-stopped.` });
+                    stopAndFinish({ status: 'warn', detail: `${label} timed out; process was force-stopped.` });
                 }
             }, timeoutMs);
         } catch (err) {
             finish({ status: 'fail', detail: `${label} threw: ${err.message}` });
         }
     });
+}
+
+function waitForChildExit(child, timeoutMs = 1000) {
+    return new Promise((resolve) => {
+        let settled = false;
+        let timer = null;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            if (typeof child.removeListener === 'function') {
+                child.removeListener('exit', finish);
+                child.removeListener('close', finish);
+            }
+            resolve();
+        };
+
+        child.once('exit', finish);
+        child.once('close', finish);
+        timer = setTimeout(finish, Math.max(0, timeoutMs));
+        if (child.exitCode !== null || child.signalCode !== null) finish();
+    });
+}
+
+function terminateChild(child, timeoutMs = 1000) {
+    if (!child || typeof child.kill !== 'function') return Promise.resolve();
+    const exited = waitForChildExit(child, timeoutMs);
+    try { child.kill(); } catch { }
+    return exited;
 }
 
 async function probeGatewaySpawn() {
@@ -2700,5 +2739,6 @@ module.exports = {
     usageEnvelope,
     operationalErrorEnvelope,
     resolveMcpSmokeTarget,
+    terminateChild,
     commandHelpMap
 };

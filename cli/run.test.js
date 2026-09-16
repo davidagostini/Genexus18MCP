@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
+const { EventEmitter } = require('node:events');
 const { Readable, Writable } = require('node:stream');
 const path = require('node:path');
 const os = require('node:os');
@@ -25,12 +26,13 @@ const {
     compareGeneXusKbAndInstallation,
     patchClientConfig
 } = require('./lib/config');
-const { handleInit, resolveMcpSmokeTarget } = require('./commands/axi');
+const { handleInit, resolveMcpSmokeTarget, terminateChild } = require('./commands/axi');
 
 const cliPath = path.join(__dirname, 'run.js');
 const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
 fs.writeFileSync(path.join(testGxPath, 'genexus.exe'), '');
 const testGatewayPath = path.join(os.tmpdir(), `genexus-mcp-test-${process.pid}`, 'GxMcp.Gateway.exe');
+const testGatewayRoot = path.dirname(testGatewayPath);
 fs.mkdirSync(path.dirname(testGatewayPath), { recursive: true });
 if (process.platform === 'win32') {
     fs.copyFileSync(process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe', testGatewayPath);
@@ -66,6 +68,7 @@ function removeTempPath(targetPath, options = {}, deps = {}) {
 test.after(() => {
     removeTempPath(testGxPath, { recursive: true, force: true });
     removeTempPath(testGatewayPath, { force: true });
+    removeTempPath(testGatewayRoot, { recursive: true, force: true });
 });
 
 function runCli(args, opts = {}) {
@@ -106,6 +109,28 @@ test('temporary cleanup retries transient Windows removal errors', () => {
         platform: 'win32',
         sleep: () => assert.fail('non-retryable cleanup errors must not sleep')
     }), permanentError);
+});
+
+test('gateway termination waits for the child exit event', async () => {
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.signalCode = null;
+    let killed = false;
+    child.kill = () => {
+        killed = true;
+        return true;
+    };
+
+    let settled = false;
+    const pending = terminateChild(child, 100).then(() => { settled = true; });
+    await Promise.resolve();
+    assert.equal(killed, true);
+    assert.equal(settled, false);
+
+    child.exitCode = 0;
+    child.emit('exit', 0, null);
+    await pending;
+    assert.equal(settled, true);
 });
 
 test('status returns structured json envelope with schema version', () => {

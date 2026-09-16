@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The Windows CLI test probe now waits for the Gateway child to exit before resolving its teardown path ([#211](https://github.com/lennix1337/Genexus18MCP/issues/211)).** This prevents the shared temporary `GxMcp.Gateway.exe` copy from remaining locked when the suite's `test.after` cleanup runs, while retaining a bounded timeout for a process that cannot be terminated.
+
 ## v3.5.3 - 2026-09-15
 
 
