@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **Local-checkout client registration guidance now stays on the checkout Gateway ([#210](https://github.com/lennix1337/Genexus18MCP/issues/210)).** The decision matrix, LLM playbook, and post-`init` help now distinguish `node cli\run.js clients add` with `GENEXUS_MCP_GATEWAY_EXE` (or `install.ps1`) from the published/npm `npx` flow, and explicitly state that `clients` and `doctor` validate without rewriting launchers.
+
 ## v3.5.3 - 2026-09-15
 
 

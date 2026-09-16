@@ -25,7 +25,7 @@ const {
     compareGeneXusKbAndInstallation,
     patchClientConfig
 } = require('./lib/config');
-const { handleInit, resolveMcpSmokeTarget } = require('./commands/axi');
+const { handleInit, resolveMcpSmokeTarget, buildClientLauncherHelp } = require('./commands/axi');
 
 const cliPath = path.join(__dirname, 'run.js');
 const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
@@ -106,6 +106,24 @@ test('temporary cleanup retries transient Windows removal errors', () => {
         platform: 'win32',
         sleep: () => assert.fail('non-retryable cleanup errors must not sleep')
     }), permanentError);
+});
+
+test('launcher help documents checkout and published package flows', () => {
+    if (process.platform !== 'win32') return;
+
+    const previousGateway = process.env.GENEXUS_MCP_GATEWAY_EXE;
+    delete process.env.GENEXUS_MCP_GATEWAY_EXE;
+    try {
+        const help = buildClientLauncherHelp({ patched: ['Antigravity'] });
+        const message = help.join('\n');
+        assert.match(message, /GENEXUS_MCP_GATEWAY_EXE=<repo>\\publish\\GxMcp\.Gateway\.exe/);
+        assert.match(message, /node cli\\run\.js clients add --clients antigravity/);
+        assert.match(message, /npx genexus-mcp@latest clients add --clients antigravity/);
+        assert.match(message, /\.\\install\.ps1/);
+    } finally {
+        if (previousGateway === undefined) delete process.env.GENEXUS_MCP_GATEWAY_EXE;
+        else process.env.GENEXUS_MCP_GATEWAY_EXE = previousGateway;
+    }
 });
 
 test('status returns structured json envelope with schema version', () => {

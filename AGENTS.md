@@ -206,12 +206,13 @@ Before creating or proposing any new script for build, installation, upgrade, or
 
 | Scenario | Recommended flow | Notes |
 |---|---|---|
-| Updated local checkout | `.\install.ps1` | Updates `config.json`, runs `build.ps1`, and registers detected clients (`init --write-clients`). Parameters: `-KBPath`, `-GeneXusPath`. |
+| Updated local checkout | `.\install.ps1` | Updates `config.json`, runs `build.ps1`, and registers clients with `clients add --all-clients`. Parameters: `-GeneXusPath`, `-SkipClientConfig` (`-KBPath` is not a root-installer parameter). |
 | Compile local checkout only | `.\build.ps1` | Regenerates `publish/` without modifying `config.json` or client registrations. |
 | Fixed-path release install / upgrade | `powershell -File scripts/install.ps1` | Downloads release `publish.zip` into fixed location. Parameters: `-Kb`, `-Gx`. |
 | npx / npm global upgrade | Run `genexus-mcp update` plan | Follow returned guidance and fully restart the AI client. |
-| Antigravity launcher pointing to stale cache | `npx genexus-mcp clients add --clients antigravity` | Re-points the launcher to current direct gateway or package cache. |
-| Post-sync validation | `npx genexus-mcp clients --format json`<br>`npx genexus-mcp doctor --mcp-smoke --format json` | Validates registration, gateway HTTP loopback, and live MCP protocol smoke. |
+| Local checkout: stale launcher | From the repository root: `$env:GENEXUS_MCP_GATEWAY_EXE='<repo>\publish\GxMcp.Gateway.exe'; node cli\run.js clients add --clients <id>` (or `.\install.ps1`) | Keeps the launcher on the checkout's Gateway. Do not use `npx genexus-mcp@latest clients add` in this flow. |
+| Packaged Antigravity launcher pointing to stale cache | `npx genexus-mcp@latest clients add --clients antigravity` | Use this only when operating from the published/npm flow, without a local `publish/` checkout. |
+| Post-sync validation | Checkout: `node cli\run.js clients --format json` and `node cli\run.js doctor --mcp-smoke --format json`<br>Package: `npx genexus-mcp clients --format json` and `npx genexus-mcp doctor --mcp-smoke --format json` | `clients` and `doctor` validate; they do not rewrite launchers. In a checkout, validate with the same CLI and `GENEXUS_MCP_GATEWAY_EXE` used for registration. |
 | Release publication | `.\release.ps1` | Only upon explicit user request. See `docs/release_protocol.md`. |
 
 ### Operational safety and side effects

@@ -1340,7 +1340,7 @@ function buildClientLauncherHelp(patchResult) {
     const help = [];
     const patched = patchResult && Array.isArray(patchResult.patched) ? patchResult.patched : [];
     if (patched.includes('Antigravity') && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
-        help.push('Antigravity uses the gateway executable bundled with this npm package when available; re-run `npx genexus-mcp@latest clients add --clients antigravity` after an upgrade if its package path is stale.');
+        help.push('For a local checkout, set `GENEXUS_MCP_GATEWAY_EXE=<repo>\\publish\\GxMcp.Gateway.exe` and run `node cli\\run.js clients add --clients antigravity` from the repository root (or run `.\\install.ps1`). For the published/npm flow, re-run `npx genexus-mcp@latest clients add --clients antigravity` when its package path is stale.');
     }
     if (patched.length > 0 && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
         help.push('Windows launcher paths may resolve under the npm cache and be blocked by AppLocker/SRP. Use scripts/install.ps1 for a stable whitelisted path.');
@@ -2700,5 +2700,6 @@ module.exports = {
     usageEnvelope,
     operationalErrorEnvelope,
     resolveMcpSmokeTarget,
+    buildClientLauncherHelp,
     commandHelpMap
 };

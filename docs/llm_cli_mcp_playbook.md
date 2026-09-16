@@ -70,9 +70,23 @@ Get-Content "$env:LOCALAPPDATA\GenexusMCP\logs\last-stdio-error.txt"
 ```
 
 It contains the UTC timestamp, exit code, and a bounded stderr tail from the gateway
-bootstrap. For Antigravity, `init` and `clients add --clients antigravity` use the
-current package's gateway executable directly when available; if `genexus-mcp clients`
-marks that path stale, re-register it with `npx genexus-mcp@latest clients add --clients antigravity`.
+bootstrap. For a local checkout, keep registration and validation on the checkout's
+Gateway:
+
+```powershell
+$env:GENEXUS_MCP_GATEWAY_EXE = (Join-Path (Get-Location) 'publish\GxMcp.Gateway.exe')
+node cli\run.js clients add --clients antigravity
+node cli\run.js clients --format json
+node cli\run.js doctor --mcp-smoke --format json
+```
+
+`.\install.ps1` performs the complete checkout update and registers all clients.
+The `clients` and `doctor` commands validate state; they do not rewrite launchers.
+Use the same checkout CLI and `GENEXUS_MCP_GATEWAY_EXE` for registration and
+validation. Running a local-checkout registration through a different `npx` CLI can
+be reported as stale because that CLI compares against its own package Gateway.
+For the published/npm flow, without a local checkout Gateway, use
+`npx genexus-mcp@latest clients add --clients antigravity` as usual.
 Do not infer an npx incompatibility or switch to a global npm install before reading
 this file.
 
