@@ -25,7 +25,53 @@ namespace GxMcp.Gateway
         string Code,
         string Diagnostic,
         DateTime AtUtc,
-        int? ExitCode);
+        int? ExitCode)
+    {
+        private static readonly HashSet<string> FatalSdkCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "GXMCP_SDK_PATH_MISSING",
+            "GXMCP_SDK_VERSION_UNDETECTED",
+            "GXMCP_SDK_VERSION_MISMATCH",
+            "GXMCP_SDK_CATALOG_MISSING",
+            "GXMCP_SDK_CATALOG_INVALID",
+            "GXMCP_SDK_MANIFEST_MISSING",
+            "GXMCP_SDK_MANIFEST_INVALID",
+            "GXMCP_SDK_ANCHOR_MISSING",
+            "GXMCP_SDK_ASSEMBLY_MISSING"
+        };
+
+        private static readonly HashSet<string> InformationalSdkCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "GXMCP_SDK_COMPATIBLE",
+            "GXMCP_SDK_LEGACY_COMPATIBLE",
+            "GXMCP_SDK_FINGERPRINT_DRIFT"
+        };
+
+        internal static bool IsFatalSdkDiagnostic(string? diagnostic)
+            => ExtractSdkCodes(diagnostic).Any(code => FatalSdkCodes.Contains(code));
+
+        internal static bool IsInformationalSdkDiagnostic(string? diagnostic)
+        {
+            var codes = ExtractSdkCodes(diagnostic).ToList();
+            return codes.Count > 0 && codes.All(code => InformationalSdkCodes.Contains(code));
+        }
+
+        internal static string ExtractCode(string? diagnostic)
+            => ExtractSdkCodes(diagnostic).FirstOrDefault() ?? "WORKER_STARTUP_FAILED";
+
+        private static IEnumerable<string> ExtractSdkCodes(string? diagnostic)
+        {
+            if (string.IsNullOrWhiteSpace(diagnostic)) yield break;
+            foreach (var line in diagnostic.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                int start = line.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase);
+                if (start < 0) continue;
+                int end = start;
+                while (end < line.Length && !char.IsWhiteSpace(line[end])) end++;
+                yield return line.Substring(start, end - start);
+            }
+        }
+    }
 
     public sealed class WorkerPool : IWorkerSupervisor
     {
@@ -281,7 +327,8 @@ namespace GxMcp.Gateway
                 worker.OnWorkerExited += (reason) =>
                 {
                     if (reason == WorkerStopReason.SdkCompatibilityRejected
-                        || !string.IsNullOrWhiteSpace(worker.StartupDiagnostic))
+                        || (!string.IsNullOrWhiteSpace(worker.StartupDiagnostic)
+                            && !WorkerStartupFailure.IsInformationalSdkDiagnostic(worker.StartupDiagnostic)))
                     {
                         RememberStartupFailure(capturedHandle, worker.StartupDiagnostic, worker.LastExitCode,
                             "Worker exited during startup.");
@@ -355,21 +402,18 @@ namespace GxMcp.Gateway
         private void RememberStartupFailure(KbHandle handle, string? workerDiagnostic, int? exitCode, string fallback)
         {
             string diagnostic = string.IsNullOrWhiteSpace(workerDiagnostic) ? fallback : workerDiagnostic!;
-            string code = ExtractDiagnosticCode(diagnostic);
-            WorkerStopReason reason = code.StartsWith("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase)
+            if (WorkerStartupFailure.IsInformationalSdkDiagnostic(diagnostic))
+            {
+                _startupFailures.TryRemove(handle.NormalizedAlias, out _);
+                return;
+            }
+
+            string code = WorkerStartupFailure.ExtractCode(diagnostic);
+            WorkerStopReason reason = WorkerStartupFailure.IsFatalSdkDiagnostic(diagnostic)
                 ? WorkerStopReason.SdkCompatibilityRejected
                 : WorkerStopReason.None;
             _startupFailures[handle.NormalizedAlias] = new WorkerStartupFailure(
                 reason, code, diagnostic, DateTime.UtcNow, exitCode);
-        }
-
-        private static string ExtractDiagnosticCode(string diagnostic)
-        {
-            int start = diagnostic.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase);
-            if (start < 0) return "WORKER_STARTUP_FAILED";
-            int end = start;
-            while (end < diagnostic.Length && !char.IsWhiteSpace(diagnostic[end])) end++;
-            return diagnostic.Substring(start, end - start);
         }
 
         /// <summary>
