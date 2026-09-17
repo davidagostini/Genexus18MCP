@@ -83,19 +83,19 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_doc` | `health` | `wiki`, `visualize` |
 | `genexus_kb` | `list`, `list_environments`, `get_environment`, `get_startup` | `open`, `close`, `select`, `set_session_default`, `set_default`, `set_persistent_default`, `set_startup`, `set_environment`, `create` |
 | `genexus_navigation` | — | `view` |
-| `genexus_api` | `list`, `describe`, `routes_inspect`, `diff_baseline` | `routes_clone`, `routes_update`, `snapshot` |
+| `genexus_api` | `list`, `describe`, `routes_inspect`, `diff_baseline`, `export_openapi`, `import_openapi` | `routes_clone`, `routes_update`, `snapshot` |
 | `genexus_apply_pattern` | `list_actions` | `add_grid_action`, `update_action`, `move_action`, `remove_action` |
 | `genexus_security` | `audit_gam`, `scan_secrets`, `scan_native` | — |
 | `genexus_sandbox` | — | `create`, `remove` |
 | `genexus_worker_pool` | — | `warm_spares` |
 | `genexus_edit_form` | — | `add_textblock`, `add_button`, `set_visibility`, `remove_control`, `wrap_in_fieldset` |
-| `genexus_module` | `list` | `install`, `install_builtin`, `update` |
+| `genexus_module` | `list` (SDK identity/path-aware, deterministic), `list_modules_servers`, `search_modules_in_servers` | `install`, `install_builtin`, `update`, `package`, `publish`, `restore`, `add_modules_server` |
 | `genexus_gxserver` | `status`, `pending`, `ignored`, `conflicts`, `history`, `pipeline_list`, `pipeline_runs`, `pipeline_output` | `commit`, `update`, `lock`, `resolve`, `pipeline_run`, `pipeline_abort` |
 | `genexus_kb_version` | `list` | `freeze`, `branch`, `set_active`, `revert` |
 | `genexus_browser` | `smoke`, `a11y`, `wcag`, `capture`, `cross`, `preview` | — |
 | `genexus_db` | `drift_check`, `drift_report`, `optimize_analyze`, `optimize_suggest`, `optimize_report`, `sql_ddl`, `sql_navigation`, `records_query`, `types_list`, `types_describe`, `types_validate`, `reorg_impact`, `reorg_preview` | `sample_data`, `records_insert`, `records_update`, `translations_import` |
 | `genexus_versioning` | `history_list`, `history_get`, `time_travel`, `blame`, `diff`, `diff_generated` | `history_save`, `history_restore`, `undo` |
-| `genexus_io` | `asset_find`, `asset_read`, `read_blob`, `ocr`, `validate_kb_text_files` | `asset_write`, `export_part`, `import_part`, `export_kb_to_text`, `import_text_to_kb`, `delete_kb_objects`, `export_unified`, `screenshot_publish` |
+| `genexus_io` | `asset_find`, `asset_read`, `read_blob`, `ocr`, `validate_kb_text_files`, `validate_text_in_memory`, `list_text_files`, `text_mirror_status` | `asset_write`, `export_part`, `import_part`, `export_kb_to_text`, `import_text_to_kb`, `text_mirror_start`, `text_mirror_stop`, `text_mirror_catchup`, `text_mirror_set_references`, `delete_kb_objects`, `export_unified`, `screenshot_publish` |
 | `genexus_variable` | — | `add`, `delete`, `modify` |
 | `genexus_telemetry` | `executions`, `watch_event`, `friction_tail`, `learning_report`, `logs`, `profile_analyze`, `profile_hotspots`, `profile_correlate` | `friction_append` |
 | `genexus_create` | `sd_panel_inspect` | `object`, `object_atomic`, `popup`, `sd_panel_create`, `sd_panel_edit`, `save_as`, `scaffold`, `translate`, `sample`, `template`, `curl_procedure` |
@@ -138,7 +138,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_format` | active | `Formatting -> Format` |
 | `genexus_properties` | active | `Property -> Get | Set | Move` |
 | `genexus_versioning` | active | Versioning umbrella: `History -> List | Get_Source | Save | Restore`, `Undo`, `TimeTravel`, `Blame`, `Diff` |
-| `genexus_io` | active | IO umbrella: `Asset -> Find | Read | Write`, Object Text batch `ExportKbToText | ImportTextToKb | ValidateKbTextFiles | DeleteKbObjects`, `Object -> ExportText | ImportText`, `Export -> Unified`, `ScreenshotPublish` |
+| `genexus_io` | active | IO umbrella: `Asset -> Find | Read | Write`, Object Text batch `ExportKbToText | ImportTextToKb | ValidateKbTextFiles | ValidateTextInMemory | ListTextInMemory | DeleteKbObjects`, native SDK tree `src/`/`ref/` with incremental modes and sectioned `part=all`/`parts[]` documents, installed reference modules/packages routed to `ref/`, module metadata (`module.toml`) and optional official packages (`.opc`) and Transaction table projections (`#tables`), filesystem controls (`listOnly | skip | stopOnError | includeChildren | ignore | forceSave | rollbackOnFailure`), manifest/hash validation, watermark mirror (`Start | Stop | Status | Catchup | SetReferences`), `Object -> ExportText | ImportText`, `Export -> Unified`, `ScreenshotPublish` |
 | `genexus_db` | active | Database umbrella: `DbDrift`, `DbOptimize`, `Analyze -> GetSQL / GetSqlForNavigation / GenerateSampleData`, typed Transaction records (`QueryRecords / InsertRecord / UpdateRecord`), `Types`, `ReorgImpact` |
 | `genexus_layout` | active | WebForm control tree, layout properties, printblock management |
 | `genexus_edit_form` | active | Semantic WebForm element manipulation |

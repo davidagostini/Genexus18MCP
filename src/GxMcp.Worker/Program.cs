@@ -438,15 +438,26 @@ namespace GxMcp.Worker
                 // Start External KB Watcher
                 // Fase 2: pass the IndexCacheService so detected changes update the in-memory
                 // index live (keeps it warm during a session); the notification callback is
-                // unchanged.
+                // unchanged. Deletions use a separate callback so mirrors can remove the
+                // corresponding textual entry immediately.
                 var watcher = new KbWatcherService(_dispatcher.GetKbService(), (name, type, time) => {
+                    _dispatcher.GetTextMirrorService()?.NotifyObjectChanged(name, type, time);
                     SendNotification("notifications/resources/updated", new {
                         name = name,
                         type = type,
                         updatedAt = time,
                         external = true
                     });
-                }, _dispatcher.GetIndexCacheService());
+                }, _dispatcher.GetIndexCacheService(), (name, type, time) => {
+                    _dispatcher.GetTextMirrorService()?.NotifyObjectDeleted(name, type, time);
+                    SendNotification("notifications/resources/updated", new {
+                        name = name,
+                        type = type,
+                        deletedAt = time,
+                        deleted = true,
+                        external = true
+                    });
+                });
                 watcher.Start();
 
                 var readerThread = new Thread(() => {
