@@ -4,6 +4,8 @@ namespace GxMcp.Gateway
 {
     partial class Program
     {
+        private static readonly object _sessionKbLeaseGate = new object();
+        private static readonly TimeSpan SessionKbLeaseTtl = TimeSpan.FromMinutes(10);
         private static readonly SessionKbContextStore _sessionKbContexts =
             new SessionKbContextStore(TimeSpan.FromMinutes(10));
 
@@ -74,8 +76,67 @@ namespace GxMcp.Gateway
             long generation = (prior?.ContextGeneration ?? 0) + 1;
             string identity = (kbId ?? string.Empty).Trim().TrimEnd('\\', '/').ToLowerInvariant();
             string canonicalAlias = CanonicalizeKbAlias(alias);
-            var lease = _kbLeases.Open(sessionId, canonicalAlias, generation, identity, "session-" + generation, TimeSpan.FromMinutes(10));
+            var lease = _kbLeases.Open(sessionId, canonicalAlias, generation, identity, "session-" + generation, SessionKbLeaseTtl);
             _sessionKbContexts.Set(sessionId, alias, canonicalAlias, lease);
+        }
+
+        /// <summary>
+        /// Keeps an explicit per-request KB argument from allowing the session
+        /// lease to go stale. A matching explicit target renews the existing
+        /// lease without changing the selected context generation. A stateful
+        /// operation targeting a different or missing context adopts that
+        /// explicit target so the normal ownership fence can validate it.
+        /// </summary>
+        internal static void RefreshSessionLeaseForExplicitKb(
+            string sessionId,
+            KbHandle resolvedKb,
+            bool requiresSessionLease)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId) || resolvedKb == null)
+                return;
+
+            string identity = NormalizeKbIdentity(resolvedKb.Path, resolvedKb.Alias);
+            string canonicalAlias = resolvedKb.NormalizedAlias;
+
+            lock (_sessionKbLeaseGate)
+            {
+                _sessionKbContexts.TryGetSnapshot(sessionId, out var snapshot);
+                if (HasMatchingActiveLease(snapshot, canonicalAlias, identity))
+                {
+                    var renewal = _kbLeases.Renew(
+                        snapshot!.Lease!.Token,
+                        snapshot.OwnerScopeId,
+                        SessionKbLeaseTtl);
+                    if (renewal.Status == KbUseLeaseOperationStatus.Success)
+                        return;
+                }
+
+                if (requiresSessionLease)
+                    SetSessionSelectedKb(sessionId, resolvedKb.Alias, identity);
+            }
+        }
+
+        private static bool HasMatchingActiveLease(
+            SessionKbContextStore.Snapshot? snapshot,
+            string canonicalAlias,
+            string identity)
+        {
+            if (snapshot?.Lease == null)
+                return false;
+
+            var lease = _kbLeases.Get(snapshot.Lease.Token);
+            return lease != null
+                && lease.State == KbUseLeaseState.Active
+                && string.Equals(lease.OwnerScopeId, snapshot.OwnerScopeId, StringComparison.Ordinal)
+                && string.Equals(lease.KbId, canonicalAlias, StringComparison.Ordinal)
+                && lease.ContextGeneration == snapshot.ContextGeneration
+                && string.Equals(lease.Identity, identity, StringComparison.Ordinal);
+        }
+
+        private static string NormalizeKbIdentity(string? path, string fallbackAlias)
+        {
+            string value = string.IsNullOrWhiteSpace(path) ? fallbackAlias : path;
+            return value.Trim().TrimEnd('\\', '/').ToLowerInvariant();
         }
 
         internal static string CanonicalizeKbAlias(string alias)

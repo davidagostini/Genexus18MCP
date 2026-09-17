@@ -303,11 +303,15 @@ namespace GxMcp.Gateway
                     try
                     {
                         string? kbArg = null;
+                        bool hasExplicitKbContext = false;
+                        bool requiresSessionLease = false;
                         if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase))
                         {
                             var paramsObj = request["params"] as JObject;
                             var argsObj = paramsObj?["arguments"] as JObject;
                             kbArg = argsObj?["kb"]?.ToString() ?? argsObj?["alias"]?.ToString();
+                            hasExplicitKbContext = !string.IsNullOrWhiteSpace(argsObj?["kb"]?.ToString());
+                            requiresSessionLease = OperationClassifier.RequiresSessionLease(toolNameForResolver, argsObj);
                             // Strip `kb` from worker-bound args (worker is single-KB scoped),
                             // but keep it for gateway-only reload so lease bypass and the
                             // explicit target remain available to the orchestrator below.
@@ -321,25 +325,31 @@ namespace GxMcp.Gateway
                             // same-named resource in another open KB is never read
                             // by fallback selection.
                             McpRouter.TryGetScopedResourceKb(request, out kbArg);
+                            hasExplicitKbContext = !string.IsNullOrWhiteSpace(kbArg);
                         }
                         string? sessionDefaultAlias = null;
                         if (sessionContextEnabled)
                         {
                             TryGetSessionSelectedKb(sessionId, out sessionDefaultAlias);
                         }
-                        _currentKb.Value = _kbResolver.Resolve(
+                        var resolvedKb = _kbResolver.Resolve(
                             kbArg,
                             _workerPool.ListOpen(),
                             _workerPool.ListKnown(),
                             sessionDefaultAlias,
                             out _);
+                        if (sessionContextEnabled && hasExplicitKbContext)
+                        {
+                            RefreshSessionLeaseForExplicitKb(sessionId, resolvedKb, requiresSessionLease);
+                        }
+                        _currentKb.Value = resolvedKb;
                         SessionKbContextStore.Snapshot? sessionSnapshot = null;
                         if (sessionContextEnabled)
                             _sessionKbContexts.TryGetSnapshot(sessionId, out sessionSnapshot);
                         _currentSessionContext.Value = sessionSnapshot;
                         var resolvedArgs = (request["params"] as JObject)?["arguments"] as JObject;
                         _currentOperationRequiresOwner.Value = !string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase)
-                            && OperationClassifier.RequiresSessionLease(toolNameForResolver ?? string.Empty, resolvedArgs);
+                            && requiresSessionLease;
                     }
                     catch (KbResolutionException ex)
                     {
