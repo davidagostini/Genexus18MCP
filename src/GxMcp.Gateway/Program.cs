@@ -134,6 +134,47 @@ namespace GxMcp.Gateway
         {
             return request["id"] == null || request["id"]!.Type == JTokenType.Null;
         }
+
+        internal static bool ShouldExitAfterStdioEof(Configuration config)
+        {
+            return config?.Server?.McpStdio == true;
+        }
+
+        private static void ShutdownAfterStdioEof(Configuration config, bool ownsLease)
+        {
+            if (System.Threading.Interlocked.Exchange(ref _stdioShutdownStarted, 1) != 0)
+                return;
+
+            Log("[Gateway] Stdio EOF received. Shutting down gateway and releasing ownership.");
+            try { _gatewayLifetime.Cancel(); } catch { }
+            try { _workerPool?.StopAll(WorkerStopReason.GatewayShutdown); }
+            catch (Exception ex) { Log("[Gateway] Worker shutdown failed: " + ex.Message); }
+            if (ownsLease)
+            {
+                try { GatewayProcessLease.ReleaseCurrentProcess(config); } catch { }
+            }
+        }
+
+        private static async Task DrainStdioRequestsAsync(IReadOnlyCollection<Task> requests)
+        {
+            if (requests == null || requests.Count == 0)
+                return;
+
+            try
+            {
+                Task allRequests = Task.WhenAll(requests);
+                Task completed = await Task.WhenAny(
+                    allRequests,
+                    Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false);
+                if (completed == allRequests)
+                    await allRequests.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Log("[Gateway] Stdio request drain failed: " + ex.Message);
+            }
+        }
+
         private sealed class PendingWorkerRequest
         {
             public TaskCompletionSource<string> CompletionSource { get; init; } = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -353,6 +394,7 @@ namespace GxMcp.Gateway
                     new ConcurrentDictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
         private static CancellationTokenSource _respawnTestCancellation = new CancellationTokenSource();
         private static bool _stdioActive;
+        private static int _stdioShutdownStarted;
         // #3: the client request that triggered a proxy→master promotion, buffered so the new
         // master can replay it once instead of dropping it across the takeover.
         private static string? _promotionReplayLine;
@@ -811,9 +853,14 @@ namespace GxMcp.Gateway
                             await StartHttpServer(config); 
                             Log("[Gateway] HTTP server bound and active.");
                             while(true) {
-                                await Task.Delay(30000);
+                                await Task.Delay(30000, _gatewayLifetime.Token);
                                 Log("[Gateway] Heartbeat: HTTP server still active.");
                             }
+                        }
+                        catch (OperationCanceledException) when (_gatewayLifetime.IsCancellationRequested)
+                        {
+                            Log("[Gateway] HTTP server stopped with gateway lifetime.");
+                            return;
                         }
                         catch (Exception exHttp) { 
                             Log($"[HTTP] Bind failure (5000): {exHttp.Message}. Attempting port recovery ({retryCount + 1}/5)...");
@@ -883,6 +930,7 @@ namespace GxMcp.Gateway
                 Log("[Gateway] Entering Stdio Loop...");
                 _stdioActive = true;
                 var reader = Console.In;
+                var pendingStdioRequests = new List<Task>();
 
                 // #3: replay the request that triggered a promotion (see RunMcpProxyAsync).
                 // It already parsed as JSON in the proxy, so process it through the normal
@@ -911,11 +959,8 @@ namespace GxMcp.Gateway
 
                     if (line == null)
                     {
-                        if (config.Server?.HttpPort > 0)
-                        {
-                            Log("Stdio closed, keeping alive for HTTP...");
-                            await Task.Delay(-1);
-                        }
+                        await DrainStdioRequestsAsync(pendingStdioRequests);
+                        ShutdownAfterStdioEof(config, useSharedLease);
                         break;
                     }
 
@@ -934,7 +979,7 @@ namespace GxMcp.Gateway
                     // _currentKb is AsyncLocal, so each dispatched request keeps its own
                     // KB routing.
                     string capturedLine = line;
-                    _ = Task.Run(async () =>
+                    Task requestTask = Task.Run(async () =>
                     {
                         JToken? capturedId = null;
                         try
@@ -991,6 +1036,9 @@ namespace GxMcp.Gateway
                             }
                         }
                     });
+                    pendingStdioRequests.Add(requestTask);
+                    if (pendingStdioRequests.Count > 100)
+                        pendingStdioRequests.RemoveAll(request => request.IsCompleted);
                 }
             }
             else if (config.Server?.HttpPort > 0)

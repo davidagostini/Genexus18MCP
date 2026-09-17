@@ -45,6 +45,36 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void StdioEof_ShouldExitEvenWhenHttpPortIsConfigured()
+        {
+            var config = CreateConfig(
+                Path.Combine(Path.GetTempPath(), "GenexusMcpTests", Guid.NewGuid().ToString("N"), "kb"),
+                Path.Combine(Path.GetTempPath(), "GenexusMcpTests", Guid.NewGuid().ToString("N"), "gx"),
+                null,
+                5513
+            );
+
+            config.Server!.McpStdio = true;
+
+            Assert.True(Program.ShouldExitAfterStdioEof(config));
+        }
+
+        [Fact]
+        public void HttpOnlyGateway_ShouldRemainLongLivedWithoutStdio()
+        {
+            var config = CreateConfig(
+                Path.Combine(Path.GetTempPath(), "GenexusMcpTests", Guid.NewGuid().ToString("N"), "kb"),
+                Path.Combine(Path.GetTempPath(), "GenexusMcpTests", Guid.NewGuid().ToString("N"), "gx"),
+                null,
+                5514
+            );
+
+            config.Server!.McpStdio = false;
+
+            Assert.False(Program.ShouldExitAfterStdioEof(config));
+        }
+
+        [Fact]
         public void TryRegisterCurrentProcess_ShouldRecoverStaleLease()
         {
             var config = CreateConfig(

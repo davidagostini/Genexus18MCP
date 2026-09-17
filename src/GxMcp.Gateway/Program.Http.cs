@@ -728,7 +728,7 @@ namespace GxMcp.Gateway
                 return Results.NoContent();
             });
 
-            return app.RunAsync();
+            return app.RunAsync(_gatewayLifetime.Token);
         }
 
         private static void TryKillProcessOnPort(int port)
