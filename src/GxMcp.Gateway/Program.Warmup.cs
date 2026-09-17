@@ -111,6 +111,10 @@ namespace GxMcp.Gateway
                         ResolveWarmupProbeObjectAsync,
                         () => Log("[Warmup] Probe object not listable yet (index still building); waiting before the first-touch warm pass."));
                 }
+                catch (OperationCanceledException) when (_gatewayLifetime.IsCancellationRequested)
+                {
+                    // Gateway shutdown cancels internal warmup work by design.
+                }
                 catch (Exception ex)
                 {
                     Log($"[IndexBootstrap] {ex.Message}");
@@ -171,6 +175,10 @@ namespace GxMcp.Gateway
                         data = "Worker warmup finished.",
                         timestamp = DateTime.UtcNow
                     });
+                }
+                catch (OperationCanceledException) when (_gatewayLifetime.IsCancellationRequested)
+                {
+                    // Gateway shutdown cancels internal warmup work by design.
                 }
                 catch (Exception ex)
                 {
@@ -418,6 +426,10 @@ namespace GxMcp.Gateway
                         (_, correlationId) => new JObject(),
                         toolName: $"gateway_warmup_{toolName}",
                         trackOperation: false);
+                }
+                catch (OperationCanceledException) when (_gatewayLifetime.IsCancellationRequested)
+                {
+                    break;
                 }
                 catch (Exception ex)
                 {

@@ -52,6 +52,7 @@
   - Target resolution now keeps build dry-runs and execution on the same plan, Specify reports real in-process exit status and suppresses only verified false not-found diagnostics, status waits honor a non-zero wait without a prior snapshot, and stalled index walks expose bounded recovery through `force=true` without discarding the certified snapshot.
   - Explicit KB selectors bypass session ownership only for that request while selected-session leases renew on use; isolated stdio gateways terminate on EOF, diagnostics distinguish compatible SDK fingerprint drift from rejection, and doctor reports fresh gateway telemetry/fallback state.
   - Normal health-loop cancellation during Gateway shutdown is no longer reported as an operational error, keeping EOF cleanup telemetry truthful.
+  - Internal warmup requests canceled by Gateway shutdown no longer become failed tool telemetry or misleading crash envelopes.
   - Transaction creation/DSL metadata, structure rollback cleanup, active-environment datastore selection, SQL navigation filter parsing, XPZ import preflight, and OpenCode `json`/`jsonc` coexistence now fail closed or preserve the requested target with structured evidence.
   - The live Gateway harness now gives cold SDK/KB startup a bounded 180-second settle window instead of reporting a false failure at the first 15-second probe.
 

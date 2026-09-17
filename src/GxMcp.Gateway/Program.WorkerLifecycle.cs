@@ -26,6 +26,12 @@ namespace GxMcp.Gateway
                     string id = kvp.Key;
                     if (_pendingRequests.TryRemove(id, out var pending))
                     {
+                        if (stopReason == WorkerStopReason.GatewayShutdown)
+                        {
+                            pending.CompletionSource.TrySetCanceled();
+                            aborted++;
+                            continue;
+                        }
                         _operationTracker.MarkFailedByRequest(id, $"Worker for KB '{kb.Alias}' crashed/exited.");
                         var errorJson = JsonConvert.SerializeObject(new
                         {
