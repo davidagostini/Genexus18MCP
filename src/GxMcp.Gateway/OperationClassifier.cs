@@ -125,7 +125,7 @@ namespace GxMcp.Gateway
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "view" }),
                 ["genexus_api"] = Contract(
-                    readOnly: new[] { "list", "describe", "routes_inspect", "diff_baseline" },
+                    readOnly: new[] { "list", "describe", "routes_inspect", "diff_baseline", "export_openapi", "import_openapi" },
                     mutating: new[] { "routes_clone", "routes_update", "snapshot" }),
                 ["genexus_apply_pattern"] = Contract(
                     readOnly: new[] { "list_actions" },
@@ -137,8 +137,8 @@ namespace GxMcp.Gateway
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "add_textblock", "add_button", "set_visibility", "remove_control", "wrap_in_fieldset" }),
                 ["genexus_module"] = Contract(
-                    readOnly: new[] { "list" },
-                    mutating: new[] { "install", "install_builtin", "update" }),
+                    readOnly: new[] { "list", "list_modules_servers", "search_modules_in_servers" },
+                    mutating: new[] { "install", "install_builtin", "update", "package", "publish", "restore", "add_modules_server" }),
                 ["genexus_gxserver"] = Contract(
                     readOnly: new[] { "status", "pending", "ignored", "conflicts", "history", "pipeline_list", "pipeline_runs", "pipeline_output" },
                     mutating: new[] { "commit", "update", "lock", "resolve", "pipeline_run", "pipeline_abort" }),
@@ -155,8 +155,8 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "history_list", "history_get", "time_travel", "blame", "diff", "diff_generated" },
                     mutating: new[] { "history_save", "history_restore", "undo" }),
                 ["genexus_io"] = Contract(
-                    readOnly: new[] { "asset_find", "asset_read", "read_blob", "ocr", "validate_kb_text_files" },
-                    mutating: new[] { "asset_write", "export_part", "import_part", "export_kb_to_text", "import_text_to_kb", "delete_kb_objects", "export_unified", "screenshot_publish" }),
+                    readOnly: new[] { "asset_find", "asset_read", "read_blob", "ocr", "validate_kb_text_files", "validate_text_in_memory", "list_text_files", "text_mirror_status" },
+                    mutating: new[] { "asset_write", "export_part", "import_part", "export_kb_to_text", "import_text_to_kb", "text_mirror_start", "text_mirror_stop", "text_mirror_catchup", "text_mirror_set_references", "delete_kb_objects", "export_unified", "screenshot_publish" }),
                 ["genexus_variable"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "add", "delete", "modify" }),

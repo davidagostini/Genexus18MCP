@@ -379,6 +379,14 @@ namespace GxMcp.Gateway
                 "- `export_kb_to_text` — export selected objects, or the full indexed KB, into deterministic `.gxtext` files plus a manifest.\n" +
                 "- `import_text_to_kb` — import that manifest; use `dryRun: true` to validate without creating or saving objects.\n" +
                 "- `validate_kb_text_files` — validate manifest files and, when the target exists, exercise the SDK import preflight.\n" +
+                "- `list_text_files` / `validate_text_in_memory` — inspect an SDK text tree under `src/`/`ref/` without opening a KB; XML is parsed safely and object headers, duplicates, manifest paths and hashes are reported.\n" +
+                "- Set `format: native` on export/import/validate to use the MCP's SDK-backed `src/`/`ref/` tree. `part: all` (or `parts: [...]`) serializes the authored textual parts into one sectioned `.gx` document; `mode: newAndModified|newOnly` avoids rewriting unchanged files using the indexed SDK version token; it does not load any GX4A DLL. Native export can emit `module.toml` with `includeModuleMetadata`, copy matching official `.opc` packages with `includeModulePackages`, and emit official SDK Transaction root-table structures under `#tables` with `includeTableProjections`; `indentString` is opt-in so the default preserves source bytes.\n" +
+                "- File-system parity options are available on batch actions: `listOnly` returns the plan without SDK/file writes, `skip` resumes a deterministic batch, `stopOnError` leaves an explicit remainder, `includeChildren` expands module/folder trees, `ignore` excludes selectors/files, `forceSave` forwards import persistence to the official writer, and multi-part native imports roll back prior part writes by default.\n" +
+                "- `text_mirror_start` — start a watermark-backed incremental mirror.\n" +
+                "- `text_mirror_stop` — stop the mirror idempotently.\n" +
+                "- `text_mirror_status` — inspect pending changes, batches, watermark, and errors.\n" +
+                "- `text_mirror_catchup` — reconcile queued changes or the full indexed KB.\n" +
+                "- `text_mirror_set_references` — enable/disable reference export. Watcher callbacks only enqueue identities; SDK reads happen on the Worker's owning STA.\n" +
                 "- `delete_kb_objects` — delete selected objects in a batch; requires `confirm: true`, and supports `dryRun: true`.\n" +
                 "- `export_unified` — export complete object envelope as a portable JSON file.\n" +
                 "- `screenshot_publish` — publish screenshot PNG into `.gx/published-screenshots`.\n" +
@@ -514,6 +522,7 @@ namespace GxMcp.Gateway
                 "Inspect HTTP procedure/API endpoints and compare their route shape with a saved baseline.\n\n" +
                 "## Actions\n" +
                 "- `list`, `describe`, `routes_inspect`, and `diff_baseline` — read endpoint metadata or compare it with a baseline.\n" +
+                "- `export_openapi` / `import_openapi` — export the current routes as OpenAPI 3 JSON or parse an OpenAPI document into a typed import blueprint; neither action mutates the KB.\n" +
                 "- `snapshot` — persist the current endpoint set as a named baseline.\n" +
                 "- `routes_clone` / `routes_update` — change API route metadata.\n\n" +
                 "The first group is read-only; `snapshot`, `routes_clone`, and `routes_update` change state. Review the endpoint diff and version token before applying route changes.\n",
@@ -541,10 +550,14 @@ namespace GxMcp.Gateway
                 "# genexus_module\n\n" +
                 "Inspect and manage modules through the GeneXus Module Manager.\n\n" +
                 "## Actions\n" +
-                "- `list` — read installed and available module metadata.\n" +
+                "- `list` — read installed Module objects from the SDK, deduplicated by GUID/EntityKey and returned with `parent`, `path`, `qualifiedName`, and description so homonymous namespaces remain distinguishable.\n" +
                 "- `install` / `install_builtin` — add a module to the KB.\n" +
-                "- `update` — update an installed module.\n\n" +
-                "Only `list` is read-only. Installation and updates can change many KB objects; review the returned plan and run an appropriate build or validation afterward.\n",
+                "- `update` / `restore` — update or restore an installed module through the SDK.\n" +
+                "- `list_modules_servers` — list configured module-server metadata without contacting remote catalogs; pass one returned name to `search_modules_in_servers` to bound network work.\n" +
+                "- `package` — create an `.opc` package from a Module and its selected environments (`confirm=true`).\n" +
+                "- `publish` — publish a package or installed Module to a configured module server (`server`, `confirm=true`).\n" +
+                "- `add_modules_server` / `search_modules_in_servers` — manage and query the SDK's configured module servers.\n\n" +
+                "`list` and `search_modules_in_servers` are read-only. The remaining actions can change the KB or external module-server state; inspect the returned result before continuing with build/validation.\n",
 
             ["genexus_gxserver"] =
                 "# genexus_gxserver\n\n" +

@@ -101,6 +101,32 @@ An explicitly configured path that does not contain `Artech.Architecture.Common.
 
 Do not add coverage exclusions merely to satisfy a floor. Add tests that execute the affected contract, run the complete command above, and confirm the current component baselines before pushing: at least 60% for Gateway and 45% for Worker when an SDK is configured. Raise each floor as its exercised surface grows; never lower it or skip tests to make a change pass.
 
+### Before every PR push
+
+The source of truth is the test suite at the commit that will be sent. For a
+new PR, first update the base and run the local integration gate:
+
+```pwsh
+git fetch --no-tags origin main
+pwsh -NoProfile -File .\scripts\integration-preflight.ps1 -BaseRef origin/main
+```
+
+For an existing PR, use the push helper. It checks for uncommitted changes,
+fetches the PR's current base branch, refuses a branch that is behind it, runs
+the operation-inventory check, all Python tests, PowerShell tests, CLI tests,
+CLI lint, and the Gateway tests. When a GeneXus SDK is installed it also runs
+the full solution tests; otherwise the Worker gate is recorded as unavailable
+and remains covered by CI's protected SDK lane. Only then does it push the exact
+`HEAD`:
+
+```pwsh
+pwsh -NoProfile -File .\scripts\pr-push.ps1 -PullRequest <number> -ForceWithLease
+```
+
+If the preflight fails, no push is attempted. Fix the reported gate, commit
+the fix, and run the helper again. This prevents a stale test baseline or
+uncommitted local state from reaching the PR.
+
 If a tool schema or description changed, update and verify the discovery golden before running coverage:
 
 ```pwsh

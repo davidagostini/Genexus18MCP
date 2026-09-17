@@ -2295,16 +2295,8 @@ namespace GxMcp.Gateway
                     // Skip caching for live-progress lifecycle reads (status/result/cancel) and logs —
                     // these must always reflect current worker state, not a stale snapshot.
                     string lcAction = tArgs?["action"]?.ToString()?.ToLowerInvariant();
-                    bool isLiveLifecycle = string.Equals(tName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
-                                           && (lcAction == "status" || lcAction == "result" || lcAction == "cancel");
-                    // genexus_gxserver reflects live server/model state — its reads
-                    // (status/pending/conflicts/history) change after a commit/update/resolve,
-                    // so a cached snapshot goes stale (an identical action=conflicts after a
-                    // resolve returned the pre-resolve count). Never cache it.
-                    bool isLiveTool = isLiveLifecycle
-                                      || string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
-                                      || string.Equals(tName, "genexus_logs", StringComparison.OrdinalIgnoreCase)
-                                      || string.Equals(tName, "genexus_gxserver", StringComparison.OrdinalIgnoreCase);
+                    // Live diagnostics and progress reads must always reflect current state.
+                    bool isLiveTool = IsLiveToolForCache(tName, lcAction);
 
                     // Scope the semantic cache by the resolved KB: the same tool+args
                     // against two different open KBs must not share envelopes (the

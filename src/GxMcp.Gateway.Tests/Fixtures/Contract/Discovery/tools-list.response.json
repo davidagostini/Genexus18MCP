@@ -108,7 +108,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Inspect HTTP procedures and native API routes. action=list|describe|routes_inspect|routes_clone|routes_update|snapshot|diff_baseline. API route writes use typed ServiceGroupSource, optimistic versioning, full snapshot, rollback and post-save reread; no lifecycle operation is implicit.",
+      "description": "Inspect HTTP procedures and native API routes. action=list|describe|routes_inspect|routes_clone|routes_update|snapshot|diff_baseline|export_openapi|import_openapi. API route writes use typed ServiceGroupSource, optimistic versioning, full snapshot, rollback and post-save reread; no lifecycle operation is implicit.",
       "inputSchema": {
         "examples": [
           {
@@ -138,7 +138,9 @@
               "routes_clone",
               "routes_update",
               "snapshot",
-              "diff_baseline"
+              "diff_baseline",
+              "export_openapi",
+              "import_openapi"
             ],
             "type": "string"
           },
@@ -148,6 +150,10 @@
           },
           "baseline": {
             "description": "Baseline name under .gx/api-baselines/ or absolute path (action=diff_baseline).",
+            "type": "string"
+          },
+          "content": {
+            "description": "Alias of spec for import_openapi.",
             "type": "string"
           },
           "dryRun": {
@@ -172,7 +178,7 @@
             "type": "string"
           },
           "pathPrefix": {
-            "description": "Folder prefix filter (action=list).",
+            "description": "Folder prefix filter (action=list/export_openapi).",
             "type": "string"
           },
           "rollbackOnFailure": {
@@ -211,12 +217,24 @@
             "description": "Source method/path prefix, e.g. inbound.",
             "type": "string"
           },
+          "spec": {
+            "description": "import_openapi: OpenAPI 3 JSON document.",
+            "type": "string"
+          },
           "target": {
             "description": "Procedure or API name (action=describe).",
             "type": "string"
           },
           "targetPrefix": {
             "description": "Target method/path prefix, e.g. reverse.",
+            "type": "string"
+          },
+          "title": {
+            "description": "export_openapi: OpenAPI info.title.",
+            "type": "string"
+          },
+          "version": {
+            "description": "export_openapi: OpenAPI info.version.",
             "type": "string"
           },
           "versionToken": {
@@ -664,7 +682,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers, and folder=<name>/module=<name> place the new object there (created in Root, then moved+verified); SDT and Transaction take optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog) | object_atomic (issue #62: all-or-nothing create/update of an object with variables[], rules[], parms[], properties{} and source in ONE validated call — pre-validates every field before the first save, composes the SDK write primitives, compensates on failure, dryRun previews, validate=true runs the inline Specify pass, update mode guards concurrent writes via expectedVersion). | curl_procedure imports a REST-consumer Procedure from a curl command through the GeneXus SDK.",
+      "description": "Creation. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object with one HTTP-verb block per object; type='Folder'/'Module' create containers; folder/module places the new object there; SDT and Transaction take optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog) | object_atomic (issue #62: all-or-nothing create/update of an object with variables[], rules[], parms[], properties{} and source in ONE validated call — pre-validates every field before the first save, composes the SDK write primitives, compensates on failure, dryRun previews, validate=true runs the inline Specify pass, update mode guards concurrent writes via expectedVersion). | curl_procedure imports a REST-consumer Procedure from a curl command through the GeneXus SDK.",
       "inputSchema": {
         "examples": [
           {
@@ -2377,7 +2395,7 @@
         ],
         "properties": {
           "action": {
-            "description": "Asset, single-part, batch Object Text, screenshot, or OCR operation.",
+            "description": "Asset, single-part, SDK text-tree, batch Object Text, screenshot, or OCR operation.",
             "enum": [
               "asset_find",
               "asset_read",
@@ -2388,6 +2406,13 @@
               "export_kb_to_text",
               "import_text_to_kb",
               "validate_kb_text_files",
+              "validate_text_in_memory",
+              "list_text_files",
+              "text_mirror_start",
+              "text_mirror_stop",
+              "text_mirror_status",
+              "text_mirror_catchup",
+              "text_mirror_set_references",
               "delete_kb_objects",
               "export_unified",
               "screenshot_publish",
@@ -2411,17 +2436,91 @@
             "description": "Object Text import/delete preview without persisting changes.",
             "type": "boolean"
           },
+          "enabled": {
+            "description": "text_mirror_set_references: enable/disable reference export.",
+            "type": "boolean"
+          },
+          "forceSave": {
+            "description": "text import: force the official WriteService persistence path even when the content is unchanged.",
+            "type": "boolean"
+          },
+          "format": {
+            "description": "Object Text export/import format. legacy preserves .gxtext compatibility; native creates the SDK text tree under src/ and ref/ without GX4A DLLs.",
+            "enum": [
+              "legacy",
+              "native"
+            ],
+            "type": "string"
+          },
+          "full": {
+            "description": "text_mirror_catchup: reconcile the complete indexed KB instead of only queued changes.",
+            "type": "boolean"
+          },
+          "ignore": {
+            "description": "list_text_files/validate_text_in_memory: relative file or directory prefixes to ignore; batch KB actions also accept object selectors.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "importMissingReferences": {
+            "description": "native import: include reference/dependency files when importing a tree.",
+            "type": "boolean"
+          },
           "includeBase64": {
             "description": "include Base64 response",
+            "type": "boolean"
+          },
+          "includeChildren": {
+            "default": true,
+            "description": "filesystem parity: recurse into child directories or expand Module/Folder selectors recursively; default true.",
             "type": "boolean"
           },
           "includeContent": {
             "description": "asset_find: inline file content.",
             "type": "boolean"
           },
+          "includeDependencies": {
+            "description": "native export/import: include Calls/Tables dependency closure under ref/.",
+            "type": "boolean"
+          },
+          "includeModuleMetadata": {
+            "default": true,
+            "description": "native export: emit deterministic module.toml metadata for modules represented in src/ref; no package DLL is loaded.",
+            "type": "boolean"
+          },
+          "includeModulePackages": {
+            "description": "native export: copy matching official .opc reference packages from the selected GeneXus installation into ref/; defaults to includeDependencies and never copies DLLs.",
+            "type": "boolean"
+          },
+          "includeReferences": {
+            "description": "Alias of includeDependencies for native src/ref exchange.",
+            "type": "boolean"
+          },
+          "includeTableProjections": {
+            "description": "native export: emit official SDK Table structures under src/#tables for selected Transactions; opt-in because tables may be shared/derived.",
+            "type": "boolean"
+          },
+          "includeVisualParts": {
+            "description": "native export/import: include WebForm/Layout companions (.web.xml or .report.xml).",
+            "type": "boolean"
+          },
+          "indentString": {
+            "description": "native export: optional prefix applied to non-empty source lines inside the object body; omitted preserves source indentation.",
+            "type": "string"
+          },
+          "initialSync": {
+            "description": "text_mirror_start: schedule a full catch-up immediately after start.",
+            "type": "boolean"
+          },
           "inputPath": {
             "description": "import_part: source file; import_text_to_kb/validate_kb_text_files: manifest or directory.",
             "type": "string"
+          },
+          "intervalMs": {
+            "description": "text_mirror_start: debounce/poll interval in milliseconds (250-600000).",
+            "minimum": 250,
+            "type": "integer"
           },
           "kb": {
             "description": "KB alias.",
@@ -2431,9 +2530,22 @@
             "description": "asset_find/Object Text: max results.",
             "type": "integer"
           },
+          "listOnly": {
+            "description": "filesystem parity: return the resolved plan without reading the SDK, writing files or mutating the KB.",
+            "type": "boolean"
+          },
           "maxBytes": {
             "description": "inline limit",
             "type": "integer"
+          },
+          "mode": {
+            "description": "native export mode. all writes every selected object; newAndModified uses the SDK/index version token; newOnly keeps existing files.",
+            "enum": [
+              "all",
+              "newAndModified",
+              "newOnly"
+            ],
+            "type": "string"
           },
           "module": {
             "description": "Object Text module filter.",
@@ -2452,8 +2564,15 @@
             "type": "boolean"
           },
           "part": {
-            "description": "Object Text or part-exchange part name (e.g. Source, Rules, WebForm).",
+            "description": "Object Text or part-exchange part name (e.g. Source, Rules, WebForm). For native format, part=all serializes authored textual parts into one sectioned .gx document.",
             "type": "string"
+          },
+          "parts": {
+            "description": "native export: explicit authored parts to include in one sectioned .gx document; part=all uses the safe default part set.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "path": {
             "description": "asset/screenshot_publish/ocr: file path; Object Text import/validate may use a manifest directory.",
@@ -2470,6 +2589,20 @@
           "relativeRoot": {
             "description": "asset_find: root for relative paths.",
             "type": "string"
+          },
+          "rollbackOnFailure": {
+            "default": true,
+            "description": "native multi-part import: restore parts already written when a later SDK part write fails; reports reconciliationRequired if a prior snapshot cannot be read or restored.",
+            "type": "boolean"
+          },
+          "skip": {
+            "description": "filesystem parity: skip this many deterministic planned items before processing; useful for resuming a large batch.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stopOnError": {
+            "description": "filesystem parity: stop after the first item-level error and report remaining work for a safe resume.",
+            "type": "boolean"
           },
           "targets": {
             "description": "Object Text selector array. Items may be names or {name,type} objects. Omit for export_kb_to_text to export the full indexed KB.",
@@ -3384,7 +3517,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "GeneXus Module Manager over the SDK's IModuleManagerService. action=list (read-only: installed Module KB objects) | install (opcFile=<path to .opc file>, or name[+version] to install a named module) | install_builtin (name=<built-in module>) | update (name+version).",
+      "description": "GeneXus Module Manager over the SDK's IModuleManagerService. action=list (read-only: installed Module KB objects) | install (opcFile=<path to .opc file>, or name[+version] to install a named module) | install_builtin (name=<built-in module>) | update (name+version) | package/publish/restore (module lifecycle) | add_modules_server/search_modules_in_servers (configured module servers).",
       "inputSchema": {
         "examples": [
           {
@@ -3402,8 +3535,22 @@
               "install",
               "install_builtin",
               "update",
-              "list"
+              "list",
+              "package",
+              "publish",
+              "restore",
+              "list_modules_servers",
+              "add_modules_server",
+              "search_modules_in_servers"
             ],
+            "type": "string"
+          },
+          "confirm": {
+            "description": "Required for restore/publish/package when the operation changes KB or publishes externally.",
+            "type": "boolean"
+          },
+          "filter": {
+            "description": "search_modules_in_servers: module name/version filter.",
             "type": "string"
           },
           "kb": {
@@ -3416,6 +3563,40 @@
           },
           "opcFile": {
             "description": "install: absolute path to a .opc module package file.",
+            "type": "string"
+          },
+          "outputDirectory": {
+            "description": "Alias of outputPath for package.",
+            "type": "string"
+          },
+          "outputPath": {
+            "description": "package: output directory; publish: output .opc file.",
+            "type": "string"
+          },
+          "preserveConfiguration": {
+            "description": "add_modules_server: preserve the existing server configuration when supported.",
+            "type": "boolean"
+          },
+          "rebuild": {
+            "description": "package: include a rebuild before packaging.",
+            "type": "boolean"
+          },
+          "server": {
+            "description": "restore/search_modules_in_servers: configured module server name.",
+            "type": "string"
+          },
+          "serverType": {
+            "description": "add_modules_server: native ServerType.",
+            "enum": [
+              "Directory",
+              "Nexus",
+              "NexusNuGet",
+              "ModuleServer"
+            ],
+            "type": "string"
+          },
+          "source": {
+            "description": "add_modules_server: server URL or directory source.",
             "type": "string"
           },
           "version": {

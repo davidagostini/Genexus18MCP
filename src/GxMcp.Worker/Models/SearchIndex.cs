@@ -209,6 +209,18 @@ namespace GxMcp.Worker.Models
         }
 
         /// <summary>
+        /// Finds a cached object by its native EntityKey. The watcher uses this
+        /// read-only fallback when the SDK no longer returns an object for a key,
+        /// so a deletion can be mirrored without guessing from a bare name.
+        /// </summary>
+        public IndexEntry FindByEntityKey(string entityKey)
+        {
+            if (string.IsNullOrWhiteSpace(entityKey) || Objects == null) return null;
+            string trimmed = entityKey.Trim();
+            return Objects.Values.FirstOrDefault(e => e != null && string.Equals(e.EntityKey, trimmed, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
         /// Checks whether any object with the given name exists.
         /// </summary>
         public bool ContainsName(string name)
