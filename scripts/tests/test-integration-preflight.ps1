@@ -20,7 +20,15 @@ foreach ($requiredText in @(
     '--no-restore',
     "'-m:1'",
     'validate-tool-contracts.py',
+    'generate-operation-contract-inventory.py',
+    'operation-contract-inventory',
+    'Python script tests',
+    "'test_*.py'",
     'run-release-script-tests.ps1',
+    'Resolve-LocalGeneXusSdkPath',
+    'GxMcp.Gateway.Tests',
+    'Worker tests',
+    'GeneXus SDK is not installed locally',
     'npm.cmd',
     '$ValidateOnly'
 )) {
