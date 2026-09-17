@@ -864,8 +864,8 @@ namespace GxMcp.Worker.Services
                 .ToList();
             var originalSet = new HashSet<string>(originalList, StringComparer.OrdinalIgnoreCase);
 
-            SearchIndex index = _indexCacheService?.TryGetLoadedIndex();
-            plan.TargetResolutionAvailable = _indexCacheService == null || index != null;
+            var index = _indexCacheService?.TryGetLoadedIndex();
+            plan.TargetResolutionAvailable = index != null;
             if (index != null)
             {
                 foreach (var target in originalList)
@@ -1352,7 +1352,7 @@ namespace GxMcp.Worker.Services
                             message: "One or more build targets resolve to multiple typed GeneXus objects.",
                             extra: new JObject { ["targets"] = JArray.FromObject(plan.AmbiguousTargets) });
                     }
-                    if (plan.TargetResolutionAvailable && plan.UnresolvedTargets.Count > 0)
+                    if (plan.UnresolvedTargets.Count > 0)
                     {
                         return McpResponse.Err(
                             code: "BuildTargetUnresolved",
@@ -1364,7 +1364,8 @@ namespace GxMcp.Worker.Services
                                 ["targets"] = JArray.FromObject(plan.UnresolvedTargets),
                                 ["supportedTargetFormats"] = new JArray("unique object name", "Type:Name", "GUID"),
                                 ["targetResolutionAvailable"] = plan.TargetResolutionAvailable
-                            });
+                            }
+                            );
                     }
                     targets = plan.Expanded;
                 }
@@ -1378,7 +1379,7 @@ namespace GxMcp.Worker.Services
                             ["wouldBuild"] = new JArray(targets.ToArray()),
                             ["includeCallees"] = includeCallees ?? "transitive",
                             ["buildPlanCap"] = buildPlanCap,
-                            ["targetResolutionAvailable"] = plan?.TargetResolutionAvailable
+                            ["targetResolutionAvailable"] = plan?.TargetResolutionAvailable ?? false
                         }
                     });
             }
