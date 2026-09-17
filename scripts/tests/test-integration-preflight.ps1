@@ -12,6 +12,7 @@ foreach ($requiredText in @(
     'tool_definitions',
     'tools-list.response.json',
     'CHANGELOG.md',
+    'AllowEmptyCollection',
     'ReadToEndAsync',
     'Kill($true)',
     'Get-Command $resolvedExecutable',

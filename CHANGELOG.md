@@ -48,6 +48,8 @@
 
 ### Fixed
 
+- **The integration preflight accepts a clean worktree.** Its changed-path validation now permits an empty path collection, so `-ValidateOnly` and clean-check invocations fail only on actual validation errors.
+
 - **Hardened the open unlabeled issue paths for build, lifecycle, SDK compatibility, KB routing, transfers, structure DSL, and CLI configuration.**
   - Target resolution now keeps build dry-runs and execution on the same plan, Specify reports real in-process exit status and suppresses only verified false not-found diagnostics, status waits honor a non-zero wait without a prior snapshot, and stalled index walks expose bounded recovery through `force=true` without discarding the certified snapshot.
   - Explicit KB selectors bypass session ownership only for that request while selected-session leases renew on use; isolated stdio gateways terminate on EOF, diagnostics distinguish compatible SDK fingerprint drift from rejection, and doctor reports fresh gateway telemetry/fallback state.

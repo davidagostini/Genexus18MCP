@@ -79,7 +79,11 @@ function Get-ChangedPaths {
 }
 
 function Test-ChangedSet {
-    param([Parameter(Mandatory = $true)][string[]]$Paths)
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$Paths
+    )
 
     foreach ($path in $Paths) {
         $fullPath = Join-Path $root $path
