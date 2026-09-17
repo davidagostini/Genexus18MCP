@@ -528,6 +528,18 @@ The installer writes a `config.json` for you. To customize networking, timeouts,
 
 `genexus_doc` keeps generated files outside the Worker installation so an update does not strand them in the install backup. By default the root is `%LOCALAPPDATA%\GxMcp\Artifacts`; each KB gets a stable `kb-<identity>` directory with `docs` and `html` children. Set `Server.ArtifactOutputDirectory` to choose another root; the per-KB child is still added. `GXMCP_ARTIFACT_OUTPUT_DIR` is the equivalent override for a directly launched Worker. Wiki responses report `result.file`; visualizer responses report `result.url`; both also report `result.outputDirectory`. Visualizer and health consume the active KB's canonical `IndexCacheService` snapshot, not a shared install-relative cache.
 
+### File exchange safety
+
+MCP arguments that name a local file are resolved from the active KB when they
+are relative, and are accepted only below the active KB or the configured
+GeneXus installation. This applies to Object Text/part exchange, XPZ transfer,
+API baselines, and profiler XML. For a deliberate staging directory, set
+`GXMCP_EXTERNAL_IO_ROOT` in the Gateway environment; the Worker inherits it.
+Quoted Windows paths, spaces, environment variables, and both slash styles are
+normalized before the containment check. Traversal and absolute paths outside
+the configured roots fail with `PathOutsideAllowedRoots` and do not reach the
+SDK or filesystem operation.
+
 ### Working with multiple KBs
 
 Once you declare more than one KB in `Environment.KBs[]`, every tool accepts an optional `kb` argument:

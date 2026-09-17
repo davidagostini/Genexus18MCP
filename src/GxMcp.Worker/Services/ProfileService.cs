@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Xml.Linq;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Utils;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -30,6 +31,18 @@ namespace GxMcp.Worker.Services
         // Attribute names that look like call/sample counts.
         private static readonly string[] CountAttrs = { "callCount", "calls", "sampleCount", "samples", "hits", "count" };
 
+        private readonly UserFilePathPolicy _filePathPolicy;
+
+        public ProfileService()
+            : this(new UserFilePathPolicy(() => Environment.GetEnvironmentVariable("GX_KB_PATH")))
+        {
+        }
+
+        internal ProfileService(UserFilePathPolicy filePathPolicy)
+        {
+            _filePathPolicy = filePathPolicy ?? throw new ArgumentNullException(nameof(filePathPolicy));
+        }
+
         public string Run(JObject args)
         {
             try
@@ -37,11 +50,15 @@ namespace GxMcp.Worker.Services
                 string action = args?["action"]?.ToString()?.ToLowerInvariant();
                 if (string.IsNullOrEmpty(action))
                     return Err("InvalidAction", "action is required (analyze|hotspots|correlate).");
-                string path = args?["path"]?.ToString();
-                if (string.IsNullOrWhiteSpace(path))
+                string requestedPath = args?["path"]?.ToString();
+                if (string.IsNullOrWhiteSpace(requestedPath))
                     return Err("MissingPath", "path is required (filesystem path to a GeneXus profile XML).");
+                string pathError;
+                string path;
+                if (!_filePathPolicy.TryResolveReadPath(requestedPath, out path, out pathError))
+                    return Err("PathOutsideAllowedRoots", pathError + " Use GXMCP_EXTERNAL_IO_ROOT for a deliberate profile exchange directory.");
                 if (!File.Exists(path))
-                    return Err("FileNotFound", "path does not exist: " + path);
+                    return Err("FileNotFound", "path does not exist: " + requestedPath);
 
                 XDocument doc;
                 try { doc = XDocument.Load(path); }

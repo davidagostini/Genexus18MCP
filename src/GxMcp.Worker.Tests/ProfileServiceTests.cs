@@ -1,6 +1,7 @@
 using System.IO;
 using System.Linq;
 using GxMcp.Worker.Services;
+using GxMcp.Worker.Utils;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -11,6 +12,9 @@ namespace GxMcp.Worker.Tests
     // so a future GX-version change doesn't crash the tool.
     public class ProfileServiceTests
     {
+        private static ProfileService Service() =>
+            new ProfileService(new UserFilePathPolicy(() => Path.GetTempPath()));
+
         private static string WriteFixture(string xml)
         {
             string path = Path.Combine(Path.GetTempPath(), "gxprofile_" + System.Guid.NewGuid().ToString("N") + ".xml");
@@ -21,7 +25,7 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void Run_MissingAction_ReturnsInvalidActionEnvelope()
         {
-            var svc = new ProfileService();
+            var svc = Service();
             var obj = JObject.Parse(svc.Run(new JObject { ["path"] = "x" }));
             Assert.Equal("error", obj["status"]?.ToString());
             Assert.Equal("InvalidAction", obj["error"]?["code"]?.ToString());
@@ -30,11 +34,11 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void Run_FileNotFound_ReturnsFileNotFoundEnvelope()
         {
-            var svc = new ProfileService();
+            var svc = Service();
             var obj = JObject.Parse(svc.Run(new JObject
             {
                 ["action"] = "analyze",
-                ["path"] = @"C:\does\not\exist\nope.xml"
+                ["path"] = Path.Combine(Path.GetTempPath(), "does-not-exist", "nope.xml")
             }));
             Assert.Equal("error", obj["status"]?.ToString());
             Assert.Equal("FileNotFound", obj["error"]?["code"]?.ToString());
@@ -52,7 +56,7 @@ namespace GxMcp.Worker.Tests
             string path = WriteFixture(xml);
             try
             {
-                var svc = new ProfileService();
+            var svc = Service();
                 var obj = JObject.Parse(svc.Run(new JObject
                 {
                     ["action"] = "analyze",
@@ -80,7 +84,7 @@ namespace GxMcp.Worker.Tests
             string path = WriteFixture(xml);
             try
             {
-                var svc = new ProfileService();
+                var svc = Service();
                 var obj = JObject.Parse(svc.Run(new JObject
                 {
                     ["action"] = "analyze",
@@ -105,7 +109,7 @@ namespace GxMcp.Worker.Tests
             string path = WriteFixture(xml);
             try
             {
-                var svc = new ProfileService();
+                var svc = Service();
                 var obj = JObject.Parse(svc.Run(new JObject
                 {
                     ["action"] = "hotspots",
@@ -133,7 +137,7 @@ namespace GxMcp.Worker.Tests
             string path = WriteFixture(xml);
             try
             {
-                var svc = new ProfileService();
+                var svc = Service();
                 var obj = JObject.Parse(svc.Run(new JObject
                 {
                     ["action"] = "correlate",

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { GxFileSystemProvider } from "../gxFileSystem";
 import { GxUriParser } from "../utils/GxUriParser";
+import { escapeHtml } from "../utils/htmlEscape";
 
 export class IndexView {
   private static panels = new Map<string, vscode.WebviewPanel>();
@@ -86,7 +87,7 @@ export class IndexView {
         </style>
       </head>
       <body>
-        <div class="toolbar">Indexes for ${objName}</div>
+        <div class="toolbar">Indexes for ${escapeHtml(objName)}</div>
         <div class="table-container">
           <div id="content">Loading Indexes...</div>
         </div>

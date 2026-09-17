@@ -364,6 +364,12 @@ namespace GxMcp.Gateway
                 return Path.GetFullPath(configPath);
             }
 
+            string? environmentPath = Environment.GetEnvironmentVariable("GXMCP_SDK_PATH");
+            if (!string.IsNullOrWhiteSpace(environmentPath) && Directory.Exists(environmentPath.Trim()))
+            {
+                return Path.GetFullPath(environmentPath.Trim());
+            }
+
             string primaryPath = GeneXusVersionCatalog.PrimaryInstallPath;
             if (Directory.Exists(primaryPath))
             {

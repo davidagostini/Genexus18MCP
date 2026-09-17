@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Xml.Linq;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Utils;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -27,11 +28,13 @@ namespace GxMcp.Worker.Services
 
         private readonly ObjectService _objectService;
         private readonly IndexCacheService _indexCacheService;
+        private readonly UserFilePathPolicy _filePathPolicy;
 
         public ObjectTextService(ObjectService objectService, IndexCacheService indexCacheService)
         {
             _objectService = objectService;
             _indexCacheService = indexCacheService;
+            _filePathPolicy = new UserFilePathPolicy(() => _objectService?.GetActiveKbPathForFilePolicy());
         }
 
         public string Execute(string action, string target, JObject args, CancellationToken cancellationToken)
@@ -68,8 +71,9 @@ namespace GxMcp.Worker.Services
                 return McpResponse.Err(code: "OutputPathRequired", message: "outputPath is required for a KB Object Text export.", hint: "Provide a directory where the .gxtext files and manifest will be written.");
 
             string root;
-            try { root = Path.GetFullPath(outputPath); }
-            catch (Exception ex) { return McpResponse.Err(code: "InvalidOutputPath", message: ex.Message, target: outputPath); }
+            string pathError;
+            if (!_filePathPolicy.TryResolveWritePath(outputPath, out root, out pathError))
+                return McpResponse.Err(code: "PathOutsideAllowedRoots", message: pathError, hint: "Use a path under the active KB, the configured GeneXus installation, or set GXMCP_EXTERNAL_IO_ROOT for an explicit exchange directory.", target: outputPath);
 
             bool overwrite = args["overwrite"]?.ToObject<bool?>() ?? false;
             List<SearchIndex.IndexEntry> entries;
@@ -520,8 +524,12 @@ namespace GxMcp.Worker.Services
             files = new List<TextFileEntry>();
             error = null;
             string full;
-            try { full = Path.GetFullPath(inputPath); }
-            catch (Exception ex) { error = ex.Message; return false; }
+            string pathError;
+            if (!_filePathPolicy.TryResolveReadPath(inputPath, out full, out pathError))
+            {
+                error = pathError;
+                return false;
+            }
 
             string manifestPath = null;
             if (Directory.Exists(full))

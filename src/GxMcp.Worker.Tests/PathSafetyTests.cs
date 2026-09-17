@@ -146,5 +146,65 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal("file.txt", rel);
         }
+
+        [Fact]
+        public void UserFilePathPolicy_RelativePath_IsAnchoredAtActiveKb()
+        {
+            string kb = NewRoot();
+            var policy = new UserFilePathPolicy(() => kb, baseDirectory: NewRoot());
+
+            bool ok = policy.TryResolveWritePath(@"""exports\with spaces\file.txt""", out string fullPath, out string error);
+
+            Assert.True(ok, error);
+            Assert.Equal(Path.GetFullPath(Path.Combine(kb, "exports", "with spaces", "file.txt")), fullPath);
+        }
+
+        [Fact]
+        public void UserFilePathPolicy_Traversal_IsRejected()
+        {
+            string kb = NewRoot();
+            var policy = new UserFilePathPolicy(() => kb);
+
+            bool ok = policy.TryResolveReadPath(Path.Combine("..", "outside.txt"), out _, out string error);
+
+            Assert.False(ok);
+            Assert.Contains("configured file roots", error);
+        }
+
+        [Fact]
+        public void UserFilePathPolicy_ExplicitExternalRoot_IsOptIn()
+        {
+            string kb = NewRoot();
+            string external = NewRoot();
+            var policy = new UserFilePathPolicy(() => kb);
+            string prior = Environment.GetEnvironmentVariable(UserFilePathPolicy.ExternalRootEnvironmentVariable);
+            try
+            {
+                Environment.SetEnvironmentVariable(UserFilePathPolicy.ExternalRootEnvironmentVariable, external);
+
+                bool ok = policy.TryResolveWritePath(Path.Combine(external, "exchange.xpz"), out string fullPath, out string error);
+
+                Assert.True(ok, error);
+                Assert.Equal(Path.GetFullPath(Path.Combine(external, "exchange.xpz")), fullPath);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(UserFilePathPolicy.ExternalRootEnvironmentVariable, prior);
+            }
+        }
+
+        [Fact]
+        public void UserFilePathPolicy_OutsideRoot_IsRejectedWithDiagnostics()
+        {
+            string kb = NewRoot();
+            string outside = Path.Combine(Path.GetTempPath(), "gxmcp-policy-outside-" + Guid.NewGuid().ToString("N"), "file.txt");
+            var policy = new UserFilePathPolicy(() => kb);
+
+            bool ok = policy.TryResolveWritePath(outside, out string resolved, out string error);
+
+            Assert.False(ok);
+            Assert.Equal(Path.GetFullPath(outside), resolved);
+            Assert.Contains(Path.GetFullPath(kb), error, StringComparison.OrdinalIgnoreCase);
+        }
     }
 }

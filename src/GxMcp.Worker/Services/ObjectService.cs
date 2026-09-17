@@ -15,6 +15,7 @@ using Artech.Genexus.Common.Parts;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Utils;
 
 namespace GxMcp.Worker.Services
 {
@@ -102,11 +103,18 @@ namespace GxMcp.Worker.Services
         private UIService _uiService;
         private PatternAnalysisService _patternAnalysisService;
         private WriteService _writeService;
+        private readonly UserFilePathPolicy _filePathPolicy;
 
         public ObjectService(KbService kbService, BuildService buildService)
         {
             _kbService = kbService;
             _buildService = buildService;
+            _filePathPolicy = new UserFilePathPolicy(() => _kbService?.GetKbPath());
+        }
+
+        internal string GetActiveKbPathForFilePolicy()
+        {
+            try { return _kbService?.GetKbPath(); } catch { return null; }
         }
 
         public void SetDataInsightService(DataInsightService ds) { _dataInsightService = ds; }
@@ -3986,7 +3994,9 @@ namespace GxMcp.Worker.Services
                 string sha256;
                 if (!string.IsNullOrWhiteSpace(outputPath))
                 {
-                    fullPath = Path.GetFullPath(outputPath);
+                    string pathError;
+                    if (!_filePathPolicy.TryResolveWritePath(outputPath, out fullPath, out pathError))
+                        return McpResponse.Err(code: "PathOutsideAllowedRoots", message: pathError, hint: "Use a path under the active KB, the configured GeneXus installation, or set GXMCP_EXTERNAL_IO_ROOT for an explicit exchange directory.", target: outputPath);
                     if (File.Exists(fullPath) && !overwrite)
                         return McpResponse.Err(code: "FileAlreadyExists", message: "Output file already exists. Set overwrite=true to replace it.", hint: "Pass overwrite=true to replace the existing file.", target: fullPath);
 
@@ -4154,11 +4164,10 @@ namespace GxMcp.Worker.Services
                         target: target);
                 }
 
-                // NOTE (path-safety consolidation): `outputPath` is intentionally NOT gated to the
-                // KB root — export_part is designed to write anywhere on disk the caller chooses
-                // (tool_definitions.json example: outputPath="C:\\tmp\\Customer.gxp"). There is no
-                // "root" here to check containment against, so PathSafety doesn't apply.
-                string fullPath = Path.GetFullPath(outputPath);
+                string fullPath;
+                string pathError;
+                if (!_filePathPolicy.TryResolveWritePath(outputPath, out fullPath, out pathError))
+                    return McpResponse.Err(code: "PathOutsideAllowedRoots", message: pathError, hint: "Use a path under the active KB, the configured GeneXus installation, or set GXMCP_EXTERNAL_IO_ROOT for an explicit exchange directory.", target: outputPath);
                 string directory = Path.GetDirectoryName(fullPath);
                 if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
                     Directory.CreateDirectory(directory);
@@ -4190,11 +4199,21 @@ namespace GxMcp.Worker.Services
                 if (string.IsNullOrWhiteSpace(inputPath))
                     return McpResponse.Err(code: "InputPathRequired", message: "Input path is required.", hint: "Provide a valid inputPath.", target: target);
 
-                // NOTE (path-safety consolidation): `inputPath` is intentionally NOT gated to the
-                // KB root either — import_part reads a text file from wherever the caller points it
-                // (the export/import pair is designed to round-trip through an arbitrary filesystem
-                // location). No "root" to check containment against.
-                string fullPath = Path.GetFullPath(inputPath);
+                // Preserve the no-type-filter lookup contract: when there is no
+                // loaded object, do not inspect a caller-supplied file just to
+                // produce the same ObjectNotFound response.
+                if (string.IsNullOrWhiteSpace(typeFilter) && FindObject(target, typeFilter) == null)
+                    return McpResponse.Err(
+                        code: "ObjectNotFound",
+                        message: "Object not found. Provide 'type' to create it before importing.",
+                        hint: "Pass typeFilter so the import can auto-create the object if missing.",
+                        nextSteps: new JArray(McpResponse.NextStep("genexus_create_object", new JObject { ["name"] = target }, "Create the object first, then retry the import.")),
+                        target: target);
+
+                string fullPath;
+                string pathError;
+                if (!_filePathPolicy.TryResolveReadPath(inputPath, out fullPath, out pathError))
+                    return McpResponse.Err(code: "PathOutsideAllowedRoots", message: pathError, hint: "Use a path under the active KB, the configured GeneXus installation, or set GXMCP_EXTERNAL_IO_ROOT for an explicit exchange directory.", target: inputPath);
                 if (!File.Exists(fullPath))
                     return McpResponse.Err(code: "InputFileNotFound", message: "Input file not found.", hint: "Verify the inputPath points to an existing file.", target: fullPath);
 

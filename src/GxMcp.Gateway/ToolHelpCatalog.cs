@@ -373,10 +373,10 @@ namespace GxMcp.Gateway
                 "- `asset_read` — read asset file content (text or binary bytes up to `maxBytes`).\n" +
                 "- `asset_write` — write or update asset files using `contentBase64`.\n" +
                 "- `read_blob` — read the real bytes of a `WikiFileKBObject`/`WikiBlobPart`; returns Base64 inline or exports atomically to `outputPath` with byte count and SHA-256. `overwrite=true` replaces an existing file; false returns `FileAlreadyExists`. A post-promotion verification failure returns `BlobVerificationFailed` with reconciliation metadata.\n" +
-                "- `export_part` — export a single object part (e.g. Source, Rules) to an external file.\n" +
-                "- `import_part` — import object part content from a file.\n" +
+                "- `export_part` — export a single object part (e.g. Source, Rules) to a file under the active KB, configured GeneXus installation, or the explicit `GXMCP_EXTERNAL_IO_ROOT`.\n" +
+                "- `import_part` — import object part content from a file under an allowed file root.\n" +
                 "- `export_kb_to_text` — export selected objects, or the full indexed KB, into deterministic `.gxtext` files plus a manifest.\n" +
-                "- `import_text_to_kb` — import that manifest; use `dryRun: true` to validate without creating or saving objects.\n" +
+                "- `import_text_to_kb` — import that manifest; use `dryRun: true` to validate without creating or saving objects. File paths are restricted to configured roots; set `GXMCP_EXTERNAL_IO_ROOT` for a deliberate staging directory.\n" +
                 "- `validate_kb_text_files` — validate manifest files and, when the target exists, exercise the SDK import preflight.\n" +
                 "- `delete_kb_objects` — delete selected objects in a batch; requires `confirm: true`, and supports `dryRun: true`.\n" +
                 "- `export_unified` — export complete object envelope as a portable JSON file.\n" +
@@ -583,7 +583,7 @@ namespace GxMcp.Gateway
 
             ["genexus_transfer"] =
                 "# genexus_transfer\n\n" +
-                "Exchange complete GeneXus objects through native XPZ/import-export paths.\n\n" +
+                "Exchange complete GeneXus objects through native XPZ/import-export paths. User-supplied files stay under the active KB, configured GeneXus installation, or the explicit `GXMCP_EXTERNAL_IO_ROOT`.\n\n" +
                 "## Actions\n" +
                 "- `export` — create an XPZ export, optionally including dependency closure.\n" +
                 "- `inspect` — inspect an XPZ manifest without importing it.\n" +

@@ -7,6 +7,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Helpers;
+using GxMcp.Worker.Utils;
 using GeneXusApi = Artech.Architecture.Common.Objects.KBObject;
 
 namespace GxMcp.Worker.Services
@@ -26,6 +27,7 @@ namespace GxMcp.Worker.Services
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
         private readonly IndexCacheService _indexCacheService;
+        private readonly UserFilePathPolicy _filePathPolicy;
 
         // CALL_PROTOCOL property regex applied to the Rules part as a fallback when
         // the typed property isn't reachable. Both `Call Protocol: HTTP;` (Rules
@@ -62,6 +64,7 @@ namespace GxMcp.Worker.Services
             _kbService = kbService;
             _objectService = objectService;
             _indexCacheService = indexCacheService;
+            _filePathPolicy = new UserFilePathPolicy(() => _kbService?.GetKbPath());
         }
 
         public string Run(JObject args)
@@ -578,13 +581,15 @@ namespace GxMcp.Worker.Services
 
         private string ResolveBaselinePath(string baselineArg)
         {
-            // Absolute path wins.
-            try
-            {
-                if (Path.IsPathRooted(baselineArg) && File.Exists(baselineArg))
-                    return baselineArg;
-            }
-            catch { /* invalid chars → fall through */ }
+            // An explicit path is accepted only inside a configured root. This
+            // keeps the useful external-baseline workflow without turning a
+            // read-only diff into an arbitrary local-file reader.
+            string resolved;
+            string pathError;
+            if (_filePathPolicy.TryResolveReadPath(baselineArg, out resolved, out pathError)
+                && File.Exists(resolved)
+                && string.Equals(Path.GetExtension(resolved), ".json", StringComparison.OrdinalIgnoreCase))
+                return resolved;
 
             string kbPath = _kbService?.GetKbPath();
             if (string.IsNullOrEmpty(kbPath)) return null;

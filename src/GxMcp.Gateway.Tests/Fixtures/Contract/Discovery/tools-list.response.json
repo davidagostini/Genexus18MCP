@@ -2347,12 +2347,12 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "IO umbrella for assets, Object Text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write | read_blob | export_part|import_part (single part) | export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects (official GeneXus for Agents Object Text parity) | export_unified|screenshot_publish|ocr.",
+      "description": "IO umbrella for assets, Object Text exchange, screenshots, OCR. action: asset_find|asset_read|asset_write | read_blob | export_part|import_part (single part) | export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects (official GeneXus for Agents Object Text parity) | export_unified|screenshot_publish|ocr. User-supplied file paths are restricted to the active KB, configured GeneXus installation, or GXMCP_EXTERNAL_IO_ROOT.",
       "inputSchema": {
         "examples": [
           {
             "action": "export_kb_to_text",
-            "outputPath": "C:\\tmp\\customer-text",
+            "outputPath": "C:\\KBs\\Example\\.gx\\exchange",
             "targets": [
               {
                 "name": "Customer",
@@ -2362,7 +2362,7 @@
           },
           {
             "action": "validate_kb_text_files",
-            "inputPath": "C:\\tmp\\customer-text"
+            "inputPath": "C:\\KBs\\Example\\.gx\\exchange"
           },
           {
             "action": "delete_kb_objects",
@@ -2417,7 +2417,7 @@
             "type": "boolean"
           },
           "inputPath": {
-            "description": "import_part: source file; import_text_to_kb/validate_kb_text_files: manifest or directory.",
+            "description": "import_part: source file; import_text_to_kb/validate_kb_text_files: manifest or directory under an allowed file root.",
             "type": "string"
           },
           "kb": {
@@ -2441,7 +2441,7 @@
             "type": "string"
           },
           "outputPath": {
-            "description": "path",
+            "description": "path under an allowed file root; set GXMCP_EXTERNAL_IO_ROOT for an explicit exchange directory.",
             "type": "string"
           },
           "overwrite": {

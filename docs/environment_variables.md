@@ -99,6 +99,7 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_LEGACY_TOOL_ALIASES` | Set to `0` to opt out of legacy tool-name aliases (de-advertised tools reachable by old names). | aliases on |
 | `GXMCP_RESILIENT_SPEC` | Set to `1` to opt into the resilient specifier path (slower; opt-in). | off |
 | `GXMCP_OCR_ENGINE` | Set to `tesseract` to select the Tesseract OCR engine (requires the Tesseract.NET dependency). | unset |
+| `GXMCP_EXTERNAL_IO_ROOT` | Optional explicit staging root for user-supplied profile, baseline, XPZ, Object Text, and part-exchange files. Relative paths are still anchored at the active KB; paths outside the active KB, GeneXus installation, and this root are rejected. | unset |
 
 ## Client registration / config location
 

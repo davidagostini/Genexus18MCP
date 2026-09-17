@@ -10,6 +10,7 @@ using GxMcp.Worker.Helpers;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Services;
 using GxMcp.Worker.Models;
+using GxMcp.Worker.Utils;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -35,6 +36,7 @@ namespace GxMcp.Worker.Services
         private readonly ObjectService _objects;
         private readonly IndexCacheService _indexCache;
         private readonly WriteService _writeService;
+        private readonly UserFilePathPolicy _filePathPolicy;
 
         public TransferService(KbService kb, ObjectService objects, IndexCacheService indexCache = null,
             WriteService writeService = null)
@@ -43,6 +45,7 @@ namespace GxMcp.Worker.Services
             _objects = objects;
             _indexCache = indexCache;
             _writeService = writeService;
+            _filePathPolicy = new UserFilePathPolicy(() => _kb?.GetKbPath());
         }
 
         public string Run(JObject args)
@@ -78,9 +81,13 @@ namespace GxMcp.Worker.Services
 
         private string Export(IKnowledgeManagerService svc, KBModel model, JObject args)
         {
-            string outputFile = args?["outputFile"]?.ToString();
-            if (string.IsNullOrWhiteSpace(outputFile))
+            string requestedOutputFile = args?["outputFile"]?.ToString();
+            if (string.IsNullOrWhiteSpace(requestedOutputFile))
                 return McpResponse.Err(code: "BadArgs", message: "action=export requires outputFile.", hint: "Pass outputFile=<absolute .xpz path>.");
+            string outputFile;
+            string pathError;
+            if (!_filePathPolicy.TryResolveWritePath(requestedOutputFile, out outputFile, out pathError))
+                return McpResponse.Err(code: "PathOutsideAllowedRoots", message: pathError, hint: "Use a path under the active KB, the configured GeneXus installation, or set GXMCP_EXTERNAL_IO_ROOT for an explicit exchange directory.", target: requestedOutputFile);
 
             var targets = args?["targets"] as JArray;
             if (targets == null || targets.Count == 0)
@@ -185,11 +192,15 @@ namespace GxMcp.Worker.Services
 
         private string Inspect(IKnowledgeManagerService svc, KBModel model, JObject args, bool isDryRunImport)
         {
-            string file = args?["file"]?.ToString() ?? args?["inputPath"]?.ToString();
-            if (string.IsNullOrWhiteSpace(file))
+            string requestedFile = args?["file"]?.ToString() ?? args?["inputPath"]?.ToString();
+            if (string.IsNullOrWhiteSpace(requestedFile))
                 return McpResponse.Err(code: "BadArgs", message: "action=inspect requires file.", hint: "Pass file=<absolute .xpz path>.");
+            string file;
+            string pathError;
+            if (!_filePathPolicy.TryResolveReadPath(requestedFile, out file, out pathError))
+                return McpResponse.Err(code: "PathOutsideAllowedRoots", message: pathError, hint: "Use a path under the active KB, the configured GeneXus installation, or set GXMCP_EXTERNAL_IO_ROOT for an explicit exchange directory.", target: requestedFile);
             if (!System.IO.File.Exists(file))
-                return McpResponse.Err(code: "FileNotFound", message: "XPZ file not found: " + file, hint: "Pass an absolute path to an existing .xpz.");
+                return McpResponse.Err(code: "FileNotFound", message: "XPZ file not found: " + requestedFile, hint: "Pass an absolute path to an existing .xpz.");
 
             var opts = new ExploreExportOptions();
             svc.ExploreExport(file, model, opts, out var objects, out var actions, out var idMap);
@@ -217,11 +228,15 @@ namespace GxMcp.Worker.Services
 
         private string Import(IKnowledgeManagerService svc, KBModel model, JObject args)
         {
-            string file = args?["file"]?.ToString() ?? args?["inputPath"]?.ToString();
-            if (string.IsNullOrWhiteSpace(file))
+            string requestedFile = args?["file"]?.ToString() ?? args?["inputPath"]?.ToString();
+            if (string.IsNullOrWhiteSpace(requestedFile))
                 return McpResponse.Err(code: "BadArgs", message: "action=import requires file.", hint: "Pass file=<absolute .xpz path>.");
+            string file;
+            string pathError;
+            if (!_filePathPolicy.TryResolveReadPath(requestedFile, out file, out pathError))
+                return McpResponse.Err(code: "PathOutsideAllowedRoots", message: pathError, hint: "Use a path under the active KB, the configured GeneXus installation, or set GXMCP_EXTERNAL_IO_ROOT for an explicit exchange directory.", target: requestedFile);
             if (!System.IO.File.Exists(file))
-                return McpResponse.Err(code: "FileNotFound", message: "XPZ file not found: " + file, hint: "Pass an absolute path to an existing .xpz.");
+                return McpResponse.Err(code: "FileNotFound", message: "XPZ file not found: " + requestedFile, hint: "Pass an absolute path to an existing .xpz.");
 
             // dryRun defaults TRUE — an import mutates the KB. dryRun=true previews via ExploreExport.
             bool dryRun = args?["dryRun"]?.ToObject<bool?>() ?? true;
