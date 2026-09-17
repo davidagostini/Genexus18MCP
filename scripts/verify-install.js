@@ -47,7 +47,8 @@ if (missing.length === 0) {
 // break `npm install`. Only a real package install (npm -g / npx extraction) fails.
 const isDevCheckout = (() => {
   try {
-    return fs.statSync(path.join(pkgRoot, '.git')).isDirectory();
+    const gitMarker = fs.statSync(path.join(pkgRoot, '.git'));
+    return gitMarker.isDirectory() || gitMarker.isFile();
   } catch {
     return false;
   }

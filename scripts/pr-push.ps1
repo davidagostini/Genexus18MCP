@@ -3,6 +3,9 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [int]$PullRequest,
 
+    [ValidateRange(30, 7200)]
+    [int]$PreflightTimeoutSeconds = 1200,
+
     [switch]$ForceWithLease
 )
 
@@ -37,9 +40,17 @@ if ($branch -eq 'main') {
     Fail-Push "Refusing to push from main. Check out the PR branch first."
 }
 
+$dirty = @(& git status --porcelain=v1 --untracked-files=all 2>&1)
+if ($LASTEXITCODE -ne 0) {
+    Fail-Push "Could not inspect the working tree before preflight."
+}
+if ($dirty.Count -gt 0) {
+    Fail-Push "The working tree is not clean. Commit or remove every local change before running the PR preflight."
+}
+
 $pr = Get-GhJson @(
     'pr', 'view', $PullRequest.ToString(),
-    '--json', 'number,state,headRefName,headRefOid,headRepository,url'
+    '--json', 'number,state,baseRefName,baseRepository,headRefName,headRefOid,headRepository,url'
 )
 if ($pr.state -ne 'OPEN') {
     Fail-Push "PR #$PullRequest must be OPEN; current state is '$($pr.state)'."
@@ -48,10 +59,33 @@ if ($pr.state -ne 'OPEN') {
 $headRepo = $pr.headRepository.nameWithOwner
 $headRef = $pr.headRefName
 $headOid = $pr.headRefOid
+$baseRepo = $pr.baseRepository.nameWithOwner
+$baseRef = $pr.baseRefName
 if ([string]::IsNullOrWhiteSpace($headRepo) -or
     [string]::IsNullOrWhiteSpace($headRef) -or
-    [string]::IsNullOrWhiteSpace($headOid)) {
-    Fail-Push "PR #$PullRequest did not expose a complete head repository/ref/OID."
+    [string]::IsNullOrWhiteSpace($headOid) -or
+    [string]::IsNullOrWhiteSpace($baseRepo) -or
+    [string]::IsNullOrWhiteSpace($baseRef)) {
+    Fail-Push "PR #$PullRequest did not expose complete base and head repository/ref/OID data."
+}
+
+$preflightRef = "refs/remotes/codex-pr-base/$baseRef"
+$fetchSpec = "+refs/heads/${baseRef}:$preflightRef"
+Write-Host "Updating the PR base before validation: $baseRepo/$baseRef" -ForegroundColor Cyan
+& git fetch --no-tags "https://github.com/$baseRepo.git" $fetchSpec
+if ($LASTEXITCODE -ne 0) {
+    Fail-Push "Could not fetch the latest PR base '$baseRepo/$baseRef'. No push was attempted."
+}
+& git merge-base --is-ancestor $preflightRef HEAD
+if ($LASTEXITCODE -ne 0) {
+    Fail-Push "The PR branch is behind the latest '$baseRepo/$baseRef'. Rebase it, rerun the tests, and retry. No push was attempted."
+}
+
+$preflightPath = Join-Path $PSScriptRoot 'integration-preflight.ps1'
+Write-Host "Running the CI-equivalent local preflight against $preflightRef..." -ForegroundColor Cyan
+& pwsh -NoProfile -File $preflightPath -BaseRef $preflightRef -TimeoutSeconds $PreflightTimeoutSeconds
+if ($LASTEXITCODE -ne 0) {
+    Fail-Push "Preflight failed. No push was attempted."
 }
 
 $targetUrl = "https://github.com/$headRepo.git"

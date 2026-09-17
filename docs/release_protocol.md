@@ -202,6 +202,17 @@ The helper rejects pushes from `main` and pins the exact remote head OID for a
 force-with-lease push, preventing a same-named branch from being updated in the
 base repository by accident.
 
+`pr-push.ps1` is also the mandatory local submission gate. Before it invokes
+Git, it requires a clean worktree, fetches the PR base into an isolated local
+ref, requires the branch to contain that fresh base, and runs
+`integration-preflight.ps1`. That preflight validates the operation-contract
+inventory and the complete Python script-test suite in addition to the
+PowerShell, CLI, lint, and Gateway gates. With a local GeneXus SDK it runs the
+full solution tests; without one it records the Worker gate as unavailable and
+leaves that validation to the protected CI SDK lane. A failure stops before
+any remote write. For a branch without an open PR yet, run the same integration
+preflight manually against the freshly fetched `origin/main`.
+
 The architectural `ripwire` analysis is an optional local/CI quality gate because
 it is not a runtime dependency of this repository. When unavailable, the PR
 preflight exits successfully only if the required GitHub gates pass, reports the

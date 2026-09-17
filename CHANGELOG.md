@@ -43,6 +43,14 @@
 
 ### Internal
 
+- **PR submission now runs against the current base and complete local test set.** `pr-push.ps1` refuses dirty or stale branches, fetches the PR base, runs the operation-contract inventory, all Python script tests, PowerShell tests, CLI tests, lint, and Gateway tests through `integration-preflight.ps1`, and only then pushes `HEAD`. When no local GeneXus SDK exists, the Worker gate is recorded as unavailable for the protected CI SDK lane. This closes the gap that allowed the stale 228-action contract expectation to reach CI.
+
+- **The version-catalog regression guard now covers the published 16, 17, and 18 support set.** Its expected list and display are synchronized with `config/gx-versions.json`, preventing the local preflight from carrying another stale compatibility baseline.
+
+- **Development worktrees now pass the npm postinstall check.** A linked worktree uses a `.git` file instead of a `.git` directory; the installer now recognizes both forms, and a regression test keeps `npm ci` usable in the isolated PR worktrees used for validation.
+
+- **`genexus_kb` dry-run planning no longer requires an installed SDK or MSBuild.** The read-only plan is produced from the requested inputs, while real creation still fails closed when the SDK, template, or MSBuild assets are unavailable; this keeps the Gateway coverage lane deterministic on hosted runners.
+
 - **The CI tool-contract baseline now matches the published schema.** The
   regression gate expects the current 229 public actions and continues to
   compare that count with the capabilities inventory, so future action changes
