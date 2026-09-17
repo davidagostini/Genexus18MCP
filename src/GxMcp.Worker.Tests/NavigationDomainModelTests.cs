@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Linq;
+using System.Xml.Linq;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
@@ -189,6 +191,67 @@ namespace GxMcp.Worker.Tests
             var result = JObject.Parse(resultJson);
 
             Assert.Equal("Error", (string)result["status"]);
+        }
+
+        [Fact]
+        public void NavigationService_ParsesGx17OptimizedWhereWithoutConcatenatingAttributeMetadata()
+        {
+            var optimizedWhere = XElement.Parse(@"
+                <OptimizedWhere>
+                  <StartFrom>
+                    <Condition>
+                      <Attribute>
+                        <AttriId>6</AttriId>
+                        <AttriName>CategoryId</AttriName>
+                        <Description>Categoria Id</Description>
+                      </Attribute>
+                      <Sp />
+                      <Token>&gt;=</Token>
+                      <Sp />
+                      <Variable>
+                        <VarId>Ccategoryid</VarId>
+                        <VarName>&amp;cCategoryId</VarName>
+                      </Variable>
+                    </Condition>
+                  </StartFrom>
+                  <LoopWhile>
+                    <Condition><Token>NotEndOfTable</Token></Condition>
+                  </LoopWhile>
+                </OptimizedWhere>");
+
+            var filters = NavigationService.ParseOptimizedWhereFilters(optimizedWhere);
+
+            var filter = Assert.Single(filters);
+            Assert.Equal("CategoryId", filter.Attribute);
+            Assert.Equal(">=", filter.Op);
+            Assert.Equal("&cCategoryId", filter.Value);
+            Assert.Equal("CategoryId >= &cCategoryId", filter.Expression);
+            Assert.DoesNotContain("Categoria Id", filter.Expression);
+        }
+
+        [Fact]
+        public void NavigationSqlService_GeneratesSinglePredicateForGx17StartFromCondition()
+        {
+            var optimizedWhere = XElement.Parse(@"
+                <OptimizedWhere>
+                  <StartFrom>
+                    <Condition>
+                      <Attribute><AttriName>CategoryId</AttriName><Description>Categoria Id</Description></Attribute>
+                      <Token>&gt;=</Token>
+                      <Variable><VarName>&amp;cCategoryId</VarName></Variable>
+                    </Condition>
+                  </StartFrom>
+                  <LoopWhile><Condition><Token>NotEndOfTable</Token></Condition></LoopWhile>
+                </OptimizedWhere>");
+            var report = new NavigationReport { TargetName = "Gx0020" };
+            var level = new NavigationLevel { Number = 1, BaseTable = "Category" };
+            level.Filters.AddRange(NavigationService.ParseOptimizedWhereFilters(optimizedWhere));
+            report.Levels.Add(level);
+
+            var query = Assert.Single((JArray)report.GenerateSql()["queries"]);
+
+            Assert.Equal("SELECT * FROM Category WHERE CategoryId >= :cCategoryId", (string)query["sql"]);
+            Assert.Equal(new[] { "cCategoryId" }, ((JArray)query["parametersExpected"]).Values<string>().ToArray());
         }
     }
 }

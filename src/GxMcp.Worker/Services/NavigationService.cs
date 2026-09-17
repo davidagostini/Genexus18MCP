@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using System.Xml;
 using Newtonsoft.Json.Linq;
@@ -93,20 +94,7 @@ namespace GxMcp.Worker.Services
                     levelObj.IsOptimized = hasOptimization;
 
                     if (optWhere != null)
-                    {
-                        foreach (var f in optWhere.Elements())
-                        {
-                            var fObj = new NavigationFilter
-                            {
-                                Element = f.Name.LocalName,
-                                Expression = f.Value?.Trim(),
-                                Attribute = f.Element("Attribute")?.Value?.Trim(),
-                                Op = f.Element("Operator")?.Value?.Trim(),
-                                Value = f.Element("Value")?.Value?.Trim()
-                            };
-                            levelObj.Filters.Add(fObj);
-                        }
-                    }
+                        levelObj.Filters.AddRange(ParseOptimizedWhereFilters(optWhere));
 
                     report.Levels.Add(levelObj);
                 }
@@ -140,6 +128,147 @@ namespace GxMcp.Worker.Services
         {
             var report = GetReport(targetName);
             return report.ToJson().ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        internal static List<NavigationFilter> ParseOptimizedWhereFilters(XElement optimizedWhere)
+        {
+            var filters = new List<NavigationFilter>();
+            if (optimizedWhere == null)
+                return filters;
+
+            var conditions = optimizedWhere
+                .Descendants()
+                .Where(element => IsElement(element, "Condition"))
+                .ToList();
+
+            if (conditions.Count == 0 && HasFilterParts(optimizedWhere))
+                conditions.Add(optimizedWhere);
+
+            foreach (var condition in conditions)
+            {
+                var filter = ParseOptimizedWhereCondition(condition);
+                if (filter != null)
+                    filters.Add(filter);
+            }
+
+            return filters;
+        }
+
+        private static NavigationFilter ParseOptimizedWhereCondition(XElement condition)
+        {
+            string attribute = ReadAttributeName(condition);
+            string op = ReadOperator(condition);
+            string value = ReadFilterValue(condition);
+            string expression = ReadLeafValue(condition, "Expression", "ConditionText", "Text");
+
+            if (string.IsNullOrWhiteSpace(expression) && !string.IsNullOrWhiteSpace(attribute) && !string.IsNullOrWhiteSpace(op))
+                expression = string.Join(" ", new[] { attribute, op, value }.Where(valuePart => !string.IsNullOrWhiteSpace(valuePart)));
+
+            // Conditions such as LoopWhile/NotEndOfTable are control-flow
+            // markers, not SQL predicates. Do not turn their concatenated XML
+            // text into a WHERE clause.
+            if (string.IsNullOrWhiteSpace(attribute) && string.IsNullOrWhiteSpace(expression))
+                return null;
+
+            return new NavigationFilter
+            {
+                Element = condition.Name.LocalName,
+                Expression = expression,
+                Attribute = attribute,
+                Op = op,
+                Value = value
+            };
+        }
+
+        private static bool HasFilterParts(XElement element)
+        {
+            return !string.IsNullOrWhiteSpace(ReadAttributeName(element))
+                || !string.IsNullOrWhiteSpace(ReadLeafValue(element, "Expression", "ConditionText", "Text"));
+        }
+
+        private static string ReadAttributeName(XElement condition)
+        {
+            var attribute = FindElement(condition, "Attribute");
+            if (attribute == null)
+                return ReadLeafValue(condition, "AttriName", "AttributeName");
+
+            return ReadLeafValue(attribute, "AttriName", "AttributeName", "Name")
+                ?? (attribute.Elements().Any() ? null : NormalizeText(attribute.Value));
+        }
+
+        private static string ReadOperator(XElement condition)
+        {
+            string explicitOperator = ReadLeafValue(condition, "Operator", "Op");
+            if (!string.IsNullOrWhiteSpace(explicitOperator))
+                return explicitOperator;
+
+            return condition
+                .Descendants()
+                .Where(element => IsElement(element, "Token"))
+                .Select(element => NormalizeText(element.Value))
+                .FirstOrDefault(IsSqlOperator);
+        }
+
+        private static string ReadFilterValue(XElement condition)
+        {
+            string value = ReadLeafValue(condition, "Value", "Constant", "Literal");
+            if (!string.IsNullOrWhiteSpace(value))
+                return value;
+
+            var variable = FindElement(condition, "Variable");
+            return variable == null
+                ? ReadLeafValue(condition, "VarName")
+                : ReadLeafValue(variable, "VarName", "Name") ?? NormalizeText(variable.Value);
+        }
+
+        private static string ReadLeafValue(XElement element, params string[] names)
+        {
+            foreach (string name in names)
+            {
+                var candidate = element
+                    .Descendants()
+                    .FirstOrDefault(child => IsElement(child, name));
+                if (candidate == null)
+                    continue;
+
+                string value = candidate.Elements().Any()
+                    ? ReadLeafValue(candidate, "Value", "Name", "AttriName", "AttributeName", "VarName", "Text")
+                    : NormalizeText(candidate.Value);
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            return null;
+        }
+
+        private static XElement FindElement(XElement element, string name)
+        {
+            return element
+                .Descendants()
+                .FirstOrDefault(child => IsElement(child, name));
+        }
+
+        private static bool IsElement(XElement element, string name)
+        {
+            return string.Equals(element?.Name.LocalName, name, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeText(string value)
+        {
+            return string.IsNullOrWhiteSpace(value)
+                ? null
+                : Regex.Replace(value.Trim(), @"\s+", " ");
+        }
+
+        private static bool IsSqlOperator(string value)
+        {
+            return value == "=" || value == "<>" || value == "!=" || value == "<"
+                || value == ">" || value == "<=" || value == ">="
+                || string.Equals(value, "like", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "in", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "is", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "is not", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "not like", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
