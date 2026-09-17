@@ -35,3 +35,21 @@ Depois rasterize o PDF com `pdftoppm` e inspecione as paginas para confirmar
 graficos, tabelas e rodape. O PR deve conter o relatorio, o script e a
 documentacao da correcao; nao incluir `node_modules`, `.vscode-test`, `bin` ou
 `obj`.
+
+## Revisao de Clean Code, SOLID e arquitetura
+
+A revisao do patch identificou uma violacao de DIP: os servicos de I/O
+construíam diretamente a politica concreta de caminhos, repetindo a decisao de
+composicao em varios pontos. A correcao introduz a porta interna
+`IUserFilePathPolicy`; o `CommandDispatcher`, que e o composition root do
+Worker, cria uma unica `UserFilePathPolicy` e injeta essa abstracao em
+`ObjectService`, `ObjectTextService`, `TransferService`,
+`ApiIntrospectService` e `ProfileService`.
+
+Os construtores publicos antigos continuam como adaptadores de compatibilidade
+para testes e consumidores existentes; o fluxo principal usa a dependencia
+injetada. A politica permanece isolada como detalhe de infraestrutura, e as
+operacoes continuam com early returns, sem acoplamento novo ao SDK nos
+servicos consumidores. O `CommandDispatcher` continua deliberadamente como
+composition root; decompo-lo seria uma mudanca transversal sem beneficio
+especifico para este achado.

@@ -20,6 +20,7 @@ namespace GxMcp.Worker.Services
         private readonly CompilationPipeline _compilationPipeline;
         private readonly ObjectInspectionModule _objectInspectionModule;
         private readonly KbService _kbService;
+        private readonly IUserFilePathPolicy _filePathPolicy;
         private readonly ObjectService _objectService;
         private readonly IndexCacheService _indexCacheService;
         private readonly BuildService _buildService;
@@ -182,11 +183,12 @@ namespace GxMcp.Worker.Services
             _indexCacheService = new IndexCacheService();
             _buildService = new BuildService();
             _kbService = new KbService(_indexCacheService);
+            _filePathPolicy = new UserFilePathPolicy(() => _kbService?.GetKbPath());
             var artifactPaths = new ArtifactPathResolver(_kbService.GetKbPath);
             _visualizerService = new VisualizerService(_indexCacheService, artifactPaths);
             _healthService = new HealthService(_indexCacheService);
             _formatService = new FormatService();
-            _objectService = new ObjectService(_kbService, _buildService);
+            _objectService = new ObjectService(_kbService, _buildService, _filePathPolicy);
             _assetService = new AssetService(_buildService);
             _navigationService = new NavigationService(_kbService);
             _navigationSqlService = new NavigationSqlService(_navigationService, _kbService, _objectService);
@@ -236,7 +238,7 @@ namespace GxMcp.Worker.Services
             _kbValidationService = new KbValidationService(_indexCacheService, _objectService, _patternAnalysisService);
             _validatePayloadService = new ValidatePayloadService(_objectService);
             _exportObjectService = new ExportObjectService(_objectService);
-            _objectTextService = new ObjectTextService(_objectService, _indexCacheService);
+            _objectTextService = new ObjectTextService(_objectService, _indexCacheService, _filePathPolicy);
             _diffService = new DiffService(_objectService);
             _applyTemplateService = new ApplyTemplateService(_writeService);
             _editAndBuildOrchestrator = new EditAndBuildOrchestrator(_writeService, _analyzeService, _buildService);
@@ -266,7 +268,7 @@ namespace GxMcp.Worker.Services
             _gamService = new GamService(_kbService);
             _mergeToolService = new MergeToolService(_kbService, _objectService);
             _kbVersionService = new KbVersionService(_kbService);
-            _transferService = new TransferService(_kbService, _objectService, _indexCacheService, _writeService);
+            _transferService = new TransferService(_kbService, _objectService, _indexCacheService, _writeService, _filePathPolicy);
             _deployService = new DeployService(_kbService);
             _reorgImpactService = new ReorgImpactService(_kbService, _objectService);
             // B15: give drift_check the authoritative reorg-needed signal.
@@ -302,9 +304,9 @@ namespace GxMcp.Worker.Services
             _visualVerifyService = new VisualVerifyService(_kbService, _objectService);
             _buildPlanService = new BuildPlanService(_indexCacheService, _objectService, callerGraphService);
             _doctorService = new DoctorService(_kbService, _indexCacheService, null);
-            _apiIntrospectService = new ApiIntrospectService(_kbService, _objectService, _indexCacheService);
+            _apiIntrospectService = new ApiIntrospectService(_kbService, _objectService, _indexCacheService, _filePathPolicy);
             _typeIntrospectService = new TypeIntrospectService(_kbService, _objectService);
-            _profileService = new ProfileService();
+            _profileService = new ProfileService(_filePathPolicy);
             _sdkProbeService = new SdkProbeService();
 
             // Phase 2: Late Linking

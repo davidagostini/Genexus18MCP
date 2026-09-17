@@ -11,7 +11,7 @@ namespace GxMcp.Worker.Utils
     /// than the process CWD. An additional root is opt-in through
     /// GXMCP_EXTERNAL_IO_ROOT for deliberate exchange with a staging folder.
     /// </summary>
-    internal sealed class UserFilePathPolicy
+    internal sealed class UserFilePathPolicy : IUserFilePathPolicy
     {
         public const string ExternalRootEnvironmentVariable = "GXMCP_EXTERNAL_IO_ROOT";
 

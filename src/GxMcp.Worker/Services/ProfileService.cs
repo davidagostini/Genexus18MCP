@@ -31,14 +31,14 @@ namespace GxMcp.Worker.Services
         // Attribute names that look like call/sample counts.
         private static readonly string[] CountAttrs = { "callCount", "calls", "sampleCount", "samples", "hits", "count" };
 
-        private readonly UserFilePathPolicy _filePathPolicy;
+        private readonly IUserFilePathPolicy _filePathPolicy;
 
         public ProfileService()
             : this(new UserFilePathPolicy(() => Environment.GetEnvironmentVariable("GX_KB_PATH")))
         {
         }
 
-        internal ProfileService(UserFilePathPolicy filePathPolicy)
+        internal ProfileService(IUserFilePathPolicy filePathPolicy)
         {
             _filePathPolicy = filePathPolicy ?? throw new ArgumentNullException(nameof(filePathPolicy));
         }

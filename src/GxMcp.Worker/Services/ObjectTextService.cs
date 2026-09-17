@@ -28,13 +28,20 @@ namespace GxMcp.Worker.Services
 
         private readonly ObjectService _objectService;
         private readonly IndexCacheService _indexCacheService;
-        private readonly UserFilePathPolicy _filePathPolicy;
+        private readonly IUserFilePathPolicy _filePathPolicy;
 
         public ObjectTextService(ObjectService objectService, IndexCacheService indexCacheService)
+            : this(objectService, indexCacheService,
+                new UserFilePathPolicy(() => objectService?.GetKbService()?.GetKbPath()))
+        {
+        }
+
+        internal ObjectTextService(ObjectService objectService, IndexCacheService indexCacheService,
+            IUserFilePathPolicy filePathPolicy)
         {
             _objectService = objectService;
             _indexCacheService = indexCacheService;
-            _filePathPolicy = new UserFilePathPolicy(() => _objectService?.GetActiveKbPathForFilePolicy());
+            _filePathPolicy = filePathPolicy ?? throw new ArgumentNullException(nameof(filePathPolicy));
         }
 
         public string Execute(string action, string target, JObject args, CancellationToken cancellationToken)

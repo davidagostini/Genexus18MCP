@@ -27,7 +27,7 @@ namespace GxMcp.Worker.Services
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
         private readonly IndexCacheService _indexCacheService;
-        private readonly UserFilePathPolicy _filePathPolicy;
+        private readonly IUserFilePathPolicy _filePathPolicy;
 
         // CALL_PROTOCOL property regex applied to the Rules part as a fallback when
         // the typed property isn't reachable. Both `Call Protocol: HTTP;` (Rules
@@ -60,11 +60,18 @@ namespace GxMcp.Worker.Services
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         public ApiIntrospectService(KbService kbService, ObjectService objectService, IndexCacheService indexCacheService)
+            : this(kbService, objectService, indexCacheService,
+                new UserFilePathPolicy(() => kbService?.GetKbPath()))
+        {
+        }
+
+        internal ApiIntrospectService(KbService kbService, ObjectService objectService,
+            IndexCacheService indexCacheService, IUserFilePathPolicy filePathPolicy)
         {
             _kbService = kbService;
             _objectService = objectService;
             _indexCacheService = indexCacheService;
-            _filePathPolicy = new UserFilePathPolicy(() => _kbService?.GetKbPath());
+            _filePathPolicy = filePathPolicy ?? throw new ArgumentNullException(nameof(filePathPolicy));
         }
 
         public string Run(JObject args)

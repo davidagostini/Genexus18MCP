@@ -49,12 +49,14 @@ FINDINGS = [
             ("src/GxMcp.Worker/Services/TransferService.cs", "223", "if (!System.IO.File.Exists(file))"),
         ],
         "fixed": [
-            ("src/GxMcp.Worker/Utils/UserFilePathPolicy.cs", "29-91", "TryResolveReadPath/TryResolveWritePath and containment diagnostics"),
-            ("src/GxMcp.Worker/Services/ObjectService.cs", "3997-3999;4167-4170;4213-4216", "policy before blob, part export, and part import I/O"),
-            ("src/GxMcp.Worker/Services/ObjectTextService.cs", "73-76;526-531", "policy on batch output and input"),
-            ("src/GxMcp.Worker/Services/ApiIntrospectService.cs", "584-592", "baseline restricted and JSON extension checked"),
-            ("src/GxMcp.Worker/Services/ProfileService.cs", "56-61", "profile restricted before XML read"),
-            ("src/GxMcp.Worker/Services/TransferService.cs", "87-90;198-203;234-239", "XPZ export, inspect, and import restricted"),
+            ("src/GxMcp.Worker/Utils/IUserFilePathPolicy.cs", "1-13", "small port for file-path consumers"),
+            ("src/GxMcp.Worker/Utils/UserFilePathPolicy.cs", "29-91", "normalization, root resolution, and containment diagnostics"),
+            ("src/GxMcp.Worker/Services/CommandDispatcher.cs", "186", "composition root creates one shared policy"),
+            ("src/GxMcp.Worker/Services/ObjectService.cs", "3998;4169;4215", "policy before blob, part export, and part import I/O"),
+            ("src/GxMcp.Worker/Services/ObjectTextService.cs", "82;535", "policy on batch output and input"),
+            ("src/GxMcp.Worker/Services/ApiIntrospectService.cs", "596", "baseline restricted and JSON extension checked"),
+            ("src/GxMcp.Worker/Services/ProfileService.cs", "58", "profile restricted before XML read"),
+            ("src/GxMcp.Worker/Services/TransferService.cs", "96;207;243", "XPZ export, inspect, and import restricted"),
         ],
         "why": "The MCP caller controlled a filesystem path that was normalized but not checked against an authorized root. The tools could read local files or write exports outside the active KB.",
         "impact": "A caller able to invoke the local MCP surface could access or overwrite unrelated files within the account filesystem permissions.",
@@ -304,7 +306,7 @@ def build_story(style):
 
     s.append(para("Recomendacoes priorizadas", style["Section"]))
     for item in [
-        "P1 - manter UserFilePathPolicy como unica porta de entrada para arquivos fornecidos por MCP e adicionar um teste para cada novo parametro de path.",
+        "P1 - manter IUserFilePathPolicy como unica porta de entrada para arquivos fornecidos por MCP, com UserFilePathPolicy criada no composition root, e adicionar um teste para cada novo parametro de path.",
         "P2 - executar o gate de PR deste diretorio em copia limpa baseada no origin/main, com SDK explicitamente selecionado.",
         "P3 - repetir a varredura de segredos em codigo, historico e bundle; manter tokens apenas em ambiente.",
         "P4 - acompanhar os sete avisos de npm audit somente na arvore de desenvolvimento do IDE; npm audit --omit=dev nao encontrou vulnerabilidades de runtime.",

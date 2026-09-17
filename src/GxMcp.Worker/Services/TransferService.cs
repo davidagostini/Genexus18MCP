@@ -36,16 +36,23 @@ namespace GxMcp.Worker.Services
         private readonly ObjectService _objects;
         private readonly IndexCacheService _indexCache;
         private readonly WriteService _writeService;
-        private readonly UserFilePathPolicy _filePathPolicy;
+        private readonly IUserFilePathPolicy _filePathPolicy;
 
         public TransferService(KbService kb, ObjectService objects, IndexCacheService indexCache = null,
             WriteService writeService = null)
+            : this(kb, objects, indexCache, writeService,
+                new UserFilePathPolicy(() => kb?.GetKbPath()))
+        {
+        }
+
+        internal TransferService(KbService kb, ObjectService objects, IndexCacheService indexCache,
+            WriteService writeService, IUserFilePathPolicy filePathPolicy)
         {
             _kb = kb;
             _objects = objects;
             _indexCache = indexCache;
             _writeService = writeService;
-            _filePathPolicy = new UserFilePathPolicy(() => _kb?.GetKbPath());
+            _filePathPolicy = filePathPolicy ?? throw new ArgumentNullException(nameof(filePathPolicy));
         }
 
         public string Run(JObject args)

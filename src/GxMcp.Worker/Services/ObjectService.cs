@@ -103,18 +103,18 @@ namespace GxMcp.Worker.Services
         private UIService _uiService;
         private PatternAnalysisService _patternAnalysisService;
         private WriteService _writeService;
-        private readonly UserFilePathPolicy _filePathPolicy;
+        private readonly IUserFilePathPolicy _filePathPolicy;
 
         public ObjectService(KbService kbService, BuildService buildService)
+            : this(kbService, buildService, new UserFilePathPolicy(() => kbService?.GetKbPath()))
+        {
+        }
+
+        internal ObjectService(KbService kbService, BuildService buildService, IUserFilePathPolicy filePathPolicy)
         {
             _kbService = kbService;
             _buildService = buildService;
-            _filePathPolicy = new UserFilePathPolicy(() => _kbService?.GetKbPath());
-        }
-
-        internal string GetActiveKbPathForFilePolicy()
-        {
-            try { return _kbService?.GetKbPath(); } catch { return null; }
+            _filePathPolicy = filePathPolicy ?? throw new ArgumentNullException(nameof(filePathPolicy));
         }
 
         public void SetDataInsightService(DataInsightService ds) { _dataInsightService = ds; }
