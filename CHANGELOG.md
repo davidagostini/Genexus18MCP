@@ -48,6 +48,9 @@
 ### Fixed
 
 
+
+- **Targeted build dry-runs now fail closed for unresolved indexed targets ([#214](https://github.com/lennix1337/Genexus18MCP/issues/214)).** When the Worker object index is loaded, `action=build` with `dryRun=true` now resolves bare names, `Type:Name`, and GUIDs before returning a plan. Unknown targets return `BuildTargetUnresolved` with the rejected targets and supported formats, while an index that is not ready is reported as `targetResolutionAvailable: false` and keeps the non-dispatching preview behavior.
+
 - **`genexus_doctor` now always reports a fresh snapshot ([#222](https://github.com/lennix1337/Genexus18MCP/issues/222)).** Gateway-side doctor responses bypass the semantic cache so `checkedAt`, Worker PID, uptime, and telemetry cannot be replayed from a previous health call.
 
 - **Native multi-part imports now fail closed when rollback cannot be certified.** A mutable `part=all`/`parts[]` import no longer writes the first parts when the complete pre-write snapshot is unavailable; it returns `RollbackSnapshotUnavailable` before touching the KB.
