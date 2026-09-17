@@ -31,6 +31,10 @@ namespace GxMcp.Worker.Services
     /// </summary>
     public class TransferService
     {
+        private const int MaxExportXmlEntries = 2048;
+        private const long MaxExportXmlEntryBytes = 8L * 1024 * 1024;
+        private const long MaxExportXmlBytes = 64L * 1024 * 1024;
+
         private readonly KbService _kb;
         private readonly ObjectService _objects;
         private readonly IndexCacheService _indexCache;
@@ -191,26 +195,69 @@ namespace GxMcp.Worker.Services
             if (!System.IO.File.Exists(file))
                 return McpResponse.Err(code: "FileNotFound", message: "XPZ file not found: " + file, hint: "Pass an absolute path to an existing .xpz.");
 
+            ExportPackageSummary packageSummary;
+            try
+            {
+                packageSummary = ReadExportPackageSummary(file);
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "TransferInspectionUnavailable",
+                    message: "The XPZ package could not be read for inspection. " + ex.Message,
+                    hint: "Retry with a complete XPZ produced by GeneXus Export.");
+            }
+
             var opts = new ExploreExportOptions();
             svc.ExploreExport(file, model, opts, out var objects, out var actions, out var idMap);
 
             var items = new JArray();
+            var details = new JArray();
+            foreach (var packageObject in packageSummary.Objects)
+            {
+                items.Add(packageObject.Name);
+                details.Add(new JObject
+                {
+                    ["name"] = packageObject.Name,
+                    ["type"] = packageObject.Type,
+                    ["partCount"] = packageObject.PartCount,
+                    ["hasPayload"] = packageObject.NonEmptyPartCount > 0
+                });
+            }
+
             foreach (var o in AsEnumerable(objects))
             {
                 string label = null;
                 try { label = (o as KBObject)?.Name ?? o?.ToString(); } catch { label = o?.ToString(); }
-                if (label != null) items.Add(label);
+                if (label != null && !items.Any(i => string.Equals(i?.ToString(), label, StringComparison.OrdinalIgnoreCase)))
+                {
+                    items.Add(label);
+                    details.Add(new JObject
+                    {
+                        ["name"] = label,
+                        ["type"] = o?.GetType()?.Name,
+                        ["source"] = "sdk"
+                    });
+                }
             }
+
+            string packageValidationError = ValidateImportPackage(packageSummary);
 
             return McpResponse.Ok(
                 code: isDryRunImport ? "TransferImportPreview" : "TransferInspected",
                 result: new JObject
                 {
                     ["file"] = file,
-                    ["objectCount"] = Count(objects),
+                    ["objectCount"] = packageSummary.Objects.Count > 0 ? packageSummary.Objects.Count : Count(objects),
                     ["actionCount"] = Count(actions),
                     ["objects"] = items,
+                    ["objectDetails"] = details,
                     ["wouldImport"] = isDryRunImport,
+                    ["preflight"] = new JObject
+                    {
+                        ["validForImport"] = string.IsNullOrWhiteSpace(packageValidationError),
+                        ["reason"] = packageValidationError
+                    },
                     ["source"] = "sdk:IKnowledgeManagerService.ExploreExport"
                 });
         }
@@ -246,6 +293,27 @@ namespace GxMcp.Worker.Services
                     message: "The requested XPZ import options could not be applied; no import was attempted. " + ex.Message,
                     hint: "Use the supported conflict/theme option values or omit them to use the safe defaults.");
             }
+
+            ExportPackageSummary packageSummary;
+            try
+            {
+                packageSummary = ReadExportPackageSummary(file);
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "TransferImportVerificationUnavailable",
+                    message: "The XPZ package could not be read before mutation; no import was attempted. " + ex.Message,
+                    hint: "Retry with a complete XPZ produced by GeneXus Export, and verify that the file is readable by the GeneXus SDK.");
+            }
+
+            string packageValidationError = ValidateImportPackage(packageSummary);
+            if (!string.IsNullOrWhiteSpace(packageValidationError))
+                return McpResponse.Err(
+                    code: "TransferImportVerificationUnavailable",
+                    message: packageValidationError + " No import was attempted.",
+                    hint: "Export the object again from GeneXus and retry only after inspect reports readable object payloads.");
+
             ImportFidelityPlan fidelityPlan;
             try
             {
@@ -373,9 +441,6 @@ namespace GxMcp.Worker.Services
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(file) || !File.Exists(file)) return result;
 
-            const int maxXmlEntries = 2048;
-            const long maxEntryBytes = 8L * 1024 * 1024;
-            const long maxTotalBytes = 64L * 1024 * 1024;
             int xmlEntries = 0;
             long totalBytes = 0;
 
@@ -384,9 +449,9 @@ namespace GxMcp.Worker.Services
                 foreach (var entry in archive.Entries.Where(e =>
                     e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)))
                 {
-                    if (++xmlEntries > maxXmlEntries)
+                    if (++xmlEntries > MaxExportXmlEntries)
                         throw new InvalidDataException("The XPZ contains too many XML entries for safe fidelity inspection.");
-                    if (entry.Length > maxEntryBytes || (totalBytes += entry.Length) > maxTotalBytes)
+                    if (entry.Length > MaxExportXmlEntryBytes || (totalBytes += entry.Length) > MaxExportXmlBytes)
                         throw new InvalidDataException("The XPZ XML payload exceeds the safe fidelity-inspection limit.");
 
                     XDocument document;
@@ -423,6 +488,133 @@ namespace GxMcp.Worker.Services
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Reads the package's object metadata before ImportFile is called.
+        /// ExploreExport can expose an IExportItem for a damaged XPZ even when
+        /// the item has no usable parts; importing that projection creates a
+        /// hollow object. This summary is deliberately package-based so the
+        /// mutation gate does not trust the SDK projection it is protecting.
+        /// </summary>
+        internal static ExportPackageSummary ReadExportPackageSummary(string file)
+        {
+            if (string.IsNullOrWhiteSpace(file) || !File.Exists(file))
+                throw new FileNotFoundException("XPZ file not found.", file);
+
+            var summary = new ExportPackageSummary();
+            int xmlEntries = 0;
+            long totalBytes = 0;
+
+            using (var archive = ZipFile.OpenRead(file))
+            {
+                foreach (var entry in archive.Entries.Where(e =>
+                    e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (++xmlEntries > MaxExportXmlEntries)
+                        throw new InvalidDataException("The XPZ contains too many XML entries for safe preflight inspection.");
+                    if (entry.Length > MaxExportXmlEntryBytes || (totalBytes += entry.Length) > MaxExportXmlBytes)
+                        throw new InvalidDataException("The XPZ XML payload exceeds the safe preflight-inspection limit.");
+
+                    XDocument document;
+                    using (var stream = entry.Open())
+                    using (var reader = XmlReader.Create(stream, new XmlReaderSettings
+                    {
+                        DtdProcessing = DtdProcessing.Prohibit,
+                        XmlResolver = null,
+                        MaxCharactersFromEntities = 0
+                    }))
+                        document = XDocument.Load(reader, LoadOptions.PreserveWhitespace);
+
+                    foreach (var objectElement in document.Descendants().Where(e =>
+                        string.Equals(e.Name.LocalName, "Object", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        string name = ReadAttribute(objectElement, "name", "objectName")
+                            ?? ReadChildValue(objectElement, "Name");
+                        if (string.IsNullOrWhiteSpace(name))
+                        {
+                            summary.UnnamedObjectCount++;
+                            continue;
+                        }
+
+                        string type = ReadAttribute(objectElement, "type", "objectType")
+                            ?? ReadChildValue(objectElement, "Type", "ObjectType");
+                        var parts = objectElement.Descendants().Where(e =>
+                            string.Equals(e.Name.LocalName, "Part", StringComparison.OrdinalIgnoreCase)).ToList();
+                        int nonEmptyParts = parts.Count(HasMeaningfulPartPayload);
+                        string key = (type ?? string.Empty) + "|" + name;
+                        var existing = summary.Objects.FirstOrDefault(o =>
+                            string.Equals(o.Key, key, StringComparison.OrdinalIgnoreCase));
+                        if (existing == null)
+                        {
+                            summary.Objects.Add(new ExportPackageObject
+                            {
+                                Key = key,
+                                Name = name,
+                                Type = type,
+                                PartCount = parts.Count,
+                                NonEmptyPartCount = nonEmptyParts
+                            });
+                        }
+                        else
+                        {
+                            existing.PartCount += parts.Count;
+                            existing.NonEmptyPartCount += nonEmptyParts;
+                        }
+                    }
+                }
+            }
+
+            return summary;
+        }
+
+        internal static string ValidateImportPackage(ExportPackageSummary summary)
+        {
+            if (summary == null)
+                return "The XPZ preflight produced no package summary.";
+            if (summary.UnnamedObjectCount > 0)
+                return "The XPZ contains object records without a readable object name.";
+            if (summary.Objects.Count == 0)
+                return "The XPZ contains no readable object records.";
+
+            var emptyObjects = summary.Objects
+                .Where(o => o.NonEmptyPartCount == 0)
+                .Select(o => string.IsNullOrWhiteSpace(o.Type) ? o.Name : o.Name + " (" + o.Type + ")")
+                .ToList();
+            if (emptyObjects.Count > 0)
+                return "The XPZ contains object records without a non-empty part payload: "
+                    + string.Join(", ", emptyObjects) + ".";
+
+            return null;
+        }
+
+        private static string ReadAttribute(XElement element, params string[] names)
+        {
+            foreach (string name in names)
+            {
+                string value = element.Attributes().FirstOrDefault(a =>
+                    string.Equals(a.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))?.Value;
+                if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+            }
+            return null;
+        }
+
+        private static string ReadChildValue(XElement element, params string[] names)
+        {
+            foreach (string name in names)
+            {
+                string value = element.Elements().FirstOrDefault(e =>
+                    string.Equals(e.Name.LocalName, name, StringComparison.OrdinalIgnoreCase))?.Value;
+                if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+            }
+            return null;
+        }
+
+        private static bool HasMeaningfulPartPayload(XElement part)
+        {
+            return part.Descendants().Any(e =>
+                !string.IsNullOrWhiteSpace(e.Value)
+                || e.Attributes().Any(a => !string.IsNullOrWhiteSpace(a.Value)));
         }
 
         private static bool IsWebFormPayload(string xml)
@@ -575,6 +767,21 @@ namespace GxMcp.Worker.Services
         {
             public bool Verified { get; set; }
             public JObject Result { get; set; }
+        }
+
+        internal sealed class ExportPackageSummary
+        {
+            internal List<ExportPackageObject> Objects { get; } = new List<ExportPackageObject>();
+            internal int UnnamedObjectCount { get; set; }
+        }
+
+        internal sealed class ExportPackageObject
+        {
+            internal string Key { get; set; }
+            internal string Name { get; set; }
+            internal string Type { get; set; }
+            internal int PartCount { get; set; }
+            internal int NonEmptyPartCount { get; set; }
         }
 
         // The SDK's incremental defaults can normalize visual XML while importing.

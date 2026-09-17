@@ -88,5 +88,82 @@ namespace GxMcp.Worker.Tests
                 try { File.Delete(path); } catch { }
             }
         }
+
+        [Fact]
+        public void ReadExportPackageSummary_ReportsObjectNamesTypesAndPayload()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "gxmcp-transfer-summary-" + Guid.NewGuid().ToString("N") + ".xpz");
+            try
+            {
+                using (var archive = ZipFile.Open(path, ZipArchiveMode.Create))
+                using (var writer = new StreamWriter(archive.CreateEntry("export.xml").Open()))
+                {
+                    writer.Write("<ExportFile><Objects>"
+                        + "<Object name=\"OrdersPanel\" type=\"WebPanel\"><Part name=\"WebForm\"><Source><![CDATA[<GxMultiForm />]]></Source></Part></Object>"
+                        + "</Objects></ExportFile>");
+                }
+
+                var summary = TransferService.ReadExportPackageSummary(path);
+                Assert.Single(summary.Objects);
+                Assert.Equal("OrdersPanel", summary.Objects[0].Name);
+                Assert.Equal("WebPanel", summary.Objects[0].Type);
+                Assert.Equal(1, summary.Objects[0].PartCount);
+                Assert.Equal(1, summary.Objects[0].NonEmptyPartCount);
+                Assert.Null(TransferService.ValidateImportPackage(summary));
+            }
+            finally
+            {
+                try { File.Delete(path); } catch { }
+            }
+        }
+
+        [Fact]
+        public void ValidateImportPackage_RejectsObjectWithoutPayloadBeforeMutation()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "gxmcp-transfer-empty-" + Guid.NewGuid().ToString("N") + ".xpz");
+            try
+            {
+                using (var archive = ZipFile.Open(path, ZipArchiveMode.Create))
+                using (var writer = new StreamWriter(archive.CreateEntry("export.xml").Open()))
+                {
+                    writer.Write("<ExportFile><Objects>"
+                        + "<Object name=\"HollowProcedure\" type=\"Procedure\"><Properties /></Object>"
+                        + "</Objects></ExportFile>");
+                }
+
+                var summary = TransferService.ReadExportPackageSummary(path);
+                string error = TransferService.ValidateImportPackage(summary);
+
+                Assert.Contains("HollowProcedure", error);
+                Assert.Contains("non-empty part payload", error);
+            }
+            finally
+            {
+                try { File.Delete(path); } catch { }
+            }
+        }
+
+        [Fact]
+        public void ValidateImportPackage_RejectsMalformedObjectRecordWithoutName()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "gxmcp-transfer-unnamed-" + Guid.NewGuid().ToString("N") + ".xpz");
+            try
+            {
+                using (var archive = ZipFile.Open(path, ZipArchiveMode.Create))
+                using (var writer = new StreamWriter(archive.CreateEntry("export.xml").Open()))
+                {
+                    writer.Write("<ExportFile><Objects><Object><Part><Source>unexpected</Source></Part></Object></Objects></ExportFile>");
+                }
+
+                var summary = TransferService.ReadExportPackageSummary(path);
+                string error = TransferService.ValidateImportPackage(summary);
+
+                Assert.Contains("without a readable object name", error);
+            }
+            finally
+            {
+                try { File.Delete(path); } catch { }
+            }
+        }
     }
 }
