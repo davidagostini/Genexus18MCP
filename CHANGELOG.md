@@ -56,6 +56,9 @@
   - The live Gateway harness now gives cold SDK/KB startup a bounded 180-second settle window instead of reporting a false failure at the first 15-second probe.
 
 
+
+- **Compatible SDK diagnostics no longer become fatal Worker failures ([#213](https://github.com/lennix1337/Genexus18MCP/issues/213)).** Startup health now classifies only known incompatible SDK codes as fatal; compatible, legacy-compatible, and fingerprint-drift diagnostics are kept informational and do not suppress the normal Worker lifecycle.
+
 - **Targeted build dry-runs now fail closed for unresolved indexed targets ([#214](https://github.com/lennix1337/Genexus18MCP/issues/214)).** When the Worker object index is loaded, `action=build` with `dryRun=true` now resolves bare names, `Type:Name`, and GUIDs before returning a plan. Unknown targets return `BuildTargetUnresolved` with the rejected targets and supported formats, while an index that is not ready is reported as `targetResolutionAvailable: false` and keeps the non-dispatching preview behavior.
 
 - **`genexus_doctor` now always reports a fresh snapshot ([#222](https://github.com/lennix1337/Genexus18MCP/issues/222)).** Gateway-side doctor responses bypass the semantic cache so `checkedAt`, Worker PID, uptime, and telemetry cannot be replayed from a previous health call.
