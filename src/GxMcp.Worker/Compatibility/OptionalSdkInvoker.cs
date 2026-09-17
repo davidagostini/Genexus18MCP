@@ -154,5 +154,100 @@ namespace GxMcp.Worker.Compatibility
         {
             return new OptionalSdkInvocation(true, false, null, error);
         }
+
+        internal static object CreateQualifiedName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return name;
+            Type qnameType = FindType("Artech.Architecture.Common.Objects.QualifiedName");
+            if (qnameType == null) return name;
+
+            try
+            {
+                var ctor = qnameType.GetConstructor(new[] { typeof(string) });
+                return ctor != null ? ctor.Invoke(new object[] { name }) : name;
+            }
+            catch
+            {
+                return name;
+            }
+        }
+
+        internal static object GetPartDynamic(object kbObject, Guid partTypeGuid)
+        {
+            if (kbObject == null) return null;
+            var partsProp = kbObject.GetType().GetProperty("Parts", MethodFlags);
+            var parts = partsProp?.GetValue(kbObject, null);
+            if (parts == null) return null;
+
+            var partsType = parts.GetType();
+            var getMethod = partsType.GetMethod("Get", new[] { typeof(Guid) })
+                         ?? partsType.GetMethod("GetPart", new[] { typeof(Guid) });
+            if (getMethod != null)
+            {
+                try
+                {
+                    return getMethod.Invoke(parts, new object[] { partTypeGuid });
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+            return null;
+        }
+
+        internal static object ResolveObjectDynamic(object model, Guid typeGuid, string moduleName, string objectName)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(objectName)) return null;
+
+            Type qnameType = FindType("Artech.Architecture.Common.Objects.QualifiedName");
+            var objectsProp = model.GetType().GetProperty("Objects", MethodFlags);
+            var objects = objectsProp?.GetValue(model, null);
+            if (objects == null) return null;
+
+            var objectsType = objects.GetType();
+
+            if (qnameType != null)
+            {
+                try
+                {
+                    object qname = null;
+                    if (!string.IsNullOrWhiteSpace(moduleName))
+                    {
+                        var twoArgCtor = qnameType.GetConstructor(new[] { typeof(string), typeof(string) });
+                        if (twoArgCtor != null) qname = twoArgCtor.Invoke(new object[] { moduleName, objectName });
+                    }
+                    if (qname == null)
+                    {
+                        var oneArgCtor = qnameType.GetConstructor(new[] { typeof(string) });
+                        if (oneArgCtor != null) qname = oneArgCtor.Invoke(new object[] { objectName });
+                    }
+
+                    if (qname != null)
+                    {
+                        var getByQname = objectsType.GetMethod("Get", new[] { typeof(Guid), qnameType });
+                        if (getByQname != null)
+                        {
+                            var res = getByQname.Invoke(objects, new object[] { typeGuid, qname });
+                            if (res != null) return res;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // Fallback for Ev1 / Ev2 without QualifiedName
+            try
+            {
+                var getByString = objectsType.GetMethod("Get", new[] { typeof(Guid), typeof(string) });
+                if (getByString != null)
+                {
+                    return getByString.Invoke(objects, new object[] { typeGuid, objectName });
+                }
+            }
+            catch { }
+
+            return null;
+        }
     }
 }

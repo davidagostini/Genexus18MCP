@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Legacy GeneXus best-effort compatibility across GeneXus Evolution 1-3, GeneXus 15, GeneXus 9.0, and GeneXus 8.0.**
+  - Added `legacyMajors` to `config/gx-versions.json` supporting `10.3` (Ev3), `10.2` (Ev2), `10.1` (Ev1), `15` (GX15) via `dotnet-reflection`, and `9` (GX 9.0) and `8` (GX 8.0) via `com-gxpublic`, keeping `supportedMajors` strictly scoped to verified primary SDK majors (16, 17, 18) with 0 release metadata drift.
+  - Implemented `DynamicSdkBridge` in Worker to dynamically gate MCP tools based on SDK capabilities, returning structured `UNSUPPORTED_IN_GENEXUS_VERSION` degradation envelopes for tools unavailable in earlier versions (e.g. `genexus_api` in <17, `genexus_gam` in <10.2, `genexus_module` in <10.3).
+  - Extended `OptionalSdkInvoker` with dynamic reflection helpers (`ResolveObjectDynamic`, `GetPartDynamic`, `CreateQualifiedName`) that seamlessly adapt to module-less SDKs (Evolution 1/2) without referencing `Artech.Architecture.Common.Objects.QualifiedName` statically.
+  - Implemented `ComGxPublicDriver` in Worker for classic Win32 GeneXus 8.0 and 9.0 installations using STA COM late-binding over `GXPublic.GXPublic`, enabling Knowledge Base opening, object queries, and part reading from `.gxi` Knowledge Bases.
+  - Updated Gateway version detection (`WorkerSdkCompatibilityProbe.cs`) to evaluate legacy SDK anchors (`gx.exe`, `gxdl32.dll`) returning `GXMCP_SDK_LEGACY_COMPATIBLE` and passing driver/major configuration to spawned workers.
+  - Extended CLI discovery (`cli/lib/config.js`) to parse decimal majors (`10.x`), discover classic `.gxi` Knowledge Bases, and locate classic executable installations (`gx.exe`).
+  - Added AI prescriptive guidance to `UNSUPPORTED_IN_GENEXUS_VERSION` error envelopes, suggesting actionable legacy patterns (e.g. Procedures with `Expose as Web Service` instead of `genexus_api`, Theme objects instead of `genexus_design_system`, Folders instead of `genexus_module`).
+  - Added proactive CLI doctor checks (`gxpublic_com_registration` and `legacy_ide_lock`) verifying `GXPublic.GXPublic` COM server registration and alerting on active `gx.exe` processes holding exclusive KB file locks.
+  - Implemented encoding resilience with automatic Windows-1252 (ANSI/CP1252) resolution for COM driver and pre-GX15 installations with `GXMCP_SOURCE_ENCODING` override support, preventing mojibake on Portuguese/Spanish accented characters.
+  - Enabled classic XPZ transfer routing `genexus_transfer action=export|import` through `ComGxPublicDriver` on GeneXus 8.0 and 9.0.
+  - Added multi-major WorkWithPlus environment resolution in `PatternApplyService`, dynamically discovering `Environment.config` across GeneXus versions instead of hardcoding GeneXus 18.
+
 - **Support for GeneXus 16 SDK.** GeneXus 16 (`16.0.x`) is now an officially supported SDK major alongside GeneXus 17 and GeneXus 18.
   - Added GeneXus 16 to the version catalog (`config/gx-versions.json`) with auto-discovery at `C:\Program Files (x86)\GeneXus\GeneXus16`.
   - Updated `SdkCompatibilityValidator` and `scripts/validate-gx-sdk.ps1` to mark `GeneXus.TeamDevClient.Architecture.BL.dll` as optional (absent in GX16).

@@ -59,7 +59,9 @@ function validateClientIds(ids) {
 
 function isSupportedCatalogMajor(catalog, major) {
     if (!major) return true;
-    return catalog.supportedMajors.some((entry) => String(entry.major) === String(major));
+    const inSupported = catalog.supportedMajors && catalog.supportedMajors.some((entry) => String(entry.major) === String(major));
+    if (inSupported) return true;
+    return Array.isArray(catalog.legacyMajors) && catalog.legacyMajors.some((entry) => String(entry.major) === String(major));
 }
 
 function parseFieldSelection(raw) {
@@ -601,6 +603,50 @@ function buildInProcessBuildAssemblyLoadCheck(gxPath) {
     };
 }
 
+function buildGxPublicComCheck(gxMajor, gxPath) {
+    if (gxMajor !== '8' && gxMajor !== '9') {
+        return { id: 'gxpublic_com_registration', status: 'not_applicable', detail: 'Not a GeneXus 8.0/9.0 installation.' };
+    }
+    const child_process = require('child_process');
+    let isRegistered = false;
+    try {
+        const res = child_process.spawnSync('reg', ['query', 'HKCR\\GXPublic.GXPublic'], { encoding: 'utf8', timeout: 2000 });
+        isRegistered = res.status === 0;
+    } catch { }
+
+    if (isRegistered) {
+        return { id: 'gxpublic_com_registration', status: 'pass', detail: 'GXPublic COM automation server (GXPublic.GXPublic) is registered.' };
+    }
+    const dllHint = gxPath ? path.join(gxPath, 'GxPublic.dll') : 'GxPublic.dll';
+    return {
+        id: 'gxpublic_com_registration',
+        status: 'warn',
+        detail: `GXPublic COM component is not registered. Run 'regsvr32 "${dllHint}"' to enable GeneXus ${gxMajor}.0 COM automation.`
+    };
+}
+
+function buildLegacyIdeLockCheck(gxMajor) {
+    if (gxMajor !== '8' && gxMajor !== '9' && gxMajor !== '10.1' && gxMajor !== '10.2') {
+        return { id: 'legacy_ide_lock', status: 'not_applicable', detail: 'Lock check not applicable for modern GeneXus versions.' };
+    }
+    const child_process = require('child_process');
+    let ideRunning = false;
+    try {
+        const res = child_process.spawnSync('tasklist', ['/FI', 'IMAGENAME eq gx.exe', '/NH'], { encoding: 'utf8', timeout: 2000 });
+        if (res.stdout && res.stdout.toLowerCase().includes('gx.exe')) {
+            ideRunning = true;
+        }
+    } catch { }
+    if (ideRunning) {
+        return {
+            id: 'legacy_ide_lock',
+            status: 'warn',
+            detail: 'GeneXus IDE (gx.exe) process is currently running. Legacy engines hold exclusive file locks on the KB.'
+        };
+    }
+    return { id: 'legacy_ide_lock', status: 'pass', detail: 'No conflicting GeneXus IDE process (gx.exe) detected.' };
+}
+
 function redactConfig(cfg) {
     // Replace absolute paths with `<redacted:hash8>` so the structure is preserved
     // but filesystem layout, usernames, and KB names are not leaked. Hash is stable
@@ -749,7 +795,7 @@ async function handleDoctor(options, ctx) {
     const kbPath = data.kbPath;
     const gxPath = data.gxPath;
     const kbExists = !!(kbPath && fs.existsSync(kbPath));
-    const gxExeExists = !!(gxPath && fs.existsSync(path.join(gxPath, 'genexus.exe')));
+    const gxExeExists = !!(gxPath && (fs.existsSync(path.join(gxPath, 'genexus.exe')) || fs.existsSync(path.join(gxPath, 'gx.exe'))));
     const kbSdkCompatibility = kbExists && gxExeExists
         ? compareGeneXusKbAndInstallation(kbPath, gxPath)
         : null;
@@ -809,7 +855,7 @@ async function handleDoctor(options, ctx) {
         // Same logic for the GeneXus install: missing genexus.exe at a configured path
         // guarantees a worker crash on first MCP call. Promote from warn to fail so init
         // exits non-zero and the caller (install.ps1, AI client) actually sees the problem.
-        { id: 'gx_installation', status: gxExeExists ? 'pass' : (gxPath ? 'fail' : 'warn'), detail: gxExeExists ? `GeneXus installation has genexus.exe${gxVersionLabel}.` : (gxPath ? `Configured GeneXus installation is missing genexus.exe at: ${gxPath}` : 'No GeneXus installation path is configured.') },
+        { id: 'gx_installation', status: gxExeExists ? 'pass' : (gxPath ? 'fail' : 'warn'), detail: gxExeExists ? `GeneXus installation has ${gxPath && fs.existsSync(path.join(gxPath, 'gx.exe')) && !fs.existsSync(path.join(gxPath, 'genexus.exe')) ? 'gx.exe' : 'genexus.exe'}${gxVersionLabel}.` : (gxPath ? `Configured GeneXus installation is missing executable at: ${gxPath}` : 'No GeneXus installation path is configured.') },
         {
             id: 'kb_sdk_compatibility',
             status: compatibilityStatus,
@@ -825,6 +871,13 @@ async function handleDoctor(options, ctx) {
     checks.push({ id: 'worker_single_instance_lock', status: lockCheck.status, detail: lockCheck.detail });
     const inProcessLoad = buildInProcessBuildAssemblyLoadCheck(gxPath);
     checks.push({ id: 'in_process_build_assembly_load', status: inProcessLoad.status, detail: inProcessLoad.detail });
+
+    // Legacy GeneXus checks (GX 8.0, 9.0, Ev1, Ev2)
+    const gxMajor = (gxIdent && gxIdent.major) || (kbSdkCompatibility && kbSdkCompatibility.gx && kbSdkCompatibility.gx.major) || null;
+    const comCheck = buildGxPublicComCheck(gxMajor, gxPath);
+    checks.push({ id: 'gxpublic_com_registration', status: comCheck.status, detail: comCheck.detail });
+    const ideLockCheck = buildLegacyIdeLockCheck(gxMajor);
+    checks.push({ id: 'legacy_ide_lock', status: ideLockCheck.status, detail: ideLockCheck.detail });
 
     // Client registration summary — one line answering "are my AI agents wired up?".
     const clientRows = clientsStatus();

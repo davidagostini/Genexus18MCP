@@ -214,6 +214,15 @@ namespace GxMcp.Worker
                 // ELITE: Configuration Resolve Logic (Env > Local Config > Error)
                 string gxPath = Environment.GetEnvironmentVariable("GX_PROGRAM_DIR");
                 string kbPath = Environment.GetEnvironmentVariable("GX_KB_PATH");
+                string driver = Environment.GetEnvironmentVariable("GXMCP_DRIVER") ?? "native-sdk";
+                string targetMajor = Environment.GetEnvironmentVariable("GXMCP_TARGET_MAJOR") ?? "";
+
+                for (int i = 0; i < args.Length; i++)
+                {
+                    if (args[i] == "--driver" && i + 1 < args.Length) { driver = args[i + 1]; }
+                    if (args[i] == "--major" && i + 1 < args.Length) { targetMajor = args[i + 1]; }
+                }
+                GxMcp.Worker.Compatibility.DynamicSdkBridge.Initialize(driver, targetMajor);
 
                 if (string.IsNullOrEmpty(gxPath) || string.IsNullOrEmpty(kbPath))
                 {
@@ -229,14 +238,21 @@ namespace GxMcp.Worker
                     throw new Exception("GX_PROGRAM_DIR not specified in environment or local config.json.");
 
                 string sdkManifest = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "", "sdk-compatibility.json");
-                var sdkCompatibility = SdkCompatibilityValidator.Validate(gxPath, sdkManifest);
-                if (!sdkCompatibility.IsCompatible)
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsLegacyDriver)
                 {
-                    Logger.Error(sdkCompatibility.Diagnostic);
-                    Environment.Exit(1);
-                    return;
+                    Logger.Info($"[Worker] Starting in legacy driver mode '{driver}' for GeneXus major '{targetMajor}'. Bypassing native manifest assembly validation.");
                 }
-                Logger.Info(sdkCompatibility.Diagnostic);
+                else
+                {
+                    var sdkCompatibility = SdkCompatibilityValidator.Validate(gxPath, sdkManifest);
+                    if (!sdkCompatibility.IsCompatible)
+                    {
+                        Logger.Error(sdkCompatibility.Diagnostic);
+                        Environment.Exit(1);
+                        return;
+                    }
+                    Logger.Info(sdkCompatibility.Diagnostic);
+                }
 
                 // FR#19 (v2.6.6 Stream B): refuse to start when another worker already
                 // serves this (kbPath, workerExe) pair. We resolve the cli-arg kbPath
@@ -317,9 +333,15 @@ namespace GxMcp.Worker
                 // warmup dominates; a sudden jump in kbOpen points at the data-store
                 // connect the SDK attempts during open.
                 var coldStartSw = System.Diagnostics.Stopwatch.StartNew();
-                TryWarmupArtechTaskCctor(gxPath);
-
-                InitializeSdk(gxPath);
+                if (!GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    TryWarmupArtechTaskCctor(gxPath);
+                    InitializeSdk(gxPath);
+                }
+                else
+                {
+                    Logger.Info($"[Worker] Starting in COM GXPublic driver mode for GeneXus {targetMajor} — skipping .NET SDK initialization.");
+                }
                 _dispatcher = CommandDispatcher.Instance;
                 _mtaExecutor = new MtaCommandExecutor(
                     ResolveQueueCapacity("GXMCP_MTA_CONCURRENCY", 8),
@@ -350,7 +372,21 @@ namespace GxMcp.Worker
                 {
                     try {
                         Logger.Info($"Worker auto-opening KB: {kbPath}");
-                        _dispatcher.GetKbService().OpenKB(kbPath);
+                        if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                        {
+                            if (!GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.OpenKB(kbPath, out string openError))
+                            {
+                                Logger.Error($"Worker failed to open KB via GXPublic COM: {openError}");
+                            }
+                            else
+                            {
+                                Logger.Info($"Worker connected KB via GXPublic COM successfully: {kbPath}");
+                            }
+                        }
+                        else
+                        {
+                            _dispatcher.GetKbService().OpenKB(kbPath);
+                        }
                     } catch (Exception ex) {
                         Logger.Error($"Worker failed to auto-open KB: {ex.Message}");
                     }
@@ -756,9 +792,21 @@ namespace GxMcp.Worker
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 lastStep = name;
-                body();
-                sw.Stop();
-                Logger.Info($"[SDK-INIT] {name} OK in {sw.ElapsedMilliseconds}ms");
+                try
+                {
+                    body();
+                    sw.Stop();
+                    Logger.Info($"[SDK-INIT] {name} OK in {sw.ElapsedMilliseconds}ms");
+                }
+                catch (Exception stepEx)
+                {
+                    sw.Stop();
+                    Logger.Warn($"[SDK-INIT] {name} failed in {sw.ElapsedMilliseconds}ms: {stepEx.Message}");
+                    if (!GxMcp.Worker.Compatibility.DynamicSdkBridge.IsLegacyDriver)
+                    {
+                        throw;
+                    }
+                }
             }
             try {
                 Logger.Debug($"Setting current directory to {gxPath}");

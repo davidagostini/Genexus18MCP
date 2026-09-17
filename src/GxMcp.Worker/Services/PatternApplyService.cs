@@ -1054,7 +1054,36 @@ namespace GxMcp.Worker.Services
                 }
 
                 context.UserAppDataPath = userAppDataPath;
-                context.EnvironmentConfigPath = Path.Combine(userAppDataPath, "GeneXus", "GeneXus", "18", "Environment.config");
+                string majorFolder = !string.IsNullOrWhiteSpace(Compatibility.DynamicSdkBridge.CurrentMajor)
+                    ? Compatibility.DynamicSdkBridge.CurrentMajor
+                    : "18";
+                string envConfigPath = Path.Combine(userAppDataPath, "GeneXus", "GeneXus", majorFolder, "Environment.config");
+                if (!File.Exists(envConfigPath))
+                {
+                    // Fallback to primary major "18" or search subdirectories in base GeneXus config
+                    string primaryFallback = Path.Combine(userAppDataPath, "GeneXus", "GeneXus", "18", "Environment.config");
+                    if (File.Exists(primaryFallback))
+                    {
+                        envConfigPath = primaryFallback;
+                    }
+                    else
+                    {
+                        string baseDir = Path.Combine(userAppDataPath, "GeneXus", "GeneXus");
+                        if (Directory.Exists(baseDir))
+                        {
+                            try
+                            {
+                                var candidates = Directory.GetFiles(baseDir, "Environment.config", SearchOption.AllDirectories);
+                                if (candidates.Length > 0)
+                                {
+                                    envConfigPath = candidates[0];
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                context.EnvironmentConfigPath = envConfigPath;
                 context.EnvironmentConfigExists = File.Exists(context.EnvironmentConfigPath);
                 if (!context.EnvironmentConfigExists)
                 {

@@ -23,5 +23,55 @@
       "registryNames": ["GeneXus 18"],
       "legacyRegistryVersions": ["18.0"]
     }
+  ],
+  "legacyMajors": [
+    {
+      "major": "10.3",
+      "displayName": "GeneXus Evolution 3",
+      "driver": "dotnet-reflection",
+      "defaultInstallPath": "C:\\Program Files (x86)\\GeneXus\\GeneXusXEv3",
+      "registryNames": ["GeneXus X Evolution 3", "GeneXus 10.3"],
+      "legacyRegistryVersions": ["10.3"]
+    },
+    {
+      "major": "10.2",
+      "displayName": "GeneXus Evolution 2",
+      "driver": "dotnet-reflection",
+      "defaultInstallPath": "C:\\Program Files (x86)\\GeneXus\\GeneXusXEv2",
+      "registryNames": ["GeneXus X Evolution 2", "GeneXus 10.2"],
+      "legacyRegistryVersions": ["10.2"]
+    },
+    {
+      "major": "10.1",
+      "displayName": "GeneXus Evolution 1",
+      "driver": "dotnet-reflection",
+      "defaultInstallPath": "C:\\Program Files (x86)\\GeneXus\\GeneXusXEv1",
+      "registryNames": ["GeneXus X Evolution 1", "GeneXus 10.1"],
+      "legacyRegistryVersions": ["10.1"]
+    },
+    {
+      "major": "15",
+      "displayName": "GeneXus 15",
+      "driver": "dotnet-reflection",
+      "defaultInstallPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus15",
+      "registryNames": ["GeneXus 15"],
+      "legacyRegistryVersions": ["15.0"]
+    },
+    {
+      "major": "9",
+      "displayName": "GeneXus 9.0",
+      "driver": "com-gxpublic",
+      "defaultInstallPath": "C:\\Program Files (x86)\\ARTech\\GeneXus\\GeneXus 9.0",
+      "registryNames": ["GeneXus 9.0"],
+      "legacyRegistryVersions": ["9.0"]
+    },
+    {
+      "major": "8",
+      "displayName": "GeneXus 8.0",
+      "driver": "com-gxpublic",
+      "defaultInstallPath": "C:\\Program Files (x86)\\ARTech\\GeneXus\\GeneXus 8.0",
+      "registryNames": ["GeneXus 8.0"],
+      "legacyRegistryVersions": ["8.0"]
+    }
   ]
 }

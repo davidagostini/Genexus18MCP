@@ -619,8 +619,45 @@ test('KB identity fails closed for malformed gxw metadata', () => {
 
 test('catalog discovery ordering can prefer the KB major', () => {
     assert.equal(getGeneXusMajor('17.0.11.163677'), '17');
+    assert.equal(getGeneXusMajor('10.3.0.86550'), '10.3');
+    assert.equal(getGeneXusMajor('10.2.0'), '10.2');
+    assert.equal(getGeneXusMajor('10.1.0'), '10.1');
+    assert.equal(getGeneXusMajor('9.0.123'), '9');
+    assert.equal(getGeneXusMajor('8.0.456'), '8');
     assert.equal(getGeneXusCatalogEntries('17')[0].major, '17');
     assert.equal(getGeneXusCatalogEntries('18')[0].major, '18');
+    assert.equal(getGeneXusCatalogEntries('10.3')[0].major, '10.3');
+    assert.equal(getGeneXusCatalogEntries('9')[0].major, '9');
+    assert.equal(getGeneXusCatalogEntries('8')[0].major, '8');
+});
+
+test('KB identity reads Evolution 3 decimal major from gxw metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-ev3-'));
+    try {
+        fs.writeFileSync(
+            path.join(tempRoot, 'KnowledgeBase.gxw'),
+            '<KnowledgeBase><FriendlyVersion>GeneXus Evolution 3</FriendlyVersion><VersionNumber>10.3.0.86550</VersionNumber></KnowledgeBase>'
+        );
+        const identity = readGeneXusKbIdentity(tempRoot);
+        assert.equal(identity.version, '10.3.0.86550');
+        assert.equal(identity.major, '10.3');
+        assert.equal(identity.source, 'gxw-version');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('KB identity reads GeneXus 9.0 classic major from gxi when gxw is absent', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-kb-gx9-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'MyLegacyKb.gxi'), 'binary-or-header-data');
+        const identity = readGeneXusKbIdentity(tempRoot);
+        assert.equal(identity.major, '9');
+        assert.equal(identity.version, '9.0');
+        assert.equal(identity.source, 'gxi-classic');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
 });
 
 test('init rejects a known KB and SDK major mismatch before writing config', () => {
@@ -1140,6 +1177,42 @@ test('doctor rejects a KB and SDK major that is outside the compatibility catalo
         assert.equal(check.status, 'fail');
         assert.match(check.detail, /KB major 19 is not supported/);
         assert.match(check.detail, /Supported majors: 16, 17, 18/);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('doctor evaluates gxpublic_com_registration and legacy_ide_lock checks for classic GeneXus', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-classic-'));
+    const kbDir = path.join(tempRoot, 'kb9');
+    const gxDir = path.join(tempRoot, 'GeneXus9');
+    fs.mkdirSync(kbDir, { recursive: true });
+    fs.mkdirSync(gxDir, { recursive: true });
+    fs.writeFileSync(path.join(kbDir, 'test.gxi'), 'legacy classic kb index');
+    fs.writeFileSync(path.join(gxDir, 'gx.exe'), 'classic-genexus-exe');
+    const configPath = path.join(tempRoot, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+        GeneXus: { InstallationPath: gxDir },
+        Environment: { KBPath: kbDir }
+    }));
+
+    try {
+        const result = runCli(['doctor', '--format', 'json', '--limit', '50'], {
+            env: {
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: process.execPath,
+                LOCALAPPDATA: tempRoot
+            }
+        });
+        assert.equal(result.status, 0);
+        const parsed = JSON.parse(result.stdout);
+        const comCheck = parsed.ok.checks.find((row) => row.id === 'gxpublic_com_registration');
+        assert.ok(comCheck, 'gxpublic_com_registration check should be present');
+        assert.ok(['pass', 'warn'].includes(comCheck.status), `expected pass or warn, got ${comCheck.status}`);
+
+        const ideCheck = parsed.ok.checks.find((row) => row.id === 'legacy_ide_lock');
+        assert.ok(ideCheck, 'legacy_ide_lock check should be present');
+        assert.ok(['pass', 'warn'].includes(ideCheck.status), `expected pass or warn, got ${ideCheck.status}`);
     } finally {
         removeTempPath(tempRoot, { recursive: true, force: true });
     }

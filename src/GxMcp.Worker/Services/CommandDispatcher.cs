@@ -705,6 +705,11 @@ namespace GxMcp.Worker.Services
                         ?? request["name"]?.ToString()
                         ?? (request["params"] as JObject)?["name"]?.ToString();
 
+                    if (!GxMcp.Worker.Compatibility.DynamicSdkBridge.CheckCapability(method, toolName, target, out string capError))
+                    {
+                        return capError;
+                    }
+
                     var ctx = new CommandContext(request, method, action, target, payload, args, toolName);
                     if (_registry != null && _registry.TryDispatch(ctx, out var regResult))
                     {
@@ -894,6 +899,25 @@ namespace GxMcp.Worker.Services
         {
             if (action == "Open")
             {
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    if (GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.OpenKB(target, out string openErr))
+                    {
+                        Environment.SetEnvironmentVariable("GX_KB_PATH", target);
+                        return Models.McpResponse.Ok(
+                            target: target,
+                            code: "GXMCP_KB_OPENED",
+                            result: new JObject
+                            {
+                                ["kbPath"] = target,
+                                ["driver"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentDriver,
+                                ["major"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentMajor,
+                                ["progId"] = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ResolvedProgId
+                            });
+                    }
+                    return openErr;
+                }
+
                 string result = _kbService.OpenKB(target);
                 try
                 {
@@ -1245,6 +1269,22 @@ namespace GxMcp.Worker.Services
         {
             if (action == "Query")
             {
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjects(args?["typeFilter"]?.ToString(), target, out string qErr);
+                    if (qErr != null) return Models.McpResponse.Err(code: "ComQueryError", message: qErr, target: target);
+                    var arr = new JArray();
+                    foreach (var obj in objects)
+                    {
+                        arr.Add(new JObject { ["name"] = obj });
+                    }
+                    return Models.McpResponse.Ok(code: "QueryResults", result: new JObject
+                    {
+                        ["objects"] = arr,
+                        ["total"] = arr.Count
+                    });
+                }
+
                 DateTime sinceArgQ = default(DateTime);
                 DateTime modifiedBeforeArgQ = default(DateTime);
                 string sinceTokQ = args?["since"]?.ToString();
@@ -1324,6 +1364,22 @@ namespace GxMcp.Worker.Services
         {
             if (action == "Objects")
             {
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjects(args?["typeFilter"]?.ToString(), args?["nameFilter"]?.ToString() ?? target, out string listErr);
+                    if (listErr != null) return Models.McpResponse.Err(code: "ComListError", message: listErr, target: target);
+                    var arr = new JArray();
+                    foreach (var obj in objects)
+                    {
+                        arr.Add(new JObject { ["name"] = obj });
+                    }
+                    return Models.McpResponse.Ok(code: "ListObjects", result: new JObject
+                    {
+                        ["objects"] = arr,
+                        ["total"] = arr.Count
+                    });
+                }
+
                 DateTime sinceArg = default(DateTime);
                 DateTime modifiedBeforeArg = default(DateTime);
                 string sinceTok = args?["since"]?.ToString();
@@ -1359,6 +1415,22 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Read(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+            {
+                string partName = args?["part"]?.ToString() ?? "Source";
+                string partContent = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ReadObjectPart(target, partName, out string readErr);
+                if (readErr != null)
+                {
+                    return Models.McpResponse.Err(code: "ComReadError", message: readErr, target: target);
+                }
+                return Models.McpResponse.Ok(target: target, code: "ObjectPart", result: new JObject
+                {
+                    ["name"] = target,
+                    ["part"] = partName,
+                    ["source"] = partContent ?? string.Empty
+                });
+            }
+
             if (action == "ExtractFullObject")
             {
                 string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
@@ -2557,6 +2629,55 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Transfer(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+            {
+                string act = (args?["action"]?.ToString() ?? action ?? "").Trim().ToLowerInvariant();
+                if (act == "export")
+                {
+                    string outputFile = args?["outputFile"]?.ToString() ?? args?["filePath"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(outputFile))
+                        return Models.McpResponse.Err(code: "BadArgs", message: "action=export requires outputFile.", hint: "Pass outputFile=<absolute .xpz path>.");
+
+                    var targets = args?["targets"] as JArray;
+                    var list = new System.Collections.Generic.List<string>();
+                    if (targets != null)
+                    {
+                        foreach (var t in targets) if (t != null) list.Add(t.ToString());
+                    }
+
+                    if (!GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ExportXPZ(outputFile, list, out var err))
+                        return Models.McpResponse.Err(code: "TransferFailed", message: err ?? "Failed to export XPZ via GXPublic COM.", target: outputFile);
+
+                    var resp = new JObject
+                    {
+                        ["status"] = "ok",
+                        ["action"] = "export",
+                        ["outputFile"] = outputFile,
+                        ["driver"] = "com-gxpublic",
+                        ["objectCount"] = list.Count
+                    };
+                    return resp.ToString(Newtonsoft.Json.Formatting.None);
+                }
+                else if (act == "import")
+                {
+                    string inputFile = args?["inputFile"]?.ToString() ?? args?["filePath"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(inputFile))
+                        return Models.McpResponse.Err(code: "BadArgs", message: "action=import requires inputFile.", hint: "Pass inputFile=<absolute .xpz path>.");
+
+                    if (!GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ImportXPZ(inputFile, out var err))
+                        return Models.McpResponse.Err(code: "TransferFailed", message: err ?? "Failed to import XPZ via GXPublic COM.", target: inputFile);
+
+                    var resp = new JObject
+                    {
+                        ["status"] = "ok",
+                        ["action"] = "import",
+                        ["inputFile"] = inputFile,
+                        ["driver"] = "com-gxpublic"
+                    };
+                    return resp.ToString(Newtonsoft.Json.Formatting.None);
+                }
+            }
+
             // genexus_transfer — real XPZ export/import over IKnowledgeManagerService.
             // action=export|inspect|import (import destructive; see TransferService guards).
             return _transferService.Run(args ?? new JObject());

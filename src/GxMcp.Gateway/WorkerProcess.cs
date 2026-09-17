@@ -792,6 +792,8 @@ namespace GxMcp.Gateway
                 string kbPath = Kb.Path;
                 startInfo.Arguments = $"--kb \"{kbPath}\"";
                 startInfo.EnvironmentVariables["GX_PROGRAM_DIR"] = _config.GeneXus?.InstallationPath ?? string.Empty;
+                startInfo.EnvironmentVariables["GXMCP_DRIVER"] = sdkProbe.Driver ?? "native-sdk";
+                startInfo.EnvironmentVariables["GXMCP_TARGET_MAJOR"] = sdkProbe.Major ?? string.Empty;
                 // GX_KB_PATH is always derived from the gateway-owned handle.
                 startInfo.EnvironmentVariables["GX_KB_PATH"] = kbPath;
                 startInfo.EnvironmentVariables["GXMCP_STATE_SCOPE_ID"] = StateScope.ProcessScopeId.ToString();

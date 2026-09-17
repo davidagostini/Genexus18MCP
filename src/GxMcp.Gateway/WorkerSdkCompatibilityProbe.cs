@@ -10,6 +10,7 @@ namespace GxMcp.Gateway
         internal string? InstallationPath { get; init; }
         internal string? Version { get; init; }
         internal string? Major { get; init; }
+        internal string? Driver { get; init; }
         internal string Status { get; init; } = "unavailable";
         internal string Code { get; init; } = "GXMCP_SDK_VERSION_UNDETECTED";
         internal string Diagnostic { get; init; } = string.Empty;
@@ -25,6 +26,7 @@ namespace GxMcp.Gateway
                 ["version"] = Version,
                 ["major"] = Major,
                 ["matchedMajor"] = IsCompatible ? Major : null,
+                ["driver"] = Driver,
                 ["status"] = Status,
                 ["code"] = Code,
                 ["diagnostic"] = Diagnostic,
@@ -42,6 +44,11 @@ namespace GxMcp.Gateway
     /// </summary>
     internal static class WorkerSdkCompatibilityProbe
     {
+        private static readonly string[] ClassicAnchors = { "gx.exe", "gxdl32.dll" };
+
+        [ThreadStatic]
+        internal static Func<string, string?>? FileVersionReader;
+
         internal static WorkerSdkCompatibilityProbeResult Check(string? installationPath)
         {
             if (string.IsNullOrWhiteSpace(installationPath) || !Directory.Exists(installationPath))
@@ -80,18 +87,36 @@ namespace GxMcp.Gateway
                 };
             }
 
-            if (!GeneXusVersionCatalog.IsSupported(version))
+            if (GeneXusVersionCatalog.IsLegacyMajor(major))
+            {
+                string? driver = GeneXusVersionCatalog.GetDriverProfile(major);
+                return new WorkerSdkCompatibilityProbeResult
+                {
+                    InstallationPath = installationPath,
+                    Version = version,
+                    Major = major,
+                    Driver = driver,
+                    Status = "compatible",
+                    Code = "GXMCP_SDK_LEGACY_COMPATIBLE",
+                    Diagnostic = "GXMCP_SDK_LEGACY_COMPATIBLE version=" + version
+                        + " major=" + major
+                        + " driver=" + driver
+                };
+            }
+
+            if (GeneXusVersionCatalog.IsSupported(version))
             {
                 return new WorkerSdkCompatibilityProbeResult
                 {
                     InstallationPath = installationPath,
                     Version = version,
                     Major = major,
-                    Status = "incompatible",
-                    Code = "GXMCP_SDK_VERSION_MISMATCH",
-                    Diagnostic = "GXMCP_SDK_VERSION_MISMATCH expectedMajors="
-                        + GeneXusVersionCatalog.SupportedMajorsDisplay
-                        + " actualVersion=" + version
+                    Driver = "native-sdk",
+                    Status = "compatible",
+                    Code = "GXMCP_SDK_COMPATIBLE",
+                    Diagnostic = "GXMCP_SDK_COMPATIBLE version=" + version
+                        + " major=" + major
+                        + " supportedMajors=" + GeneXusVersionCatalog.SupportedMajorsDisplay
                 };
             }
 
@@ -100,11 +125,11 @@ namespace GxMcp.Gateway
                 InstallationPath = installationPath,
                 Version = version,
                 Major = major,
-                Status = "compatible",
-                Code = "GXMCP_SDK_COMPATIBLE",
-                Diagnostic = "GXMCP_SDK_COMPATIBLE version=" + version
-                    + " major=" + major
-                    + " supportedMajors=" + GeneXusVersionCatalog.SupportedMajorsDisplay
+                Status = "incompatible",
+                Code = "GXMCP_SDK_VERSION_MISMATCH",
+                Diagnostic = "GXMCP_SDK_VERSION_MISMATCH expectedMajors="
+                    + GeneXusVersionCatalog.SupportedMajorsDisplay
+                    + " actualVersion=" + version
             };
         }
 
@@ -113,14 +138,47 @@ namespace GxMcp.Gateway
             try
             {
                 string anchor = Path.Combine(installationPath, "Artech.Architecture.Common.dll");
-                if (!File.Exists(anchor)) return null;
-                var info = FileVersionInfo.GetVersionInfo(anchor);
-                return string.IsNullOrWhiteSpace(info.ProductVersion) ? info.FileVersion : info.ProductVersion;
+                if (File.Exists(anchor))
+                {
+                    string? version = GetFileVersion(anchor);
+                    if (!string.IsNullOrWhiteSpace(version))
+                    {
+                        return version;
+                    }
+                }
+
+                foreach (string classicAnchor in ClassicAnchors)
+                {
+                    string classicPath = Path.Combine(installationPath, classicAnchor);
+                    if (File.Exists(classicPath))
+                    {
+                        string? version = GetFileVersion(classicPath);
+                        if (!string.IsNullOrWhiteSpace(version))
+                        {
+                            return version;
+                        }
+                    }
+                }
+
+                return null;
             }
             catch
             {
                 return null;
             }
+        }
+
+        private static string? GetFileVersion(string filePath)
+        {
+            if (FileVersionReader != null)
+            {
+                string? mocked = FileVersionReader(filePath);
+                if (mocked != null) return string.IsNullOrWhiteSpace(mocked) ? null : mocked.Trim();
+            }
+
+            var info = FileVersionInfo.GetVersionInfo(filePath);
+            string? version = string.IsNullOrWhiteSpace(info.ProductVersion) ? info.FileVersion : info.ProductVersion;
+            return string.IsNullOrWhiteSpace(version) ? null : version.Trim();
         }
     }
 }

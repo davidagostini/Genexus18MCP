@@ -67,6 +67,13 @@ catalog only after compiling the Worker with that SDK and passing the focused
 tests plus a live KB smoke. This prevents the server from claiming compatibility
 based only on a version string.
 
+### Legacy GeneXus compatibility (GX8 to GX15)
+
+The server also includes best-effort dynamic compatibility for legacy installations:
+- **GeneXus Evolution 1 (10.1), Evolution 2 (10.2), Evolution 3 (10.3), and GeneXus 15**: Driven via runtime reflection (`dotnet-reflection`), dynamically adapting to missing types or structural differences (such as module-less KBs without `QualifiedName`).
+- **GeneXus 8.0 and GeneXus 9.0**: Driven via classic Win32 COM automation (`com-gxpublic`), late-binding to `GXPublic.GXPublic` on an STA thread to open, inspect, and read objects from classic `.gxi` Knowledge Bases.
+- **Graceful degradation**: Modern tools that require features introduced in newer GeneXus versions (such as `genexus_api`, `genexus_gam`, or `genexus_module`) return structured `UNSUPPORTED_IN_GENEXUS_VERSION` errors indicating the required minimum version rather than failing ungracefully.
+
 ---
 
 ## What you can do with it

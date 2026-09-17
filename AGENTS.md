@@ -54,6 +54,11 @@ Primary SDK: **GeneXus 18**.
 Source of truth: `config/gx-versions.json`.
 <!-- END GENERATED: gx-compatibility -->
 
+- **Legacy GeneXus best-effort support (GX8 to GX15):** In addition to the primary supported SDK majors (GX 16, 17, 18), the server supports legacy GeneXus versions via dynamic degradation:
+  - GeneXus Evolution 1 (10.1), Evolution 2 (10.2), Evolution 3 (10.3), and GeneXus 15 via `dotnet-reflection` (using `DynamicSdkBridge` and `OptionalSdkInvoker` for module-less vs `QualifiedName` and API differences).
+  - GeneXus 8.0 and 9.0 via `com-gxpublic` (`ComGxPublicDriver` connecting to classic Win32 `GXPublic.GXPublic` COM automation on an STA thread for `.gxi` KBs).
+  - Modern tools unsupported in earlier versions return structured degradation envelopes (`UNSUPPORTED_IN_GENEXUS_VERSION`).
+
 ## KB and harness contracts
 
 - KB resolution order is explicit `kb` → MCP-session selection (`genexus_kb action=select` / `set_session_default`) → strict/legacy resolution policy.

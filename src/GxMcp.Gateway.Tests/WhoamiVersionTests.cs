@@ -108,6 +108,49 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void GeneXusVersionCatalog_RecognizesLegacyMajorsAndDrivers()
+        {
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("10.3"));
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("10.2"));
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("10.1"));
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("9"));
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("8"));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor("18"));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor("unknown"));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor(null));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor(""));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor("   "));
+
+            Assert.Equal("dotnet-reflection", GeneXusVersionCatalog.GetDriverProfile("10.3"));
+            Assert.Equal("dotnet-reflection", GeneXusVersionCatalog.GetDriverProfile("10.3.0.86550"));
+            Assert.Equal("dotnet-reflection", GeneXusVersionCatalog.GetDriverProfile("15"));
+            Assert.Equal("com-gxpublic", GeneXusVersionCatalog.GetDriverProfile("9"));
+            Assert.Equal("com-gxpublic", GeneXusVersionCatalog.GetDriverProfile("9.0.123"));
+            Assert.Equal("com-gxpublic", GeneXusVersionCatalog.GetDriverProfile("8"));
+            Assert.Equal("com-gxpublic", GeneXusVersionCatalog.GetDriverProfile("8.0.456"));
+            Assert.Equal("native-sdk", GeneXusVersionCatalog.GetDriverProfile("18"));
+            Assert.Equal("native-sdk", GeneXusVersionCatalog.GetDriverProfile("18.0.4.180000"));
+            Assert.Equal("native-sdk", GeneXusVersionCatalog.GetDriverProfile("17"));
+            Assert.Equal("native-sdk", GeneXusVersionCatalog.GetDriverProfile("16"));
+            Assert.Null(GeneXusVersionCatalog.GetDriverProfile("unknown"));
+            Assert.Null(GeneXusVersionCatalog.GetDriverProfile(null));
+            Assert.Null(GeneXusVersionCatalog.GetDriverProfile(""));
+
+            Assert.True(GeneXusVersionCatalog.IsSupportedOrLegacy("10.3.0"));
+            Assert.True(GeneXusVersionCatalog.IsSupportedOrLegacy("18.0.4"));
+            Assert.True(GeneXusVersionCatalog.IsSupportedOrLegacy("8.0.0"));
+            Assert.False(GeneXusVersionCatalog.IsSupportedOrLegacy("19.0.0"));
+            Assert.False(GeneXusVersionCatalog.IsSupportedOrLegacy(null));
+            Assert.False(GeneXusVersionCatalog.IsSupportedOrLegacy(""));
+
+            Assert.Contains("10.3", GeneXusVersionCatalog.LegacyMajors);
+            Assert.Contains("10.2", GeneXusVersionCatalog.LegacyMajors);
+            Assert.Contains("10.1", GeneXusVersionCatalog.LegacyMajors);
+            Assert.Contains("9", GeneXusVersionCatalog.LegacyMajors);
+            Assert.Contains("8", GeneXusVersionCatalog.LegacyMajors);
+        }
+
+        [Fact]
         public void Whoami_ExposesMultiKbSelectionContext()
         {
             var payload = Program.BuildWhoamiPayload();
