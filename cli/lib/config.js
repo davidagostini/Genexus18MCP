@@ -717,6 +717,12 @@ function resolveOpenCodeConfigPath(xdgConfig) {
     return path.join(xdgConfig, 'opencode', 'opencode.json');
 }
 
+function alternateOpenCodeConfigPath(filePath) {
+    return path.extname(filePath).toLowerCase() === '.jsonc'
+        ? filePath.slice(0, -1)
+        : filePath.replace(/\.json$/i, '.jsonc');
+}
+
 // VS Code stores its user profile (and native MCP mcp.json) in a per-platform
 // location. `variant` is 'Code' (stable) or 'Code - Insiders'.
 function vscodeUserDir(variant, { appData, macAppSupport, xdgConfig }) {
@@ -816,6 +822,7 @@ function getClientConfigTargets() {
             name: 'OpenCode (CLI)',
             format: 'opencode',
             path: resolveOpenCodeConfigPath(xdgConfig),
+            alternatePaths: [alternateOpenCodeConfigPath(resolveOpenCodeConfigPath(xdgConfig))],
             installMarkers: [
                 path.join(xdgConfig, 'opencode'),
                 path.join(home, '.local', 'share', 'opencode')
@@ -835,6 +842,7 @@ function getClientConfigTargets() {
             name: 'OpenCode Desktop',
             format: 'opencode',
             path: resolveOpenCodeConfigPath(xdgConfig),
+            alternatePaths: [alternateOpenCodeConfigPath(resolveOpenCodeConfigPath(xdgConfig))],
             detectByMarkerOnly: true,
             installMarkers: [
                 path.join(localAppData, 'Programs', '@opencode-aidesktop'),
@@ -1158,7 +1166,8 @@ function clientsStatus(opts = {}) {
             serverName,
             isThirdParty: Boolean(isThirdParty),
             writeSupported: client.writeSupported !== false,
-            configPath: client.path,
+            configPath: entry && entry.configPath ? entry.configPath : client.path,
+            configPaths: entry && entry.configPath ? [entry.configPath] : [client.path],
             command: entry && entry.command ? entry.command : null,
             args: entry && Array.isArray(entry.args) ? entry.args : [],
             url: entry && entry.url ? entry.url : null,
@@ -1455,7 +1464,7 @@ function getOpenCodeMcpContainer(cfgObj) {
     };
 }
 
-function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false, fs: fileSystem = fs } = {}) {
+function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = DEFAULT_MCP_SERVER_NAME, force = false, globalConfig = false, alternatePaths = [], fs: fileSystem = fs } = {}) {
     const parsed = fileSystem.existsSync(filePath) ? readJsonFileSafe(filePath, fileSystem) : {};
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
@@ -1499,10 +1508,20 @@ function applyOpenCodeJson(filePath, launcher, targetConfigPath, { serverName = 
         }
     }
     writeClientJson(filePath, cfgObj, fileSystem);
+    for (const alternatePath of alternatePaths || []) {
+        if (!fileSystem.existsSync(alternatePath)) continue;
+        applyOpenCodeJson(alternatePath, launcher, targetConfigPath, {
+            serverName,
+            force,
+            globalConfig,
+            alternatePaths: [],
+            fs: fileSystem
+        });
+    }
 }
 
-function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME, fs: fileSystem = fs } = {}) {
-    const parsed = readJsonFileSafe(filePath);
+function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME, alternatePaths = [], fs: fileSystem = fs } = {}) {
+    const parsed = readJsonFileSafe(filePath, fileSystem);
     if (parsed === null) throw new Error('Invalid JSON');
     const cfgObj = parsed || {};
     if (!cfgObj.mcp || typeof cfgObj.mcp !== 'object') return false;
@@ -1532,9 +1551,17 @@ function removeOpenCodeJson(filePath, { serverName = DEFAULT_MCP_SERVER_NAME, fs
             }
         }
     }
-    if (!removedAny) return false;
-    writeClientJson(filePath, cfgObj, fileSystem);
-    return true;
+    if (removedAny) writeClientJson(filePath, cfgObj, fileSystem);
+    let removedAlternate = false;
+    for (const alternatePath of alternatePaths || []) {
+        if (!fileSystem.existsSync(alternatePath)) continue;
+        removedAlternate = removeOpenCodeJson(alternatePath, {
+            serverName,
+            alternatePaths: [],
+            fs: fileSystem
+        }) || removedAlternate;
+    }
+    return removedAny || removedAlternate;
 }
 
 function extractCodexTomlEntry(content, serverName = DEFAULT_MCP_SERVER_NAME) {
@@ -1679,8 +1706,49 @@ function normalizeExePath(p) {
     return s;
 }
 
+function readOpenCodeCommandEntry(filePath, serverName, fileSystem) {
+    if (!fileSystem.existsSync(filePath)) return null;
+    const parsed = readJsonFileSafe(filePath, fileSystem);
+    if (!parsed || typeof parsed !== 'object') return null;
+    let entry = parsed.mcp?.servers?.[serverName] || parsed.mcp?.[serverName];
+    if (!entry && serverName === DEFAULT_MCP_SERVER_NAME) {
+        const legacyGx = parsed.mcp?.servers?.genexus || parsed.mcp?.genexus;
+        if (legacyGx && !isThirdPartyMcpEntry(legacyGx)) entry = legacyGx;
+        else entry = parsed.mcp?.servers?.genexus18 || parsed.mcp?.genexus18;
+    }
+    if (!entry) return null;
+    if (Array.isArray(entry.command) && entry.command.length > 0) {
+        return {
+            command: entry.command[0],
+            args: entry.command.slice(1),
+            url: entry.url || null,
+            type: entry.type || null,
+            environment: entry.environment || null,
+            raw: entry,
+            configPath: filePath
+        };
+    }
+    return {
+        command: null,
+        args: [],
+        url: entry.url || null,
+        type: entry.type || null,
+        environment: entry.environment || null,
+        raw: entry,
+        configPath: filePath
+    };
+}
+
 function readClientCommandEntry(client, serverName = DEFAULT_MCP_SERVER_NAME, { fs: fileSystem = fs } = {}) {
     if (client.writeSupported === false) return null;
+    if (client.format === 'opencode') {
+        const paths = [client.path, ...(client.alternatePaths || [])];
+        for (const configPath of paths) {
+            const entry = readOpenCodeCommandEntry(configPath, serverName, fileSystem);
+            if (entry) return entry;
+        }
+        return null;
+    }
     if (!fileSystem.existsSync(client.path)) return null;
     try {
         if (client.format === 'mcpServers') {

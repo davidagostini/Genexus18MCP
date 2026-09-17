@@ -539,7 +539,8 @@ namespace GxMcp.Worker.Services.Structure
                 string indexName = null;
                 if (!string.IsNullOrWhiteSpace(payload))
                 {
-                    try { indexName = JObject.Parse(payload)["indexName"]?.ToString(); } catch { }
+                    JObject body = JObject.Parse(payload);
+                    indexName = body["indexName"]?.ToString() ?? body["name"]?.ToString();
                 }
                 if (string.IsNullOrWhiteSpace(indexName)) return Models.McpResponse.Err(
                     code: "InvalidIndexPayload",

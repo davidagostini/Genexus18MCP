@@ -69,6 +69,77 @@ namespace GxMcp.Gateway.Tests
         }
 
         [LiveKbFact]
+        public async Task ObjectDryRunsAndMissingReadsStayBoundedOnSupportedSdk()
+        {
+            string suffix = Guid.NewGuid().ToString("N").Substring(0, 10);
+            foreach (var type in new[] { "Procedure", "SDT" })
+            {
+                var response = await _harness.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = type,
+                    ["name"] = "McpIssue218" + type + suffix,
+                    ["dryRun"] = true
+                }, timeoutMs: 120_000);
+                Assert.False(LiveGatewayHarness.IsToolError(response),
+                    type + " dry-run failed: " + _harness.DiagnosticsSummary());
+                var payload = LiveGatewayHarness.ParseToolPayload(response);
+                Assert.Equal("DryRun", payload?["code"]?.ToString());
+                Assert.False(payload?["result"]?["persisted"]?.ToObject<bool>() ?? true);
+            }
+
+            string missing = "McpIssue218Missing" + suffix;
+            var read = await _harness.CallToolAsync("genexus_read", new JObject
+            {
+                ["name"] = missing
+            }, timeoutMs: 120_000);
+            var readPayload = LiveGatewayHarness.ParseToolPayload(read);
+            Assert.True(LiveGatewayHarness.IsToolError(read));
+            Assert.NotEqual("Internal", readPayload?["error"]?["code"]?.ToString());
+            Assert.Contains("ObjectNotFound", readPayload?.ToString(Newtonsoft.Json.Formatting.None) ?? string.Empty);
+
+            var deletePreview = await _harness.CallToolAsync("genexus_delete_object", new JObject
+            {
+                ["name"] = missing,
+                ["dryRun"] = true
+            }, timeoutMs: 120_000);
+            var deletePayload = LiveGatewayHarness.ParseToolPayload(deletePreview);
+            Assert.True(LiveGatewayHarness.IsToolError(deletePreview));
+            Assert.Contains("ObjectNotFound", deletePayload?.ToString(Newtonsoft.Json.Formatting.None) ?? string.Empty);
+
+            var whoami = await _harness.CallToolAsync("genexus_whoami", new JObject());
+            string alias = LiveGatewayHarness.ParseToolPayload(whoami)?["kbAlias"]?.ToString() ?? "kbteste";
+            var environments = await _harness.CallToolAsync("genexus_kb", new JObject
+            {
+                ["action"] = "list_environments",
+                ["kb"] = alias
+            }, timeoutMs: 120_000);
+            Assert.False(LiveGatewayHarness.IsToolError(environments),
+                "Explicit-KB environment listing failed: " + _harness.DiagnosticsSummary());
+        }
+
+        [LiveKbFact]
+        public async Task DoctorReturnsFreshGatewayTelemetryOnRepeatedCalls()
+        {
+            var first = LiveGatewayHarness.ParseToolPayload(
+                await _harness.CallToolAsync("genexus_doctor", new JObject()));
+            await Task.Delay(1100);
+            var second = LiveGatewayHarness.ParseToolPayload(
+                await _harness.CallToolAsync("genexus_doctor", new JObject()));
+            var firstResult = first?["result"] as JObject;
+            var secondResult = second?["result"] as JObject;
+
+            Assert.NotNull(firstResult?["checkedAt"]);
+            Assert.NotNull(secondResult?["checkedAt"]);
+            DateTime firstCheckedAt = firstResult!["checkedAt"]!.Value<DateTime>();
+            DateTime secondCheckedAt = secondResult!["checkedAt"]!.Value<DateTime>();
+            Assert.True(secondCheckedAt > firstCheckedAt,
+                $"Doctor checkedAt did not advance: first={firstCheckedAt:o}, second={secondCheckedAt:o}");
+            Assert.Equal("gateway", secondResult["telemetry"]?["source"]?.ToString());
+            Assert.True((secondResult["telemetry"]?["totalToolCalls"]?.ToObject<int>() ?? 0) > 0);
+        }
+
+        [LiveKbFact]
         public async Task ReadBlob_OverwriteTrue_ReplacesExistingFileAndReportsHash()
         {
             var list = await _harness.CallToolAsync("genexus_list_objects", new JObject

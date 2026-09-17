@@ -165,6 +165,7 @@ namespace GxMcp.Worker.Parsers
                         existing.IsKey = pNode.IsKey;
                         // Update existing attribute's type if DSL specifies one.
                         ApplyTypeFromDsl(existing, pNode.TypeStr, model);
+                        ApplyMetadataFromDsl(existing, pNode);
                     }
                     else
                     {
@@ -188,6 +189,7 @@ namespace GxMcp.Worker.Parsers
                                     if (globalAttr != null)
                                     {
                                         ApplyTypeFromDsl(globalAttr, pNode.TypeStr, model);
+                                        ApplyMetadataFromDsl(globalAttr, pNode);
                                         newAttr.Save();
                                         createdGlobal = true;
                                     }
@@ -214,6 +216,7 @@ namespace GxMcp.Worker.Parsers
                             {
                                 ApplyTypeFromDsl(globalAttr, pNode.TypeStr, model);
                             }
+                            ApplyMetadataFromDsl(globalAttr, pNode);
                         } catch (Exception addEx) {
                             Logger.Error("[TransactionDslParser] Failed to add attribute '" + pNode.Name + "': " + (addEx.InnerException?.Message ?? addEx.Message));
                         }
@@ -378,6 +381,41 @@ namespace GxMcp.Worker.Parsers
             }
 
             GxMcp.Worker.Helpers.AttributeTypeApplier.ApplyPrimitive(globalAttr, spec.CanonicalType, spec.Length, spec.Decimals);
+        }
+
+        private static void ApplyMetadataFromDsl(object trnAttrOrAttribute, DslParserUtils.ParsedNode node)
+        {
+            if (trnAttrOrAttribute == null || node == null) return;
+            object globalAttr = trnAttrOrAttribute;
+            try
+            {
+                var property = trnAttrOrAttribute.GetType().GetProperty("Attribute");
+                var nested = property?.GetValue(trnAttrOrAttribute, null);
+                if (nested != null) globalAttr = nested;
+            }
+            catch { }
+
+            if (!string.IsNullOrWhiteSpace(node.Description))
+                TrySetStringProperty(globalAttr, "Description", node.Description);
+            if (node.Formula != null)
+            {
+                var attribute = globalAttr as Artech.Genexus.Common.Objects.Attribute;
+                if (attribute == null) throw new InvalidOperationException("DSL formula target is not a global Attribute.");
+                attribute.Formula = Formula.Parse(node.Formula, attribute, null);
+            }
+        }
+
+        private static void TrySetStringProperty(object target, string name, string value)
+        {
+            try
+            {
+                var property = target?.GetType().GetProperty(name);
+                if (property?.CanWrite == true) property.SetValue(target, value, null);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[TransactionDslParser] Could not apply " + name + " metadata: " + ex.Message);
+            }
         }
     }
 }

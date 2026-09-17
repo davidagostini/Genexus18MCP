@@ -451,6 +451,13 @@ namespace GxMcp.Worker.Services
             return false;
         }
 
+        private bool IsKnownBuildTarget(string name, BuildTaskStatus status)
+        {
+            if (!IsBuildTarget(name, status) || _indexCacheService == null) return false;
+            try { return _indexCacheService.TryGetEntryByName(name) != null; }
+            catch { return false; }
+        }
+
         internal static bool IsBcOrphanError(string line, IndexCacheService lookup)
         {
             if (lookup == null || string.IsNullOrEmpty(line)) return false;
@@ -826,6 +833,8 @@ namespace GxMcp.Worker.Services
             public List<string> Expanded { get; set; } = new List<string>();
             public List<string> Skipped { get; set; } = new List<string>();
             public List<string> AmbiguousTargets { get; set; } = new List<string>();
+            public List<string> UnresolvedTargets { get; set; } = new List<string>();
+            public bool TargetResolutionAvailable { get; set; }
             public bool Truncated { get; set; }
             public int NodeCap { get; set; }
             public int RequestedNodes { get; set; }
@@ -855,14 +864,19 @@ namespace GxMcp.Worker.Services
                 .ToList();
             var originalSet = new HashSet<string>(originalList, StringComparer.OrdinalIgnoreCase);
 
-            if (_indexCacheService != null)
+            SearchIndex index = _indexCacheService?.TryGetLoadedIndex();
+            plan.TargetResolutionAvailable = _indexCacheService == null || index != null;
+            if (index != null)
             {
                 foreach (var target in originalList)
                 {
-                    if (_indexCacheService.FindEntriesByName(target).Count > 1)
+                    var candidates = FindCompileCheckTargetCandidates(index, target);
+                    if (candidates.Count > 1)
                         plan.AmbiguousTargets.Add(target);
+                    else if (candidates.Count == 0)
+                        plan.UnresolvedTargets.Add(target);
                 }
-                if (plan.AmbiguousTargets.Count > 0)
+                if (plan.AmbiguousTargets.Count > 0 || plan.UnresolvedTargets.Count > 0)
                 {
                     plan.Expanded.AddRange(originalList);
                     return plan;
@@ -995,8 +1009,31 @@ namespace GxMcp.Worker.Services
         // without the full ~compile+deploy build. Reuses the whole build-task pipeline;
         // the #13 error split surfaces the spec diagnostics under codeErrors.
         public string Specify(string target)
-            => Build("Build", target, includeCallees: "none", buildPlanCap: 200,
-                     skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false, specifyOnly: true);
+        {
+            var plan = BuildCompileCheckPlan(target, buildPlanCap: 200, includeCallers: false, callerCap: 0);
+            if (plan.TargetResolutionAvailable && plan.AmbiguousTargets.Count > 0)
+            {
+                return McpResponse.Err(
+                    code: "SpecifyTargetAmbiguous",
+                    message: "The Specify target resolves to multiple typed GeneXus objects.",
+                    hint: "Use Type:Name or GUID.", target: target,
+                    extra: new JObject { ["targets"] = JArray.FromObject(plan.AmbiguousTargets) });
+            }
+            if (plan.TargetResolutionAvailable && plan.UnresolvedTargets.Count > 0)
+            {
+                return McpResponse.Err(
+                    code: "SpecifyTargetUnresolved",
+                    message: "The Specify target does not resolve to an indexed GeneXus object.",
+                    hint: "Use a unique object name, Type:Name, or GUID.", target: target,
+                    extra: new JObject { ["targets"] = JArray.FromObject(plan.UnresolvedTargets) });
+            }
+
+            string canonicalTarget = plan.CanonicalSeeds.Count > 0
+                ? string.Join(",", plan.CanonicalSeeds)
+                : target;
+            return Build("Build", canonicalTarget, includeCallees: "none", buildPlanCap: 200,
+                skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false, specifyOnly: true);
+        }
 
         // mode=compile_check: "did my edits break the build?" without the ~200s
         // DeveloperMenu regeneration a full build-all pays. Expands the requested
@@ -1315,6 +1352,20 @@ namespace GxMcp.Worker.Services
                             message: "One or more build targets resolve to multiple typed GeneXus objects.",
                             extra: new JObject { ["targets"] = JArray.FromObject(plan.AmbiguousTargets) });
                     }
+                    if (plan.TargetResolutionAvailable && plan.UnresolvedTargets.Count > 0)
+                    {
+                        return McpResponse.Err(
+                            code: "BuildTargetUnresolved",
+                            message: "One or more build targets do not resolve to indexed GeneXus objects.",
+                            hint: "Use a unique object name, Type:Name, or GUID. Folder paths and textual EntityKey values are not supported build identifiers.",
+                            target: target,
+                            extra: new JObject
+                            {
+                                ["targets"] = JArray.FromObject(plan.UnresolvedTargets),
+                                ["supportedTargetFormats"] = new JArray("unique object name", "Type:Name", "GUID"),
+                                ["targetResolutionAvailable"] = plan.TargetResolutionAvailable
+                            });
+                    }
                     targets = plan.Expanded;
                 }
                 return McpResponse.Ok(
@@ -1326,7 +1377,8 @@ namespace GxMcp.Worker.Services
                             ["action"] = action,
                             ["wouldBuild"] = new JArray(targets.ToArray()),
                             ["includeCallees"] = includeCallees ?? "transitive",
-                            ["buildPlanCap"] = buildPlanCap
+                            ["buildPlanCap"] = buildPlanCap,
+                            ["targetResolutionAvailable"] = plan?.TargetResolutionAvailable
                         }
                     });
             }
@@ -1459,6 +1511,19 @@ namespace GxMcp.Worker.Services
                         targets = plan.AmbiguousTargets,
                         requested = targets,
                         includeCallees = plan.IncludeCallees
+                    });
+                }
+                if (plan.TargetResolutionAvailable && plan.UnresolvedTargets.Count > 0)
+                {
+                    return JsonConvert.SerializeObject(new
+                    {
+                        status = "BuildTargetUnresolved",
+                        code = "BuildTargetUnresolved",
+                        message = "One or more build targets do not resolve to indexed GeneXus objects.",
+                        hint = "Use a unique object name, Type:Name, or GUID. Folder paths and textual EntityKey values are not supported build identifiers.",
+                        targets = plan.UnresolvedTargets,
+                        requested = targets,
+                        targetResolutionAvailable = plan.TargetResolutionAvailable
                     });
                 }
                 targets = plan.Expanded;
@@ -1854,11 +1919,13 @@ namespace GxMcp.Worker.Services
                 terminal = IsTerminalStatus(status.Status);
             }
 
-            // Terminal → always return now. Baseline mismatch → caller is behind, return now.
-            // Empty sinceBaseline means caller has no prior snapshot; surface current state.
+            // Terminal -> always return now. A changed baseline means the caller is
+            // behind, so return immediately. With no prior snapshot, establish the
+            // current baseline and still honor waitSeconds; otherwise the public
+            // wait parameter is silently reduced to a zero-second status read.
             bool baselineDiffers = !string.IsNullOrEmpty(sinceBaseline)
                                    && !string.Equals(sinceBaseline, currentBaseline, StringComparison.Ordinal);
-            if (terminal || baselineDiffers || string.IsNullOrEmpty(sinceBaseline))
+            if (terminal || baselineDiffers)
             {
                 return AnnotateWithBaseline(GetStatus(taskId, page, pageSize, compact), taskId);
             }
@@ -3004,6 +3071,8 @@ namespace GxMcp.Worker.Services
                         bool failed = outcome == InProcessBuildOutcome.FailedWithDiagnostics
                                       || status.ErrorCount > 0;
                         status.Status = failed ? "Failed" : "Succeeded";
+                        status.ExitCode = failed ? 1 : 0;
+                        status.MsBuildExitCode = status.ExitCode;
                         FinalizeBuildAllStatus(status, fullText);
                         // A1 (parity with the MSBuild.exe branch below): when the
                         // in-process pipeline reports failure but emitted zero code
@@ -3064,6 +3133,8 @@ namespace GxMcp.Worker.Services
                     if (status.SpecifyOnly)
                     {
                         status.Status = "Failed";
+                        status.ExitCode = 1;
+                        status.MsBuildExitCode = status.ExitCode;
                         status.Phase = "Done";
                         EmitPhaseProgress(status.Phase);
                         status.Error = "Spec-check (specifyOnly) could not run in-process (GeneXus MSBuild tasks unavailable in this worker). Not falling back to a full build. Run a normal build to see diagnostics.";
@@ -3307,6 +3378,13 @@ namespace GxMcp.Worker.Services
                     status.TargetsDone = (status.TargetsDone ?? 0) + 1;
                 }
 
+                var notFoundError = _rxObjectNotFoundWarning.Match(line);
+                if (notFoundError.Success && IsKnownBuildTarget(notFoundError.Groups["obj"].Value, status))
+                {
+                    status.NotFoundTargets.Add(notFoundError.Groups["obj"].Value);
+                    return;
+                }
+
                 if (_rxError.IsMatch(line))
                 {
                     // v2.6.6 Stream E (FR#9): CS2001 for "<obj>_bc.cs" where the
@@ -3408,7 +3486,8 @@ namespace GxMcp.Worker.Services
                     {
                         string objName = nf.Groups["obj"].Value;
                         status.NotFoundTargets.Add(objName);
-                        if (!status.SpecifyOnly && IsBuildTarget(objName, status))
+                        if (IsBuildTarget(objName, status)
+                            && (!status.SpecifyOnly || IsKnownBuildTarget(objName, status)))
                         {
                             return;
                         }

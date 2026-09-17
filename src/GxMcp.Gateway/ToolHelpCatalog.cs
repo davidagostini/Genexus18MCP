@@ -47,7 +47,7 @@ namespace GxMcp.Gateway
                 "- `rebuild` — forced Rebuild All (`ForceRebuild=true`) and remains compatible with directed targets.\n" +
                 "- `validate` — inline validation/specifier check. Returns the result in the same call; it does not currently use the background-job path.\n" +
                 "- `index` — rebuilds the search index. Pass `force=true` to ignore the on-disk cache.\n" +
-                "- `status` — accepts either a `taskId` or `job_id` via `target`; pass `wait_seconds > 0` to long-poll up to 600s. Without `target`, `wait` blocks on the search index and `freshness` sets the target state: `freshness='current'` waits for a warm-start delta refresh to finish (a snapshot restored from the warm cache is `Ready` but `stale`, so a status-only wait returns immediately). The reply carries `waitSatisfied` so a timeout is distinguishable from success.\n" +
+                "- `status` — accepts either a `taskId` or `job_id` via `target`; pass `wait_seconds > 0` to long-poll up to 600s. A positive lifecycle status wait is not cut to the generic 50s no-progress cap; without `target`, `wait` blocks on the search index and `freshness` sets the target state: `freshness='current'` waits for a warm-start delta refresh to finish (a snapshot restored from the warm cache is `Ready` but `stale`, so a status-only wait returns immediately). The reply carries `waitSatisfied` so a timeout is distinguishable from success.\n" +
                 "- `result` — fetch the completion payload of a finished operation.\n" +
                 "- `inspect` — read the redacted durable mutation journal for an operation key after a lost response; it never replays the write.\n" +
                 "- `reconcile` — close an unknown mutation fence only after an independent read and explicit `confirmed: true` verification; use a fresh key for any later write.\n" +
@@ -77,11 +77,12 @@ namespace GxMcp.Gateway
                 "## Modes\n" +
                 "- `mode=soft` — drain the selected worker, replace it, and wait for SDK readiness. This is the normal restart path.\n" +
                 "- `mode=hard` — copy Worker binaries from `sourceDir` during the drain window, then replace the worker.\n" +
-                "- `force=true` — kill and respawn directly when the worker is wedged and cannot acknowledge a graceful drain.\n\n" +
+                "- `force=true` — kill and respawn directly when the worker is wedged and cannot acknowledge a graceful drain. It is only valid with `mode=soft`; `force=true` + `mode=hard` is rejected before any Worker is stopped.\n\n" +
                 "## Selection and safety\n" +
                 "- With one open KB, `mode=soft` is sufficient. With multiple workers, pass `alias=<alias>` (or its `kb` alias) to select the target explicitly.\n" +
                 "- `mode=hard` requires a valid `sourceDir`; use the repository's Worker `bin/Debug` directory when hot-swapping a local build.\n" +
-                "- A graceful response means the replacement signalled SDK-ready. A forced reload abandons in-flight Worker jobs; retry only after checking the returned worker state.\n",
+                "- A graceful response means the replacement signalled SDK-ready. A forced reload abandons in-flight Worker jobs; inspect `scope`, `affectedAliases`, and returned worker state before retrying.\n" +
+                "- `force=true` with `alias`/`kb` recycles only that selected Worker and returns `scope=alias`; without a selector it is an explicit global reset and returns all affected aliases. The global path abandons in-flight jobs.\n",
 
             ["genexus_edit"] =
                 "# genexus_edit\n\n" +
@@ -245,7 +246,7 @@ namespace GxMcp.Gateway
                 "Create a new empty GeneXus object in the active KB (`action: object`, the default). The tool covers every KBObject the IDE can create — both objects with a typed wrapper (Transaction, Procedure, WebPanel, SDT, DataProvider, DataSelector, Domain, Attribute, Table, Index, ExternalObject, Theme, Image, Menu, Menubar, Stencil, UserControl, WorkPanel, Report, API, URLRewrite, MiniApp, SuperApp, DesignSystem, ColorPalette, OfflineDatabase, DataView, Group, Language) and Guid-only types (SDPanel, Dashboard, Query, QueryDashboard, WorkflowDiagram, ConversationalFlows, TestSuite, ThemeClass, ThemeColor, ThemeTransformation, DesignSystemClass, WorkWithDevices, WorkWithWeb, WikiPageKBObject, TranslationMessage, DataStoreCategory, GeneratorCategory, DeploymentUnitCategory).\n\n" +
                 "Aliases accepted: `StructuredDataType`→SDT, `BusinessProcessDiagram`/`BPD`→WorkflowDiagram, `PanelForSD`→SDPanel.\n\n" +
                 "## Defaults that get seeded\n" +
-                "- `Transaction` — gets a default `<Name>Id : Numeric(8,0) [Key]` attribute so the SDK accepts the empty save.\n" +
+                "- `Transaction` — gets a default `<Name>Id : Numeric(4) [Key]` attribute so the SDK accepts the empty save; pass `firstItem`/`firstItemType` to choose the initial key.\n" +
                 "- `SDT` — gets a default `Item1 : VARCHAR(40)` item.\n" +
                 "- `Procedure` / `DataProvider` — empty source with a `// Procedure: <Name>` header.\n" +
                 "- `Domain` — defaults to `Character(20)` when no `dataType` is supplied.\n\n" +

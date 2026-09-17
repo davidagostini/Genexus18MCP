@@ -374,6 +374,35 @@ namespace GxMcp.Gateway.Tests
             }
         }
 
+        [Fact]
+        public void StdioEof_KeepsOnlyLegacyHttpMasterAlive()
+        {
+            Assert.False(Program.ShouldKeepStdioAliveForLegacyMaster(new Configuration
+            {
+                Server = new ServerConfig { McpStdio = true, HttpPort = 5000 }
+            }));
+            Assert.False(Program.ShouldKeepStdioAliveForLegacyMaster(new Configuration
+            {
+                GatewayMode = "stdio-isolated",
+                Server = new ServerConfig { TransportMode = "stdio-isolated", HttpPort = 0 }
+            }));
+            Assert.False(Program.ShouldKeepStdioAliveForLegacyMaster(new Configuration
+            {
+                GatewayMode = "stdio-isolated",
+                Server = new ServerConfig { TransportMode = "legacy", HttpPort = 5000 }
+            }));
+            Assert.True(Program.ShouldKeepStdioAliveForLegacyMaster(new Configuration
+            {
+                GatewayMode = "legacy",
+                Server = new ServerConfig { TransportMode = "legacy", HttpPort = 5000 }
+            }));
+            Assert.False(Program.ShouldKeepStdioAliveForLegacyMaster(new Configuration
+            {
+                GatewayMode = "legacy",
+                Server = new ServerConfig { TransportMode = "legacy", HttpPort = 0 }
+            }));
+        }
+
         private static string StrictStdioJson()
         {
             return @"{

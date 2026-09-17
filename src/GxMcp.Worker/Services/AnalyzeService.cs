@@ -2359,6 +2359,42 @@ namespace GxMcp.Worker.Services
         // Enumerates every caller from the index and scans their source for
         // actual call sites, returning line number + 3-line surrounding context.
         // ----------------------------------------------------------------
+        private JArray ScanSdkCallerSources(IEnumerable<string> callerNames, string canonicalName)
+        {
+            var sites = new JArray();
+            if (_objectService == null || callerNames == null) return sites;
+            foreach (var callerName in callerNames.Distinct(StringComparer.OrdinalIgnoreCase).Take(50))
+            {
+                foreach (var partName in new[] { "Source", "Events", "Rules" })
+                {
+                    string source = null;
+                    try { source = _objectService.ReadObjectSource(callerName, partName); } catch { }
+                    if (string.IsNullOrWhiteSpace(source)) continue;
+                    var trimmed = source.TrimStart();
+                    if (trimmed.StartsWith("{") && trimmed.IndexOf("\"error\"", StringComparison.OrdinalIgnoreCase) >= 0)
+                        continue;
+                    var lines = source.Split('\n');
+                    foreach (var call in SourceParser.ParseCalls(source, false))
+                    {
+                        var callee = call.Callee ?? string.Empty;
+                        var unqualified = callee.Substring(callee.LastIndexOf('.') + 1);
+                        if (!string.Equals(callee, canonicalName, StringComparison.OrdinalIgnoreCase)
+                            && !string.Equals(unqualified, canonicalName, StringComparison.OrdinalIgnoreCase)) continue;
+                        int index = Math.Max(0, call.LineNumber - 1);
+                        sites.Add(new JObject
+                        {
+                            ["object"] = callerName,
+                            ["part"] = partName,
+                            ["line"] = call.LineNumber,
+                            ["lineText"] = index < lines.Length ? lines[index] : string.Empty,
+                            ["provenance"] = "sdk-reference-cross-check"
+                        });
+                    }
+                }
+            }
+            return sites;
+        }
+
         public string FindCallerSites(string targetName)
         {
             try
@@ -2475,6 +2511,15 @@ namespace GxMcp.Worker.Services
                         var sdkCallers = new JArray();
                         foreach (var c in sdk.Callers) sdkCallers.Add(c);
                         zeroResult["sdkCallers"] = sdkCallers;
+                        var sdkSites = ScanSdkCallerSources(sdk.Callers, canonicalName);
+                        if (sdkSites.Count > 0)
+                        {
+                            zeroResult["callSiteCount"] = sdkSites.Count;
+                            zeroResult["callerSites"] = sdkSites;
+                            zeroResult["provenance"] = "sdk-reference-cross-check+source-scan";
+                            zeroResult["hint"] = "The index lacked incoming edges; line-level sites were recovered by scanning callers returned by the live SDK reference graph.";
+                            return McpResponse.Ok(target: canonicalName, code: "CallerSitesFound", result: zeroResult);
+                        }
                         zeroResult["verifiedZero"] = false;
                         zeroResult["hint"] = "The index had no caller edges yet, but the live SDK reference graph found callers (listed under sdkCallers). Line-level call sites weren't resolved because the index isn't enriched — re-run shortly, or use genexus_read on the listed callers.";
                         return McpResponse.Ok(target: canonicalName, code: "CallerSitesUnconfirmed", result: zeroResult);

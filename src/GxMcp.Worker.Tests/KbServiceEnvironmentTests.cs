@@ -105,11 +105,22 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void ListEnvironments_NullKb_ThrowsInvalidOperationException()
+        public void ListEnvironments_NullKb_ReturnsStructuredError()
         {
             var svc = new KbService(new IndexCacheService());
-            var ex = Assert.Throws<InvalidOperationException>(() => svc.ListEnvironments());
-            Assert.Contains("not open", ex.Message);
+            var json = JObject.Parse(svc.ListEnvironments());
+            Assert.Equal("error", json["status"]?.ToString());
+            Assert.Equal("EnvironmentListFailed", json["error"]?["code"]?.ToString());
+            Assert.Contains("not open", json["error"]?["message"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData(9, 10, false)]
+        [InlineData(10, 10, true)]
+        public void IndexProgressWatchdog_UsesExplicitNoProgressDeadline(int elapsedSeconds, int timeoutSeconds, bool expected)
+        {
+            DateTime last = DateTime.UtcNow;
+            Assert.Equal(expected, KbService.IsIndexProgressStalled(last, last.AddSeconds(elapsedSeconds), timeoutSeconds));
         }
 
         [Fact]

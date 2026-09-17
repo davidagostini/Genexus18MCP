@@ -227,6 +227,24 @@ namespace GxMcp.Worker.Structure
 
         public static KBObjectPart GetPart(KBObject obj, string partName)
         {
+            if (obj != null && string.Equals(partName, "DataViewIndexes", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var property = obj.GetType().GetProperty("DataViewIndexes", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (property?.GetValue(obj, null) is KBObjectPart dataViewIndexes) return dataViewIndexes;
+                }
+                catch { }
+                foreach (KBObjectPart part in obj.Parts)
+                {
+                    string typeName = part?.GetType()?.Name ?? string.Empty;
+                    string descriptorName = part?.TypeDescriptor?.Name ?? string.Empty;
+                    if (typeName.IndexOf("DataViewIndex", StringComparison.OrdinalIgnoreCase) >= 0
+                        || descriptorName.IndexOf("DataViewIndex", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return part;
+                }
+            }
+
             // GeneXus API objects keep their authored methods in the typed
             // ServiceGroupSource part. It is not exposed by the generic Parts
             // descriptor under the user-facing name "Methods" on every GX
@@ -338,6 +356,16 @@ namespace GxMcp.Worker.Structure
                 .Where(name => !string.Equals(name, "PatternVirtual", StringComparison.OrdinalIgnoreCase))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+            if (obj.TypeDescriptor?.Name?.Equals("DataView", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                try
+                {
+                    var property = obj.GetType().GetProperty("DataViewIndexes", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (property?.GetValue(obj, null) is KBObjectPart) names.Add("DataViewIndexes");
+                }
+                catch { }
+            }
 
             // API.ServiceGroupSource is the native methods/route part. Surface
             // the stable MCP name even when the SDK descriptor says Source or

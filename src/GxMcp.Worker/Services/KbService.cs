@@ -27,6 +27,85 @@ namespace GxMcp.Worker.Services
         private static volatile int _totalCount = 0;
         private static volatile bool _isIndexing = false;
         private static volatile string _currentStatus = "";
+        private Thread _liteIndexThread;
+        private Thread _enrichIndexThread;
+        private Thread _deltaIndexThread;
+        private Thread _indexWatchdogThread;
+        private long _lastIndexProgressTicks;
+        private volatile bool _stopIndexWatchdog;
+
+        internal static int ResolveIndexNoProgressSeconds()
+        {
+            const int defaultSeconds = 180;
+            string raw = Environment.GetEnvironmentVariable("GXMCP_INDEX_NO_PROGRESS_SEC");
+            int seconds;
+            return int.TryParse(raw, out seconds) ? Math.Max(30, Math.Min(3600, seconds)) : defaultSeconds;
+        }
+
+        internal static bool IsIndexProgressStalled(DateTime lastProgressUtc, DateTime nowUtc, int timeoutSeconds)
+        {
+            return lastProgressUtc != default(DateTime)
+                && (nowUtc - lastProgressUtc).TotalSeconds >= Math.Max(1, timeoutSeconds);
+        }
+
+        private void MarkIndexProgressHeartbeat()
+        {
+            Interlocked.Exchange(ref _lastIndexProgressTicks, DateTime.UtcNow.Ticks);
+        }
+
+        private string CancelStalledIndexBuild()
+        {
+            int processed = _processedCount;
+            DateTime last = new DateTime(Interlocked.Read(ref _lastIndexProgressTicks), DateTimeKind.Utc);
+            _stopIndexWatchdog = true;
+            try { _indexCacheService.EndLiteWalk(); } catch { }
+            foreach (var thread in new[] { _liteIndexThread, _enrichIndexThread, _deltaIndexThread })
+            {
+                try
+                {
+                    if (thread != null && thread.IsAlive) thread.Abort();
+                }
+                catch (Exception ex) { Logger.Warn("Index recovery could not stop thread: " + ex.Message); }
+            }
+            try { _indexCacheService.MarkIndexFailed(); } catch { }
+            _currentStatus = "Error: index build cancelled after no progress";
+            _isIndexing = false;
+            return Models.McpResponse.Ok(
+                code: "IndexRecoveryStarted",
+                result: new JObject
+                {
+                    ["cancelled"] = true,
+                    ["processed"] = processed,
+                    ["lastProgressAtUtc"] = last.ToString("o"),
+                    ["noProgressTimeoutSec"] = ResolveIndexNoProgressSeconds(),
+                    ["hint"] = "The stalled index build was cancelled. Re-issue force=true to start a fresh build; the last certified snapshot remains available on disk."
+                });
+        }
+
+        private void StartIndexWatchdog()
+        {
+            _stopIndexWatchdog = false;
+            MarkIndexProgressHeartbeat();
+            int timeoutSeconds = ResolveIndexNoProgressSeconds();
+            _indexWatchdogThread = new Thread(() =>
+            {
+                while (!_stopIndexWatchdog && _isIndexing)
+                {
+                    Thread.Sleep(1000);
+                    long ticks = Interlocked.Read(ref _lastIndexProgressTicks);
+                    if (ticks <= 0) continue;
+                    var lastProgress = new DateTime(ticks, DateTimeKind.Utc);
+                    var stalledFor = DateTime.UtcNow - lastProgress;
+                    if (IsIndexProgressStalled(lastProgress, DateTime.UtcNow, timeoutSeconds))
+                    {
+                        Logger.Error("[INDEX-STALLED] no progress for " + (long)stalledFor.TotalSeconds + "s; cancelling build.");
+                        CancelStalledIndexBuild();
+                        break;
+                    }
+                }
+            }) { IsBackground = true, Name = "GxMcp-IndexWatchdog", Priority = ThreadPriority.BelowNormal };
+            _indexWatchdogThread.Start();
+        }
 
         // Fase 0 instrumentation: last KB-open / datastore-probe elapsed, so Program.cs
         // can attribute them in the consolidated [COLD-START-BREAKDOWN] line without
@@ -529,9 +608,13 @@ namespace GxMcp.Worker.Services
             }
 
             Logger.Info($"BulkIndex(force={force}) requested — fast index path (lite + lazy enrichment).");
-            if (_isIndexing) return Models.McpResponse.Ok(
-                code: "AlreadyInProgress",
-                result: new JObject { ["hint"] = "An index build is already running; poll genexus_whoami for progress." });
+            if (_isIndexing)
+            {
+                if (force) return CancelStalledIndexBuild();
+                return Models.McpResponse.Ok(
+                    code: "AlreadyInProgress",
+                    result: new JObject { ["hint"] = "An index build is already running; poll genexus_whoami for progress." });
+            }
 
             // Wait briefly for the KB to open — same warm-up window as the legacy path.
             try
@@ -586,6 +669,7 @@ namespace GxMcp.Worker.Services
                             try { _indexCacheService.MarkIndexRefreshing(); } catch { }
                             _isIndexing = true;
                             StartDeltaRefreshThread(validation.HighWaterMark, loaded.Objects.Count);
+                            StartIndexWatchdog();
                             Logger.Info($"BulkIndex(fast): warm cache delta-eligible ({loaded.Objects.Count} objects, hwm={validation.HighWaterMark:o}, dllRebaseline={dllRebaseline}) — delta refresh started.");
                             return Models.McpResponse.Ok(
                                 code: "DeltaStarted",
@@ -655,6 +739,7 @@ namespace GxMcp.Worker.Services
                         // showed processed:0 with no way to gauge progress. In the lite
                         // pass every walked object IS processed, so track them together.
                         _processedCount = _totalCount;
+                        MarkIndexProgressHeartbeat();
                         string typeName = null;
                         try { typeName = obj.TypeDescriptor?.Name; } catch { }
                         if (string.IsNullOrEmpty(typeName)) typeName = obj.GetType().Name;
@@ -799,6 +884,7 @@ namespace GxMcp.Worker.Services
                         _indexCacheService.MarkIndexComplete(_totalCount);
                         bulkSw.Stop();
                         _currentStatus = "Complete";
+                        _stopIndexWatchdog = true;
                         _isIndexing = false;
                         Logger.Info($"[ENRICH-LAZY] eager drain skipped — {_totalCount} objects catalogued, enrichment on-demand. litePassMs={liteSw.ElapsedMilliseconds}");
                         return;
@@ -844,13 +930,14 @@ namespace GxMcp.Worker.Services
                             try { _indexCacheService.MarkIndexFailed(); } catch { }
                             _currentStatus = "Error: " + ex.Message;
                         }
-                        finally { _isIndexing = false; }
+                        finally { _stopIndexWatchdog = true; _isIndexing = false; }
                     }) {
                         IsBackground = true,
                         Priority = ThreadPriority.BelowNormal,
                         Name = "GxMcp-Enrich"
                     };
                     enrichThread.SetApartmentState(ApartmentState.STA);
+                    _enrichIndexThread = enrichThread;
                     enrichThread.Start();
                 }
                 catch (Exception ex)
@@ -859,6 +946,7 @@ namespace GxMcp.Worker.Services
                     Logger.Error("[BULK-INDEX-LITE-FAIL] error=" + ex.Message);
                     try { _indexCacheService.MarkIndexFailed(); } catch { }
                     _currentStatus = "Error: " + ex.Message;
+                    _stopIndexWatchdog = true;
                     _isIndexing = false;
                 }
             }) {
@@ -867,7 +955,9 @@ namespace GxMcp.Worker.Services
                 Name = "GxMcp-Lite"
             };
             liteThread.SetApartmentState(ApartmentState.STA);
+            _liteIndexThread = liteThread;
             liteThread.Start();
+            StartIndexWatchdog();
 
             return Models.McpResponse.Ok(
                 code: "LiteStarted",
@@ -925,6 +1015,7 @@ namespace GxMcp.Worker.Services
                 int changed = 0;
                 try
                 {
+                    MarkIndexProgressHeartbeat();
                     dynamic kb = GetKB();
                     if (kb == null)
                     {
@@ -960,6 +1051,7 @@ namespace GxMcp.Worker.Services
                             DateTime objectLastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate);
                             if (objectLastUpdate <= safeHwm) continue; // re-filter like KbWatcherService
                             _indexCacheService.UpdateEntry(obj);
+                            MarkIndexProgressHeartbeat();
                             if (objectLastUpdate > newHwm) newHwm = objectLastUpdate;
                             changed++;
                         }
@@ -1050,6 +1142,7 @@ namespace GxMcp.Worker.Services
                 Name = "GxMcp-Delta"
             };
             deltaThread.SetApartmentState(ApartmentState.STA);
+            _deltaIndexThread = deltaThread;
             deltaThread.Start();
         }
 
@@ -1290,6 +1383,15 @@ namespace GxMcp.Worker.Services
             json["totalKnown"] = !_isIndexing;
             json["objectsWalked"] = _totalCount;
             json["status"] = _currentStatus;
+            long lastProgressTicks = Interlocked.Read(ref _lastIndexProgressTicks);
+            if (lastProgressTicks > 0)
+            {
+                var lastProgress = new DateTime(lastProgressTicks, DateTimeKind.Utc);
+                json["lastProgressAtUtc"] = lastProgress.ToString("o");
+                json["noProgressTimeoutSec"] = ResolveIndexNoProgressSeconds();
+                json["stalled"] = _isIndexing
+                    && (DateTime.UtcNow - lastProgress).TotalSeconds >= ResolveIndexNoProgressSeconds();
+            }
             var state = _indexCacheService?.GetState();
             json["freshness"] = state?.Freshness ?? "stale";
             json["lastSuccessfulScanAt"] = state?.LastSuccessfulScanAt.HasValue == true
@@ -1396,9 +1498,18 @@ namespace GxMcp.Worker.Services
                     TryGet(() => (object)_kb.Environment?.DesignModel)
                 };
                 string activeName = GetActiveEnvironment();
-                var environmentRoots = Directory.GetDirectories(kbPath)
-                    .Where(d => Directory.Exists(Path.Combine(d, "web")))
-                    .ToList();
+                List<string> environmentRoots;
+                try
+                {
+                    environmentRoots = Directory.GetDirectories(kbPath)
+                        .Where(d => Directory.Exists(Path.Combine(d, "web")))
+                        .ToList();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("Active environment web-path probe unavailable: " + ex.Message);
+                    environmentRoots = new List<string>();
+                }
                 // Prefer an unambiguous semantic match before probing SDK
                 // properties: U5 can expose a stale TargetPath from another
                 // environment even while GetActiveEnvironment reports development.
@@ -1488,9 +1599,11 @@ namespace GxMcp.Worker.Services
         // Enumerate all environment models configured in the open KB.
         public string ListEnvironments()
         {
-            lock (_kbLock)
+            try
             {
-                if (_kb == null) throw new InvalidOperationException("Knowledge Base is not open.");
+                lock (_kbLock)
+                {
+                    if (_kb == null) throw new InvalidOperationException("Knowledge Base is not open.");
 
                 string activeName = GetActiveEnvironment();
                 string activeWebPath = GetActiveEnvironmentWebPath();
@@ -1567,7 +1680,16 @@ namespace GxMcp.Worker.Services
                     ["environments"] = envArray
                 };
 
-                return response.ToString(Newtonsoft.Json.Formatting.None);
+                    return response.ToString(Newtonsoft.Json.Formatting.None);
+                }
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "EnvironmentListFailed",
+                    message: "The GeneXus environment list could not be read: " + ex.Message,
+                    hint: "Retry after the KB finishes opening or inspect the Worker log for the SDK member that is unavailable on this GeneXus major.",
+                    extra: new JObject { ["operation"] = "list_environments", ["sdkType"] = ex.GetType().FullName });
             }
         }
 
@@ -2003,8 +2125,11 @@ namespace GxMcp.Worker.Services
         }
 
         private static string TryGetEnvironmentName(object candidate)
+            => TryGetEnvironmentName(candidate, 0, new HashSet<object>());
+
+        private static string TryGetEnvironmentName(object candidate, int depth, HashSet<object> seen)
         {
-            if (candidate == null) return null;
+            if (candidate == null || depth > 8 || !seen.Add(candidate)) return null;
 
             foreach (var propertyName in new[] { "Name", "EnvironmentName" })
             {
@@ -2020,7 +2145,7 @@ namespace GxMcp.Worker.Services
             foreach (var childName in new[] { "TargetModel", "ActiveModel", "Model" })
             {
                 var child = TryGetMember(candidate, childName);
-                var name = TryGetEnvironmentName(child);
+                var name = TryGetEnvironmentName(child, depth + 1, seen);
                 if (!string.IsNullOrWhiteSpace(name)) return name;
             }
             return null;

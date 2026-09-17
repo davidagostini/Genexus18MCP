@@ -210,6 +210,10 @@ namespace GxMcp.Worker.Services
                 // so returning after KBObject.Create was not a read-only preview.
                 if (dryRun && type.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
                 {
+                    string previewName = options?["firstItem"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(previewName)) previewName = name + "Id";
+                    string previewType = options?["firstItemType"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(previewType)) previewType = "Numeric(4)";
                     return McpResponse.Ok(
                         target: name,
                         code: "DryRun",
@@ -220,31 +224,42 @@ namespace GxMcp.Worker.Services
                             ["mutationDetected"] = false,
                             ["type"] = type,
                             ["name"] = name,
-                            ["seededDescription"] = name + "Id : Numeric(8,0) [Key]",
-                            ["hint"] = "Re-run without dryRun to create the Transaction and its seed attribute."
+                            ["seededDescription"] = previewName + " : " + previewType + " [Key]",
+                            ["hint"] = "Re-run without dryRun to create the Transaction and its initial key attribute. Pass firstItem/firstItemType to choose it explicitly."
                         });
+                }
+
+                // A dry run is a planning operation, not an SDK object-construction
+                // probe. Some GX17 builds resolve optional object wrappers (notably
+                // SuperApp) while KBObject.Create materializes the object, even though
+                // no Save is requested. Type GUID and duplicate checks above are the
+                // only native reads needed for this contract.
+                if (dryRun)
+                {
+                    string plannedSeed = null;
+                    if (type.Equals("SDT", StringComparison.OrdinalIgnoreCase)
+                        || type.Equals("StructuredDataType", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string itemName = options?["firstItem"]?.ToString();
+                        if (string.IsNullOrWhiteSpace(itemName)) itemName = "Item1";
+                        string itemType = options?["firstItemType"]?.ToString();
+                        if (string.IsNullOrWhiteSpace(itemType)) itemType = "VARCHAR";
+                        plannedSeed = itemName.Trim() + " : " + itemType.Trim();
+                    }
+                    var planned = new JObject
+                    {
+                        ["dryRun"] = true,
+                        ["persisted"] = false,
+                        ["mutationDetected"] = false,
+                        ["type"] = type,
+                        ["name"] = name,
+                        ["hint"] = "Re-run without dryRun to call Save()."
+                    };
+                    if (!string.IsNullOrWhiteSpace(plannedSeed)) planned["seededDescription"] = plannedSeed;
+                    return McpResponse.Ok(target: name, code: "DryRun", result: planned);
                 }
 
                 KBObject newObj = CreateObjectInstance(type, name, options, out string seededDescription, out JObject domainMeta);
-
-                if (dryRun)
-                {
-                    // Item 21 (friction 2026-05-22) — return planned shape without persisting.
-                    // SDK in-memory artefact is discarded (GC-collected) since we don't hold
-                    // a reference past this method. Pre-flight checks (type resolution,
-                    // duplicate name) already ran above so the LLM sees real validation.
-                    return McpResponse.Ok(
-                        target: name,
-                        code: "DryRun",
-                        result: new JObject
-                        {
-                            ["dryRun"] = true,
-                            ["type"] = type,
-                            ["name"] = name,
-                            ["seededDescription"] = seededDescription,
-                            ["hint"] = "Re-run without dryRun to call Save()."
-                        });
-                }
 
                 newObj.Save();
 
@@ -415,8 +430,11 @@ namespace GxMcp.Worker.Services
             }
             else if (newObj is Artech.Genexus.Common.Objects.Transaction newTrn)
             {
-                InitializeTransactionWithDefaultKey(newTrn, name);
-                seededDescription = name + "Id : Numeric(8,0) [Key]";
+                string firstItem = options?["firstItem"]?.ToString();
+                string firstItemType = options?["firstItemType"]?.ToString();
+                InitializeTransactionWithDefaultKey(newTrn, name, firstItem, firstItemType);
+                seededDescription = (string.IsNullOrWhiteSpace(firstItem) ? name + "Id" : firstItem.Trim())
+                    + " : " + (string.IsNullOrWhiteSpace(firstItemType) ? "Numeric(4)" : firstItemType.Trim()) + " [Key]";
             }
             else if (type.Equals("Domain", StringComparison.OrdinalIgnoreCase))
             {
@@ -1140,7 +1158,8 @@ namespace GxMcp.Worker.Services
         // Mirrors the SDT init: a freshly created Transaction with zero attributes fails the
         // SDK validation on Save. We seed it with a Numeric(4) key attribute named
         // "<TrnName>Id" — same convention the GeneXus IDE uses when you create a new Trn.
-        private static void InitializeTransactionWithDefaultKey(Artech.Genexus.Common.Objects.Transaction trn, string trnName)
+        private static void InitializeTransactionWithDefaultKey(Artech.Genexus.Common.Objects.Transaction trn, string trnName,
+            string requestedName = null, string requestedType = null)
         {
             try
             {
@@ -1151,7 +1170,8 @@ namespace GxMcp.Worker.Services
                 // If, somehow, attributes already exist, leave the Trn alone.
                 try { foreach (var _ in root.Attributes) return; } catch { }
 
-                string keyName = trnName + "Id";
+                string keyName = string.IsNullOrWhiteSpace(requestedName) ? trnName + "Id" : requestedName.Trim().TrimStart('&');
+                string typeText = string.IsNullOrWhiteSpace(requestedType) ? "Numeric(4)" : requestedType.Trim();
 
                 // Reuse an existing global Attribute with the conventional "<TrnName>Id" name;
                 // otherwise create one (Numeric(4)) — same convention the GeneXus IDE uses.
@@ -1169,9 +1189,15 @@ namespace GxMcp.Worker.Services
                         globalAttr = newAttr as Artech.Genexus.Common.Objects.Attribute;
                         if (globalAttr != null)
                         {
-                            try { globalAttr.Type = Artech.Genexus.Common.eDBType.NUMERIC; } catch { }
-                            try { globalAttr.Length = 4; } catch { }
-                            try { globalAttr.Decimals = 0; } catch { }
+                            var typeSpec = GxMcp.Worker.Helpers.AttributeTypeApplier.Parse(typeText);
+                            if (!typeSpec.Recognized
+                                || !GxMcp.Worker.Helpers.AttributeTypeApplier.ApplyPrimitive(
+                                    globalAttr, typeSpec.CanonicalType, typeSpec.Length, typeSpec.Decimals))
+                            {
+                                try { globalAttr.Type = Artech.Genexus.Common.eDBType.NUMERIC; } catch { }
+                                try { globalAttr.Length = 4; } catch { }
+                                try { globalAttr.Decimals = 0; } catch { }
+                            }
                         }
                         newAttr.Save();
                         if (globalAttr == null) globalAttr = Artech.Genexus.Common.Objects.Attribute.Get(trn.Model, keyName);
@@ -2935,6 +2961,21 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            // A completed lite/full index is authoritative for absence. Do not call
+            // the broad SDK GetByName fallback after it says the object is missing:
+            // on GX17 that fallback can lazily load the unavailable SuperApp type and
+            // turn an ordinary typo into a dispatcher exception.
+            try
+            {
+                var indexState = _kbService?.GetIndexCache()?.GetState();
+                if (index != null && indexState != null
+                    && !string.Equals(indexState.Status, "Cold", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(indexState.Status, "Reindexing", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(indexState.Status, "Indexing", StringComparison.OrdinalIgnoreCase))
+                    return null;
+            }
+            catch { }
+
             // 2. SLOW PATH: Fallback to SDK GetByName (for safety with new objects not yet indexed)
             // If the index wasn't loaded, kick off the background warm so subsequent
             // lookups hit the fast path — idempotent, fire-and-forget, never blocks.
@@ -2963,14 +3004,21 @@ namespace GxMcp.Worker.Services
                     catch { }
                 }
 
-                var sdkMatchesTyped = kb.DesignModel.Objects.GetByName(null, null, namePart);
-                foreach (KBObject obj in sdkMatchesTyped)
+                try
                 {
-                    if (ResolutionTypeMatches(obj, typePart))
+                    var sdkMatchesTyped = kb.DesignModel.Objects.GetByName(null, null, namePart);
+                    foreach (KBObject obj in sdkMatchesTyped)
                     {
-                        Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Typed-SDK) in {1}ms", target, sw.ElapsedMilliseconds));
-                        return obj;
+                        if (ResolutionTypeMatches(obj, typePart))
+                        {
+                            Logger.Debug(string.Format("FindObject '{0}' SUCCESS (Typed-SDK) in {1}ms", target, sw.ElapsedMilliseconds));
+                            return obj;
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn(string.Format("FindObject typed SDK fallback unavailable for '{0}': {1}", target, ex.Message));
                 }
                 return null;
             }
@@ -3020,7 +3068,16 @@ namespace GxMcp.Worker.Services
             catch { }
 
             // 3. Fallback to generic GetByName
-            var sdkMatches = kb.DesignModel.Objects.GetByName(null, null, namePart);
+            IEnumerable<KBObject> sdkMatches;
+            try
+            {
+                sdkMatches = kb.DesignModel.Objects.GetByName(null, null, namePart);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn(string.Format("FindObject generic SDK fallback unavailable for '{0}': {1}", target, ex.Message));
+                return null;
+            }
             KBObject firstPrimaryLogic = null;
             KBObject firstLogicMatch = null;
             KBObject firstMatch = null;

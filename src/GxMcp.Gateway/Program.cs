@@ -29,6 +29,10 @@ namespace GxMcp.Gateway
         private static readonly AsyncLocal<KbHandle?> _currentKb = new AsyncLocal<KbHandle?>();
         private static readonly AsyncLocal<SessionKbContextStore.Snapshot?> _currentSessionContext = new AsyncLocal<SessionKbContextStore.Snapshot?>();
         private static readonly AsyncLocal<bool> _currentOperationRequiresOwner = new AsyncLocal<bool>();
+        // An explicit kb= selector identifies the worker directly. It must not be
+        // rejected merely because the caller did not first establish a session
+        // selection; selected-session calls still use the lease fence below.
+        private static readonly AsyncLocal<bool> _currentExplicitKb = new AsyncLocal<bool>();
         private static readonly KbUseLeaseRegistry _kbLeases = new KbUseLeaseRegistry(new StopwatchMonotonicClock());
         // Legacy single-worker accessor: returns the worker for the AsyncLocal KB if set,
         // otherwise the worker for the DefaultKb (acquiring it lazily).
@@ -42,7 +46,8 @@ namespace GxMcp.Gateway
                 kb = _kbResolver!.Resolve(null, _workerPool.ListOpen(), _workerPool.ListKnown());
             }
             bool legacy = string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
-            return await _workerPool.AcquireAsync(kb, CancellationToken.None, _kbLeases, _currentSessionContext.Value, _currentOperationRequiresOwner.Value, legacy);
+            bool requireOwner = _currentOperationRequiresOwner.Value;
+            return await _workerPool.AcquireAsync(kb, CancellationToken.None, _kbLeases, _currentSessionContext.Value, requireOwner, legacy);
         }
         internal static WorkerPool? GetWorkerPool() => _workerPool;
         internal static KbResolver? GetKbResolver() => _kbResolver;
@@ -625,6 +630,19 @@ namespace GxMcp.Gateway
             Environment.Exit(failCount == 0 ? 0 : 1);
         }
 
+        internal static bool ShouldKeepStdioAliveForLegacyMaster(Configuration config, bool explicitSharedGateway = false)
+        {
+            var server = config?.Server;
+            string? mode = config?.GatewayMode ?? server?.TransportMode;
+            bool sharedGatewayExplicit = explicitSharedGateway
+                || server?.SharedGateway == true
+                || string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Environment.GetEnvironmentVariable("GX_MCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase);
+            return (string.Equals(config?.GatewayMode, "legacy", StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(mode, "legacy", StringComparison.OrdinalIgnoreCase) && sharedGatewayExplicit))
+                && server?.HttpPort > 0;
+        }
+
         public static async Task Main(string[] args)
         {
             // Short-circuit self-test before any I/O setup. The CLI installer calls this
@@ -696,6 +714,7 @@ namespace GxMcp.Gateway
                     _gxMirrorWatcher = null;
                 }
                 catch { }
+                try { _workerPool?.StopAll(WorkerStopReason.GatewayShutdown); } catch { }
                 if (useSharedLease && _activeConfig != null)
                 {
                     GatewayProcessLease.ReleaseCurrentProcess(_activeConfig);
@@ -911,11 +930,17 @@ namespace GxMcp.Gateway
 
                     if (line == null)
                     {
-                        if (config.Server?.HttpPort > 0)
+                        // A dedicated stdio gateway owns its Worker lifetime through the
+                        // parent pipe. Once the client closes stdin there is no caller left
+                        // to serve, so keeping the process alive would retain the KB lease
+                        // indefinitely. The legacy transport is the only mode that keeps a
+                        // stdio loop alive for its shared HTTP master.
+                        if (ShouldKeepStdioAliveForLegacyMaster(config, sharedGatewayExplicit))
                         {
-                            Log("Stdio closed, keeping alive for HTTP...");
+                            Log("Stdio closed, keeping legacy HTTP master alive...");
                             await Task.Delay(-1);
                         }
+                        Log("Stdio closed; shutting down isolated gateway.");
                         break;
                     }
 

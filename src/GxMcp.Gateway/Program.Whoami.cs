@@ -1056,7 +1056,7 @@ namespace GxMcp.Gateway
 
         private static JObject BuildStartupFailureHealth(string alias, WorkerStartupFailure failure)
         {
-            bool sdkFailure = failure.Code.StartsWith("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase);
+            bool sdkFailure = WorkerPool.IsFatalSdkDiagnosticCode(failure.Code);
             var health = new JObject
             {
                 ["status"] = sdkFailure ? "sdk_incompatible" : "startup_failed",
@@ -1070,28 +1070,6 @@ namespace GxMcp.Gateway
                 ? "The Worker rejected the configured GeneXus SDK before opening the KB. Check geneXus.sdkCompatibility and use a supported major; the gateway will not restart this rejected worker in a loop."
                 : "The Worker failed during startup. Check the error above and retry after correcting the reported path or process problem.";
             return health;
-        }
-
-        internal static bool IsWorkerReadyForDoctor()
-        {
-            try
-            {
-                if (_workerPool == null) return false;
-                KbHandle? current = _currentKb.Value;
-                if (current != null)
-                {
-                    var worker = _workerPool.TryGet(current.NormalizedAlias);
-                    return worker != null && worker.Pid.HasValue && worker.IsSdkReady;
-                }
-
-                foreach (var handle in _workerPool.ListOpen())
-                {
-                    var worker = _workerPool.TryGet(handle.NormalizedAlias);
-                    if (worker != null && worker.Pid.HasValue && worker.IsSdkReady) return true;
-                }
-            }
-            catch { }
-            return false;
         }
 
         internal static JObject BuildGatewayDoctorEnvelope(string? sessionId = null)
@@ -1122,6 +1100,11 @@ namespace GxMcp.Gateway
                 warnings.Add("No active KB is selected.");
 
             var index = whoami["index"] as JObject;
+            var metrics = _operationTracker.BuildMetricsSummary();
+            metrics["source"] = "gateway";
+            // Keep the doctor vocabulary stable while exposing the Gateway-side
+            // counters that remain valid across Worker replacement.
+            metrics["totalToolCalls"] = metrics["totalCalls"] ?? 0;
             var result = new JObject
             {
                 ["checkedAt"] = DateTime.UtcNow.ToString("o"),
@@ -1139,7 +1122,7 @@ namespace GxMcp.Gateway
                     ["indexEntries"] = index?["totalObjects"] ?? 0,
                     ["ageHours"] = JValue.CreateNull()
                 },
-                ["telemetry"] = new JObject { ["source"] = "gateway" },
+                ["telemetry"] = metrics,
                 ["warnings"] = warnings,
                 ["hint"] = warnings.Count > 0 ? warnings[0] : JValue.CreateNull()
             };

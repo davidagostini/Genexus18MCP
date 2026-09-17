@@ -180,7 +180,24 @@ namespace GxMcp.Gateway.Tests
             var pool = new WorkerPool(CfgWithMax(1));
             Assert.False(pool.IsAtCapacity()); // 0 entries, max=1 → 0 >= 1 is false
             pool.RegisterForTest(new KbHandle("a", "C:/A"));
-            Assert.True(pool.IsAtCapacity());  // 1 entry, max=1 → 1 >= 1 is true
+            Assert.True(pool.IsAtCapacity());  // 1 entry, max=1 >= 1 is true
+        }
+
+        [Theory]
+        [InlineData("GXMCP_SDK_COMPATIBLE", false)]
+        [InlineData("GXMCP_SDK_FINGERPRINT_DRIFT", false)]
+        [InlineData("GXMCP_SDK_VERSION_MISMATCH", true)]
+        [InlineData("WORKER_STARTUP_FAILED", false)]
+        public void Sdk_diagnostic_classifies_only_rejections_as_fatal(string code, bool fatal)
+        {
+            Assert.Equal(fatal, WorkerPool.IsFatalSdkDiagnosticCode(code));
+        }
+
+        [Fact]
+        public void ExtractDiagnosticCode_skips_informational_code_before_fatal_code()
+        {
+            string diagnostic = "GXMCP_SDK_COMPATIBLE major=18 GXMCP_SDK_VERSION_MISMATCH major=19";
+            Assert.Equal("GXMCP_SDK_VERSION_MISMATCH", WorkerPool.ExtractDiagnosticCode(diagnostic));
         }
     }
 }

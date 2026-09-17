@@ -9,6 +9,33 @@ namespace GxMcp.Worker.Tests
 {
     public class TransferImportTests
     {
+        private sealed class FakeExportItem
+        {
+            public string ObjectName { get; set; }
+            public string DisplayName { get; set; }
+            public string Guid { get; set; }
+            public string BaseOperation { get; set; }
+            public string Status { get; set; }
+        }
+
+        [Fact]
+        public void DescribeExportItem_ProjectsStableSdkMetadataWithoutCallingObject()
+        {
+            var descriptor = TransferService.DescribeExportItem(new FakeExportItem
+            {
+                ObjectName = "SamplePanel",
+                DisplayName = "Sample panel",
+                Guid = "9b7e0f20-39a2-45a4-9b21-000000000001",
+                BaseOperation = "Insert",
+                Status = "Ready"
+            });
+
+            Assert.Equal("SamplePanel", descriptor["name"]?.ToString());
+            Assert.Equal("Sample panel", descriptor["displayName"]?.ToString());
+            Assert.Equal("Insert", descriptor["baseOperation"]?.ToString());
+            Assert.True(descriptor["identityAvailable"]?.ToObject<bool>() ?? false);
+        }
+
         [Fact]
         public void SilentImportOptions_DefaultsToLosslessOverwrite()
         {

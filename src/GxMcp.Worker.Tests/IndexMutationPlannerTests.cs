@@ -31,6 +31,18 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Create_OmittedUniqueDefaultsToDuplicate()
+        {
+            IndexCreatePlan plan = IndexMutationPlanner.Create(new JObject
+            {
+                ["attributes"] = new JArray("QueueStartedAt")
+            }, TableAttributes, Array.Empty<TableIndexState>());
+
+            Assert.False(plan.Unique);
+            Assert.Equal("Duplicate", plan.WouldCreate.IndexType);
+        }
+
+        [Fact]
         public void Projected_AddsIndexWithoutChangingSnapshot()
         {
             var original = Existing("PK_QUEUE", "Primary", "QueueId");

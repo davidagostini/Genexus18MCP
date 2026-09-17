@@ -314,6 +314,8 @@ namespace GxMcp.Worker.Models
             }
 
             var clauses = new List<string>();
+            var seenClauses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenStructured = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var f in level.Filters)
             {
                 string attribute = f.Attribute;
@@ -326,14 +328,16 @@ namespace GxMcp.Worker.Models
                 {
                     string rhs = string.IsNullOrWhiteSpace(value) ? "?" : ReplaceVarsWithBinds(value, parms);
                     clause = $"{attribute} {op} {rhs}";
-                    structured.Add(new JObject { ["attribute"] = attribute, ["op"] = op });
+                    string structuredKey = attribute + "\u001f" + op + "\u001f" + (value ?? string.Empty);
+                    if (seenStructured.Add(structuredKey))
+                        structured.Add(new JObject { ["attribute"] = attribute, ["op"] = op });
                 }
                 else if (!string.IsNullOrWhiteSpace(raw))
                 {
                     clause = ReplaceVarsWithBinds(raw, parms);
                 }
 
-                if (!string.IsNullOrWhiteSpace(clause)) clauses.Add(clause);
+                if (!string.IsNullOrWhiteSpace(clause) && seenClauses.Add(clause)) clauses.Add(clause);
             }
 
             return (string.Join(" AND ", clauses), parms, warnings, structured);

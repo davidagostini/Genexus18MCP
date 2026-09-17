@@ -122,6 +122,23 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("MyObj", status.Target);
         }
 
+        [Fact]
+        public void Specify_RejectsUnresolvedTargetBeforeQueuing()
+        {
+            var idx = new IndexCacheService();
+            idx.ReplaceAll(new[]
+            {
+                new SearchIndex.IndexEntry { Guid = Guid.NewGuid().ToString(), Name = "Existing", Type = "Procedure", IsEnriched = true }
+            });
+            var svc = new BuildService();
+            svc.SetIndexCacheService(idx);
+
+            var response = JObject.Parse(svc.Specify("Missing"));
+
+            Assert.Equal("error", response["status"]?.ToString());
+            Assert.Equal("SpecifyTargetUnresolved", response["error"]?["code"]?.ToString());
+        }
+
         // ── BuildDryRun() ────────────────────────────────────────────────────
 
         [Fact]
@@ -513,6 +530,30 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal(0, status.WarningCount);
             Assert.Empty(status.Warnings);
+        }
+
+        [Fact]
+        public void HandleLine_SpecifyExistingTarget_DemotesNotFoundDiagnostic()
+        {
+            var idx = new IndexCacheService();
+            idx.ReplaceAll(new[]
+            {
+                new SearchIndex.IndexEntry { Guid = Guid.NewGuid().ToString(), Name = "ExistingProc", Type = "Procedure", IsEnriched = true }
+            });
+            var svc = new BuildService();
+            svc.SetIndexCacheService(idx);
+            var status = new BuildService.BuildTaskStatus
+            {
+                TaskId = "nf-specify",
+                Target = "ExistingProc",
+                SpecifyOnly = true
+            };
+
+            InvokeHandleLine(svc, status, "error: Object 'ExistingProc' was not found in the Knowledge Base", isError: true);
+
+            Assert.Equal(0, status.ErrorCount);
+            Assert.Equal(0, status.WarningCount);
+            Assert.Contains("ExistingProc", status.NotFoundTargets);
         }
 
         [Fact]

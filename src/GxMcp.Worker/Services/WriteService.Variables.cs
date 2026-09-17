@@ -42,6 +42,37 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
+        private string ValidateVariableDryRunTarget(string target)
+        {
+            if (string.IsNullOrWhiteSpace(target))
+                return McpResponse.Err(
+                    code: "MissingParameter",
+                    message: "Object name is required for a variable preview.",
+                    hint: "Pass name=<object>.",
+                    target: target);
+            try
+            {
+                if (_objectService?.FindObject(target) != null) return null;
+                return McpResponse.Err(
+                    code: "ObjectNotFound",
+                    message: "The variable preview target was not found in the Knowledge Base.",
+                    hint: "Verify the object name with genexus_query or genexus_list_objects, then retry the preview.",
+                    nextSteps: new JArray(Models.McpResponse.NextStep(
+                        "genexus_query",
+                        new JObject { ["query"] = target },
+                        "Find the exact object name before retrying the variable preview.")),
+                    target: target);
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "ObjectResolutionFailed",
+                    message: "The variable preview target could not be resolved: " + ex.Message,
+                    hint: "Retry after the KB index is ready or pass a fully qualified object identity.",
+                    target: target);
+            }
+        }
+
         /// Batch variant: removes all `varNames` from `target`, calling EnsureSave / ScheduleFlush once.
         /// Skips framework-managed names. Returns per-name outcomes plus aggregate counts.
         public string DeleteVariables(string target, System.Collections.Generic.IEnumerable<string> varNames)
@@ -115,6 +146,9 @@ namespace GxMcp.Worker.Services
         public string DeleteVariable(string target, string varName, bool dryRun = false)
         {
             if (dryRun)
+            {
+                string targetError = ValidateVariableDryRunTarget(target);
+                if (targetError != null) return targetError;
                 return McpResponse.Ok(
                     target: target,
                     code: "DryRun",
@@ -127,6 +161,7 @@ namespace GxMcp.Worker.Services
                             ["varName"] = varName
                         }
                     });
+            }
             var raw = DeleteVariableInternal(target, varName);
             MarkDirtyIfSuccess(raw, target);
             return WrapWithPersistedState(raw, target, "Variables", GxMcp.Worker.Helpers.WriteResultMeta.TypedWriter);
@@ -431,6 +466,8 @@ namespace GxMcp.Worker.Services
         {
             if (dryRun)
             {
+                string targetError = ValidateVariableDryRunTarget(target);
+                if (targetError != null) return targetError;
                 var preview = new JArray();
                 if (variables != null)
                     foreach (var v in variables) preview.Add(v.DeepClone());
@@ -694,6 +731,9 @@ namespace GxMcp.Worker.Services
             int? length = null, int? decimals = null, bool? collection = null, string basedOn = null)
         {
             if (dryRun)
+            {
+                string targetError = ValidateVariableDryRunTarget(target);
+                if (targetError != null) return targetError;
                 return McpResponse.Ok(
                     target: target,
                     code: "DryRun",
@@ -711,6 +751,7 @@ namespace GxMcp.Worker.Services
                             ["collection"] = collection
                         }
                     });
+            }
             var raw = AddVariableInternal(target, varName, typeName, length, decimals, collection, basedOn);
             MarkDirtyIfSuccess(raw, target);
             return WrapWithPersistedState(raw, target, "Variables", GxMcp.Worker.Helpers.WriteResultMeta.TypedWriter);
@@ -1123,6 +1164,9 @@ namespace GxMcp.Worker.Services
             int? length = null, int? decimals = null, bool? collection = null)
         {
             if (dryRun)
+            {
+                string targetError = ValidateVariableDryRunTarget(target);
+                if (targetError != null) return targetError;
                 return McpResponse.Ok(
                     target: target,
                     code: "DryRun",
@@ -1140,6 +1184,7 @@ namespace GxMcp.Worker.Services
                             ["collection"] = collection
                         }
                     });
+            }
             var raw = ModifyVariableInternal(target, varName, newTypeName, basedOn, length, decimals, collection);
             MarkDirtyIfSuccess(raw, target);
             return WrapWithPersistedState(raw, target, "Variables", GxMcp.Worker.Helpers.WriteResultMeta.TypedWriter);

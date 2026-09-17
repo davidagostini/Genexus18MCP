@@ -100,6 +100,19 @@ namespace GxMcp.Gateway
             return true;
         }
 
+        public bool RefreshLease(string sessionId, KbUseLease lease)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId) || lease == null) return false;
+            if (!_entries.TryGetValue(sessionId, out var entry)
+                || !string.Equals(entry.KbId, lease.KbId, StringComparison.Ordinal)
+                || !string.Equals(entry.Lease?.Token, lease.Token, StringComparison.Ordinal)
+                || entry.ContextGeneration != lease.ContextGeneration)
+                return false;
+            entry.Lease = lease;
+            entry.LastSeenUtc = DateTime.UtcNow;
+            return true;
+        }
+
         public void Clear(string sessionId)
         {
             if (string.IsNullOrWhiteSpace(sessionId)) return;

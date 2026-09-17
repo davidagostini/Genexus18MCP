@@ -78,10 +78,16 @@ class OpenCodeJsoncAdapter extends BaseClientAdapter {
         this.config = configModule || require('./config');
     }
     apply(client, launcher, targetConfigPath, opts = {}) {
-        return this.config.applyOpenCodeJson(client.path, launcher, targetConfigPath, opts);
+        return this.config.applyOpenCodeJson(client.path, launcher, targetConfigPath, {
+            ...opts,
+            alternatePaths: client.alternatePaths || []
+        });
     }
     remove(client, opts = {}) {
-        return this.config.removeOpenCodeJson(client.path, opts);
+        return this.config.removeOpenCodeJson(client.path, {
+            ...opts,
+            alternatePaths: client.alternatePaths || []
+        });
     }
     read(client, serverName) {
         if (!fs.existsSync(client.path)) return null;

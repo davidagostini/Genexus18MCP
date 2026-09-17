@@ -356,20 +356,59 @@ namespace GxMcp.Gateway
         {
             string diagnostic = string.IsNullOrWhiteSpace(workerDiagnostic) ? fallback : workerDiagnostic!;
             string code = ExtractDiagnosticCode(diagnostic);
-            WorkerStopReason reason = code.StartsWith("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase)
+            // COMPATIBLE and fingerprint drift are informational diagnostics emitted
+            // during a normal supported-major startup. Persisting either as a startup
+            // failure makes whoami/doctor report a false SDK rejection after the
+            // Worker exits for an unrelated reason.
+            if (code.StartsWith("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase)
+                && !IsFatalSdkDiagnosticCode(code))
+            {
+                _startupFailures[handle.NormalizedAlias] = new WorkerStartupFailure(
+                    WorkerStopReason.None,
+                    "WORKER_STARTUP_FAILED",
+                    diagnostic + Environment.NewLine + fallback,
+                    DateTime.UtcNow,
+                    exitCode);
+                return;
+            }
+
+            WorkerStopReason reason = IsFatalSdkDiagnosticCode(code)
                 ? WorkerStopReason.SdkCompatibilityRejected
                 : WorkerStopReason.None;
             _startupFailures[handle.NormalizedAlias] = new WorkerStartupFailure(
                 reason, code, diagnostic, DateTime.UtcNow, exitCode);
         }
 
-        private static string ExtractDiagnosticCode(string diagnostic)
+        internal static bool IsFatalSdkDiagnosticCode(string? code)
         {
-            int start = diagnostic.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase);
-            if (start < 0) return "WORKER_STARTUP_FAILED";
-            int end = start;
-            while (end < diagnostic.Length && !char.IsWhiteSpace(diagnostic[end])) end++;
-            return diagnostic.Substring(start, end - start);
+            if (string.IsNullOrWhiteSpace(code)
+                || !code.StartsWith("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            return !string.Equals(code, "GXMCP_SDK_COMPATIBLE", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(code, "GXMCP_SDK_FINGERPRINT_DRIFT", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(code, "GXMCP_SDK_LEGACY_COMPATIBLE", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static string ExtractDiagnosticCode(string? diagnostic)
+        {
+            if (string.IsNullOrWhiteSpace(diagnostic)) return "WORKER_STARTUP_FAILED";
+            int searchFrom = 0;
+            while (searchFrom < diagnostic.Length)
+            {
+                int start = diagnostic.IndexOf("GXMCP_SDK_", searchFrom, StringComparison.OrdinalIgnoreCase);
+                if (start < 0) return "WORKER_STARTUP_FAILED";
+                int end = start;
+                while (end < diagnostic.Length
+                    && (char.IsLetterOrDigit(diagnostic[end]) || diagnostic[end] == '_'))
+                    end++;
+                string candidate = diagnostic.Substring(start, end - start);
+                if (IsFatalSdkDiagnosticCode(candidate)) return candidate;
+                // Keep looking: a diagnostic can contain COMPATIBLE followed by a
+                // fatal code from a later validation stage.
+                searchFrom = Math.Max(end, start + 1);
+            }
+            return "GXMCP_SDK_COMPATIBLE";
         }
 
         /// <summary>

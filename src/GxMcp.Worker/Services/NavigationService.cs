@@ -94,16 +94,22 @@ namespace GxMcp.Worker.Services
 
                     if (optWhere != null)
                     {
-                        foreach (var f in optWhere.Elements())
+                        foreach (var f in ExtractNavigationFilterElements(optWhere))
                         {
                             var fObj = new NavigationFilter
                             {
                                 Element = f.Name.LocalName,
-                                Expression = f.Value?.Trim(),
-                                Attribute = f.Element("Attribute")?.Value?.Trim(),
-                                Op = f.Element("Operator")?.Value?.Trim(),
-                                Value = f.Element("Value")?.Value?.Trim()
+                                Expression = ReadScalarFilterValue(f, "Expression"),
+                                Attribute = ReadFilterField(f, "Attribute", "AttriName"),
+                                Op = ReadFilterField(f, "Operator", "Op"),
+                                Value = ReadFilterField(f, "Value", "Expression")
                             };
+                            if (string.IsNullOrWhiteSpace(fObj.Expression)
+                                && string.IsNullOrWhiteSpace(fObj.Attribute)
+                                && string.IsNullOrWhiteSpace(fObj.Op)
+                                && string.IsNullOrWhiteSpace(fObj.Value)
+                                && !f.Elements().Any())
+                                fObj.Expression = f.Value?.Trim();
                             levelObj.Filters.Add(fObj);
                         }
                     }
@@ -131,6 +137,60 @@ namespace GxMcp.Worker.Services
                 Logger.Error($"GetNavigation ERROR for {targetName}: {ex.Message}");
                 return NavigationReport.Error(targetName, CommandDispatcher.EscapeJsonString(ex.Message));
             }
+        }
+
+        private static readonly HashSet<string> FilterFieldNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Attribute", "AttriName", "Operator", "Op", "Value", "Expression", "Description", "Id"
+        };
+
+        private static bool IsFilterField(XElement element)
+            => element != null && FilterFieldNames.Contains(element.Name.LocalName);
+
+        private static bool HasStructuredFilterData(XElement element)
+            => element != null && element.Descendants().Any(d => FilterFieldNames.Contains(d.Name.LocalName));
+
+        private static IEnumerable<XElement> ExtractNavigationFilterElements(XElement optimizedWhere)
+        {
+            var candidates = optimizedWhere.Descendants()
+                .Where(e => !IsFilterField(e) && HasStructuredFilterData(e))
+                .ToList();
+            var leaves = candidates
+                .Where(e => !candidates.Any(child => child != e && e.Descendants().Contains(child)))
+                .ToList();
+            if (leaves.Count > 0) return leaves;
+
+            // Legacy reports sometimes contain a raw predicate as a direct child.
+            // Preserve it, but never flatten a structured child tree into one string.
+            return optimizedWhere.Elements().Where(e => !e.Elements().Any() || !HasStructuredFilterData(e));
+        }
+
+        private static string ReadFilterField(XElement element, params string[] names)
+        {
+            foreach (var name in names ?? Array.Empty<string>())
+            {
+                var field = element.DescendantsAndSelf()
+                    .FirstOrDefault(e => string.Equals(e.Name.LocalName, name, StringComparison.OrdinalIgnoreCase));
+                if (field == null) continue;
+
+                var nested = field.Descendants()
+                                    .FirstOrDefault(e => string.Equals(e.Name.LocalName, "AttriName", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(e.Name.LocalName, "Text", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(e.Name.LocalName, "Name", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(e.Name.LocalName, "Value", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(e.Name.LocalName, "Expression", StringComparison.OrdinalIgnoreCase));
+                string value = nested?.Value?.Trim();
+                if (!string.IsNullOrWhiteSpace(value)) return value;
+                if (!field.Elements().Any()) return field.Value?.Trim();
+            }
+            return null;
+        }
+
+        private static string ReadScalarFilterValue(XElement element, params string[] names)
+        {
+            string value = ReadFilterField(element, names);
+            if (!string.IsNullOrWhiteSpace(value)) return value;
+            return element != null && !element.Elements().Any() ? element.Value?.Trim() : null;
         }
 
         /// <summary>

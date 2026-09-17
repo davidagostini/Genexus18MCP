@@ -969,14 +969,25 @@ namespace GxMcp.Worker.Services
             // cache miss. Pure SDK read, no side effects.
             if (action == "GetActiveEnvironment")
             {
-                string env = _kbService.GetActiveEnvironment();
-                string ver = _kbService.GetActiveEnvironmentVersion();
-                return new JObject
+                try
                 {
-                    ["environment"] = env,
-                    ["version"] = ver,
-                    ["webPath"] = _kbService.GetActiveEnvironmentWebPath()
-                }.ToString(Newtonsoft.Json.Formatting.None);
+                    string env = _kbService.GetActiveEnvironment();
+                    string ver = _kbService.GetActiveEnvironmentVersion();
+                    return new JObject
+                    {
+                        ["environment"] = env,
+                        ["version"] = ver,
+                        ["webPath"] = _kbService.GetActiveEnvironmentWebPath()
+                    }.ToString(Newtonsoft.Json.Formatting.None);
+                }
+                catch (Exception ex)
+                {
+                    return Models.McpResponse.Err(
+                        code: "EnvironmentReadFailed",
+                        message: "The active GeneXus environment could not be read: " + ex.Message,
+                        hint: "Retry after the KB finishes opening or inspect the Worker log for the SDK member that is unavailable on this GeneXus major.",
+                        extra: new JObject { ["operation"] = "get_environment", ["sdkType"] = ex.GetType().FullName });
+                }
             }
             if (action == "ListEnvironments")
             {

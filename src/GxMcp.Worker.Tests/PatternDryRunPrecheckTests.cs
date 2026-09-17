@@ -42,7 +42,7 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("[\"savePathExercised\"] = false", visualSrc);
 
             // 5. Generic WriteService dryRun includes verified array and savePathExercised = false
-            Assert.Contains("[\"verified\"] = new JArray(\"inputReceived\")", baseWriteSrc);
+            Assert.Contains("[\"verified\"] = new JArray(\"inputReceived\", \"partExists\", \"pureSyntax\")", baseWriteSrc);
             Assert.Contains("[\"savePathExercised\"] = false", baseWriteSrc);
         }
     }

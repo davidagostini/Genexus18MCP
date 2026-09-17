@@ -89,6 +89,25 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void RefreshLease_PreservesSessionIdentityAndGeneration()
+        {
+            var clock = new TestClock();
+            var registry = new KbUseLeaseRegistry(clock);
+            var store = new SessionKbContextStore(TimeSpan.FromMinutes(5));
+            var lease = registry.Open("session-a", "orders", 1, "path-a", "open-a", TimeSpan.FromMinutes(1));
+            store.Set("session-a", "orders", "orders", lease);
+
+            var renewed = registry.Renew(lease.Token, "session-a", TimeSpan.FromMinutes(10));
+            Assert.Equal(KbUseLeaseOperationStatus.Success, renewed.Status);
+            Assert.True(store.RefreshLease("session-a", renewed.Lease!));
+            Assert.True(store.TryGetSnapshot("session-a", out var snapshot));
+            Assert.Equal("orders", snapshot!.KbId);
+            Assert.Equal(1, snapshot.ContextGeneration);
+            Assert.Equal(renewed.Lease.Token, snapshot.Lease!.Token);
+            Assert.Equal(renewed.Lease.ExpiresAt, snapshot.Lease.ExpiresAt);
+        }
+
+        [Fact]
         public void ProgramSessionSelection_CanonicalizesLeaseAlias()
         {
             string sessionId = "canonical-alias-" + Guid.NewGuid().ToString("N");

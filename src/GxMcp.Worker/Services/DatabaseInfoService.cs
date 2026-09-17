@@ -164,23 +164,34 @@ namespace GxMcp.Worker.Services
         // model.Parts (a Guid-keyed KBModelPartCollection), so we iterate and match by type name
         // rather than guessing the part's Guid. Tries the design model first, then the
         // environment's target model. Shared with KbService's [KB-OPEN-DATASTORE] diagnostic.
-        internal static List<dynamic> EnumerateViaDataStoresPart(dynamic kb)
+        internal static List<dynamic> EnumerateViaDataStoresPart(dynamic kb, bool activeEnvironmentOnly = false)
         {
             var found = new List<dynamic>();
             if (kb == null) return found;
 
             var models = new List<dynamic>();
-            try { var m = kb.DesignModel; if (m != null) models.Add(m); } catch { }
-            try { var tm = kb.DesignModel.Environment.TargetModel; if (tm != null) models.Add(tm); } catch { }
+            if (activeEnvironmentOnly)
+            {
+                try { var tm = kb.DesignModel.Environment.TargetModel; if (tm != null) models.Add(tm); } catch { }
+                try { var tm = kb.Environment.TargetModel; if (tm != null) models.Add(tm); } catch { }
+            }
+            else
+            {
+                try { var m = kb.DesignModel; if (m != null) models.Add(m); } catch { }
+                try { var tm = kb.DesignModel.Environment.TargetModel; if (tm != null) models.Add(tm); } catch { }
+            }
             // The DataStoresPart often lives on an environment model that is neither the design
             // model nor the target model. KBEnvironment.Models exposes them all — try each.
-            try
+            if (!activeEnvironmentOnly)
             {
-                var all = kb.DesignModel.Environment.Models;
-                if (all is System.Collections.IEnumerable me)
-                    foreach (var m in me) { if (m != null) models.Add(m); }
+                try
+                {
+                    var all = kb.DesignModel.Environment.Models;
+                    if (all is System.Collections.IEnumerable me)
+                        foreach (var m in me) { if (m != null) models.Add(m); }
+                }
+                catch { }
             }
-            catch { }
 
             foreach (var model in models)
             {
@@ -215,6 +226,40 @@ namespace GxMcp.Worker.Services
                     }
                     if (found.Count > 0) return found;
                 }
+            }
+            return found;
+        }
+
+        // Records operations must never silently use the design model's datastore
+        // after an environment switch. Keep this resolver target-model-only and
+        // fall back only to datastore properties exposed by that same model.
+        internal static List<dynamic> EnumerateActiveEnvironmentDataStores(dynamic kb)
+        {
+            var found = EnumerateViaDataStoresPart(kb, activeEnvironmentOnly: true);
+            if (found.Count > 0) return found;
+
+            var targetModels = new List<dynamic>();
+            try { var tm = kb?.DesignModel?.Environment?.TargetModel; if (tm != null) targetModels.Add(tm); } catch { }
+            try { var tm = kb?.Environment?.TargetModel; if (tm != null) targetModels.Add(tm); } catch { }
+
+            foreach (var model in targetModels)
+            {
+                try
+                {
+                    dynamic stores = model.DataStores;
+                    if (stores is System.Collections.IEnumerable sequence)
+                        foreach (var ds in sequence) if (ds != null) found.Add(ds);
+                }
+                catch { }
+                if (found.Count > 0) return found;
+
+                try
+                {
+                    dynamic store = model.DataStore;
+                    if (store != null) found.Add(store);
+                }
+                catch { }
+                if (found.Count > 0) return found;
             }
             return found;
         }

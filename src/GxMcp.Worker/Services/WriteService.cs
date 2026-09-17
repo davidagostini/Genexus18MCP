@@ -1412,14 +1412,54 @@ namespace GxMcp.Worker.Services
 
                 if (dryRun)
                 {
+                    var requestedPart = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, partName);
+                    if (requestedPart == null)
+                    {
+                        return Models.McpResponse.Err(
+                            code: "PartNotFound",
+                            message: "Part '" + partName + "' was not found on the resolved object.",
+                            hint: "Read the object first and retry with one of its available parts.",
+                            nextSteps: new JArray(Models.McpResponse.NextStep(
+                                "genexus_read",
+                                new JObject { ["name"] = target },
+                                "Read the object to discover its available parts.")),
+                            target: target,
+                            extra: new JObject { ["part"] = partName, ["savePathExercised"] = false });
+                    }
+
+                    var pureErrors = new JArray();
+                    if (partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
+                        || partName.Equals("Rules", StringComparison.OrdinalIgnoreCase)
+                        || partName.Equals("Events", StringComparison.OrdinalIgnoreCase))
+                    {
+                        foreach (var error in CodeParser.Validate(decodedCode ?? string.Empty))
+                            pureErrors.Add(new JObject { ["description"] = error, ["severity"] = "Error" });
+                    }
+                    if (pureErrors.Count > 0)
+                    {
+                        return Models.McpResponse.Err(
+                            code: "SyntaxError",
+                            message: pureErrors[0]["description"]?.ToString(),
+                            hint: "Fix the pure syntax diagnostics before retrying the edit.",
+                            target: target,
+                            extra: new JObject
+                            {
+                                ["part"] = partName,
+                                ["errors"] = pureErrors,
+                                ["savePathExercised"] = false,
+                                ["validationScope"] = "pure"
+                            });
+                    }
+
                     return Models.McpResponse.Ok(
                         target: target,
                         code: "WriteDryRun",
                         result: new JObject
                         {
                             ["part"] = partName,
-                            ["details"] = "Dry-run for non-pattern/visual parts: input received; not validated against SDK. Save skipped.",
-                            ["verified"] = new JArray("inputReceived"),
+                            ["details"] = "Dry-run for non-pattern/visual parts: part exists and pure syntax was checked; SDK save skipped.",
+                            ["verified"] = new JArray("inputReceived", "partExists", "pureSyntax"),
+                            ["validationScope"] = "pure",
                             ["savePathExercised"] = false
                         });
                 }

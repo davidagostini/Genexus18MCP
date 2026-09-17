@@ -100,6 +100,12 @@ namespace GxMcp.Gateway
                 || openKbCount == 1;
         }
 
+        internal static bool IsForceHardReloadUnsupportedForTest(JObject? args)
+        {
+            return args?["force"]?.ToObject<bool?>() == true
+                && string.Equals(args?["mode"]?.ToString(), "hard", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static bool CanReloadWithoutLease(JObject? args)
         {
             return CanReloadWithoutLeaseForTest(args, _workerPool?.ListOpen().Count ?? 0);
@@ -173,6 +179,12 @@ namespace GxMcp.Gateway
 
             try
             {
+                // Keep a selected session alive while it is actively used. The
+                // registry intentionally keeps the same token/generation, so the
+                // immutable session snapshot remains valid after renewal.
+                var renewal = _kbLeases.Renew(snapshot.Lease.Token, snapshot.OwnerScopeId, TimeSpan.FromMinutes(10));
+                if (renewal.Status == KbUseLeaseOperationStatus.Success && renewal.Lease != null)
+                    _sessionKbContexts.RefreshLease(sessionId, renewal.Lease);
                 _kbLeases.Validate(snapshot.Lease.Token, snapshot.OwnerScopeId, snapshot.KbId,
                     snapshot.ContextGeneration, snapshot.Lease.Identity);
                 return null;
@@ -203,6 +215,7 @@ namespace GxMcp.Gateway
             _currentKb.Value = null;
             _currentSessionContext.Value = null;
             _currentOperationRequiresOwner.Value = false;
+            _currentExplicitKb.Value = false;
 
             // Resource subscriptions are stateful protocol operations. Route them
             // before McpRouter's static discovery handler so an ACK is only issued
@@ -293,8 +306,23 @@ namespace GxMcp.Gateway
                     && OperationClassifier.RequiresSessionLease(
                         toolNameForResolver,
                         (request["params"] as JObject)?["arguments"] as JObject);
+                var resolverArgs = (request["params"] as JObject)?["arguments"] as JObject;
+                string resolverAction = resolverArgs?["action"]?.ToString() ?? string.Empty;
+                bool kbEnvironmentTool = string.Equals(toolNameForResolver, "genexus_kb", StringComparison.OrdinalIgnoreCase)
+                    && (string.Equals(resolverAction, "list_environments", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(resolverAction, "get_environment", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(resolverAction, "set_environment", StringComparison.OrdinalIgnoreCase));
+                bool kbEnvironmentMutation = kbEnvironmentTool
+                    && string.Equals(resolverAction, "set_environment", StringComparison.OrdinalIgnoreCase);
+                bool explicitReadOnlyMetaKb = !string.IsNullOrWhiteSpace(resolverArgs?["kb"]?.ToString())
+                    && (string.Equals(toolNameForResolver, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(toolNameForResolver, "genexus_doc", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(toolNameForResolver, "genexus_sdk_probe", StringComparison.OrdinalIgnoreCase));
+                statefulMetaTool |= kbEnvironmentMutation;
                 bool needsKbResolution =
                     (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase) && (!isMetaTool || statefulMetaTool))
+                    || kbEnvironmentTool
+                    || explicitReadOnlyMetaKb
                     || (string.Equals(method, "resources/read", StringComparison.OrdinalIgnoreCase)
                         && McpRouter.ConvertResourceCall(request) != null);
 
@@ -333,20 +361,47 @@ namespace GxMcp.Gateway
                             _workerPool.ListKnown(),
                             sessionDefaultAlias,
                             out _);
+                        _currentExplicitKb.Value = !string.IsNullOrWhiteSpace(kbArg);
                         SessionKbContextStore.Snapshot? sessionSnapshot = null;
                         if (sessionContextEnabled)
                             _sessionKbContexts.TryGetSnapshot(sessionId, out sessionSnapshot);
+                        if (_currentExplicitKb.Value
+                            && sessionSnapshot?.Lease != null
+                            && _currentKb.Value != null
+                            && string.Equals(sessionSnapshot.KbId, _currentKb.Value.KbId, StringComparison.Ordinal))
+                        {
+                            var renewal = _kbLeases.Renew(
+                                sessionSnapshot.Lease.Token,
+                                sessionSnapshot.OwnerScopeId,
+                                TimeSpan.FromMinutes(10));
+                            if (renewal.Status == KbUseLeaseOperationStatus.Success && renewal.Lease != null)
+                            {
+                                _sessionKbContexts.RefreshLease(sessionId, renewal.Lease);
+                                sessionSnapshot = new SessionKbContextStore.Snapshot(
+                                    sessionSnapshot.OwnerScopeId,
+                                    sessionSnapshot.KbId,
+                                    sessionSnapshot.ContextGeneration,
+                                    renewal.Lease);
+                            }
+                        }
                         _currentSessionContext.Value = sessionSnapshot;
                         var resolvedArgs = (request["params"] as JObject)?["arguments"] as JObject;
                         _currentOperationRequiresOwner.Value = !string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase)
-                            && OperationClassifier.RequiresSessionLease(toolNameForResolver ?? string.Empty, resolvedArgs);
+                            && ((OperationClassifier.RequiresSessionLease(toolNameForResolver ?? string.Empty, resolvedArgs)
+                                && !_currentExplicitKb.Value)
+                                || kbEnvironmentMutation);
                     }
                     catch (KbResolutionException ex)
                     {
                         if (string.Equals(method, "tools/call", StringComparison.OrdinalIgnoreCase)
-                            && OperationClassifier.RequiresSessionLease(
-                                toolNameForResolver,
-                                (request["params"] as JObject)?["arguments"] as JObject)
+                            && (OperationClassifier.RequiresSessionLease(
+                                    toolNameForResolver,
+                                    (request["params"] as JObject)?["arguments"] as JObject)
+                                || (string.Equals(toolNameForResolver, "genexus_kb", StringComparison.OrdinalIgnoreCase)
+                                    && string.Equals(
+                                        ((request["params"] as JObject)?["arguments"] as JObject)?["action"]?.ToString(),
+                                        "set_environment",
+                                        StringComparison.OrdinalIgnoreCase)))
                             && (string.Equals(ex.Code, "KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase)
                                 || string.Equals(ex.Code, "KB_NOT_OWNED", StringComparison.OrdinalIgnoreCase)))
                         {
@@ -590,7 +645,10 @@ namespace GxMcp.Gateway
 
                 // Reject stateful calls before any gateway handler can select a
                 // process-wide worker. Stateless recipe/catalog reads remain global.
-                if (OperationClassifier.RequiresSessionLease(toolName, args)
+                if ((OperationClassifier.RequiresSessionLease(toolName, args)
+                        && !_currentExplicitKb.Value
+                        || (string.Equals(toolName, "genexus_kb", StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(args?["action"]?.ToString(), "set_environment", StringComparison.OrdinalIgnoreCase)))
                     && !(string.Equals(toolName, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase)
                         && CanReloadWithoutLease(args))
                     && !string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase))
@@ -649,6 +707,22 @@ namespace GxMcp.Gateway
                             },
                             isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
                     }
+                    if (IsForceHardReloadUnsupportedForTest(args))
+                    {
+                        return BuildToolTextResponse(
+                            idToken,
+                            new JObject
+                            {
+                                ["status"] = "error",
+                                ["error"] = new JObject
+                                {
+                                    ["code"] = "ForceHardReloadUnsupported",
+                                    ["message"] = "force=true cannot be combined with mode=hard.",
+                                    ["hint"] = "Use mode=hard without force to copy sourceDir during a graceful drain, or use force=true with mode=soft when the Worker is wedged. No Worker was stopped."
+                                }
+                            },
+                            isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
+                    }
                 }
 
                 // Friction 2026-05-22: genexus_worker_reload force=true bypasses
@@ -672,6 +746,63 @@ namespace GxMcp.Gateway
                     }
                     try
                     {
+                        string? forcedAlias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
+                        if (!string.IsNullOrWhiteSpace(forcedAlias))
+                        {
+                            var forcedHandle = _workerPool?.ListOpen().FirstOrDefault(h =>
+                                string.Equals(h.NormalizedAlias, forcedAlias, StringComparison.OrdinalIgnoreCase));
+                            if (forcedHandle == null)
+                            {
+                                return BuildToolTextResponse(idToken,
+                                    new JObject
+                                    {
+                                        ["status"] = "error",
+                                        ["error"] = new JObject
+                                        {
+                                            ["code"] = "ReloadTargetNotFound",
+                                            ["message"] = $"No open Worker exists for alias '{forcedAlias}'.",
+                                            ["hint"] = "Pass an alias/kb from genexus_kb action=list."
+                                        }
+                                    },
+                                    isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
+                            }
+
+                            InvalidateIndexStateForKb(forcedHandle.NormalizedAlias);
+                            ResetIndexBootstrapForAlias(forcedHandle.NormalizedAlias);
+                            bool recycled;
+                            using (SuppressEagerRespawn())
+                                recycled = _workerPool!.RecycleStalledWorker(forcedHandle.NormalizedAlias);
+                            if (!recycled)
+                                throw new InvalidOperationException($"Worker for alias '{forcedHandle.Alias}' was not live when force reload started.");
+
+                            using var forcedCts = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+                            var replacement = await _workerPool.AcquireAsync(forcedHandle, forcedCts.Token).ConfigureAwait(false);
+                            bool ready = await McpRouter.AwaitWithHeartbeat(
+                                replacement.SdkReadyTask, timeoutMs: 180_000,
+                                progressToken: null, heartbeat: null,
+                                toolName: "worker_reload force").ConfigureAwait(false);
+                            var forcedReady = new JArray();
+                            var forcedFailed = new JArray();
+                            if (ready) forcedReady.Add(forcedHandle.Alias);
+                            else forcedFailed.Add(new JObject { ["alias"] = forcedHandle.Alias, ["reason"] = "sdkReadyTimeout" });
+                            if (ready) TriggerIndexBootstrapOnce(forcedHandle.NormalizedAlias);
+                            BroadcastToolsListChanged("worker_reloaded_force", forcedHandle.NormalizedAlias,
+                                _semanticCache.GetRevision(forcedHandle.NormalizedAlias));
+                            BroadcastResourcesListChanged("worker_reloaded_force", forcedHandle.NormalizedAlias,
+                                _semanticCache.GetRevision(forcedHandle.NormalizedAlias));
+                            return BuildToolTextResponse(idToken,
+                                new JObject
+                                {
+                                    ["status"] = ready ? "Forced" : "ReloadFailed",
+                                    ["scope"] = "alias",
+                                    ["affectedAliases"] = new JArray(forcedHandle.Alias),
+                                    ["abandonedJobs"] = true,
+                                    ["cacheInvalidated"] = true,
+                                    ["restoredWorkers"] = forcedReady,
+                                    ["failedWorkers"] = forcedFailed
+                                },
+                                isError: !ready, toolName: toolName, toolArgs: args);
+                        }
                         var handlesToRestore = _workerPool?.ListOpen().ToList() ?? new List<KbHandle>();
                         if (_workerPool != null)
                         {
@@ -716,6 +847,10 @@ namespace GxMcp.Gateway
                                     ["online"] = handlesToRestore.Count > 0 && readyAliases.Count > 0 && failedAliases.Count == 0,
                                     ["restoredWorkers"] = readyAliases,
                                     ["failedWorkers"] = failedAliases,
+                                    ["scope"] = "global",
+                                    ["affectedAliases"] = new JArray(handlesToRestore.Select(h => JToken.FromObject(h.Alias)).ToArray()),
+                                    ["abandonedJobs"] = true,
+                                    ["cacheInvalidated"] = true,
                                     ["detail"] = handlesToRestore.Count == 0
                                         ? "Worker pool was reset; no previously-open worker existed to restore. A worker will start on the next KB request."
                                         : failedAliases.Count == 0
@@ -2167,6 +2302,7 @@ namespace GxMcp.Gateway
                     // so a cached snapshot goes stale (an identical action=conflicts after a
                     // resolve returned the pre-resolve count). Never cache it.
                     bool isLiveTool = isLiveLifecycle
+                                      || string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
                                       || string.Equals(tName, "genexus_logs", StringComparison.OrdinalIgnoreCase)
                                       || string.Equals(tName, "genexus_gxserver", StringComparison.OrdinalIgnoreCase);
 
@@ -2276,13 +2412,12 @@ namespace GxMcp.Gateway
                         return BuildToolResultContent(whoami, false, tName, tArgs);
                     }
 
-                    // A Worker that is still booting, rejected the SDK, or failed
-                    // before registration cannot answer genexus_doctor itself. Return
-                    // the Gateway-side diagnostic immediately instead of waiting for
-                    // the normal worker timeout (and, for an incompatible SDK, avoid
-                    // triggering another respawn attempt).
-                    if (string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
-                        && !IsWorkerReadyForDoctor())
+                    // Doctor is a Gateway-owned health snapshot. Calling the Worker
+                    // version here made the result stale after a reload because the
+                    // health payload was tied to the old process and its counters.
+                    // The Gateway already has the current pool PID, index mirror and
+                    // operation tracker, and can answer even when startup failed.
+                    if (string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase))
                     {
                         JObject doctor = BuildGatewayDoctorEnvelope(
                             sessionContextEnabled ? sessionId : null);

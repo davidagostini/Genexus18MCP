@@ -1264,6 +1264,8 @@ namespace GxMcp.Worker.Services
         {
             public Dictionary<string, EntitySnapshot> Parts { get; } = new Dictionary<string, EntitySnapshot>(StringComparer.OrdinalIgnoreCase);
             public Dictionary<Guid, EntitySnapshot> GlobalAttributes { get; } = new Dictionary<Guid, EntitySnapshot>();
+            public HashSet<Guid> GlobalAttributeIds { get; } = new HashSet<Guid>();
+            public bool GlobalAttributeIdsCaptured { get; set; }
             public JObject Integrity { get; set; }
             public string StructurePartKey { get; set; }
         }
@@ -1348,6 +1350,7 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrWhiteSpace(snapshot.StructurePartKey))
                 throw new InvalidOperationException("The Transaction Structure part was not found.");
             CaptureGlobalAttributeSnapshots(trn.Structure.Root, snapshot.GlobalAttributes);
+            snapshot.GlobalAttributeIdsCaptured = CaptureGlobalAttributeIds(trn, snapshot.GlobalAttributeIds);
             snapshot.Integrity = CaptureStructureIntegrity(trn, movedIdentity, excludeIdentityDetails);
             return snapshot;
         }
@@ -1363,6 +1366,27 @@ namespace GxMcp.Worker.Services
             }
             foreach (TransactionLevel child in level.Levels)
                 CaptureGlobalAttributeSnapshots(child, snapshots);
+        }
+
+        private static bool CaptureGlobalAttributeIds(Transaction trn, HashSet<Guid> ids)
+        {
+            if (trn?.Model?.Objects == null || ids == null) return false;
+            try
+            {
+                foreach (var obj in ((System.Collections.IEnumerable)trn.Model.Objects.GetAll()).Cast<KBObject>())
+                {
+                    if (obj is Artech.Genexus.Common.Objects.Attribute attribute)
+                        ids.Add(attribute.Guid);
+                }
+                // An empty set is valid for a brand-new/attribute-free model, but
+                // only after the complete enumeration succeeded.
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Could not capture global Attribute identities for rollback: " + ex.Message);
+                return false;
+            }
         }
 
         private static JObject CaptureStructureIntegrity(Transaction trn, string movedIdentity,
@@ -1639,6 +1663,7 @@ namespace GxMcp.Worker.Services
                             attribute.Dirty = true;
                             attribute.Save();
                         }
+                        RemoveOrphanedGlobalAttributes(trn, snapshot);
                         tx.Commit();
                         result.Success = true;
                     }
@@ -1683,6 +1708,45 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex) { result.Error = ex.Message; }
             return result;
+        }
+
+        private static void RemoveOrphanedGlobalAttributes(Transaction trn, TransactionSnapshot snapshot)
+        {
+            if (trn?.Model?.Objects == null || snapshot == null || !snapshot.GlobalAttributeIdsCaptured) return;
+            var referenced = new HashSet<Guid>();
+            CollectReferencedGlobalAttributes(trn.Structure?.Root, referenced);
+            var all = ((System.Collections.IEnumerable)trn.Model.Objects.GetAll())
+                .Cast<KBObject>()
+                .OfType<Artech.Genexus.Common.Objects.Attribute>()
+                .ToList();
+            foreach (var attribute in all)
+            {
+                if (attribute == null || snapshot.GlobalAttributeIds.Contains(attribute.Guid)
+                    || referenced.Contains(attribute.Guid)) continue;
+                try
+                {
+                    var delete = attribute.GetType().GetMethod("Delete", Type.EmptyTypes)
+                        ?? attribute.GetType().GetMethod("Remove", Type.EmptyTypes);
+                    if (delete == null)
+                        throw new MissingMethodException(attribute.GetType().FullName, "Delete/Remove");
+                    delete.Invoke(attribute, null);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException("Could not remove orphaned global Attribute '" + attribute.Name + "': " + ex.Message, ex);
+                }
+            }
+        }
+
+        private static void CollectReferencedGlobalAttributes(TransactionLevel level, HashSet<Guid> referenced)
+        {
+            if (level == null) return;
+            foreach (TransactionAttribute occurrence in level.Attributes)
+            {
+                if (occurrence.Attribute != null) referenced.Add(occurrence.Attribute.Guid);
+            }
+            foreach (TransactionLevel child in level.Levels)
+                CollectReferencedGlobalAttributes(child, referenced);
         }
 
         // SerializeData/DeserializeData/Reload are protected on the SDK Entity base class.

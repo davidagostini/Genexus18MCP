@@ -103,9 +103,10 @@ namespace GxMcp.Gateway.Routers
                                 // counts / TargetsDone / terminal Status) or the timeout fires.
                                 // `since` is the snapshot string returned under _meta.snapshot
                                 // by the previous status response — pass it back for chaining.
-                                int wait = args?["wait"]?.ToObject<int?>() ?? 0;
+                                int wait = args?["wait"]?.ToObject<int?>()
+                                    ?? args?["wait_seconds"]?.ToObject<int?>() ?? 0;
                                 if (wait < 0) wait = 0;
-                                if (wait > 300) wait = 300;
+                                if (wait > McpRouter.MaxLongPollSeconds) wait = McpRouter.MaxLongPollSeconds;
                                 return new {
                                     module = "Build",
                                     action = "Status",
@@ -121,9 +122,10 @@ namespace GxMcp.Gateway.Routers
                             // index state transitions (e.g. UltraLiteReady→LiteReady→Ready) or
                             // a walk progress tick lands, instead of the agent polling in a loop.
                             {
-                                int idxWait = args?["wait"]?.ToObject<int?>() ?? 0;
+                                int idxWait = args?["wait"]?.ToObject<int?>()
+                                    ?? args?["wait_seconds"]?.ToObject<int?>() ?? 0;
                                 if (idxWait < 0) idxWait = 0;
-                                if (idxWait > 300) idxWait = 300;
+                                if (idxWait > McpRouter.MaxLongPollSeconds) idxWait = McpRouter.MaxLongPollSeconds;
                                 // Issue #209 (policy A): forward `freshness` so the wait can
                                 // target Freshness=current (a Status-only wait cannot observe the
                                 // warm-start delta that republishes it).

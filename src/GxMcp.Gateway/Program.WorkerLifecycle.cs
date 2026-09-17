@@ -662,8 +662,11 @@ namespace GxMcp.Gateway
                 // unchanged (full timeout + heartbeats).
                 bool noClientProgressToken = progressToken == null
                     || progressToken.Type == JTokenType.Null;
+                bool lifecycleStatusWait = string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(toolArgs?["action"]?.ToString(), "status", StringComparison.OrdinalIgnoreCase)
+                    && ((toolArgs?["wait"]?.ToObject<int?>() ?? toolArgs?["wait_seconds"]?.ToObject<int?>() ?? 0) > 0);
                 int effectiveTimeoutMs = timeoutMs;
-                if (noClientProgressToken && !string.IsNullOrWhiteSpace(operationId))
+                if (noClientProgressToken && !string.IsNullOrWhiteSpace(operationId) && !lifecycleStatusWait)
                     effectiveTimeoutMs = Math.Min(timeoutMs, McpRouter.SafeLongPollSecondsWithoutProgress * 1000);
                 bool workerCompleted = await McpRouter.AwaitWithHeartbeat(
                     pending.CompletionSource.Task, effectiveTimeoutMs, progressToken, heartbeat, toolName);
@@ -814,6 +817,14 @@ namespace GxMcp.Gateway
         {
             if (toolName == "genexus_lifecycle" || toolName == "genexus_analyze" || toolName == "genexus_test")
             {
+                if (toolName == "genexus_lifecycle"
+                    && string.Equals(args?["action"]?.ToString(), "status", StringComparison.OrdinalIgnoreCase))
+                {
+                    int wait = args?["wait"]?.ToObject<int?>()
+                        ?? args?["wait_seconds"]?.ToObject<int?>() ?? 0;
+                    wait = Math.Max(0, Math.Min(McpRouter.MaxLongPollSeconds, wait));
+                    return Math.Min(900000, (wait + 10) * 1000);
+                }
                 return 600000;
             }
 

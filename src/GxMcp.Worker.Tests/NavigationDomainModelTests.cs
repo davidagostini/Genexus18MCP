@@ -180,6 +180,32 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void SqlGeneration_DeduplicatesRepeatedStructuredFilters()
+        {
+            var report = new NavigationReport
+            {
+                TargetName = "Proc",
+                Levels = new List<NavigationLevel>
+                {
+                    new NavigationLevel
+                    {
+                        Number = 1,
+                        BaseTable = "Customer",
+                        Filters = new List<NavigationFilter>
+                        {
+                            new NavigationFilter { Attribute = "CustomerId", Op = "=", Value = "&Id" },
+                            new NavigationFilter { Attribute = "CustomerId", Op = "=", Value = "&Id" }
+                        }
+                    }
+                }
+            };
+
+            var sql = report.GenerateSql()["queries"]?[0]?["sql"]?.ToString();
+
+            Assert.Equal("SELECT * FROM Customer WHERE CustomerId = :Id", sql);
+        }
+
+        [Fact]
         public void NavigationSqlService_DirectDelegation_WorksWithoutSdk()
         {
             var navService = new NavigationService(kbService: null);

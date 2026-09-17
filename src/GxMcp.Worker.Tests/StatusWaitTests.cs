@@ -101,6 +101,21 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public async Task StatusWaitWithoutSince_StillHonorsPositiveWait()
+        {
+            var (svc, status, taskId) = NewRunningTask();
+            var waitTask = Task.Run(() => svc.GetStatusWait(taskId, waitSeconds: 10, sinceBaseline: null));
+
+            await Task.Delay(100);
+            lock (status._lock) { status.Phase = "Generating"; }
+            status.StateChangeSignal.Set();
+
+            var completed = await Task.WhenAny(waitTask, Task.Delay(2000));
+            Assert.Same(waitTask, completed);
+            Assert.Equal("Generating", JObject.Parse(await waitTask)["Phase"]?.ToString());
+        }
+
+        [Fact]
         public void StatusWaitTimeout_ReturnsAfterDeadline()
         {
             var (svc, status, taskId) = NewRunningTask();

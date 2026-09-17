@@ -13,6 +13,8 @@ namespace GxMcp.Worker.Helpers
             public bool IsCollection { get; set; }
             public bool IsCompound { get; set; }
             public bool IsKey { get; set; }
+            public string Description { get; set; }
+            public string Formula { get; set; }
             public List<ParsedNode> Children { get; set; } = new List<ParsedNode>();
         }
 
@@ -28,9 +30,14 @@ namespace GxMcp.Worker.Helpers
                 
                 int indent = line.TakeWhile(c => c == ' ').Count();
                 string trimmed = line.Trim();
+                var node = new ParsedNode();
                 
                 int commentIndex = trimmed.IndexOf("//");
-                if (commentIndex >= 0) trimmed = trimmed.Substring(0, commentIndex).Trim();
+                if (commentIndex >= 0)
+                {
+                    ParseCommentMetadata(trimmed.Substring(commentIndex + 2), node);
+                    trimmed = trimmed.Substring(0, commentIndex).Trim();
+                }
                 if (string.IsNullOrEmpty(trimmed)) continue;
                 
                 if (trimmed == "{" || trimmed == "}") {
@@ -38,7 +45,6 @@ namespace GxMcp.Worker.Helpers
                     continue;
                 }
 
-                var node = new ParsedNode();
                 if (trimmed.EndsWith("Collection", StringComparison.OrdinalIgnoreCase)) {
                     trimmed = trimmed.Substring(0, trimmed.Length - 10).Trim();
                     node.IsCollection = true;
@@ -95,6 +101,26 @@ namespace GxMcp.Worker.Helpers
                 if (node.IsCompound) stack.Push((node, indent));
             }
             return rootNodes;
+        }
+
+        private static void ParseCommentMetadata(string comment, ParsedNode node)
+        {
+            if (string.IsNullOrWhiteSpace(comment) || node == null) return;
+            var formulaStart = comment.IndexOf("[Formula:", StringComparison.OrdinalIgnoreCase);
+            if (formulaStart >= 0)
+            {
+                int valueStart = formulaStart + "[Formula:".Length;
+                int close = comment.IndexOf(']', valueStart);
+                node.Formula = (close >= 0 ? comment.Substring(valueStart, close - valueStart) : comment.Substring(valueStart)).Trim();
+            }
+
+            int quoteStart = comment.IndexOf('"');
+            if (quoteStart >= 0)
+            {
+                int quoteEnd = comment.IndexOf('"', quoteStart + 1);
+                if (quoteEnd > quoteStart)
+                    node.Description = comment.Substring(quoteStart + 1, quoteEnd - quoteStart - 1).Trim();
+            }
         }
     }
 }

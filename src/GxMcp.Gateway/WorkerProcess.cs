@@ -333,12 +333,24 @@ namespace GxMcp.Gateway
                         }
                     }
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
                 catch (Exception ex)
                 {
                     Program.Log($"[Health] Error during health check loop: {ex.Message}");
                 }
 
-                await Task.Delay(15000, ct);
+                if (ct.IsCancellationRequested) break;
+                try
+                {
+                    await Task.Delay(15000, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
             }
         }
 
@@ -1073,14 +1085,17 @@ namespace GxMcp.Gateway
         {
             if (string.IsNullOrWhiteSpace(line)) return;
             if (line.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase) >= 0)
-                _startupDiagnostic = line.Trim();
+            {
+                string candidate = line.Trim();
+                if (string.IsNullOrWhiteSpace(_startupDiagnostic)) _startupDiagnostic = candidate;
+                else if (_startupDiagnostic.IndexOf(candidate, StringComparison.OrdinalIgnoreCase) < 0)
+                    _startupDiagnostic += Environment.NewLine + candidate;
+            }
         }
 
         private static bool IsSdkCompatibilityFailure(string? diagnostic)
         {
-            return !string.IsNullOrWhiteSpace(diagnostic)
-                && diagnostic.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase) >= 0
-                && diagnostic.IndexOf("GXMCP_SDK_COMPATIBLE", StringComparison.OrdinalIgnoreCase) < 0;
+            return WorkerPool.IsFatalSdkDiagnosticCode(WorkerPool.ExtractDiagnosticCode(diagnostic));
         }
 
         // Invokes OnWorkerExited at most once per WorkerProcess lifetime. Both the async

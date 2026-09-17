@@ -664,7 +664,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers, and folder=<name>/module=<name> place the new object there (created in Root, then moved+verified); SDT takes optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog) | object_atomic (issue #62: all-or-nothing create/update of an object with variables[], rules[], parms[], properties{} and source in ONE validated call — pre-validates every field before the first save, composes the SDK write primitives, compensates on failure, dryRun previews, validate=true runs the inline Specify pass, update mode guards concurrent writes via expectedVersion). | curl_procedure imports a REST-consumer Procedure from a curl command through the GeneXus SDK.",
+      "description": "Creation umbrella. action: object (Transaction/Procedure/WebPanel/SDT/API/Domain/Dashboard/Folder/Module; type='API' scaffolds a REST API object — routes use ONE HTTP-verb block per object 'Verb { route => Object; }' (mixing Get+Post blocks is unsupported); type='Folder'/'Module' create containers, and folder=<name>/module=<name> place the new object there (created in Root, then moved+verified); SDT and Transaction take optional firstItem/firstItemType; Domain takes dataType+length or enumValues; NOT WWP — use genexus_apply_pattern) | popup (popup WebPanel with Form type='layout' body) | sd_panel_create|sd_panel_inspect|sd_panel_edit | save_as (clone parts) | scaffold|translate|sample (forge) | template (kpi_header|empty_state|confirm_dialog) | object_atomic (issue #62: all-or-nothing create/update of an object with variables[], rules[], parms[], properties{} and source in ONE validated call — pre-validates every field before the first save, composes the SDK write primitives, compensates on failure, dryRun previews, validate=true runs the inline Specify pass, update mode guards concurrent writes via expectedVersion). | curl_procedure imports a REST-consumer Procedure from a curl command through the GeneXus SDK.",
       "inputSchema": {
         "examples": [
           {
@@ -752,11 +752,11 @@
             "type": "string"
           },
           "firstItem": {
-            "description": "object SDT optional: name of the first structure item to seed (SDK requires ≥1). Defaults to Item1. Use to avoid the throwaway Item1.",
+            "description": "object SDT/Transaction optional: name of the initial structure item/key attribute to seed (SDK requires >=1). Defaults to <ObjectName>Id for Transaction and Item1 for SDT.",
             "type": "string"
           },
           "firstItemType": {
-            "description": "object SDT optional: type of the seeded first item (Character/Numeric/VarChar/…). Defaults to VarChar.",
+            "description": "object SDT/Transaction optional: type of the seeded first item/key attribute (Character/Numeric/VarChar/…). Defaults to Numeric(4) for Transaction and VarChar for SDT.",
             "type": "string"
           },
           "folder": {
@@ -1266,8 +1266,7 @@
           }
         },
         "required": [
-          "name",
-          "confirm"
+          "name"
         ],
         "type": "object"
       },
@@ -1339,6 +1338,10 @@
               "visualize",
               "health"
             ],
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias for health or other worker-backed document actions.",
             "type": "string"
           },
           "target": {
@@ -2572,6 +2575,10 @@
           },
           "environment": {
             "description": "Environment name/folder (required for set_environment), e.g. development.",
+            "type": "string"
+          },
+          "kb": {
+            "description": "KB alias for environment actions; required when more than one Worker is open.",
             "type": "string"
           },
           "major": {
@@ -4033,6 +4040,10 @@
           }
         ],
         "properties": {
+          "kb": {
+            "description": "KB alias.",
+            "type": "string"
+          },
           "mode": {
             "description": "surface (default) writes the diagnostic probe; capabilities is read-only and returns status/evidence.",
             "enum": [
@@ -4960,12 +4971,12 @@
     },
     {
       "annotations": {
-        "destructiveHint": false,
+        "destructiveHint": true,
         "idempotentHint": false,
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Reload worker. mode=soft drains and respawns; mode=hard copies sourceDir during the drain window and respawns. force=true: gateway kills directly. See tool-help.",
+      "description": "Reload worker. mode=soft drains and respawns; mode=hard copies sourceDir during the drain window and respawns. force=true kills and respawns a wedged Worker, but cannot be combined with mode=hard; no Worker is stopped when that combination is rejected. See tool-help.",
       "inputSchema": {
         "examples": [
           {
@@ -4986,7 +4997,7 @@
             "type": "integer"
           },
           "force": {
-            "description": "Bypass drain; gateway kills + respawns. Use when worker is wedged.",
+            "description": "Bypass drain; gateway kills + respawns. Use with mode=soft when the Worker is wedged; force=true + mode=hard is rejected before stopping anything.",
             "type": "boolean"
           },
           "kb": {

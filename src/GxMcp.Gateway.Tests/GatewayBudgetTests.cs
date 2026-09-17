@@ -33,6 +33,20 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(600000, timeoutMs);
         }
 
+        [Theory]
+        [InlineData("wait", 60, 70000)]
+        [InlineData("wait_seconds", 45, 55000)]
+        public void LifecycleStatusWaitGetsRequestedBudgetInsteadOfGenericFiftySecondCap(string field, int wait, int expected)
+        {
+            int timeoutMs = Program.GetToolTimeoutMs("genexus_lifecycle", new JObject
+            {
+                ["action"] = "status",
+                [field] = wait
+            });
+            Assert.Equal(expected, timeoutMs);
+            Assert.True(timeoutMs > McpRouter.SafeLongPollSecondsWithoutProgress * 1000);
+        }
+
         // Plan 070: deep=true on genexus_db (reorg_impact/reorg_preview/drift_check)
         // runs ISpecifierService.ImpactDatabase — a build-heavy specification pass that
         // exceeds the 60s default; the deep flag must lift the sync ceiling to 10 min.

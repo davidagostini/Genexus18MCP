@@ -47,6 +47,15 @@ namespace GxMcp.Worker.Tests
             Assert.All(hits, h => Assert.StartsWith("Root Module/ClickSign/", h["parentFolderPath"].ToString()));
         }
 
+        [Theory]
+        [InlineData("Root Module/Folder/Subfolder/Leaf", "Root Module/Folder/Subfolder", true)]
+        [InlineData("Root Module/Folder/Subfolder/Leaf", "Root Module/Folder/Subfolder/", true)]
+        [InlineData("Root Module/Folder/Subfolder2/Leaf", "Root Module/Folder/Subfolder", false)]
+        public void PathPrefix_MatchesPathSegments_NotSiblingPrefixes(string candidate, string prefix, bool expected)
+        {
+            Assert.Equal(expected, ListService.PathPrefixMatches(candidate, prefix));
+        }
+
         // Regression (empty-KB vs not-built): a fully-built index with 0 entries means the
         // KB genuinely has no model objects (e.g. a missing LocalDB model). list_objects must
         // return an honest empty listing tagged kb_has_no_objects instead of an eternal

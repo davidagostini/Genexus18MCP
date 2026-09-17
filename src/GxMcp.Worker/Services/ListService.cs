@@ -63,6 +63,15 @@ namespace GxMcp.Worker.Services
                 cursor: c.Cursor);
         }
 
+        internal static bool PathPrefixMatches(string candidatePath, string requestedPrefix)
+        {
+            if (string.IsNullOrWhiteSpace(candidatePath) || string.IsNullOrWhiteSpace(requestedPrefix)) return false;
+            string candidate = candidatePath.Trim().Replace('\\', '/').TrimEnd('/');
+            string prefix = requestedPrefix.Trim().Replace('\\', '/').TrimEnd('/');
+            return string.Equals(candidate, prefix, StringComparison.OrdinalIgnoreCase)
+                || candidate.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase);
+        }
+
         public string ListObjects(string filter, int limit, int offset, string parentFilter = null, string typeFilter = null, string parentPathFilter = null, bool verbose = false, string invokerNameFilter = null, string invokerDescriptionFilter = null, string invokerPathPrefix = null, string sort = null, DateTime since = default(DateTime), DateTime modifiedBefore = default(DateTime), string cursor = null)
         {
             var sw = Stopwatch.StartNew();
@@ -301,7 +310,7 @@ namespace GxMcp.Worker.Services
                     if (!string.IsNullOrEmpty(invokerPathPrefix))
                     {
                         entries = entries.Where(e =>
-                            (e.ParentFolderPath ?? string.Empty).StartsWith(invokerPathPrefix, StringComparison.OrdinalIgnoreCase));
+                            PathPrefixMatches(e.ParentFolderPath, invokerPathPrefix));
                     }
 
                     // v2.6.8: temporal filters (Since inclusive, ModifiedBefore exclusive).
@@ -564,7 +573,7 @@ namespace GxMcp.Worker.Services
                         string folderPath = string.IsNullOrEmpty(pp)
                             ? "Root Module"
                             : "Root Module/" + pp;
-                        return folderPath.StartsWith(invokerPathPrefix, StringComparison.OrdinalIgnoreCase);
+                        return PathPrefixMatches(folderPath, invokerPathPrefix);
                     });
                 }
 

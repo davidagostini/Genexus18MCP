@@ -1460,6 +1460,41 @@ test('clients add patches OpenCode Desktop into shared opencode config', () => {
     }
 });
 
+test('OpenCode status and remove inspect both json and jsonc when they coexist', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-dual-config-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const configPath = path.join(tempRoot, 'config.json');
+        const openCodeDir = path.join(env.XDG_CONFIG_HOME, 'opencode');
+        const jsonPath = path.join(openCodeDir, 'opencode.json');
+        const jsoncPath = path.join(openCodeDir, 'opencode.jsonc');
+        fs.mkdirSync(openCodeDir, { recursive: true });
+        fs.writeFileSync(configPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
+        fs.writeFileSync(jsoncPath, JSON.stringify({ mcp: { servers: {} } }));
+        fs.writeFileSync(jsonPath, JSON.stringify({ mcp: { genexus18mcp: {
+            type: 'local',
+            command: ['npx.cmd', '-y', 'genexus-mcp@latest']
+        } } }));
+
+        const status = runCli(['clients', '--format', 'json'], {
+            env: { ...env, GX_CONFIG_PATH: configPath }
+        });
+        assert.equal(status.status, 0);
+        const row = JSON.parse(status.stdout).ok.clients.find((client) => client.id === 'opencode');
+        assert.ok(row && row.registered);
+        assert.equal(row.configPath, jsonPath);
+
+        const removed = runCli(['clients', 'remove', '--clients', 'opencode', '--format', 'json'], {
+            env: { ...env, GX_CONFIG_PATH: configPath }
+        });
+        assert.equal(removed.status, 0);
+        assert.equal(JSON.parse(fs.readFileSync(jsonPath, 'utf8')).mcp.genexus18mcp, undefined);
+        assert.equal(JSON.parse(fs.readFileSync(jsoncPath, 'utf8')).mcp.servers.genexus18mcp, undefined);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('OpenCode Desktop is not falsely reported as installed when only CLI config exists', () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-opencode-desktop-undetected-'));
     try {

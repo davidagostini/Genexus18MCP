@@ -61,7 +61,10 @@ namespace GxMcp.Worker.Services.Structure
                     "AttributeNotInTable",
                     "Attribute '" + outsideTable + "' is not part of the associated table.");
 
-            bool unique = true;
+            // GeneXus indexes are duplicate/non-unique unless the caller explicitly
+            // requests a unique constraint. Inferring uniqueness from an omitted
+            // optional flag can reject valid duplicate rows at runtime.
+            bool unique = false;
             if (payload["unique"] != null)
             {
                 if (payload["unique"].Type != JTokenType.Boolean)

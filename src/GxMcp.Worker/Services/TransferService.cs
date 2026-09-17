@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Reflection;
 using System.Xml;
 using System.Xml.Linq;
 using GxMcp.Worker.Helpers;
@@ -195,24 +196,79 @@ namespace GxMcp.Worker.Services
             svc.ExploreExport(file, model, opts, out var objects, out var actions, out var idMap);
 
             var items = new JArray();
-            foreach (var o in AsEnumerable(objects))
+            bool identityMissing = false;
+            var exportItems = AsEnumerable(objects).ToList();
+            foreach (var o in exportItems)
             {
-                string label = null;
-                try { label = (o as KBObject)?.Name ?? o?.ToString(); } catch { label = o?.ToString(); }
-                if (label != null) items.Add(label);
+                var descriptor = DescribeExportItem(o);
+                identityMissing |= !(descriptor["identityAvailable"]?.Value<bool>() ?? false);
+                items.Add(descriptor);
             }
+
+            if (exportItems.Count > 0 && identityMissing)
+                return McpResponse.Err(
+                    code: "TransferImportPreviewUnavailable",
+                    message: "The SDK exposed XPZ entries but did not expose a stable object identity; no import was attempted.",
+                    hint: "Use an XPZ produced by the GeneXus Export path supported by this Worker and retry inspect first.");
 
             return McpResponse.Ok(
                 code: isDryRunImport ? "TransferImportPreview" : "TransferInspected",
                 result: new JObject
                 {
                     ["file"] = file,
-                    ["objectCount"] = Count(objects),
-                    ["actionCount"] = Count(actions),
+                    ["objectCount"] = exportItems.Count,
+                    ["actionCount"] = Math.Max(Count(actions), exportItems.Count),
+                    ["packageActionCount"] = Count(actions),
                     ["objects"] = items,
                     ["wouldImport"] = isDryRunImport,
                     ["source"] = "sdk:IKnowledgeManagerService.ExploreExport"
                 });
+        }
+
+        internal static JObject DescribeExportItem(object raw)
+        {
+            var native = raw as KBObject;
+            string name = native?.Name ?? ReadExportProperty(raw, "Name", "ObjectName", "QualifiedName");
+            string type = native?.TypeDescriptor?.Name ?? ReadExportProperty(raw, "TypeName", "ObjectType", "Type");
+            string qualifiedName = ReadExportProperty(raw, "QualifiedName", "FullName");
+            string displayName = ReadExportProperty(raw, "DisplayName", "Caption");
+            string guid = native != null ? native.Guid.ToString("D") : ReadExportProperty(raw, "Guid", "ObjectGuid", "Id");
+            string baseOperation = ReadExportProperty(raw, "BaseOperation", "Operation");
+            string status = ReadExportProperty(raw, "Status", "State");
+            string typeDescriptor = ReadExportProperty(raw, "TypeDescriptor");
+            bool identityAvailable = !string.IsNullOrWhiteSpace(name) || !string.IsNullOrWhiteSpace(guid);
+            return new JObject
+            {
+                ["name"] = name,
+                ["type"] = type,
+                ["qualifiedName"] = qualifiedName,
+                ["displayName"] = displayName,
+                ["guid"] = guid,
+                ["baseOperation"] = baseOperation,
+                ["status"] = status,
+                ["typeDescriptor"] = typeDescriptor,
+                ["identityAvailable"] = identityAvailable,
+                ["sdkItemType"] = raw?.GetType().FullName
+            };
+        }
+
+        private static string ReadExportProperty(object raw, params string[] names)
+        {
+            if (raw == null) return null;
+            foreach (string name in names)
+            {
+                try
+                {
+                    var property = raw.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    var value = property?.GetValue(raw, null);
+                    if (value is KBObject obj) return obj.Name;
+                    string text = value?.ToString();
+                    if (!string.IsNullOrWhiteSpace(text) && !string.Equals(text, raw.GetType().Name, StringComparison.Ordinal))
+                        return text;
+                }
+                catch { }
+            }
+            return null;
         }
 
         private string Import(IKnowledgeManagerService svc, KBModel model, JObject args)
@@ -312,19 +368,31 @@ namespace GxMcp.Worker.Services
             // item; otherwise the SDK exposes only its normalized projection and
             // the fidelity check becomes circular (issue #102).
             var exportedWebForms = ReadExportWebForms(file);
-            var prepared = svc.PrepareImport(file, model, options);
             var exploreOptions = new ExploreExportOptions();
             svc.ExploreExport(file, model, exploreOptions, out var exportedObjects, out _, out _);
             var candidates = AsEnumerable(exportedObjects).ToList();
-            if (candidates.Count == 0)
-                candidates = AsEnumerable(prepared?.Items).ToList();
+            // Validate the package's stable metadata before invoking PrepareImport.
+            // Some GeneXus SDKs perform normalization while preparing an item, so
+            // an unreadable/anonymous XPZ must fail before that call can touch the KB.
+            foreach (var raw in candidates)
+            {
+                var descriptor = DescribeExportItem(raw);
+                if (!(descriptor["identityAvailable"]?.Value<bool>() ?? false))
+                    throw new InvalidDataException("The XPZ contains an import item without a stable object identity.");
+            }
             if (candidates.Count == 0 && exportedWebForms.Count > 0)
                 throw new InvalidDataException("The XPZ contains raw WebForm payloads but the SDK exposed no import candidates for them.");
+            var prepared = svc.PrepareImport(file, model, options);
+            if (candidates.Count == 0)
+                candidates = AsEnumerable(prepared?.Items).ToList();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             bool sawWebFormCandidate = false;
 
             foreach (var raw in candidates)
             {
+                var rawDescriptor = DescribeExportItem(raw);
+                if (!(rawDescriptor["identityAvailable"]?.Value<bool>() ?? false))
+                    throw new InvalidDataException("The XPZ contains an import item without a stable object identity.");
                 var item = raw as IExportItem;
                 if (item == null) continue;
 
@@ -362,6 +430,8 @@ namespace GxMcp.Worker.Services
                 });
             }
 
+            if (exportedWebForms.Count > 0 && !sawWebFormCandidate)
+                throw new InvalidDataException("The XPZ contains raw WebForm payloads, but the SDK could not map them to import candidates.");
             if (sawWebFormCandidate && plan.Items.Count == 0)
                 throw new InvalidDataException("The XPZ exposed WebForm objects but no raw WebForm payload could be mapped.");
 
@@ -505,7 +575,12 @@ namespace GxMcp.Worker.Services
                 mismatch["repaired"] = false;
                 mismatches.Add(mismatch);
                 rollbackAttempted = true;
-                if (!TryRestoreImportedObject(expected)) rollbackSucceeded = false;
+                bool restoredOrDeleted = expected.ExistingBefore
+                    ? TryRestoreImportedObject(expected)
+                    : TryDeleteImportedObject(expected);
+                mismatch["rollbackAction"] = expected.ExistingBefore ? "restore" : "delete_imported_object";
+                mismatch["rollbackSucceeded"] = restoredOrDeleted;
+                if (!restoredOrDeleted) rollbackSucceeded = false;
             }
 
             var result = new JObject
@@ -540,6 +615,20 @@ namespace GxMcp.Worker.Services
                 explicitBase64: false,
                 strictVerify: true);
             return IsSuccessfulWrite(ParseObject(raw));
+        }
+
+        private bool TryDeleteImportedObject(ImportWebFormSnapshot expected)
+        {
+            if (expected == null || _objects == null) return false;
+            try
+            {
+                string raw = _objects.DeleteObject(expected.Name, expected.TypeFilter, confirm: true);
+                var response = ParseObject(raw);
+                if (!IsSuccessfulWrite(response) && !string.Equals(response["code"]?.ToString(), "ObjectDeleted", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                return _objects.FindObjectFresh(expected.Name, expected.TypeFilter) == null;
+            }
+            catch { return false; }
         }
 
         private static JObject ParseObject(string raw)

@@ -693,7 +693,7 @@ namespace GxMcp.Worker.Services
             string requested = FirstText(args, "dataStore", "datastore");
             dynamic first = null;
             dynamic selected = null;
-            foreach (dynamic ds in DatabaseInfoService.EnumerateViaDataStoresPart(kb))
+            foreach (dynamic ds in DatabaseInfoService.EnumerateActiveEnvironmentDataStores(kb))
             {
                 if (ds == null) continue;
                 if (first == null) first = ds;

@@ -18,5 +18,21 @@ namespace GxMcp.Gateway.Tests
             Assert.True(Program.CanReloadWithoutLeaseForTest(new JObject { ["alias"] = "secondary" }, openKbCount: 2));
             Assert.True(Program.CanReloadWithoutLeaseForTest(new JObject { ["kb"] = "secondary" }, openKbCount: 2));
         }
+
+        [Fact]
+        public void ForceHardReload_is_rejected_before_worker_shutdown()
+        {
+            Assert.True(Program.IsForceHardReloadUnsupportedForTest(new JObject
+            {
+                ["force"] = true,
+                ["mode"] = "hard",
+                ["sourceDir"] = "C:/worker"
+            }));
+            Assert.False(Program.IsForceHardReloadUnsupportedForTest(new JObject
+            {
+                ["force"] = true,
+                ["mode"] = "soft"
+            }));
+        }
     }
 }
