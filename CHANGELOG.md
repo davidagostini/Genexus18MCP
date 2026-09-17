@@ -4,6 +4,15 @@
 
 ### Added
 
+- **SDK-backed native Object Text tree and in-memory filesystem operations.** `genexus_io` now supports `format=native` for a dependency-aware `src/`/`ref/` projection, `all|newAndModified|newOnly` export modes, deterministic `.gx` documents, optional visual companions, dry-run imports, and safe XML/header/duplicate validation without loading GX4A DLLs. `list_text_files` and `validate_text_in_memory` inspect external trees without a KB read.
+- **Watermark-backed incremental text mirror.** `text_mirror_start|stop|status|catchup|set_references` coalesces watcher identities, queues SDK work onto the Worker's owning STA, persists `.mirror-sync`, removes verified orphan files during full reconciliation, mirrors explicit/MCP and detected external deletions by updating the manifest atomically, and exposes pending/batch/error counters.
+- **Official Module Manager task coverage.** `genexus_module` now exposes package, publish, restore, configured-server management, and server module search through the installed SDK's `IModuleManagerService`; external writes and uploads require explicit confirmation.
+- **Stable module identity in `genexus_module action=list`.** Installed Module objects are deduplicated by SDK GUID/EntityKey, retain homonymous namespaces through `parent`/`path`/`qualifiedName`, and are returned in deterministic order instead of relying on `DesignModel.Objects.GetAll()` enumeration order.
+- **OpenAPI task surface publication.** The existing official SDK-backed API OpenAPI export/import blueprint is now discoverable as `genexus_api action=export_openapi|import_openapi`.
+- **File-system task parity for SDK text exchange.** Batch Object Text operations now support deterministic `[all]`/Module/Folder selection with recursive children, selector-based `ignore`, `listOnly` planning, resumable `skip`, fail-fast `stopOnError`, import `forceSave` and rollback of partial multi-part writes, optional `indentString`, generated `module.toml` metadata, installed reference-module routing and optional official `.opc` reference packages for native `src/ref` exports, optional Transaction root-table projections under `#tables`, sectioned `part=all`/`parts[]` object documents, and offline manifest/file/hash verification. Legacy `.gxtext` and `_gxmcp-object-text-manifest.json` flows remain intact.
+- **Tool-schema budget adjusted from 29,800 to 31,000 tokens** to carry the native text-tree, mirror, Module Manager server/package, OpenAPI action contracts, filesystem-parity controls, full-part documents and reference-package export without silently dropping their safety parameters.
+
+
 - **Legacy GeneXus best-effort compatibility across GeneXus Evolution 1-3, GeneXus 15, GeneXus 9.0, and GeneXus 8.0.**
   - Added `legacyMajors` to `config/gx-versions.json` supporting `10.3` (Ev3), `10.2` (Ev2), `10.1` (Ev1), `15` (GX15) via `dotnet-reflection`, and `9` (GX 9.0) and `8` (GX 8.0) via `com-gxpublic`, keeping `supportedMajors` strictly scoped to verified primary SDK majors (16, 17, 18) with 0 release metadata drift.
   - Implemented `DynamicSdkBridge` in Worker to dynamically gate MCP tools based on SDK capabilities, returning structured `UNSUPPORTED_IN_GENEXUS_VERSION` degradation envelopes for tools unavailable in earlier versions (e.g. `genexus_api` in <17, `genexus_gam` in <10.2, `genexus_module` in <10.3).
@@ -32,9 +41,30 @@
   - Updated CLI doctor (`cli/commands/axi.js`) to display exact detected SDK versions in `gx_installation` and `kb_sdk_compatibility`.
   - Updated `.github/ISSUE_TEMPLATE/bug_report.md` with structured sections for GeneXus SDK version & exact build, KB generator, AI client, transport mode, and diagnostics bundle.
 
+### Internal
+
+- **Text exchange responsibilities were decomposed into focused seams.** The façade now delegates selection, filesystem validation/listing, batch options, legacy pipelines, native export/import pipelines, document/support logic and mirror reconciliation to dedicated files/classes; the public MCP contracts and legacy/native behavior remain unchanged.
+
 ### Fixed
 
+
+
+
 - **Compatible SDK diagnostics no longer become fatal Worker failures ([#213](https://github.com/lennix1337/Genexus18MCP/issues/213)).** Startup health now classifies only known incompatible SDK codes as fatal; compatible, legacy-compatible, and fingerprint-drift diagnostics are kept informational and do not suppress the normal Worker lifecycle.
+
+- **Targeted build dry-runs now fail closed for unresolved indexed targets ([#214](https://github.com/lennix1337/Genexus18MCP/issues/214)).** When the Worker object index is loaded, `action=build` with `dryRun=true` now resolves bare names, `Type:Name`, and GUIDs before returning a plan. Unknown targets return `BuildTargetUnresolved` with the rejected targets and supported formats, while an index that is not ready is reported as `targetResolutionAvailable: false` and keeps the non-dispatching preview behavior.
+
+- **`genexus_doctor` now always reports a fresh snapshot ([#222](https://github.com/lennix1337/Genexus18MCP/issues/222)).** Gateway-side doctor responses bypass the semantic cache so `checkedAt`, Worker PID, uptime, and telemetry cannot be replayed from a previous health call.
+
+- **Native multi-part imports now fail closed when rollback cannot be certified.** A mutable `part=all`/`parts[]` import no longer writes the first parts when the complete pre-write snapshot is unavailable; it returns `RollbackSnapshotUnavailable` before touching the KB.
+
+- **Batch cancellation is preserved through the decomposed pipelines.** Legacy export/import/validate now return the same immediate typed `Cancelled` envelope before path, index or manifest preparation, matching the pre-refactor contract.
+
+- **GX16 version-catalog contract tests now match the supported-major catalog.** The release-script checks no longer reject the already-supported `16,17,18` catalog or report an outdated display string.
+
+- **Explicit `[all]` native exports retain full-selection reconciliation.** A batch with `targets: ["[all]"]` now participates in stale-file and manifest cleanup exactly like an unfiltered export instead of being treated as a targeted partial pass.
+
+- **Nested worker routing keys no longer leak into user arguments.** A routed `module=Object` was being merged into Object Text's optional `module` filter when callers omitted that filter, causing valid batch selectors to return `NoObjectsMatched`. Reserved `module`, `action`, and `target` fields are now kept at the routing layer while inner tool arguments remain authoritative.
 
 - **The background first-touch warmup now survives a cold index and actually runs.** The warm pass resolves its probe object from the worker's `List/Objects` reply, but on a cold start that reply is the `IndexNotReady` envelope (no items) because the index is still building; the previous single-shot resolve dropped the whole pass silently, so the agent's first `genexus_read` / `genexus_inspect` / `genexus_edit` paid the one-time first-touch JIT/SDK cost instead of the warmup window — measured on a real KB: first read 174ms, inspect 78ms, edit dry-run 29ms, against ~1ms for every following call of the same tool. The pass now runs from the index-bootstrap path (which is the first point where the index can be listable) and waits — bounded at 40 × 3s, logging when it gives up — for a listable object; a warm start still warms from the existing pre-bootstrap path, and whichever path claims the pass first runs it exactly once. It also warms `read part=Source` — the part agents actually read — alongside `Structure`, and converts all warmup commands through `McpRouter.ConvertToolCall` so each tool (`Read/ExtractSource` with singular `target`, `Analyze/GetConversionContext`, `Linter/linter`, `Analyze/FindCallerSites`) reaches the worker's real service handler instead of failing silently on mismatched module or target parameters.
 
@@ -42,6 +72,7 @@
 - **The CLI spawn probes wait for the child to exit instead of returning while it is still terminating ([#211](https://github.com/lennix1337/Genexus18MCP/issues/211)).** `spawnGatewayProbe` (the `gateway_spawn_probe` check in `init`/`doctor`) and `probeWorkerStartup` called `child.kill()` and reported success immediately; on Windows `kill()` only signals the direct process and returns before the OS releases the executable image, so a still-terminating probe kept the exe locked and `npm test` failed in the `test.after` cleanup with `EPERM` while every assertion passed. Both now await the child's `exit` (bounded by a 2s grace) and report `warn` when the process does not exit, and the worker smoke no longer misreads its own stop signal as a crash. `cli/run.test.js` teardown terminates only processes launched from its own temp dir (never a machine-wide `GxMcp.Gateway.exe` sweep), extends the Windows removal backoff to 8 attempts (10→640 ms), and removes the parent `genexus-mcp-test-<pid>` directory it used to leave behind.
 
 ### Internal
+
 
 - **PR submission now runs against the current base and complete local test set.** `pr-push.ps1` refuses dirty or stale branches, fetches the PR base, runs the operation-contract inventory, all Python script tests, PowerShell tests, CLI tests, lint, and Gateway tests through `integration-preflight.ps1`, and only then pushes `HEAD`. When no local GeneXus SDK exists, the Worker gate is recorded as unavailable for the protected CI SDK lane. This closes the gap that allowed the stale 228-action contract expectation to reach CI.
 
@@ -52,7 +83,7 @@
 - **`genexus_kb` dry-run planning no longer requires an installed SDK or MSBuild.** The read-only plan is produced from the requested inputs, while real creation still fails closed when the SDK, template, or MSBuild assets are unavailable; this keeps the Gateway coverage lane deterministic on hosted runners.
 
 - **The CI tool-contract baseline now matches the published schema.** The
-  regression gate expects the current 229 public actions and continues to
+  regression gate expects the current 244 public actions and continues to
   compare that count with the capabilities inventory, so future action changes
   must update the schema and its contract views together.
 

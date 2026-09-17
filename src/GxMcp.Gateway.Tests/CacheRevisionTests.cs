@@ -71,6 +71,14 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void DoctorNeverUsesTheSemanticCache()
+        {
+            Assert.True(Program.IsLiveToolForCache("genexus_doctor", null));
+            Assert.True(Program.IsLiveToolForCache("genexus_lifecycle", "status"));
+            Assert.False(Program.IsLiveToolForCache("genexus_query", null));
+        }
+
+        [Fact]
         public void CanonicalKey_PreservesArrayOrder()
         {
             var first = Program.CreateSemanticCacheKey(
