@@ -17,7 +17,7 @@
     { "path": "Artech.Architecture.UI.Framework.dll", "sha256": "18e8614d283563ea6314343c15d3becf638cc9d1407befc9626c8a4623a1eed9" },
     { "path": "Packages/Artech.Packages.GAM.dll", "sha256": "04683929ba4912a0de38dd9792d8efc7ce002cc5b34ae528f003fe7a9effe726" },
     { "path": "Packages/Artech.Packages.TeamDevClient.BL.dll", "sha256": "8cb13101a22eff5a840fe0adcfdb0eb87cd8408b4ba6b408fdc71778116b75b2" },
-    { "path": "GeneXus.TeamDevClient.Architecture.BL.dll", "sha256": "e54a25119b49bcb921f1ad33f9881414d0e56219c1ab884474069ff14ac20580" },
+    { "path": "GeneXus.TeamDevClient.Architecture.BL.dll", "sha256": "e54a25119b49bcb921f1ad33f9881414d0e56219c1ab884474069ff14ac20580", "optional": true },
     { "path": "Packages/Artech.Packages.GenexusBL.dll", "sha256": "35a776ee80ca2e838789af84375ba692eca610fa19d31cbeead4c52addf8e48a" },
     { "path": "Packages/Artech.Packages.Specifier.dll", "sha256": "1f206a3e5619f5c0e4ada10461c92bac16c4471fd90c9daeab3d487bbdfa38f3" }
   ]

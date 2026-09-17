@@ -2,7 +2,7 @@
   "name": "genexus-mcp",
   "version": "3.5.3",
   "mcpName": "io.github.lennix1337/genexus",
-  "description": "GeneXus 17, GeneXus 18 MCP server — read, edit, and analyze Knowledge Base objects directly from Claude, Cursor, and other AI agents over the Model Context Protocol.",
+  "description": "GeneXus 16, GeneXus 17, GeneXus 18 MCP server — read, edit, and analyze Knowledge Base objects directly from Claude, Cursor, and other AI agents over the Model Context Protocol.",
   "keywords": [
     "mcp",
     "mcp-server",

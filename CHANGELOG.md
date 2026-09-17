@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- **Support for GeneXus 16 SDK.** GeneXus 16 (`16.0.x`) is now an officially supported SDK major alongside GeneXus 17 and GeneXus 18.
+  - Added GeneXus 16 to the version catalog (`config/gx-versions.json`) with auto-discovery at `C:\Program Files (x86)\GeneXus\GeneXus16`.
+  - Updated `SdkCompatibilityValidator` and `scripts/validate-gx-sdk.ps1` to mark `GeneXus.TeamDevClient.Architecture.BL.dll` as optional (absent in GX16).
+  - Decoupled `DesignSystemSdkAdapter`, `DesignSystemService`, `ApiIntrospectService`, `CiPipelineService`, `GeneratorReferenceService`, `ObjectService`, `CurlProcService`, `DataViewService`, `GxServerWriteService`, `KbVersionService`, and `KbService` to dynamically adapt to missing or changed SDK types across GX16, GX17, and GX18 without compile-time breakage.
+  - Verified clean builds (`0 Warning(s), 0 Error(s)`) against all three majors (`GX_PATH` pointing to GX16, GX17, and GX18) and full passing test suites across both .NET and CLI.
+- **Autonomous Knowledge Base bootstrapping via `genexus_kb action=create`.**
+  - Added native `action: "create"` to `genexus_kb`, allowing LLMs and automated workflows to create brand new GeneXus Knowledge Bases from scratch using native MSBuild tasks (`Genexus.MsBuild.Tasks.CreateKnowledgeBase`).
+  - Supports `path`, `name`, `alias`, `dbServer` (defaulting to `(LocalDB)\MSSQLLocalDB` with automatic preflight service start), `dbName`, `dbUser`, `dbPassword`, `template` (auto-resolving `netcore.kbtemplate` on GX18, `csharp.kbtemplate` on GX16/17, or custom path), `sdkPath`, `major` ('16', '17', '18'), `openAfterCreate` (automatically spawning an STA Worker and acquiring session lease), `persist` (saving entry to `config.json`), and `dryRun` (returning execution plan without disk mutation).
+  - Bumped tool schema budget from 29400 to 29800 tokens in `ToolSchemaSizeTests.cs` to accommodate the new action, parameters, and examples.
+- **Enriched diagnostics and AI-observable error envelopes for bug reporting.**
+  - Gateway tool error envelopes (`Program.ToolPayload.cs`, `McpRouter.cs`, `Program.RequestLoop.cs`) now attach `diagnosticContext` carrying active SDK version, installed path, major, supported majors, and explicit bug reporting guidance so consuming AI clients can immediately detect incompatibilities and instruct users to provide actionable diagnostics.
+  - Updated `scripts/collect-diagnostics.ps1` to inspect all GeneXus installations (GX16, GX17, GX18) across 64-bit and 32-bit Program Files, extracting exact `ProductVersion` and `FileVersion` from `genexus.exe` and `Artech.Architecture.Common.dll`.
+  - Updated CLI doctor (`cli/commands/axi.js`) to display exact detected SDK versions in `gx_installation` and `kb_sdk_compatibility`.
+  - Updated `.github/ISSUE_TEMPLATE/bug_report.md` with structured sections for GeneXus SDK version & exact build, KB generator, AI client, transport mode, and diagnostics bundle.
+
 ### Fixed
 
 - **The background first-touch warmup now survives a cold index and actually runs.** The warm pass resolves its probe object from the worker's `List/Objects` reply, but on a cold start that reply is the `IndexNotReady` envelope (no items) because the index is still building; the previous single-shot resolve dropped the whole pass silently, so the agent's first `genexus_read` / `genexus_inspect` / `genexus_edit` paid the one-time first-touch JIT/SDK cost instead of the warmup window — measured on a real KB: first read 174ms, inspect 78ms, edit dry-run 29ms, against ~1ms for every following call of the same tool. The pass now runs from the index-bootstrap path (which is the first point where the index can be listable) and waits — bounded at 40 × 3s, logging when it gives up — for a listable object; a warm start still warms from the existing pre-bootstrap path, and whichever path claims the pass first runs it exactly once. It also warms `read part=Source` — the part agents actually read — alongside `Structure`, and converts all warmup commands through `McpRouter.ConvertToolCall` so each tool (`Read/ExtractSource` with singular `target`, `Analyze/GetConversionContext`, `Linter/linter`, `Analyze/FindCallerSites`) reaches the worker's real service handler instead of failing silently on mismatched module or target parameters.

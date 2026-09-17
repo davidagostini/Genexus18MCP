@@ -56,7 +56,21 @@ namespace GxMcp.Worker.Tests
                 Assert.True(result.IsCompatible);
                 Assert.Equal("GXMCP_SDK_COMPATIBLE", result.Code);
                 Assert.Contains("supported major 17; reference major 18", result.Diagnostic);
-                Assert.Contains("supportedMajors=17,18", result.Diagnostic);
+                Assert.Contains("supportedMajors=16,17,18", result.Diagnostic);
+            }
+        }
+
+        [Fact]
+        public void Validate_SupportsGeneXus16Major()
+        {
+            using (var fixture = new SdkFixture("18.0.10.184260", "supported"))
+            {
+                var result = SdkCompatibilityValidator.Validate(fixture.Root, fixture.Manifest, _ => "16.0.11.144151");
+
+                Assert.True(result.IsCompatible);
+                Assert.Equal("GXMCP_SDK_COMPATIBLE", result.Code);
+                Assert.Contains("supported major 16; reference major 18", result.Diagnostic);
+                Assert.Contains("supportedMajors=16,17,18", result.Diagnostic);
             }
         }
 
@@ -106,7 +120,7 @@ namespace GxMcp.Worker.Tests
                 Assert.Equal("GXMCP_SDK_VERSION_MISMATCH", result.Code);
                 Assert.Contains("expectedVersion=18.0.10.184260", result.Diagnostic);
                 Assert.Contains("actualVersion=" + actualVersion, result.Diagnostic);
-                Assert.Contains("supportedMajors=17,18", result.Diagnostic);
+                Assert.Contains("supportedMajors=16,17,18", result.Diagnostic);
             }
         }
 
@@ -212,6 +226,7 @@ namespace GxMcp.Worker.Tests
                 var catalog = new JObject
                 {
                     ["supportedMajors"] = new JArray(
+                        new JObject { ["major"] = "16" },
                         new JObject { ["major"] = "17" },
                         new JObject { ["major"] = "18" })
                 };

@@ -276,7 +276,7 @@ namespace GxMcp.Worker.Services
                 ["updatable"] = true,
                 ["physicalTable"] = PhysicalName(request),
                 ["logicalSourceTable"] = sourceTable.Name,
-                ["dataStore"] = dataStore.Category.Name,
+                ["dataStore"] = GetDataStoreName(dataStore),
                 ["attributeMappings"] = MappingJson(request.Mappings),
                 ["version"] = beforeVersion,
                 ["newTables"] = new JArray(),
@@ -286,6 +286,25 @@ namespace GxMcp.Worker.Services
                 ["implicitLifecycleActions"] = new JArray(),
                 ["note"] = "The preview only read persisted metadata; KBObject.Create, Save, Specify, Generate, Build, Rebuild, Reorg, Publish, Run, and Test were not called."
             });
+        }
+
+        private static string GetDataStoreName(GxDataStore dataStore)
+        {
+            if (dataStore == null) return null;
+            try
+            {
+                dynamic d = dataStore;
+                string catName = (string)d.Category?.Name;
+                if (!string.IsNullOrEmpty(catName)) return catName;
+            }
+            catch { }
+            try
+            {
+                dynamic d = dataStore;
+                return (string)d.Name;
+            }
+            catch { }
+            return null;
         }
 
         private string Create(Request request, string beforeVersion, Table sourceTable, GxDataStore dataStore)

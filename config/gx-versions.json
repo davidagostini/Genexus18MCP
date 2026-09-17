@@ -3,6 +3,13 @@
   "primaryMajor": "18",
   "supportedMajors": [
     {
+      "major": "16",
+      "displayName": "GeneXus 16",
+      "defaultInstallPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus16",
+      "registryNames": ["GeneXus 16"],
+      "legacyRegistryVersions": ["16.0"]
+    },
+    {
       "major": "17",
       "displayName": "GeneXus 17",
       "defaultInstallPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus17Trial",

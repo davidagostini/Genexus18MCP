@@ -1678,31 +1678,70 @@ namespace GxMcp.Worker.Services
                 {
                     try
                     {
-                        var gxModel = kbModel.GetAs<GxModel>() ?? new GxModel(kbModel);
+                        dynamic gxModel = kbModel.GetAs<GxModel>() ?? new GxModel(kbModel);
                         var mainGen = gxModel?.Generator;
                         if (mainGen != null)
                         {
                             string text = mainGen.ToString();
                             if (!string.IsNullOrWhiteSpace(text))
                                 return text;
-                            if (!string.IsNullOrWhiteSpace(mainGen.Description))
-                                return mainGen.Description;
+                            string desc = (string)mainGen.Description;
+                            if (!string.IsNullOrWhiteSpace(desc))
+                                return desc;
                         }
                     }
                     catch { }
 
-                    var part = kbModel.Parts.Get<GeneratorsPart>();
+                    dynamic part = null;
+                    foreach (var p in kbModel.Parts)
+                    {
+                        if (p == null) continue;
+                        string pName = p.GetType().Name;
+                        if (string.Equals(pName, "GeneratorsPart", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(pName, "EnvironmentsPart", StringComparison.OrdinalIgnoreCase))
+                        {
+                            part = p;
+                            break;
+                        }
+                    }
+
                     if (part?.Generators != null)
                     {
-                        var candidate = part.Generators.FirstOrDefault(g => !g.IsReorgGen && g.Category?.Name == "Web")
-                                     ?? part.Generators.FirstOrDefault(g => !g.IsReorgGen && (g.ToString() ?? string.Empty).IndexOf("Default", StringComparison.OrdinalIgnoreCase) >= 0)
-                                     ?? part.Generators.FirstOrDefault(g => !g.IsReorgGen)
-                                     ?? part.Generators.FirstOrDefault();
-
-                        if (candidate != null)
+                        object bestGen = null;
+                        foreach (dynamic g in part.Generators)
                         {
-                            string text = candidate.ToString();
-                            return !string.IsNullOrWhiteSpace(text) ? text : candidate.Description;
+                            if (g == null) continue;
+                            bool isReorg = false;
+                            try { isReorg = g.IsReorgGen == true; } catch { }
+                            if (isReorg) continue;
+
+                            string catName = null;
+                            try { catName = (string)g.Category?.Name?.ToString(); } catch { }
+                            string genStr = null;
+                            try { genStr = (string)g.ToString(); } catch { }
+
+                            if (string.Equals(catName, "Web", StringComparison.OrdinalIgnoreCase))
+                            {
+                                bestGen = g;
+                                break;
+                            }
+                            if (genStr != null && genStr.IndexOf("Default", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                bestGen = g;
+                            }
+                            else if (bestGen == null)
+                            {
+                                bestGen = g;
+                            }
+                        }
+
+                        if (bestGen != null)
+                        {
+                            dynamic bg = bestGen;
+                            string text = bg.ToString();
+                            string desc = null;
+                            try { desc = (string)bg.Description; } catch { }
+                            return !string.IsNullOrWhiteSpace(text) ? text : desc;
                         }
                     }
                 }
@@ -1729,7 +1768,25 @@ namespace GxMcp.Worker.Services
                     if (parts != null)
                     {
                         dynamic part = null;
-                        try { part = parts.Get(typeof(GeneratorsPart)) ?? parts.Get("Generators"); } catch { }
+                        try { part = parts.Get("Generators") ?? parts.Get("Environments"); } catch { }
+                        if (part == null)
+                        {
+                            try
+                            {
+                                foreach (dynamic p in parts)
+                                {
+                                    if (p == null) continue;
+                                    string pName = p.GetType().Name;
+                                    if (string.Equals(pName, "GeneratorsPart", StringComparison.OrdinalIgnoreCase) ||
+                                        string.Equals(pName, "EnvironmentsPart", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        part = p;
+                                        break;
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
                         if (part?.Generators != null)
                         {
                             object bestGen = null;

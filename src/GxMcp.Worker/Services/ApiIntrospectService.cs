@@ -7,7 +7,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Helpers;
-using GeneXusApi = Artech.Genexus.Common.Objects.API;
+using GeneXusApi = Artech.Architecture.Common.Objects.KBObject;
 
 namespace GxMcp.Worker.Services
 {
@@ -130,7 +130,7 @@ namespace GxMcp.Worker.Services
             // not in the Procedure index used by the legacy describe path.
             var api = ResolveApi(target);
             if (api != null)
-                return BuildApiRoutesResponse(api, api.ServiceGroupSource?.Source, "ApiRoutesInspected", "Inspected", false, null, null);
+                return BuildApiRoutesResponse(api, (string)GetServiceGroupSource(api)?.Source, "ApiRoutesInspected", "Inspected", false, null, null);
 
             // Find candidate procedure via index.
             var idx = _indexCacheService?.GetIndex();
@@ -182,7 +182,7 @@ namespace GxMcp.Worker.Services
 
             return BuildApiRoutesResponse(
                 api,
-                api.ServiceGroupSource?.Source,
+                (string)GetServiceGroupSource(api)?.Source,
                 "ApiRoutesInspected",
                 "Inspected",
                 false,
@@ -212,10 +212,11 @@ namespace GxMcp.Worker.Services
             var api = ResolveApi(apiName);
             if (api == null)
                 return Err("NotFound", $"No API named '{apiName}' was found in the open KB.");
-            if (api.ServiceGroupSource == null)
+            dynamic serviceGroupSource = GetServiceGroupSource(api);
+            if (serviceGroupSource == null)
                 return Err("MethodsPartUnavailable", "The API does not expose its native ServiceGroupSource part.");
 
-            string currentSource = api.ServiceGroupSource.Source ?? string.Empty;
+            string currentSource = (string)serviceGroupSource.Source ?? string.Empty;
             var snapshot = CaptureApiSnapshot(api, currentSource);
             if (!snapshot.Complete)
                 return McpResponse.Err(
@@ -302,7 +303,7 @@ namespace GxMcp.Worker.Services
             // read/plan/write window so a concurrent edit is never knowingly
             // overwritten.
             var latest = ResolveApiFresh(api.Name);
-            if (latest == null || latest.ServiceGroupSource == null)
+            if (latest == null || GetServiceGroupSource(latest) == null)
             {
                 return McpResponse.Err(
                     code: "VersionConflict",
@@ -312,7 +313,7 @@ namespace GxMcp.Worker.Services
                     extra: new JObject { ["persisted"] = false, ["versionToken"] = snapshot.VersionToken });
             }
 
-            var latestSnapshot = CaptureApiSnapshot(latest, latest.ServiceGroupSource.Source ?? string.Empty);
+            var latestSnapshot = CaptureApiSnapshot(latest, GetApiSource(latest));
             if (!latestSnapshot.Complete
                 || !string.Equals(latestSnapshot.VersionToken, snapshot.VersionToken, StringComparison.Ordinal)
                 || !LogicalSourceEquals(latestSnapshot.Methods, snapshot.Methods))
@@ -352,10 +353,10 @@ namespace GxMcp.Worker.Services
 
                 _objectService.MarkReadCacheDirty(api, "Methods");
                 var fresh = ResolveApiFresh(api.Name);
-                if (fresh == null || fresh.ServiceGroupSource == null)
+                if (fresh == null || GetServiceGroupSource(fresh) == null)
                     throw new InvalidOperationException("The API could not be re-read after saving.");
 
-                var after = CaptureApiSnapshot(fresh, fresh.ServiceGroupSource.Source ?? string.Empty);
+                var after = CaptureApiSnapshot(fresh, GetApiSource(fresh));
                 string changedPart = null;
                 bool nonMethodsEqual = SnapshotNonMethodsEqual(snapshot, after, out changedPart);
                 if (!after.Complete
@@ -415,6 +416,33 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        private static dynamic GetServiceGroupSource(GeneXusApi api)
+        {
+            if (api == null) return null;
+            try
+            {
+                dynamic d = api;
+                return d.ServiceGroupSource;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string GetApiSource(GeneXusApi api)
+        {
+            try
+            {
+                dynamic sgs = GetServiceGroupSource(api);
+                return (string)sgs?.Source ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
         private GeneXusApi ResolveApi(string name)
         {
             try { return _objectService?.FindObject(name, "API") as GeneXusApi; }
@@ -436,7 +464,7 @@ namespace GxMcp.Worker.Services
             string sourcePrefix,
             string targetPrefix)
         {
-            if (api?.ServiceGroupSource == null)
+            if (GetServiceGroupSource(api) == null)
                 return Err("MethodsPartUnavailable", "The API does not expose its native ServiceGroupSource part.");
 
             var snapshot = CaptureApiSnapshot(api, source ?? string.Empty);
@@ -993,7 +1021,8 @@ namespace GxMcp.Worker.Services
 
         private void PersistApiMethods(GeneXusApi api, string methods)
         {
-            if (api?.ServiceGroupSource == null)
+            dynamic serviceGroupSource = GetServiceGroupSource(api);
+            if (serviceGroupSource == null)
                 throw new InvalidOperationException("The API does not expose its native ServiceGroupSource part.");
 
             var kb = _kbService?.GetKB();
@@ -1005,12 +1034,12 @@ namespace GxMcp.Worker.Services
             {
                 try
                 {
-                    api.ServiceGroupSource.Source = methods ?? string.Empty;
+                    serviceGroupSource.Source = methods ?? string.Empty;
                     // The API part can remain Mode=Unchanged after Source mutation
                     // in headless GX18. Force the native part state before saving so
                     // the SDK cannot silently skip nested route bytes.
-                    WriteService.ForcePatternPartDirty(api.ServiceGroupSource);
-                    api.ServiceGroupSource.Save();
+                    WriteService.ForcePatternPartDirty(serviceGroupSource as global::Artech.Architecture.Common.Objects.KBObjectPart);
+                    serviceGroupSource.Save();
                     api.Save(new Artech.Architecture.Common.Objects.KBObjectSavePreferences
                     {
                         ForceSave = true,
@@ -1073,12 +1102,17 @@ namespace GxMcp.Worker.Services
             var typedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                if (api?.ServiceGroupSource != null)
+                dynamic serviceGroupSource = GetServiceGroupSource(api);
+                if (serviceGroupSource != null)
                 {
-                    foreach (var signature in api.ServiceGroupSource.GetPublicMethods() ?? Enumerable.Empty<Artech.Genexus.Common.Objects.Signature>())
+                    var publicMethods = serviceGroupSource.GetPublicMethods() as System.Collections.IEnumerable;
+                    if (publicMethods != null)
                     {
-                        string signatureName = GetSignatureName(signature);
-                        if (!string.IsNullOrWhiteSpace(signatureName)) typedNames.Add(signatureName);
+                        foreach (var signature in publicMethods)
+                        {
+                            string signatureName = GetSignatureName(signature as Artech.Genexus.Common.Objects.Signature);
+                            if (!string.IsNullOrWhiteSpace(signatureName)) typedNames.Add(signatureName);
+                        }
                     }
                 }
             }
@@ -1231,16 +1265,21 @@ namespace GxMcp.Worker.Services
 
         private static string ValidateApiSourceWithSdk(GeneXusApi api, string candidateSource, IEnumerable<string> targetMethodNames)
         {
-            if (api?.ServiceGroupSource == null) return "The API does not expose its native ServiceGroupSource part.";
-            string original = api.ServiceGroupSource.Source ?? string.Empty;
+            dynamic serviceGroupSource = GetServiceGroupSource(api);
+            if (serviceGroupSource == null) return "The API does not expose its native ServiceGroupSource part.";
+            string original = (string)serviceGroupSource.Source ?? string.Empty;
             try
             {
-                api.ServiceGroupSource.Source = candidateSource ?? string.Empty;
+                serviceGroupSource.Source = candidateSource ?? string.Empty;
                 var typedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var signature in api.ServiceGroupSource.GetPublicMethods() ?? Enumerable.Empty<Artech.Genexus.Common.Objects.Signature>())
+                var publicMethods = serviceGroupSource.GetPublicMethods() as System.Collections.IEnumerable;
+                if (publicMethods != null)
                 {
-                    string signatureName = GetSignatureName(signature);
-                    if (!string.IsNullOrWhiteSpace(signatureName)) typedNames.Add(signatureName);
+                    foreach (var signature in publicMethods)
+                    {
+                        string signatureName = GetSignatureName(signature as Artech.Genexus.Common.Objects.Signature);
+                        if (!string.IsNullOrWhiteSpace(signatureName)) typedNames.Add(signatureName);
+                    }
                 }
 
                 foreach (string targetName in targetMethodNames ?? Enumerable.Empty<string>())
@@ -1254,7 +1293,7 @@ namespace GxMcp.Worker.Services
             }
             finally
             {
-                try { api.ServiceGroupSource.Source = original; } catch { }
+                try { serviceGroupSource.Source = original; } catch { }
             }
         }
 
@@ -1264,13 +1303,13 @@ namespace GxMcp.Worker.Services
             try
             {
                 var current = ResolveApiFresh(apiName);
-                if (current == null || current.ServiceGroupSource == null)
+                if (current == null || GetServiceGroupSource(current) == null)
                 {
                     result["error"] = "API could not be re-read for rollback.";
                     return result;
                 }
 
-                string currentSource = current.ServiceGroupSource.Source ?? string.Empty;
+                string currentSource = GetApiSource(current);
                 if (!LogicalSourceEquals(currentSource, candidateSource)
                     && !LogicalSourceEquals(currentSource, snapshot.Methods))
                 {
@@ -1282,9 +1321,9 @@ namespace GxMcp.Worker.Services
                 PersistApiMethods(current, snapshot.Methods ?? string.Empty);
                 _objectService.MarkReadCacheDirty(current, "Methods");
                 var restored = ResolveApiFresh(apiName);
-                var restoredSnapshot = restored == null || restored.ServiceGroupSource == null
+                var restoredSnapshot = restored == null || GetServiceGroupSource(restored) == null
                     ? null
-                    : CaptureApiSnapshot(restored, restored.ServiceGroupSource.Source ?? string.Empty);
+                    : CaptureApiSnapshot(restored, GetApiSource(restored));
                 result["verified"] = restoredSnapshot != null
                     && restoredSnapshot.Complete
                     && LogicalSourceEquals(restoredSnapshot.Methods, snapshot.Methods)
@@ -1342,7 +1381,7 @@ namespace GxMcp.Worker.Services
                 string apiPath = ApiPath(api);
                 if (!string.IsNullOrEmpty(pathPrefix)
                     && !apiPath.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase)) continue;
-                string source = api.ServiceGroupSource?.Source;
+                string source = GetApiSource(api);
                 foreach (var route in ParseApiRoutes(source))
                 {
                     var endpoint = BuildEndpointFromApiRoute(api, route);
@@ -1355,11 +1394,27 @@ namespace GxMcp.Worker.Services
         {
             var model = _kbService?.GetKB()?.DesignModel;
             if (model == null) yield break;
-            IEnumerable<GeneXusApi> apis = null;
-            try { apis = GeneXusApi.GetAll(model); } catch { }
-            if (apis == null) yield break;
-            foreach (var api in apis)
-                if (api != null) yield return api;
+            System.Collections.IEnumerable apis = null;
+            try
+            {
+                var apiType = Type.GetType("Artech.Genexus.Common.Objects.API, Artech.Genexus.Common");
+                if (apiType != null)
+                {
+                    var getAll = apiType.GetMethod("GetAll", new Type[] { typeof(Artech.Architecture.Common.Objects.KBModel) });
+                    if (getAll != null)
+                        apis = getAll.Invoke(null, new object[] { model }) as System.Collections.IEnumerable;
+                }
+            }
+            catch { }
+
+            if (apis != null)
+            {
+                foreach (var api in apis)
+                {
+                    var kbObj = api as GeneXusApi;
+                    if (kbObj != null) yield return kbObj;
+                }
+            }
         }
 
         private static string ApiPath(GeneXusApi api)
@@ -1386,7 +1441,7 @@ namespace GxMcp.Worker.Services
             var variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                foreach (JObject variable in _objectService.GetVariablesCompact(api, api.ServiceGroupSource?.Source).OfType<JObject>())
+                foreach (JObject variable in _objectService.GetVariablesCompact(api, GetApiSource(api)).OfType<JObject>())
                 {
                     string name = variable["name"]?.ToString();
                     if (!string.IsNullOrWhiteSpace(name)) variables[name.TrimStart('&')] = variable["type"]?.ToString();

@@ -57,7 +57,7 @@ needed. Existing tool names, arguments, and MCP client configuration formats do
 not change.
 
 <!-- BEGIN GENERATED: gx-compatibility -->
-Supported SDK majors: **GeneXus 17, GeneXus 18**.
+Supported SDK majors: **GeneXus 16, GeneXus 17, GeneXus 18**.
 Primary SDK: **GeneXus 18**.
 Source of truth: `config/gx-versions.json`.
 <!-- END GENERATED: gx-compatibility -->

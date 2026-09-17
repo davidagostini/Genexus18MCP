@@ -87,6 +87,7 @@ namespace GxMcp.Gateway.Tests
 
             var supportedMajors = Assert.IsType<JArray>(payload["geneXus"]?["supportedMajors"]);
             var supportedMajorValues = supportedMajors.ToObject<string[]>() ?? Array.Empty<string>();
+            Assert.Contains("16", supportedMajorValues);
             Assert.Contains("17", supportedMajorValues);
             Assert.Contains("18", supportedMajorValues);
             Assert.Equal("18", payload["geneXus"]?["catalog"]?["primaryMajor"]?.ToString());
@@ -94,6 +95,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
+        [InlineData("16.0.11.144151", "16", true)]
         [InlineData("17.0.11.163677", "17", true)]
         [InlineData("18.0.6", "18", true)]
         [InlineData("19.0.0", "19", false)]

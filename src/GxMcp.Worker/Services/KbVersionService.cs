@@ -139,7 +139,7 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                KBVersion created = KBVersionHelper.BranchModel(name, description, parent, includeEnvironments);
+                KBVersion created = BranchModelCompatible(name, description, parent, includeEnvironments);
                 KBVersion active = SafeGetActive(kbase);
                 return McpResponse.Ok(code: "KbVersionBranched", result: DescribeVersion(created, active));
             }
@@ -321,6 +321,23 @@ namespace GxMcp.Worker.Services
         private static bool SafeBool(Func<bool> f)
         {
             try { return f(); } catch { return false; }
+        }
+
+        private static KBVersion BranchModelCompatible(string name, string description, KBVersion parent, bool includeEnvironments)
+        {
+            var method = typeof(KBVersionHelper).GetMethod("BranchModel");
+            if (method == null) throw new InvalidOperationException("KBVersionHelper.BranchModel method not found");
+            var pars = method.GetParameters();
+            if (pars.Length >= 4 && pars[3].ParameterType == typeof(bool))
+            {
+                return (KBVersion)method.Invoke(null, new object[] { name, description, parent, includeEnvironments });
+            }
+            else
+            {
+                // GX16: Func<string, Guid> environmentGuidProvider
+                Func<string, Guid> provider = includeEnvironments ? (Func<string, Guid>)(_ => Guid.NewGuid()) : null;
+                return (KBVersion)method.Invoke(null, new object[] { name, description, parent, provider });
+            }
         }
     }
 }

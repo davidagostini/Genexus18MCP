@@ -79,7 +79,7 @@ namespace GxMcp.Worker.Compatibility
         {
             var catalog = new CatalogInfo
             {
-                SupportedMajors = supportedMajors ?? new[] { "17", "18" },
+                SupportedMajors = supportedMajors ?? new[] { "16", "17", "18" },
                 Source = "test"
             };
             return Create(installationPath, version, detectionSource, null, catalog);
@@ -131,7 +131,7 @@ namespace GxMcp.Worker.Compatibility
 
         private sealed class CatalogInfo
         {
-            internal IReadOnlyList<string> SupportedMajors { get; set; } = new[] { "17", "18" };
+            internal IReadOnlyList<string> SupportedMajors { get; set; } = new[] { "16", "17", "18" };
             internal string Source { get; set; } = "built-in-fallback";
         }
 

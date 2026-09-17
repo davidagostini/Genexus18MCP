@@ -6,7 +6,6 @@ using GxMcp.Worker.Compatibility;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
-using DSObject = Artech.Genexus.Common.Objects.DesignSystem;
 
 namespace GxMcp.Worker.Services
 {
@@ -70,11 +69,11 @@ namespace GxMcp.Worker.Services
             }
 
             string name = args?["name"]?.ToString();
-            DSObject dso = null;
+            KBObject dso = null;
 
             if (!string.IsNullOrWhiteSpace(name))
             {
-                try { dso = _objects?.FindObject(name, "DesignSystem") as DSObject; } catch { }
+                try { dso = _objects?.FindObject(name, "DesignSystem"); } catch { }
                 if (dso == null)
                 {
                     try
@@ -84,7 +83,7 @@ namespace GxMcp.Worker.Services
                             if (string.Equals(o?.TypeDescriptor?.Name, "DesignSystem", StringComparison.OrdinalIgnoreCase)
                                 && string.Equals(o.Name, name, StringComparison.OrdinalIgnoreCase))
                             {
-                                dso = o as DSObject;
+                                dso = o;
                                 if (dso != null) break;
                             }
                         }
@@ -108,7 +107,7 @@ namespace GxMcp.Worker.Services
                         if (firstKey != null && index.Objects.TryGetValue(firstKey, out var entry)
                             && !string.IsNullOrEmpty(entry?.Name))
                         {
-                            dso = _objects.FindObject(entry.Name, "DesignSystem") as DSObject;
+                            dso = _objects.FindObject(entry.Name, "DesignSystem");
                             if (dso != null) name = entry.Name;
                         }
                     }
@@ -122,7 +121,7 @@ namespace GxMcp.Worker.Services
                         foreach (KBObject o in model.Objects.GetAll())
                         {
                             if (string.Equals(o?.TypeDescriptor?.Name, "DesignSystem", StringComparison.OrdinalIgnoreCase))
-                            { dso = o as DSObject; if (dso != null) { name = o.Name; break; } }
+                            { dso = o; if (dso != null) { name = o.Name; break; } }
                         }
                     }
                     catch { }

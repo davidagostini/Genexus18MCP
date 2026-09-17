@@ -49,7 +49,7 @@ Selected supported GeneXus SDK → Knowledge Base on disk
   `worker/GxMcp.Worker.exe` is one level below. The npm package includes it.
 
 <!-- BEGIN GENERATED: gx-compatibility -->
-Supported SDK majors: **GeneXus 17, GeneXus 18**.
+Supported SDK majors: **GeneXus 16, GeneXus 17, GeneXus 18**.
 Primary SDK: **GeneXus 18**.
 Source of truth: `config/gx-versions.json`.
 <!-- END GENERATED: gx-compatibility -->

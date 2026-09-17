@@ -231,14 +231,19 @@ namespace GxMcp.Worker.Structure
             // ServiceGroupSource part. It is not exposed by the generic Parts
             // descriptor under the user-facing name "Methods" on every GX
             // version, so resolve this alias before the GUID/name fallbacks.
-            if (obj is Artech.Genexus.Common.Objects.API api
+            if (obj != null && string.Equals(obj.TypeDescriptor?.Name, "API", StringComparison.OrdinalIgnoreCase)
                 && !string.IsNullOrWhiteSpace(partName)
                 && (partName.Equals("Methods", StringComparison.OrdinalIgnoreCase)
                     || partName.Equals("ServiceGroupSource", StringComparison.OrdinalIgnoreCase)
                     || partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
                     || partName.Equals("Code", StringComparison.OrdinalIgnoreCase)))
             {
-                if (api.ServiceGroupSource != null) return api.ServiceGroupSource;
+                try
+                {
+                    dynamic d = obj;
+                    if (d.ServiceGroupSource != null) return (KBObjectPart)d.ServiceGroupSource;
+                }
+                catch { }
             }
 
             // issue #26: DSO Tokens/Styles are addressable by name directly, ahead of the
@@ -337,11 +342,19 @@ namespace GxMcp.Worker.Structure
             // API.ServiceGroupSource is the native methods/route part. Surface
             // the stable MCP name even when the SDK descriptor says Source or
             // ServiceGroupSource, and avoid exposing a misleading duplicate.
-            if (obj is Artech.Genexus.Common.Objects.API api && api.ServiceGroupSource != null)
+            if (obj != null && string.Equals(obj.TypeDescriptor?.Name, "API", StringComparison.OrdinalIgnoreCase))
             {
-                names.Add("Methods");
-                names.RemoveAll(n => string.Equals(n, "Source", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(n, "ServiceGroupSource", StringComparison.OrdinalIgnoreCase));
+                try
+                {
+                    dynamic d = obj;
+                    if (d.ServiceGroupSource != null)
+                    {
+                        names.Add("Methods");
+                        names.RemoveAll(n => string.Equals(n, "Source", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(n, "ServiceGroupSource", StringComparison.OrdinalIgnoreCase));
+                    }
+                }
+                catch { }
             }
 
             // "Source" and "Events" both resolve to the same ISource part on WebPanels/Transactions —

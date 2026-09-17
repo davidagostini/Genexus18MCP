@@ -67,6 +67,88 @@ try {
     foreach ($w in $where) { Add-Line ("  " + (Redact $w)) }
 } catch {}
 
+# ── GeneXus SDK Installations ────────────────────────────────────────────
+Section 'GeneXus SDK Installations'
+$gxRoots = @()
+if ($env:GENEXUS_HOME) { $gxRoots += $env:GENEXUS_HOME }
+foreach ($drive in @('C', 'D', 'E')) {
+    $gxRoots += "${drive}:\Program Files (x86)\GeneXus"
+    $gxRoots += "${drive}:\Program Files\GeneXus"
+}
+$foundGx = @()
+foreach ($root in $gxRoots) {
+    if (Test-Path $root) {
+        if (Test-Path (Join-Path $root 'genexus.exe')) {
+            $foundGx += $root
+        } else {
+            Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                if (Test-Path (Join-Path $_.FullName 'genexus.exe')) {
+                    $foundGx += $_.FullName
+                }
+            }
+        }
+    }
+}
+$foundGx = $foundGx | Select-Object -Unique
+if ($foundGx.Count -eq 0) {
+    Add-Line "<no GeneXus installations found in standard directories>"
+} else {
+    foreach ($g in $foundGx) {
+        $exe = Join-Path $g 'genexus.exe'
+        $commonDll = Join-Path $g 'Artech.Architecture.Common.dll'
+        $pv = (Get-Item $exe -ErrorAction SilentlyContinue).VersionInfo.ProductVersion
+        $fv = (Get-Item $exe -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+        $commonFv = (Get-Item $commonDll -ErrorAction SilentlyContinue).VersionInfo.FileVersion
+        Add-Line "- Path: $(Redact $g)"
+        Add-Line "  genexus.exe: ProductVersion=$pv FileVersion=$fv"
+        if ($commonFv) { Add-Line "  Artech.Architecture.Common.dll: FileVersion=$commonFv" }
+    }
+}
+
+# ── Active Configuration & KB ────────────────────────────────────────────
+Section 'Active Configuration & KB'
+$cfgCandidates = @()
+if ($env:GX_CONFIG_PATH) { $cfgCandidates += $env:GX_CONFIG_PATH }
+$cfgCandidates += @(
+    (Join-Path $env:APPDATA 'GenexusMCP\config.json'),
+    (Join-Path (Get-Location) 'config.json')
+)
+$cfgFound = $null
+foreach ($c in $cfgCandidates) {
+    if ($c -and (Test-Path $c)) { $cfgFound = $c; break }
+}
+if ($cfgFound) {
+    Add-Line "Config file: $(Redact $cfgFound)"
+    try {
+        $raw = Get-Content $cfgFound -Raw | ConvertFrom-Json
+        $gxPath = $raw.GeneXus.InstallationPath
+        Add-Line "  Configured GeneXusPath: $(Redact $gxPath)"
+        if ($gxPath -and (Test-Path $gxPath)) {
+            $cExe = Join-Path $gxPath 'genexus.exe'
+            if (Test-Path $cExe) {
+                $cVer = (Get-Item $cExe).VersionInfo.ProductVersion
+                Add-Line "  Configured SDK Version: $cVer"
+            }
+        }
+        if ($raw.Environment.KBPath) {
+            Add-Line "  Configured KBPath: $(Redact $raw.Environment.KBPath)"
+        }
+        if ($raw.Environment.DefaultKb) {
+            Add-Line "  Configured DefaultKb: $(Redact $raw.Environment.DefaultKb)"
+        }
+        if ($raw.Server.TransportMode) {
+            Add-Line "  TransportMode: $($raw.Server.TransportMode)"
+        }
+        if ($raw.Server.ResolutionPolicy) {
+            Add-Line "  ResolutionPolicy: $($raw.Server.ResolutionPolicy)"
+        }
+    } catch {
+        Add-Line "  <error reading JSON configuration: $($_.Exception.Message)>"
+    }
+} else {
+    Add-Line "<no config.json found>"
+}
+
 # ── genexus-mcp doctor (best-effort; short) ──────────────────────────────
 Section 'genexus-mcp doctor'
 try {

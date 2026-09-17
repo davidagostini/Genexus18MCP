@@ -63,9 +63,13 @@ namespace GxMcp.Worker
             {
                 string relativePath = (string)token["path"];
                 string expectedHash = (string)token["sha256"];
+                bool optional = (bool?)token["optional"] == true;
                 string filePath = Path.Combine(sdkPath, relativePath ?? string.Empty);
                 if (string.IsNullOrWhiteSpace(relativePath) || !File.Exists(filePath))
+                {
+                    if (optional) continue;
                     return Fail("GXMCP_SDK_ASSEMBLY_MISSING", "GXMCP_SDK_ASSEMBLY_MISSING path=" + (relativePath ?? "<missing>"));
+                }
                 string actualHash = Sha256(filePath);
                 if (!string.Equals(expectedHash, actualHash, StringComparison.OrdinalIgnoreCase))
                     fingerprintDrift.Add("GXMCP_SDK_FINGERPRINT_DRIFT path=" + relativePath + " expectedSha256=" + expectedHash + " actualSha256=" + actualHash);

@@ -1139,7 +1139,7 @@ test('doctor rejects a KB and SDK major that is outside the compatibility catalo
         assert.ok(check);
         assert.equal(check.status, 'fail');
         assert.match(check.detail, /KB major 19 is not supported/);
-        assert.match(check.detail, /Supported majors: 17, 18/);
+        assert.match(check.detail, /Supported majors: 16, 17, 18/);
     } finally {
         removeTempPath(tempRoot, { recursive: true, force: true });
     }

@@ -67,6 +67,7 @@ if (-not $spec.assemblies -or $spec.assemblies.Count -eq 0) {
 foreach ($assembly in $spec.assemblies) {
     $file = Join-Path $GxPath $assembly.path
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+        if ($assembly.optional -eq $true) { continue }
         Fail "GXMCP_SDK_ASSEMBLY_MISSING path=$($assembly.path)"
     }
     $sha = [System.Security.Cryptography.SHA256]::Create()

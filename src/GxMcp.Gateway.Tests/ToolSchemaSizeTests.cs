@@ -191,7 +191,10 @@ namespace GxMcp.Gateway.Tests
             //   indentation validation, including their error codes and line evidence),
             //   the top-level scope/indentation aliases the router consumes, and
             //   genexus_lifecycle's freshness wait target. Measured ~29147.
-            Assert.True(approxTokens < 29400, $"tool_definitions.json is ~{approxTokens} tokens; budget 29400.");
+            //   2026-09-16 (KB creation): 29400 → 29800 for genexus_kb create action,
+            //   parameters (dbServer, dbName, dbUser, dbPassword, template, sdkPath,
+            //   major, openAfterCreate, dryRun), and examples. Measured ~29502.
+            Assert.True(approxTokens < 29800, $"tool_definitions.json is ~{approxTokens} tokens; budget 29800.");
         }
     }
 }

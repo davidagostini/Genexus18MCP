@@ -1,3 +1,4 @@
+using System.Linq;
 using GxMcp.Gateway;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -109,6 +110,32 @@ namespace GxMcp.Gateway.Tests
             var err = JObject.Parse(@"{""code"":""patch_no_match"",""message"":""Context not found.""}");
             var trimmed = McpRouter.TrimErrorEnvelope(err, verbose: false);
             Assert.NotNull(trimmed["suggested_next_step"]);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_PreservesDiagnosticContext()
+        {
+            var err = JObject.Parse(@"{""code"":""Error"",""message"":""Fatal crash"",""diagnosticContext"":{""sdk"":{""major"":""16""},""reportIssue"":""Please report""}}");
+            var trimmed = McpRouter.TrimErrorEnvelope(err, verbose: false);
+            Assert.NotNull(trimmed["diagnosticContext"]);
+            Assert.Equal("16", trimmed["diagnosticContext"]!["sdk"]!["major"]!.ToString());
+            Assert.Equal("Please report", trimmed["diagnosticContext"]!["reportIssue"]!.ToString());
+        }
+
+        [Fact]
+        public void BuildDiagnosticContext_CarriesSupportedMajorsAndReportGuidance()
+        {
+            var diag = Program.BuildDiagnosticContext();
+            Assert.NotNull(diag);
+            Assert.NotNull(diag["sdk"]);
+            Assert.NotNull(diag["sdk"]!["supportedMajors"]);
+            var supported = (JArray)diag["sdk"]!["supportedMajors"]!;
+            Assert.Contains("16", supported.Select(t => t.ToString()));
+            Assert.Contains("17", supported.Select(t => t.ToString()));
+            Assert.Contains("18", supported.Select(t => t.ToString()));
+            Assert.NotNull(diag["reportIssue"]);
+            Assert.Contains("collect-diagnostics.ps1", diag["reportIssue"]!.ToString());
+            Assert.Contains("github.com/lennix1337/Genexus18MCP/issues", diag["reportIssue"]!.ToString());
         }
     }
 }

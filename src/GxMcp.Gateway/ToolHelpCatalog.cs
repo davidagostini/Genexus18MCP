@@ -457,6 +457,7 @@ namespace GxMcp.Gateway
                 "- `list_environments` / `get_environment` — inspect environment metadata.\n" +
                 "- `get_startup` — read the persisted startup selection.\n\n" +
                 "## Mutating actions\n" +
+                "- `create` — create a brand new GeneXus Knowledge Base from scratch using native MSBuild tasks (supports path, name, alias, major, template, dbServer, dbName, openAfterCreate, persist, dryRun).\n" +
                 "- `open` / `close` — register or release a Worker and KB lease.\n" +
                 "- `select` / `set_session_default` — select a KB for the current session only without mutating config.json.\n" +
                 "- `set_default` / `set_startup` / `set_environment` — change session or persisted selection (set_default with persist: false acts like select).\n\n" +

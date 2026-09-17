@@ -881,6 +881,16 @@ namespace GxMcp.Gateway
                 obj["noChange"] = true;
             }
 
+            bool isErrorResponse = isError
+                || string.Equals(obj["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase)
+                || obj["error"] != null
+                || (obj["result"] is JObject resObj && (resObj["error"] != null || string.Equals(resObj["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase)));
+
+            if (isErrorResponse && obj["diagnosticContext"] == null)
+            {
+                obj["diagnosticContext"] = BuildDiagnosticContext();
+            }
+
             // Where the collection lives: top-level first (search tools), then inside the
             // canonical `result` object (McpResponse.Ok producers). Deterministic lookup —
             // never auto-detect "the sole array property" (would wrongly pick up per-row
@@ -1280,6 +1290,60 @@ namespace GxMcp.Gateway
             }
 
             return null;
+        }
+
+        internal static JObject BuildDiagnosticContext()
+        {
+            var context = new JObject();
+            try
+            {
+                string? gxPath = _activeConfig?.GeneXus?.InstallationPath;
+                var probe = WorkerSdkCompatibilityProbe.Check(gxPath);
+                var sdk = new JObject
+                {
+                    ["installedPath"] = gxPath ?? probe.InstallationPath,
+                    ["version"] = probe.Version,
+                    ["major"] = probe.Major,
+                    ["supportedMajors"] = JArray.FromObject(GeneXusVersionCatalog.SupportedMajors)
+                };
+                context["sdk"] = sdk;
+            }
+            catch
+            {
+                // best-effort diagnostic context
+            }
+
+            try
+            {
+                var currentKb = _currentKb.Value;
+                if (currentKb != null)
+                {
+                    context["kb"] = new JObject
+                    {
+                        ["alias"] = currentKb.Alias,
+                        ["path"] = currentKb.Path
+                    };
+                }
+                else
+                {
+                    string? defaultKb = _activeConfig?.Environment?.RawDefaultKb ?? _activeConfig?.Environment?.DefaultKb;
+                    if (!string.IsNullOrWhiteSpace(defaultKb))
+                    {
+                        context["kb"] = new JObject
+                        {
+                            ["defaultKb"] = defaultKb
+                        };
+                    }
+                }
+            }
+            catch
+            {
+                // best-effort diagnostic context
+            }
+
+            context["reportIssue"] = "If this error indicates an SDK incompatibility or bug, please ask the user to run 'pwsh -File scripts/collect-diagnostics.ps1' (or 'genexus-mcp doctor --format json') and submit an issue at https://github.com/lennix1337/Genexus18MCP/issues with the diagnostics bundle.";
+
+            return context;
         }
 
     }

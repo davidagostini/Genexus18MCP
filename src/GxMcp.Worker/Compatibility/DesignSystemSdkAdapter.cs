@@ -7,7 +7,6 @@ using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Structure;
 using Newtonsoft.Json.Linq;
-using DSObject = Artech.Genexus.Common.Objects.DesignSystem;
 
 namespace GxMcp.Worker.Compatibility
 {
@@ -32,7 +31,7 @@ namespace GxMcp.Worker.Compatibility
         private const string HelperTypeName =
             "Artech.Genexus.Common.Helpers.DesignSystemHelper";
 
-        internal static DesignSystemReadResult Read(DSObject dso)
+        internal static DesignSystemReadResult Read(KBObject dso)
         {
             SourceParts parts = ReadSourceParts(dso);
             DesignSystemSourceParseResult parsed =
@@ -141,7 +140,7 @@ namespace GxMcp.Worker.Compatibility
             return fallback;
         }
 
-        private static SourceParts ReadSourceParts(DSObject dso)
+        private static SourceParts ReadSourceParts(KBObject dso)
         {
             string tokens = ReadSource(dso, styles: false, out string tokensError);
             string styles = ReadSource(dso, styles: true, out string stylesError);
@@ -154,7 +153,7 @@ namespace GxMcp.Worker.Compatibility
             };
         }
 
-        private static string ReadSource(DSObject dso, bool styles, out string error)
+        private static string ReadSource(KBObject dso, bool styles, out string error)
         {
             error = null;
             try

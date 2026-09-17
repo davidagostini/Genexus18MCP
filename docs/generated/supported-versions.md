@@ -7,6 +7,7 @@ Primary SDK major: `18`
 
 | Major | Display name | Default install path |
 |---|---|---|
+| 16 | GeneXus 16 | `C:\Program Files (x86)\GeneXus\GeneXus16` |
 | 17 | GeneXus 17 | `C:\Program Files (x86)\GeneXus\GeneXus17Trial` |
 | 18 | GeneXus 18 | `C:\Program Files (x86)\GeneXus\GeneXus18` |
 

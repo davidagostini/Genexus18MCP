@@ -45,18 +45,22 @@ namespace GxMcp.Worker.Helpers
 
         public static T TryResolve<T>(int attempts = 5, int delayMs = 200) where T : class
         {
-            Guid id = typeof(T).GUID;
+            return TryResolve(typeof(T).GUID, attempts, delayMs) as T;
+        }
+
+        public static object TryResolve(Guid id, int attempts = 5, int delayMs = 200)
+        {
             for (int i = 0; i < attempts; i++)
             {
                 try
                 {
-                    var s = SdkServices.TryGetService(id) as T;
+                    var s = SdkServices.TryGetService(id);
                     if (s != null) return s;
                 }
                 catch { /* not registered yet */ }
                 try
                 {
-                    var s = SdkServices.GetService(id) as T;
+                    var s = SdkServices.GetService(id);
                     if (s != null) return s;
                 }
                 catch { /* forcing variant may throw */ }

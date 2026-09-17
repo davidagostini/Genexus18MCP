@@ -1972,7 +1972,7 @@ namespace GxMcp.Gateway
                 "persistedMatchCount", "oldContentPresent", "verification", "rollback",
                 "rolledBack", "versionToken", "persistedVerifyError", "replacementPresent",
                 "reReadConfirmed", "commentOnly", "commentStyle", "before", "after",
-                "matchedCount", "implicitOperations"
+                "matchedCount", "implicitOperations", "diagnosticContext"
             };
             foreach (var k in diagnosticKeys)
             {

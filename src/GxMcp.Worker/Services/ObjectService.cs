@@ -1781,11 +1781,11 @@ namespace GxMcp.Worker.Services
                 if (type.Equals("UserControl", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.UserControl>().Id;
                 if (type.Equals("WorkPanel", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.WorkPanel>().Id;
                 if (type.Equals("Report", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Report>().Id;
-                if (type.Equals("API", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.API>().Id;
-                if (type.Equals("URLRewrite", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.URLRewrite>().Id;
-                if (type.Equals("MiniApp", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.MiniApp>().Id;
-                if (type.Equals("SuperApp", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.SuperApp>().Id;
-                if (type.Equals("DesignSystem", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.DesignSystem>().Id;
+                if (type.Equals("API", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("API");
+                if (type.Equals("URLRewrite", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("URLRewrite");
+                if (type.Equals("MiniApp", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("MiniApp");
+                if (type.Equals("SuperApp", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("SuperApp");
+                if (type.Equals("DesignSystem", StringComparison.OrdinalIgnoreCase)) return ResolveOptionalDescriptorId("DesignSystem");
                 if (type.Equals("ColorPalette", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.ColorPalette>().Id;
                 if (type.Equals("OfflineDatabase", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.OfflineDatabase>().Id;
                 if (type.Equals("Group", StringComparison.OrdinalIgnoreCase)) return KBObjectDescriptor.Get<Artech.Genexus.Common.Objects.Group>().Id;
@@ -1796,6 +1796,35 @@ namespace GxMcp.Worker.Services
                 Logger.Error("ResolveFromTypedDescriptor failed for " + type + ": " + ex.Message);
             }
             return Guid.Empty;
+        }
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Guid> _optionalDescriptorIds =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+
+        private static Guid ResolveOptionalDescriptorId(string typeName)
+        {
+            return _optionalDescriptorIds.GetOrAdd(typeName, name =>
+            {
+                try
+                {
+                    var asm = typeof(Artech.Genexus.Common.Objects.Procedure).Assembly;
+                    var t = asm.GetType("Artech.Genexus.Common.Objects." + name, false, true);
+                    if (t == null) return Guid.Empty;
+                    var method = typeof(KBObjectDescriptor).GetMethod("Get", Type.EmptyTypes);
+                    if (method != null)
+                    {
+                        var genericMethod = method.MakeGenericMethod(t);
+                        var desc = genericMethod.Invoke(null, null);
+                        if (desc != null)
+                        {
+                            var prop = desc.GetType().GetProperty("Id");
+                            if (prop != null) return (Guid)prop.GetValue(desc, null);
+                        }
+                    }
+                }
+                catch { }
+                return Guid.Empty;
+            });
         }
 
         private static Type _objClassType;
@@ -2412,13 +2441,30 @@ namespace GxMcp.Worker.Services
                     if (norm.Equals("DataSelector", StringComparison.OrdinalIgnoreCase))
                         return global::Artech.Genexus.Common.Objects.DataSelector.Get(model, qName);
                     if (norm.Equals("API", StringComparison.OrdinalIgnoreCase))
-                        return global::Artech.Genexus.Common.Objects.API.Get(model, qName);
+                        return ResolveOptionalTypedObject("API", model, qName);
                 }
                 catch (Exception ex)
                 {
                     Logger.Debug(string.Format("ResolveTypedObjectDirect static Get error for '{0}' as {1}: {2}", name, norm, ex.Message));
                 }
             }
+            return null;
+        }
+
+        private static KBObject ResolveOptionalTypedObject(string typeName, KBModel model, global::Artech.Architecture.Common.Objects.QualifiedName qName)
+        {
+            try
+            {
+                var asm = typeof(Artech.Genexus.Common.Objects.Procedure).Assembly;
+                var t = asm.GetType("Artech.Genexus.Common.Objects." + typeName, false, true);
+                if (t == null) return null;
+                var getMethod = t.GetMethod("Get", new[] { typeof(KBModel), typeof(global::Artech.Architecture.Common.Objects.QualifiedName) });
+                if (getMethod != null)
+                {
+                    return getMethod.Invoke(null, new object[] { model, qName }) as KBObject;
+                }
+            }
+            catch { }
             return null;
         }
 
@@ -3163,14 +3209,17 @@ namespace GxMcp.Worker.Services
                     ["guid"] = p.Type.ToString()
                 });
             }
-            if (obj is Artech.Genexus.Common.Objects.API api && api.ServiceGroupSource != null
-                && !parts.OfType<JObject>().Any(p => string.Equals(p["name"]?.ToString(), "Methods", StringComparison.OrdinalIgnoreCase)))
+            if (string.Equals(obj.TypeDescriptor?.Name, "API", StringComparison.OrdinalIgnoreCase))
             {
-                parts.Add(new JObject
+                var sgs = (obj as dynamic)?.ServiceGroupSource;
+                if (sgs != null && !parts.OfType<JObject>().Any(p => string.Equals(p["name"]?.ToString(), "Methods", StringComparison.OrdinalIgnoreCase)))
                 {
-                    ["name"] = "Methods",
-                    ["guid"] = api.ServiceGroupSource.Type.ToString()
-                });
+                    parts.Add(new JObject
+                    {
+                        ["name"] = "Methods",
+                        ["guid"] = sgs.Type.ToString()
+                    });
+                }
             }
 
             string parentName = null;
@@ -4523,7 +4572,7 @@ namespace GxMcp.Worker.Services
 
             if (obj is Procedure) return "Source";
             if (obj is Transaction || obj is WebPanel) return defaulted ? "Events" : "Source";
-            if (obj is Artech.Genexus.Common.Objects.API) return "Methods";
+            if (string.Equals(obj?.TypeDescriptor?.Name, "API", StringComparison.OrdinalIgnoreCase)) return "Methods";
             // Data Selectors have no ISource part. Keep the generic alias so the
             // typed read path can return their complete persisted definition.
             if (DataSelectorReadService.IsDataSelector(obj)) return "Source";

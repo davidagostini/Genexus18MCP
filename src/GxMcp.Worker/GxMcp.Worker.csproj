@@ -38,6 +38,10 @@
     <DefineConstants>$(DefineConstants);HAS_SECURITY_SCANNER</DefineConstants>
   </PropertyGroup>
 
+  <PropertyGroup Condition="Exists('$(GX_PATH)\GeneXus.TeamDevClient.Architecture.BL.dll')">
+    <DefineConstants>$(DefineConstants);HAS_TEAMDEV_CI</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <Reference Include="Artech.Packages.Patterns">
       <HintPath>$(GX_PATH)\Packages\Artech.Packages.Patterns.dll</HintPath>
@@ -125,7 +129,7 @@
       <Private>False</Private>
     </Reference>
     <!-- genexus_gxserver action=pipeline_*: IContinuousIntegrationService (CI pipelines). -->
-    <Reference Include="GeneXus.TeamDevClient.Architecture.BL">
+    <Reference Include="GeneXus.TeamDevClient.Architecture.BL" Condition="Exists('$(GX_PATH)\GeneXus.TeamDevClient.Architecture.BL.dll')">
       <HintPath>$(GX_PATH)\GeneXus.TeamDevClient.Architecture.BL.dll</HintPath>
       <Private>False</Private>
     </Reference>

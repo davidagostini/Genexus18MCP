@@ -7,8 +7,6 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
-using Artech.Genexus.Common.Entities;
-using Artech.Genexus.Common.ModelParts;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
@@ -450,7 +448,7 @@ namespace GxMcp.Worker.Services
                             try
                             {
                                 GeneratorConfigurationSnapshot before = Capture(environment, generator, reload: false,
-                                    out GeneratorsPart part, out GxGenerator selected);
+                                    out dynamic part, out dynamic selected);
                                 result.Before = before;
                                 if (!string.Equals(before.VersionToken, baseVersion, StringComparison.Ordinal))
                                 {
@@ -526,21 +524,22 @@ namespace GxMcp.Worker.Services
                     try
                     {
                         GeneratorConfigurationSnapshot current = Capture(environment, generator, reload: false,
-                            out GeneratorsPart part, out _);
+                            out dynamic part, out _);
                         if (!string.Equals(current.VersionToken, expectedCurrentVersion, StringComparison.Ordinal))
                             throw new GeneratorReferenceStoreException("ConcurrentChangeDuringRollback",
                                 "The generator configuration changed again before rollback; the newer state was not overwritten.",
                                 current.VersionToken);
 
-                        var live = part.Generators.ToDictionary(Identity, StringComparer.Ordinal);
+                        var live = GetGenerators((object)part).ToDictionary(Identity, StringComparer.Ordinal);
                         if (live.Count != before.Generators.Count || before.Generators.Keys.Any(k => !live.ContainsKey(k)))
                             throw new GeneratorReferenceStoreException("GeneratorCollectionChanged",
                                 "The generator collection changed and cannot be restored safely.", current.VersionToken);
 
                         foreach (KeyValuePair<string, GeneratorState> item in before.Generators)
                         {
-                            live[item.Key].Properties.Reset();
-                            live[item.Key].Properties.DeserializeFromXml(item.Value.PropertiesXml);
+                            dynamic gen = live[item.Key];
+                            gen.Properties.Reset();
+                            gen.Properties.DeserializeFromXml(item.Value.PropertiesXml);
                         }
                         part.Dirty = true;
                         part.OnSavingEnviromentChange();
@@ -567,7 +566,7 @@ namespace GxMcp.Worker.Services
             }
 
             private GeneratorConfigurationSnapshot Capture(string requestedEnvironment, string requestedGenerator,
-                bool reload, out GeneratorsPart part, out GxGenerator selected)
+                bool reload, out dynamic part, out dynamic selected)
             {
                 dynamic kb = _kbService.GetKB();
                 if (kb == null) throw new GeneratorReferenceStoreException("KbNotOpen", "No Knowledge Base is open.");
@@ -585,14 +584,16 @@ namespace GxMcp.Worker.Services
                     throw new GeneratorReferenceStoreException("EnvironmentNotActive",
                         "The requested Environment is not the active Environment. This tool does not switch Environments implicitly.");
 
-                part = ((Artech.Architecture.Common.Objects.KBModel)targetModel).Parts.Get<GeneratorsPart>();
+                part = GetGeneratorsOrEnvironmentsPart(targetModel);
                 if (part == null)
                     throw new GeneratorReferenceStoreException("GeneratorsPartUnavailable", "The active Environment has no native GeneratorsPart.");
 
-                selected = part.Generators.FirstOrDefault(g => GeneratorMatches(g, requestedGenerator));
+                var generators = GetGenerators((object)part).ToList();
+                selected = generators.FirstOrDefault(g => GeneratorMatches(g, requestedGenerator));
                 if (selected == null)
                     throw new GeneratorReferenceStoreException("GeneratorNotFound", "The requested generator was not found in the active Environment.");
-                if (!selected.Properties.ContainsPropertyDefinition(CompilerFlagsProperty))
+                dynamic selectedDynamic = selected;
+                if (!selectedDynamic.Properties.ContainsPropertyDefinition(CompilerFlagsProperty))
                     throw new GeneratorReferenceStoreException("GeneratorReferencesUnsupported",
                         "The selected generator does not expose the native C# compiler flags property.");
 
@@ -601,19 +602,20 @@ namespace GxMcp.Worker.Services
                     EnvironmentName = environmentName ?? targetModelName,
                     GeneratorName = DisplayName(selected),
                     TargetIdentity = Identity(selected),
-                    CompilerFlags = selected.Properties.GetPropertyValueString(CompilerFlagsProperty) ?? string.Empty,
+                    CompilerFlags = selectedDynamic.Properties.GetPropertyValueString(CompilerFlagsProperty) ?? string.Empty,
                     KbLocation = kb.Location?.ToString(),
                     TargetPath = targetModel.TargetPath?.ToString()
                 };
 
-                foreach (GxGenerator item in part.Generators.OrderBy(Identity, StringComparer.Ordinal))
+                foreach (object item in generators.OrderBy(Identity, StringComparer.Ordinal))
                 {
+                    dynamic itemDynamic = item;
                     var state = new GeneratorState
                     {
                         Identity = Identity(item),
-                        PropertiesXml = item.Properties.SerializeToXml() ?? string.Empty
+                        PropertiesXml = itemDynamic.Properties.SerializeToXml() ?? string.Empty
                     };
-                    foreach (var property in item.Properties.SerializedProperties())
+                    foreach (var property in itemDynamic.Properties.SerializedProperties())
                         state.Properties[property.Name] = property.Value ?? string.Empty;
                     if (state.Identity == snapshot.TargetIdentity)
                         state.Properties[CompilerFlagsProperty] = snapshot.CompilerFlags;
@@ -623,17 +625,62 @@ namespace GxMcp.Worker.Services
                 return snapshot;
             }
 
-            private static bool GeneratorMatches(GxGenerator generator, string requested)
+            private static dynamic GetGeneratorsOrEnvironmentsPart(dynamic targetModel)
             {
+                if (targetModel == null) return null;
+                var kbModel = targetModel as Artech.Architecture.Common.Objects.KBModel;
+                if (kbModel == null) return null;
+
+                foreach (var p in kbModel.Parts)
+                {
+                    if (p == null) continue;
+                    string name = p.GetType().Name;
+                    if (string.Equals(name, "GeneratorsPart", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(name, "EnvironmentsPart", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return p;
+                    }
+                }
+                return null;
+            }
+
+            private static IEnumerable<object> GetGenerators(object partObj)
+            {
+                if (partObj == null) yield break;
+                dynamic part = partObj;
+                System.Collections.IEnumerable list = null;
+                try { list = part.Generators; } catch { }
+                if (list == null)
+                {
+                    try { list = part.Environments; } catch { }
+                }
+                if (list != null)
+                {
+                    foreach (var item in list)
+                        if (item != null) yield return item;
+                }
+            }
+
+            private static bool GeneratorMatches(object generatorObj, string requested)
+            {
+                if (generatorObj == null) return false;
+                dynamic generator = generatorObj;
                 string normalized = NormalizeSelection(requested);
+                string catName = null;
+                try { catName = generator.Category?.Name; } catch { }
+                if (string.IsNullOrWhiteSpace(catName))
+                {
+                    try { catName = generator.EnvironmentCategory?.Name; } catch { }
+                }
+
                 return new[]
                     {
-                        generator.ToString(),
-                        generator.Description,
-                        generator.Category?.Name,
-                        DisplayName(generator),
-                        (generator.Category?.Name ?? string.Empty) + " (" + (generator.Description ?? string.Empty) + ")",
-                        (generator.Category?.Name ?? string.Empty) + " " + generator.GeneratorType
+                        (string)generator.ToString(),
+                        (string)generator.Description,
+                        catName,
+                        DisplayName(generatorObj),
+                        (catName ?? string.Empty) + " (" + ((string)generator.Description ?? string.Empty) + ")",
+                        (catName ?? string.Empty) + " " + generator.GeneratorType
                     }
                     .Where(x => !string.IsNullOrWhiteSpace(x))
                     .Any(x => NormalizeSelection(x) == normalized);
@@ -649,15 +696,33 @@ namespace GxMcp.Worker.Services
             private static string NormalizeSelection(string value) =>
                 new string((value ?? string.Empty).Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 
-            private static string DisplayName(GxGenerator generator)
+            private static string DisplayName(object generatorObj)
             {
+                if (generatorObj == null) return string.Empty;
+                dynamic generator = generatorObj;
                 string text = generator.ToString();
                 if (!string.IsNullOrWhiteSpace(text)) return text;
-                return (generator.Category?.Name ?? "Generator") + " (" + generator.GeneratorType + ")";
+                string catName = null;
+                try { catName = generator.Category?.Name; } catch { }
+                if (string.IsNullOrWhiteSpace(catName))
+                {
+                    try { catName = generator.EnvironmentCategory?.Name; } catch { }
+                }
+                return (catName ?? "Generator") + " (" + generator.GeneratorType + ")";
             }
 
-            private static string Identity(GxGenerator generator) =>
-                generator.CategoryGuid.ToString("D") + ":" + generator.Generator.ToString();
+            private static string Identity(object generatorObj)
+            {
+                if (generatorObj == null) return string.Empty;
+                dynamic generator = generatorObj;
+                Guid catGuid = Guid.Empty;
+                try { catGuid = generator.CategoryGuid; } catch { }
+                if (catGuid == Guid.Empty)
+                {
+                    try { catGuid = generator.EnvironmentCategoryGuid; } catch { }
+                }
+                return catGuid.ToString("D") + ":" + generator.Generator.ToString();
+            }
 
             private static string Version(GeneratorConfigurationSnapshot snapshot)
             {

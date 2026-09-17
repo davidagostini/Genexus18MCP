@@ -2492,12 +2492,17 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Manage open KBs, session selection, startup config, and GeneXus environments. list/open/close/select/set_session_default/set_persistent_default/set_default operate on WorkerPool and session context; select sets active KB for current session only without mutating config; set_persistent_default explicitly persists startup default to config.json and returns persistedTo; set_default is a legacy persistent default operation; set_startup/get_startup mirror IDE 'Set As Startup Object'; list_environments lists all configured environments; get_environment reads the active environment; set_environment selects an environment.",
+      "description": "Manage open KBs, session selection, startup config, Knowledge Base creation, and GeneXus environments. create bootstraps a brand new KB via native MSBuild tasks; list/open/close/select/set_session_default/set_persistent_default/set_default operate on WorkerPool and session context; select sets active KB for current session only without mutating config; set_persistent_default explicitly persists startup default to config.json and returns persistedTo; set_default is a legacy persistent default operation; set_startup/get_startup mirror IDE 'Set As Startup Object'; list_environments lists all configured environments; get_environment reads the active environment; set_environment selects an environment.",
       "inputSchema": {
         "examples": [
           {
             "action": "open",
             "path": "C:\\KBs\\MyKb"
+          },
+          {
+            "action": "create",
+            "major": "18",
+            "path": "C:\\KBs\\NewKb"
           },
           {
             "action": "select",
@@ -2536,7 +2541,8 @@
               "get_startup",
               "list_environments",
               "get_environment",
-              "set_environment"
+              "set_environment",
+              "create"
             ],
             "type": "string"
           },
@@ -2544,21 +2550,57 @@
             "description": "KB alias. open: auto from path basename if omitted.",
             "type": "string"
           },
+          "dbName": {
+            "description": "create only: target database name (default gx_kb_<name>).",
+            "type": "string"
+          },
+          "dbPassword": {
+            "description": "create only: database password for SQL authentication (optional).",
+            "type": "string"
+          },
+          "dbServer": {
+            "description": "create only: SQL Server instance name (default (LocalDB)\\MSSQLLocalDB).",
+            "type": "string"
+          },
+          "dbUser": {
+            "description": "create only: database user for SQL authentication (optional).",
+            "type": "string"
+          },
+          "dryRun": {
+            "description": "create only: preview KB creation plan without creating directories or running MSBuild (default false).",
+            "type": "boolean"
+          },
           "environment": {
             "description": "Environment name/folder (required for set_environment), e.g. development.",
             "type": "string"
           },
-          "name": {
-            "description": "Object name (required for set_startup).",
+          "major": {
+            "description": "create only: target GeneXus major version, e.g. '16', '17', or '18' (optional).",
             "type": "string"
           },
+          "name": {
+            "description": "Object name (required for set_startup) or Knowledge Base name (optional for create, defaults to directory name).",
+            "type": "string"
+          },
+          "openAfterCreate": {
+            "description": "create only: automatically open the KB and start a Worker instance after creation (default true).",
+            "type": "boolean"
+          },
           "path": {
-            "description": "Absolute KB path (required for open if alias not in config).",
+            "description": "Absolute KB path (required for create and for open if alias not in config).",
             "type": "string"
           },
           "persist": {
-            "description": "Legacy set_default only: persist to config.json (default true). If false, acts like select.",
+            "description": "Persist KB to config.json for create and legacy set_default (default false for create, default true for set_default).",
             "type": "boolean"
+          },
+          "sdkPath": {
+            "description": "create only: explicit GeneXus SDK installation directory (optional).",
+            "type": "string"
+          },
+          "template": {
+            "description": "create only: generator template path or name, e.g. CSharp/csharp.kbtemplate (optional).",
+            "type": "string"
           }
         },
         "required": [

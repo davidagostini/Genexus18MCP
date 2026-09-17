@@ -770,14 +770,17 @@ async function handleDoctor(options, ctx) {
             compatibilityDetail = `${unsupportedCompatibilityMajor} is not supported by this MCP distribution. Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}.`;
         } else if (kbSdkCompatibility.status === 'mismatch') {
             compatibilityStatus = 'fail';
-            compatibilityDetail = `KB major ${kbSdkCompatibility.kb.major} does not match GeneXus SDK major ${kbSdkCompatibility.gx.major}. Re-run init with the matching --gx path.`;
+            compatibilityDetail = `KB major ${kbSdkCompatibility.kb.major} does not match GeneXus SDK major ${kbSdkCompatibility.gx.major}${kbSdkCompatibility.gx.version ? ` (${kbSdkCompatibility.gx.version})` : ''}. Re-run init with the matching --gx path.`;
         } else if (kbSdkCompatibility.status === 'match') {
             compatibilityStatus = 'pass';
-            compatibilityDetail = `KB major ${kbSdkCompatibility.kb.major} matches GeneXus SDK major ${kbSdkCompatibility.gx.major}.`;
+            compatibilityDetail = `KB major ${kbSdkCompatibility.kb.major} matches GeneXus SDK major ${kbSdkCompatibility.gx.major}${kbSdkCompatibility.gx.version ? ` (${kbSdkCompatibility.gx.version})` : ''}.`;
         } else {
             compatibilityDetail = `KB/SDK major compatibility could not be verified (KB: ${kbSdkCompatibility.kb.source}; SDK: ${kbSdkCompatibility.gx.source}).`;
         }
     }
+
+    const gxIdent = gxPath ? readGeneXusInstallationIdentity(gxPath) : null;
+    const gxVersionLabel = gxIdent && gxIdent.version ? ` (GeneXus ${gxIdent.major || ''} version ${gxIdent.version})` : (gxIdent && gxIdent.major ? ` (GeneXus ${gxIdent.major})` : '');
 
     const riskyZone = isPathLikelyAppLockerBlocked(gatewayExePath);
     const clientCrossCheck = buildClientExeCrossCheck(gatewayExePath);
@@ -806,7 +809,7 @@ async function handleDoctor(options, ctx) {
         // Same logic for the GeneXus install: missing genexus.exe at a configured path
         // guarantees a worker crash on first MCP call. Promote from warn to fail so init
         // exits non-zero and the caller (install.ps1, AI client) actually sees the problem.
-        { id: 'gx_installation', status: gxExeExists ? 'pass' : (gxPath ? 'fail' : 'warn'), detail: gxExeExists ? 'GeneXus installation has genexus.exe.' : (gxPath ? `Configured GeneXus installation is missing genexus.exe at: ${gxPath}` : 'No GeneXus installation path is configured.') },
+        { id: 'gx_installation', status: gxExeExists ? 'pass' : (gxPath ? 'fail' : 'warn'), detail: gxExeExists ? `GeneXus installation has genexus.exe${gxVersionLabel}.` : (gxPath ? `Configured GeneXus installation is missing genexus.exe at: ${gxPath}` : 'No GeneXus installation path is configured.') },
         {
             id: 'kb_sdk_compatibility',
             status: compatibilityStatus,

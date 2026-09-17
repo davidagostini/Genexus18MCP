@@ -1294,8 +1294,42 @@ namespace GxMcp.Gateway
                                 };
                                 break;
                             }
+                            case "create":
+                            {
+                                var options = new KbCreateHelper.CreateOptions
+                                {
+                                    Path = args?["path"]?.ToString() ?? string.Empty,
+                                    Name = args?["name"]?.ToString(),
+                                    Alias = args?["alias"]?.ToString(),
+                                    DbServer = args?["dbServer"]?.ToString(),
+                                    DbName = args?["dbName"]?.ToString(),
+                                    DbUser = args?["dbUser"]?.ToString(),
+                                    DbPassword = args?["dbPassword"]?.ToString(),
+                                    Template = args?["template"]?.ToString(),
+                                    SdkPath = args?["sdkPath"]?.ToString(),
+                                    Major = args?["major"]?.ToString(),
+                                    OpenAfterCreate = args?["openAfterCreate"]?.Value<bool?>() ?? true,
+                                    Persist = args?["persist"]?.Value<bool?>() ?? false,
+                                    DryRun = args?["dryRun"]?.Value<bool?>() ?? false
+                                };
+
+                                payload = await KbCreateHelper.CreateKbAsync(
+                                    options,
+                                    _activeConfig,
+                                    sessionId,
+                                    sessionContextEnabled,
+                                    _workerPool,
+                                    SetSessionSelectedKb,
+                                    TriggerIndexBootstrapOnce);
+
+                                if (string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    isError = true;
+                                }
+                                break;
+                            }
                             default:
-                                throw new ArgumentException($"Unknown action '{action}'. Use list|open|close.");
+                                throw new ArgumentException($"Unknown action '{action}'. Use list|open|close|create.");
                         }
                     }
                     catch (KbResolutionException ex)
@@ -2866,10 +2900,18 @@ namespace GxMcp.Gateway
                             // pure pattern-match over code/message text; routes patch NoMatch →
                             // near-match inspection, visual write failures → LayoutGotchaScanner,
                             // KB_AMBIGUOUS → kb=<alias>, spc0150 → extract_to_procedure recipe.
-                            if (isErr && finalResult is JObject preTrimErr && preTrimErr["suggested_next_step"] == null)
+                            if (isErr && finalResult is JObject preTrimErr)
                             {
-                                var hint = McpRouter.AttachSuggestedNextStep(preTrimErr);
-                                if (hint != null) preTrimErr["suggested_next_step"] = hint;
+                                if (preTrimErr["suggested_next_step"] == null)
+                                {
+                                    var hint = McpRouter.AttachSuggestedNextStep(preTrimErr);
+                                    if (hint != null) preTrimErr["suggested_next_step"] = hint;
+                                }
+
+                                if (preTrimErr["diagnosticContext"] == null)
+                                {
+                                    preTrimErr["diagnosticContext"] = BuildDiagnosticContext();
+                                }
                             }
 
                             // TerseErrors: trim error envelopes to {message, code, hint} by default.

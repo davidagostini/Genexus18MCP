@@ -128,6 +128,7 @@ namespace GxMcp.Gateway
             {
                 Entries = new JArray
                 {
+                    new JObject { ["major"] = "16", ["displayName"] = "GeneXus 16" },
                     new JObject { ["major"] = "17", ["displayName"] = "GeneXus 17" },
                     new JObject { ["major"] = "18", ["displayName"] = "GeneXus 18" }
                 }

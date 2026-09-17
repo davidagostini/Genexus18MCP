@@ -81,7 +81,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_authoring` | — | `add_external_method`, `add_external_property`, `add_menu_option`, `add_condition` |
 | `genexus_layout` | `get_tree`, `find_controls`, `inspect_surface`, `get_preview`, `scan_mutators`, `list_controls`, `design_system` | `set_property`, `set_properties`, `rename_printblock`, `add_printblock`, `delete_printblock` |
 | `genexus_doc` | `health` | `wiki`, `visualize` |
-| `genexus_kb` | `list`, `list_environments`, `get_environment`, `get_startup` | `open`, `close`, `select`, `set_session_default`, `set_default`, `set_persistent_default`, `set_startup`, `set_environment` |
+| `genexus_kb` | `list`, `list_environments`, `get_environment`, `get_startup` | `open`, `close`, `select`, `set_session_default`, `set_default`, `set_persistent_default`, `set_startup`, `set_environment`, `create` |
 | `genexus_navigation` | — | `view` |
 | `genexus_api` | `list`, `describe`, `routes_inspect`, `diff_baseline` | `routes_clone`, `routes_update`, `snapshot` |
 | `genexus_apply_pattern` | `list_actions` | `add_grid_action`, `update_action`, `move_action`, `remove_action` |
