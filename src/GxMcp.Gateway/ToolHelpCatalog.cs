@@ -76,12 +76,12 @@ namespace GxMcp.Gateway
                 "Restart the gateway-managed Worker for an open Knowledge Base. This is a gateway operation, not a `genexus_lifecycle` action.\n\n" +
                 "## Modes\n" +
                 "- `mode=soft` — drain the selected worker, replace it, and wait for SDK readiness. This is the normal restart path.\n" +
-                "- `mode=hard` — copy Worker binaries from `sourceDir` during the drain window, then replace the worker.\n" +
-                "- `force=true` — kill and respawn directly when the worker is wedged and cannot acknowledge a graceful drain.\n\n" +
+                "- `mode=hard` — copy Worker binaries from `sourceDir` during the graceful drain window, then replace the worker. It cannot be combined with `force=true`; the direct path has no safe copy window and returns `ReloadForceHardUnsupported`.\n" +
+                "- `force=true` — kill and respawn every open Worker directly when the pool is wedged and cannot acknowledge a graceful drain. This is global; `alias`/`kb` authorize the request but do not narrow the affected set.\n\n" +
                 "## Selection and safety\n" +
-                "- With one open KB, `mode=soft` is sufficient. With multiple workers, pass `alias=<alias>` (or its `kb` alias) to select the target explicitly.\n" +
+                "- With one open KB, `mode=soft` is sufficient. With multiple workers, pass `alias=<alias>` (or its `kb` alias) to select the target explicitly on the graceful path.\n" +
                 "- `mode=hard` requires a valid `sourceDir`; use the repository's Worker `bin/Debug` directory when hot-swapping a local build.\n" +
-                "- A graceful response means the replacement signalled SDK-ready. A forced reload abandons in-flight Worker jobs; retry only after checking the returned worker state.\n",
+                "- A graceful response means the replacement signalled SDK-ready. A forced reload abandons in-flight jobs for all open Workers and reports `scope=all-open-workers`; retry only after checking the returned worker state.\n",
 
             ["genexus_edit"] =
                 "# genexus_edit\n\n" +

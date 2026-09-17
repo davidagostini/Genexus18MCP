@@ -658,6 +658,30 @@ namespace GxMcp.Gateway
                 if (string.Equals(toolName, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase)
                     && args?["force"]?.ToObject<bool?>() == true)
                 {
+                    // The direct force path kills and recreates the pool without
+                    // the drain-window copy hook. Never accept sourceDir here and
+                    // silently run the old binary: hard hot-swap is available only
+                    // through the graceful path below.
+                    string forceReloadMode = args?["mode"]?.ToString()?.Trim().ToLowerInvariant() ?? "soft";
+                    if (forceReloadMode == "hard")
+                    {
+                        return BuildToolTextResponse(
+                            idToken,
+                            new JObject
+                            {
+                                ["status"] = "error",
+                                ["error"] = new JObject
+                                {
+                                    ["code"] = "ReloadForceHardUnsupported",
+                                    ["message"] = "force=true cannot be combined with mode=hard because the direct path does not apply sourceDir.",
+                                    ["hint"] = "Use mode=hard with force=false for a verified drain-window hot-swap, or use force=true with mode=soft when the Worker is wedged.",
+                                    ["scope"] = "none",
+                                    ["sourceDirApplied"] = false
+                                }
+                            },
+                            isError: true, toolName: toolName, toolArgs: args, payloadOwned: true);
+                    }
+
                     // Refuse the force path when configuration isn't loaded — otherwise we'd
                     // kill the worker pool with no way to bring it back up and the caller
                     // would only learn from subsequent tool failures.
@@ -714,6 +738,8 @@ namespace GxMcp.Gateway
                                 {
                                     ["status"] = failedAliases.Count == 0 ? "Forced" : "ReloadFailed",
                                     ["online"] = handlesToRestore.Count > 0 && readyAliases.Count > 0 && failedAliases.Count == 0,
+                                    ["scope"] = "all-open-workers",
+                                    ["selectorApplied"] = false,
                                     ["restoredWorkers"] = readyAliases,
                                     ["failedWorkers"] = failedAliases,
                                     ["detail"] = handlesToRestore.Count == 0
