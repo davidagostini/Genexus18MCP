@@ -4960,12 +4960,12 @@
     },
     {
       "annotations": {
-        "destructiveHint": false,
+        "destructiveHint": true,
         "idempotentHint": false,
         "openWorldHint": true,
         "readOnlyHint": false
       },
-      "description": "Reload worker. mode=soft drains and respawns; mode=hard copies sourceDir during the drain window and respawns. force=true: gateway kills directly. See tool-help.",
+      "description": "Reload worker. mode=soft drains and respawns the selected worker; mode=hard copies sourceDir during the graceful drain window and respawns. force=true kills and respawns all open Workers globally; alias/kb do not narrow that scope. force=true with mode=hard is rejected because sourceDir cannot be applied safely on the direct path. See tool-help.",
       "inputSchema": {
         "examples": [
           {
@@ -4978,7 +4978,7 @@
         ],
         "properties": {
           "alias": {
-            "description": "KB alias to reload when more than one worker is open.",
+            "description": "KB alias to reload on the graceful path when more than one worker is open; force=true remains global.",
             "type": "string"
           },
           "drainTimeoutMs": {
@@ -4986,7 +4986,7 @@
             "type": "integer"
           },
           "force": {
-            "description": "Bypass drain; gateway kills + respawns. Use when worker is wedged.",
+            "description": "Bypass drain and restart all open Workers. Use only when the pool is wedged; alias/kb do not make this selective.",
             "type": "boolean"
           },
           "kb": {
@@ -5001,7 +5001,7 @@
             "type": "string"
           },
           "sourceDir": {
-            "description": "Required for mode=hard.",
+            "description": "Required for mode=hard; ignored is not permitted with force=true.",
             "type": "string"
           }
         },
