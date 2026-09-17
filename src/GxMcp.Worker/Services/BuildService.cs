@@ -826,6 +826,8 @@ namespace GxMcp.Worker.Services
             public List<string> Expanded { get; set; } = new List<string>();
             public List<string> Skipped { get; set; } = new List<string>();
             public List<string> AmbiguousTargets { get; set; } = new List<string>();
+            public List<string> UnresolvedTargets { get; set; } = new List<string>();
+            public bool TargetResolutionAvailable { get; set; }
             public bool Truncated { get; set; }
             public int NodeCap { get; set; }
             public int RequestedNodes { get; set; }
@@ -855,14 +857,19 @@ namespace GxMcp.Worker.Services
                 .ToList();
             var originalSet = new HashSet<string>(originalList, StringComparer.OrdinalIgnoreCase);
 
-            if (_indexCacheService != null)
+            var index = _indexCacheService?.TryGetLoadedIndex();
+            plan.TargetResolutionAvailable = index != null;
+            if (index != null)
             {
                 foreach (var target in originalList)
                 {
-                    if (_indexCacheService.FindEntriesByName(target).Count > 1)
+                    var candidates = FindCompileCheckTargetCandidates(index, target);
+                    if (candidates.Count > 1)
                         plan.AmbiguousTargets.Add(target);
+                    else if (candidates.Count == 0)
+                        plan.UnresolvedTargets.Add(target);
                 }
-                if (plan.AmbiguousTargets.Count > 0)
+                if (plan.AmbiguousTargets.Count > 0 || plan.UnresolvedTargets.Count > 0)
                 {
                     plan.Expanded.AddRange(originalList);
                     return plan;
@@ -1315,6 +1322,19 @@ namespace GxMcp.Worker.Services
                             message: "One or more build targets resolve to multiple typed GeneXus objects.",
                             extra: new JObject { ["targets"] = JArray.FromObject(plan.AmbiguousTargets) });
                     }
+                    if (plan.UnresolvedTargets.Count > 0)
+                    {
+                        return McpResponse.Err(
+                            code: "BuildTargetUnresolved",
+                            message: "One or more build targets do not resolve to indexed GeneXus objects.",
+                            hint: "Use a unique object name, Type:Name, or GUID. The target was not dispatched.",
+                            extra: new JObject
+                            {
+                                ["targets"] = JArray.FromObject(plan.UnresolvedTargets),
+                                ["targetResolutionAvailable"] = plan.TargetResolutionAvailable,
+                                ["supportedTargetFormats"] = new JArray("unique object name", "Type:Name", "GUID")
+                            });
+                    }
                     targets = plan.Expanded;
                 }
                 return McpResponse.Ok(
@@ -1326,7 +1346,8 @@ namespace GxMcp.Worker.Services
                             ["action"] = action,
                             ["wouldBuild"] = new JArray(targets.ToArray()),
                             ["includeCallees"] = includeCallees ?? "transitive",
-                            ["buildPlanCap"] = buildPlanCap
+                            ["buildPlanCap"] = buildPlanCap,
+                            ["targetResolutionAvailable"] = plan?.TargetResolutionAvailable ?? false
                         }
                     });
             }
