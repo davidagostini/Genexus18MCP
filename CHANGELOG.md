@@ -77,7 +77,7 @@
 - **`genexus_kb` dry-run planning no longer requires an installed SDK or MSBuild.** The read-only plan is produced from the requested inputs, while real creation still fails closed when the SDK, template, or MSBuild assets are unavailable; this keeps the Gateway coverage lane deterministic on hosted runners.
 
 - **The CI tool-contract baseline now matches the published schema.** The
-  regression gate expects the current 229 public actions and continues to
+  regression gate expects the current 244 public actions and continues to
   compare that count with the capabilities inventory, so future action changes
   must update the schema and its contract views together.
 
