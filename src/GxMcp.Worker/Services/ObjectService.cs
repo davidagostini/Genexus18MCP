@@ -4180,7 +4180,57 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string ImportObjectFromText(string target, string inputPath, string partName = null, string typeFilter = null, bool dryRun = false)
+        /// <summary>
+        /// Reads one object part through the existing SDK accessor without doing filesystem I/O.
+        /// Batch text projections use this seam to plan all output files first and write them in
+        /// one controlled pass, while keeping SDK resolution and STA ownership in ObjectService.
+        /// </summary>
+        internal string ReadObjectPartText(string target, string partName = null, string typeFilter = null)
+        {
+            try
+            {
+                var obj = FindObject(target, typeFilter);
+                if (obj == null) return HealingService.FormatNotFoundError(target, GetLoadedIndexOrNull());
+                return ReadObjectSourceInternal(
+                    obj,
+                    string.IsNullOrWhiteSpace(partName) ? "Source" : partName,
+                    0,
+                    int.MaxValue,
+                    "mcp",
+                    false);
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(code: "ReadPartFailed", message: "Part read failed: " + ex.Message, target: target);
+            }
+        }
+
+        /// <summary>
+        /// Persists text already loaded by a batch projection through the same WriteService path
+        /// as genexus_edit/import_part. No direct KB file/database write is permitted here.
+        /// </summary>
+        internal string ImportObjectPartText(string target, string partName, string content, string typeFilter = null, bool dryRun = false, bool forceSave = false)
+        {
+            try
+            {
+                if (_writeService == null)
+                    return McpResponse.Err(code: "WriteServiceUnavailable", message: "Import failed: Write service is not available.", target: target);
+                return _writeService.WriteObject(
+                    target,
+                    string.IsNullOrWhiteSpace(partName) ? "Source" : partName,
+                    content ?? string.Empty,
+                    typeFilter,
+                    autoValidate: false,
+                    dryRun: dryRun,
+                    forceWrite: forceSave);
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(code: "ImportPartFailed", message: "Part import failed: " + ex.Message, target: target);
+            }
+        }
+
+        public string ImportObjectFromText(string target, string inputPath, string partName = null, string typeFilter = null, bool dryRun = false, bool forceSave = false)
         {
             try
             {
@@ -4231,7 +4281,7 @@ namespace GxMcp.Worker.Services
                 }
 
                 string importedText = File.ReadAllText(fullPath);
-                string writeResult = _writeService.WriteObject(target, normalizedPart, importedText, typeFilter, autoValidate: false, dryRun: dryRun);
+                string writeResult = _writeService.WriteObject(target, normalizedPart, importedText, typeFilter, autoValidate: false, dryRun: dryRun, forceWrite: forceSave);
                 JObject writeJson = JObject.Parse(writeResult);
 
                 // WriteService.WriteObject only ever returns via McpResponse.Ok/Err (canonical

@@ -783,6 +783,33 @@ namespace GxMcp.Gateway.Routers
                         @params = args
                     };
 
+                case "validate_text_in_memory":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ValidateTextInMemory",
+                        @params = args
+                    };
+
+                case "list_text_files":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ListTextInMemory",
+                        @params = args
+                    };
+
+                case "text_mirror_start":
+                    return new { module = "Object", action = "TextMirrorStart", @params = args };
+                case "text_mirror_stop":
+                    return new { module = "Object", action = "TextMirrorStop", @params = args };
+                case "text_mirror_status":
+                    return new { module = "Object", action = "TextMirrorStatus", @params = args };
+                case "text_mirror_catchup":
+                    return new { module = "Object", action = "TextMirrorCatchup", @params = args };
+                case "text_mirror_set_references":
+                    return new { module = "Object", action = "TextMirrorSetReferences", @params = args };
+
                 case "delete_kb_objects":
                     return new
                     {
@@ -812,7 +839,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_io: unknown action '{action}'. Valid: asset_find|asset_read|asset_write|export_part|import_part|export_kb_to_text|import_text_to_kb|validate_kb_text_files|delete_kb_objects|export_unified|screenshot_publish|ocr."
+                        error = $"genexus_io: unknown action '{action}'. Valid: asset_find|asset_read|asset_write|read_blob|export_part|import_part|export_kb_to_text|import_text_to_kb|validate_kb_text_files|validate_text_in_memory|list_text_files|text_mirror_start|text_mirror_stop|text_mirror_status|text_mirror_catchup|text_mirror_set_references|delete_kb_objects|export_unified|screenshot_publish|ocr."
                     };
             }
         }

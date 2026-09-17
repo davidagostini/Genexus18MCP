@@ -75,6 +75,7 @@ namespace GxMcp.Worker.Services
         private readonly ValidatePayloadService _validatePayloadService;
         private readonly ExportObjectService _exportObjectService;
         private readonly ObjectTextService _objectTextService;
+        private readonly TextMirrorService _textMirrorService;
         private readonly DiffService _diffService;
         private readonly ApplyTemplateService _applyTemplateService;
         private readonly EditAndBuildOrchestrator _editAndBuildOrchestrator;
@@ -237,6 +238,7 @@ namespace GxMcp.Worker.Services
             _validatePayloadService = new ValidatePayloadService(_objectService);
             _exportObjectService = new ExportObjectService(_objectService);
             _objectTextService = new ObjectTextService(_objectService, _indexCacheService);
+            _textMirrorService = new TextMirrorService(_kbService, _objectTextService, _indexCacheService);
             _diffService = new DiffService(_objectService);
             _applyTemplateService = new ApplyTemplateService(_writeService);
             _editAndBuildOrchestrator = new EditAndBuildOrchestrator(_writeService, _analyzeService, _buildService);
@@ -361,6 +363,7 @@ namespace GxMcp.Worker.Services
 
         public KbService GetKbService() { return _kbService; }
         public IndexCacheService GetIndexCacheService() { return _indexCacheService; }
+        public TextMirrorService GetTextMirrorService() { return _textMirrorService; }
 
         // Item 51 (Tier-S, EXPERIMENTAL) — capture IndexCacheService state to disk
         // before a warm reload. Returns a small JObject result the dispatcher
@@ -676,7 +679,14 @@ namespace GxMcp.Worker.Services
                     }
                     foreach (var prop in args.Properties())
                     {
-                        if (prop.Name == "params") continue;
+                        // These are worker-routing fields, not user arguments. In particular,
+                        // the router module is "Object" and must not become the Object Text
+                        // module filter when the caller omitted module altogether. The inner
+                        // tool args already win on collision, so keep only non-routing fallbacks.
+                        if (prop.Name == "params"
+                            || prop.Name == "module"
+                            || prop.Name == "action"
+                            || prop.Name == "target") continue;
                         if (merged[prop.Name] == null) merged[prop.Name] = prop.Value;
                     }
                     args = merged;
@@ -1516,7 +1526,15 @@ namespace GxMcp.Worker.Services
                 // rolledBack=false with a note (delete the object via genexus_delete_object).
                 return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(createResp, target, args, "Source");
             }
-            if (action == "Delete") return _objectService.DeleteObject(target, args?["type"]?.ToString(), args?["confirm"]?.ToObject<bool?>() ?? false, args?["dryRun"]?.ToObject<bool?>() ?? false, args?["expectedVersion"]?.ToString());
+            if (action == "Delete")
+            {
+                bool dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
+                string type = args?["type"]?.ToString();
+                string response = _objectService.DeleteObject(target, type, args?["confirm"]?.ToObject<bool?>() ?? false, dryRun, args?["expectedVersion"]?.ToString());
+                if (!dryRun && IsSuccessfulMutation(response))
+                    NotifyMirrorDeleted(target, type);
+                return response;
+            }
             if (action == "SaveAs") return _saveAsService.SaveAs(args ?? new JObject());
             if (action == "WorkerReload")
             {
@@ -1589,16 +1607,69 @@ namespace GxMcp.Worker.Services
                     args?["overwrite"]?.ToObject<bool?>() ?? false);
             }
             if (action == "ImportText") return _objectService.ImportObjectFromText(target, args?["inputPath"]?.ToString() ?? args?["path"]?.ToString(), args?["part"]?.ToString(), args?["type"]?.ToString());
+            if (action.StartsWith("TextMirror", StringComparison.OrdinalIgnoreCase))
+            {
+                string mirrorAction = action.Substring("TextMirror".Length).ToLowerInvariant();
+                if (mirrorAction == "setreferences") mirrorAction = "set_reference_export_enabled";
+                return _textMirrorService.Run(mirrorAction, args ?? new JObject());
+            }
             if (action == "ExportTextBatch" || action == "ImportTextBatch"
-                || action == "ValidateTextBatch" || action == "DeleteTextBatch")
+                || action == "ValidateTextBatch" || action == "DeleteTextBatch"
+                || action == "ValidateTextInMemory" || action == "ListTextInMemory")
             {
                 string cancelToken = args?["cancelToken"]?.ToString();
                 using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(cancelToken, out var objectTextCt))
                 {
-                    return _objectTextService.Execute(action, target, args, objectTextCt);
+                    string response = _objectTextService.Execute(action, target, args, objectTextCt);
+                    if (action == "DeleteTextBatch") NotifyMirrorDeletesFromBatch(response, args);
+                    return response;
                 }
             }
             return null;
+        }
+
+        private void NotifyMirrorDeleted(string target, string type)
+        {
+            if (_textMirrorService == null || string.IsNullOrWhiteSpace(target)) return;
+            string name = target.Trim();
+            string resolvedType = type;
+            int separator = name.IndexOf(':');
+            if (separator > 0 && separator + 1 < name.Length)
+            {
+                if (string.IsNullOrWhiteSpace(resolvedType)) resolvedType = name.Substring(0, separator);
+                name = name.Substring(separator + 1);
+            }
+            _textMirrorService.NotifyObjectDeleted(name, resolvedType, DateTime.UtcNow);
+        }
+
+        private void NotifyMirrorDeletesFromBatch(string rawResponse, JObject args)
+        {
+            if (args?["dryRun"]?.ToObject<bool?>() ?? false) return;
+            try
+            {
+                JObject response = JObject.Parse(rawResponse ?? "{}");
+                JArray results = response["result"]?["results"] as JArray;
+                if (results == null) return;
+                foreach (JObject item in results.OfType<JObject>())
+                {
+                    string nested = item["response"]?.ToString();
+                    if (IsSuccessfulMutation(nested))
+                        NotifyMirrorDeleted(item["name"]?.ToString(), item["type"]?.ToString());
+                }
+            }
+            catch { }
+        }
+
+        private static bool IsSuccessfulMutation(string rawResponse)
+        {
+            try
+            {
+                JObject response = JObject.Parse(rawResponse ?? "{}");
+                string status = response["status"]?.ToString();
+                return string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "success", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
         private string Handle_Mutation(JObject request, string method, string action, string target, string payload, JObject args)

@@ -194,7 +194,13 @@ namespace GxMcp.Gateway.Tests
             //   2026-09-16 (KB creation): 29400 → 29800 for genexus_kb create action,
             //   parameters (dbServer, dbName, dbUser, dbPassword, template, sdkPath,
             //   major, openAfterCreate, dryRun), and examples. Measured ~29502.
-            Assert.True(approxTokens < 29800, $"tool_definitions.json is ~{approxTokens} tokens; budget 29800.");
+            //   2026-09-17 (SDK text/mirror/module tasks): 29800 → 30600 for the
+            //   native src/ref exchange, in-memory list/validation, watermark mirror,
+            //   Module Manager server/package actions, and OpenAPI task publication.
+            //   2026-09-17 (filesystem parity): 30600 → 31000 for recursive selectors,
+            //   listOnly/skip/stopOnError, forceSave, module.toml metadata and manifest
+            //   hash/file-reference validation. Measured ~30905 tokens.
+            Assert.True(approxTokens < 31000, $"tool_definitions.json is ~{approxTokens} tokens; budget 31000.");
         }
     }
 }
