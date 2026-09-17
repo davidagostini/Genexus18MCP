@@ -115,6 +115,33 @@ function Test-ChangedSet {
     }
 }
 
+function Resolve-LocalGeneXusSdkPath {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($env:GX_PATH)) {
+        [void]$candidates.Add($env:GX_PATH.Trim().Trim('"'))
+    }
+    $catalogPath = Join-Path $root 'config\gx-versions.json'
+    if (Test-Path -LiteralPath $catalogPath -PathType Leaf) {
+        try {
+            $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+            foreach ($entry in @($catalog.supportedMajors)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$entry.defaultInstallPath)) {
+                    [void]$candidates.Add([string]$entry.defaultInstallPath)
+                }
+            }
+        } catch { }
+    }
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        try {
+            $resolved = [IO.Path]::GetFullPath($candidate)
+            if (Test-Path -LiteralPath (Join-Path $resolved 'Artech.Architecture.Common.dll') -PathType Leaf) {
+                return $resolved
+            }
+        } catch { }
+    }
+    return $null
+}
+
 function Add-SkippedPhase {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -241,6 +268,12 @@ try {
         Invoke-BoundedPhase -Name 'tool-contracts' -Executable 'python' -Arguments @(
             (Join-Path $root 'scripts\validate-tool-contracts.py')
         )
+        Invoke-BoundedPhase -Name 'operation-contract-inventory' -Executable 'python' -Arguments @(
+            (Join-Path $root 'scripts\generate-operation-contract-inventory.py'), '--check'
+        )
+        Invoke-BoundedPhase -Name 'Python script tests' -Executable 'python' -Arguments @(
+            '-m', 'unittest', 'discover', '-s', (Join-Path $root 'scripts\tests'), '-p', 'test_*.py', '-v'
+        )
         if ($SkipPowerShell) {
             Add-SkippedPhase -Name 'PowerShell script tests' -Reason 'disabled by -SkipPowerShell'
         } else {
@@ -256,6 +289,12 @@ try {
         }
         if ($SkipDotnet) {
             Add-SkippedPhase -Name 'solution tests' -Reason 'disabled by -SkipDotnet'
+        } elseif ($null -eq (Resolve-LocalGeneXusSdkPath)) {
+            Invoke-BoundedPhase -Name 'Gateway tests' -Executable 'dotnet' -Arguments @(
+                'test', (Join-Path $root 'src\GxMcp.Gateway.Tests\GxMcp.Gateway.Tests.csproj'),
+                '--no-restore', '--nologo', '-v:minimal', '-m:1'
+            )
+            Add-SkippedPhase -Name 'Worker tests' -Reason 'GeneXus SDK is not installed locally; CI SDK-independent gates still ran and the protected SDK lane remains authoritative.'
         } else {
             Invoke-BoundedPhase -Name 'solution tests' -Executable 'dotnet' -Arguments @(
                 'test', (Join-Path $root 'Genexus18MCP.sln'),
