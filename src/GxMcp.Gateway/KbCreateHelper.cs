@@ -93,6 +93,47 @@ namespace GxMcp.Gateway
 
             // Resolve SDK path
             string? sdkPath = ResolveSdkPath(options.SdkPath, options.Major, activeConfig);
+            if (options.DryRun)
+            {
+                string? dryRunTemplatePath = string.IsNullOrWhiteSpace(sdkPath)
+                    ? null
+                    : ResolveTemplatePath(sdkPath, options.Template);
+                string? dryRunMsBuildPath = LocateNetFrameworkMsBuild();
+                return new JObject
+                {
+                    ["status"] = "Plan",
+                    ["dryRun"] = true,
+                    ["alias"] = alias,
+                    ["name"] = name,
+                    ["dbServer"] = string.IsNullOrWhiteSpace(options.DbServer)
+                        ? @"(LocalDB)\MSSQLLocalDB"
+                        : options.DbServer.Trim(),
+                    ["dbName"] = string.IsNullOrWhiteSpace(options.DbName)
+                        ? $"gx_kb_{name}"
+                        : options.DbName.Trim(),
+                    ["template"] = dryRunTemplatePath,
+                    ["sdkPath"] = sdkPath,
+                    ["plan"] = new JObject
+                    {
+                        ["path"] = fullPath,
+                        ["name"] = name,
+                        ["alias"] = alias,
+                        ["dbServer"] = string.IsNullOrWhiteSpace(options.DbServer)
+                            ? @"(LocalDB)\MSSQLLocalDB"
+                            : options.DbServer.Trim(),
+                        ["dbName"] = string.IsNullOrWhiteSpace(options.DbName)
+                            ? $"gx_kb_{name}"
+                            : options.DbName.Trim(),
+                        ["dbUser"] = options.DbUser,
+                        ["template"] = dryRunTemplatePath,
+                        ["sdkPath"] = sdkPath,
+                        ["msbuildPath"] = dryRunMsBuildPath,
+                        ["openAfterCreate"] = options.OpenAfterCreate,
+                        ["persist"] = options.Persist
+                    }
+                };
+            }
+
             if (string.IsNullOrWhiteSpace(sdkPath) || !Directory.Exists(sdkPath))
             {
                 return Error("SdkNotFound",
@@ -133,36 +174,6 @@ namespace GxMcp.Gateway
                 return Error("MsBuildNotFound",
                     "Could not locate 32-bit .NET Framework MSBuild.exe (v4.0.30319) required by GeneXus SDK tasks.",
                     hint: "Verify that .NET Framework 4.8 is installed on this Windows machine.");
-            }
-
-            // Handle DryRun
-            if (options.DryRun)
-            {
-                return new JObject
-                {
-                    ["status"] = "Plan",
-                    ["dryRun"] = true,
-                    ["alias"] = alias,
-                    ["name"] = name,
-                    ["dbServer"] = dbServer,
-                    ["dbName"] = dbName,
-                    ["template"] = templatePath,
-                    ["sdkPath"] = sdkPath,
-                    ["plan"] = new JObject
-                    {
-                        ["path"] = fullPath,
-                        ["name"] = name,
-                        ["alias"] = alias,
-                        ["dbServer"] = dbServer,
-                        ["dbName"] = dbName,
-                        ["dbUser"] = options.DbUser,
-                        ["template"] = templatePath,
-                        ["sdkPath"] = sdkPath,
-                        ["msbuildPath"] = msbuildPath,
-                        ["openAfterCreate"] = options.OpenAfterCreate,
-                        ["persist"] = options.Persist
-                    }
-                };
             }
 
             // Preflight: If using LocalDB, ensure instance is started

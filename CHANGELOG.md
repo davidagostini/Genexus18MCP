@@ -47,6 +47,9 @@
 
 ### Fixed
 
+
+- **`genexus_doctor` now always reports a fresh snapshot ([#222](https://github.com/lennix1337/Genexus18MCP/issues/222)).** Gateway-side doctor responses bypass the semantic cache so `checkedAt`, Worker PID, uptime, and telemetry cannot be replayed from a previous health call.
+
 - **Native multi-part imports now fail closed when rollback cannot be certified.** A mutable `part=all`/`parts[]` import no longer writes the first parts when the complete pre-write snapshot is unavailable; it returns `RollbackSnapshotUnavailable` before touching the KB.
 
 - **Batch cancellation is preserved through the decomposed pipelines.** Legacy export/import/validate now return the same immediate typed `Cancelled` envelope before path, index or manifest preparation, matching the pre-refactor contract.
@@ -63,6 +66,20 @@
 - **The CLI spawn probes wait for the child to exit instead of returning while it is still terminating ([#211](https://github.com/lennix1337/Genexus18MCP/issues/211)).** `spawnGatewayProbe` (the `gateway_spawn_probe` check in `init`/`doctor`) and `probeWorkerStartup` called `child.kill()` and reported success immediately; on Windows `kill()` only signals the direct process and returns before the OS releases the executable image, so a still-terminating probe kept the exe locked and `npm test` failed in the `test.after` cleanup with `EPERM` while every assertion passed. Both now await the child's `exit` (bounded by a 2s grace) and report `warn` when the process does not exit, and the worker smoke no longer misreads its own stop signal as a crash. `cli/run.test.js` teardown terminates only processes launched from its own temp dir (never a machine-wide `GxMcp.Gateway.exe` sweep), extends the Windows removal backoff to 8 attempts (10→640 ms), and removes the parent `genexus-mcp-test-<pid>` directory it used to leave behind.
 
 ### Internal
+
+
+- **PR submission now runs against the current base and complete local test set.** `pr-push.ps1` refuses dirty or stale branches, fetches the PR base, runs the operation-contract inventory, all Python script tests, PowerShell tests, CLI tests, lint, and Gateway tests through `integration-preflight.ps1`, and only then pushes `HEAD`. When no local GeneXus SDK exists, the Worker gate is recorded as unavailable for the protected CI SDK lane. This closes the gap that allowed the stale 228-action contract expectation to reach CI.
+
+- **The version-catalog regression guard now covers the published 16, 17, and 18 support set.** Its expected list and display are synchronized with `config/gx-versions.json`, preventing the local preflight from carrying another stale compatibility baseline.
+
+- **Development worktrees now pass the npm postinstall check.** A linked worktree uses a `.git` file instead of a `.git` directory; the installer now recognizes both forms, and a regression test keeps `npm ci` usable in the isolated PR worktrees used for validation.
+
+- **`genexus_kb` dry-run planning no longer requires an installed SDK or MSBuild.** The read-only plan is produced from the requested inputs, while real creation still fails closed when the SDK, template, or MSBuild assets are unavailable; this keeps the Gateway coverage lane deterministic on hosted runners.
+
+- **The CI tool-contract baseline now matches the published schema.** The
+  regression gate expects the current 244 public actions and continues to
+  compare that count with the capabilities inventory, so future action changes
+  must update the schema and its contract views together.
 
 - **The live benchmark measures the gateway instead of the client's connection setup.** `scripts/bench-live-http.py` opened a new TCP connection per call through `urllib` with a timeout; on Windows a CPython socket operation carrying a timeout waits through `select()`, whose wait granularity is the ~15.6ms system timer, so roughly one sample in three paid that timer. Isolated on the same port: the ~15.6ms spikes disappear with a blocking connect (p95 0.42ms) and never appear in a .NET client (fresh-connection `HttpClient` p95 1.59ms), while the gateway's own `[HTTP] Received`/`Sending` timestamps logged ~1ms for every call — yet the harness reported p95 ~22ms for those same gateway-served ops, so `--compare` and `test-live.ps1`'s `--fail-on-regression` were comparing client transport noise. `rpc()` now POSTs over a single keep-alive connection (`http_post`, one reconnect when the server drops an idle socket, per-request timeouts preserved, HTTP error statuses still surfaced as the `__http_error__` envelope) and the initialize handshake shares that transport; a re-run on the pooled connection measures whoami p50 1.32ms / p95 1.57ms, 0 of 50 samples at ≥10ms, and the benchmark's own stub run shows 11 requests over 1 accepted TCP connection. Two tests that patched `urllib.request.urlopen` were rewritten against the new transport seam, plus three new ones (one connection for N calls, a single reconnect after a drop, and a persistent transport failure surfacing instead of looping). Baselines captured with the previous per-call connections are not comparable; `docs/live-kb-test-harness.md` records that they must be re-captured.
 - **Documented the local-checkout client registration flow ([#210](https://github.com/lennix1337/Genexus18MCP/issues/210)).** `AGENTS.md`'s harness-sync matrix and `docs/llm_cli_mcp_playbook.md` gained an explicit checkout branch (register/repair with `GENEXUS_MCP_GATEWAY_EXE` + `node cli\run.js clients add` or `.\install.ps1`, then validate/repair with the checkout CLI) so `npx @latest clients add` is no longer the only remediation offered there — that path rewrites a checkout harness back to the npm-cache launcher. The matrix row for `install.ps1` was also corrected: it registers with `clients add --all-clients` (not `init --write-clients`), takes `-GeneXusPath`/`-SkipClientConfig`, and writes no `Environment.KBPath`. `init`'s post-patch help (`buildClientLauncherHelp`) now names the checkout alternative next to the npx one.

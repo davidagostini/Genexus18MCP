@@ -409,6 +409,19 @@ namespace GxMcp.Gateway
             return $"{kbScope}|{toolName}:{args?.ToString(Newtonsoft.Json.Formatting.None)}";
         }
 
+        internal static bool IsLiveToolForCache(string toolName, string? action)
+        {
+            bool liveLifecycle = string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(action, "status", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "result", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "cancel", StringComparison.OrdinalIgnoreCase));
+
+            return liveLifecycle
+                || string.Equals(toolName, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(toolName, "genexus_logs", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(toolName, "genexus_gxserver", StringComparison.OrdinalIgnoreCase);
+        }
+
         /// <summary>
         /// Builds a deterministic semantic-cache key. The legacy overload above
         /// preserves the pre-v3 shape for callers that only need the classifier;
