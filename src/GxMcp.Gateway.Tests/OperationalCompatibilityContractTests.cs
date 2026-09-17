@@ -68,6 +68,9 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("remove_tab", actions);
             Assert.Contains("set_table_type", actions);
             Assert.Contains("add_grid_attribute", actions);
+            Assert.Contains("add_user_action", actions);
+            Assert.NotNull(schema["properties"]!["containerName"]);
+            Assert.NotNull(schema["properties"]!["rollbackOnFailure"]);
             Assert.NotNull(schema["properties"]!["baseVersion"]);
             Assert.NotNull(schema["properties"]!["expectedVersion"]);
             Assert.NotNull(schema["properties"]!["versionToken"]);
@@ -86,6 +89,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("settings_edit")]
         [InlineData("list")]
         [InlineData("add_action")]
+        [InlineData("add_user_action")]
         public void WorkWithPlusPublishedNameReachesWorkerTarget(string action)
         {
             var args = new JObject

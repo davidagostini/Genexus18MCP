@@ -83,6 +83,58 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("Continue?", (string)action.Attribute("confirmMessage"));
         }
 
+        [Fact]
+        public void AddFormUserAction_InsertsDirectlyIntoTableActionsAndDerivesEvent()
+        {
+            var doc = XDocument.Parse("<instance><table name='TableActions' childrenOrderedList='standardAction,footer'><standardAction name='Cancel' caption='Cancel'/><footer /></table></instance>");
+            JObject result = WwpActionService.Apply(doc, "add_user_action", new JObject
+            {
+                ["containerName"] = "TableActions",
+                ["actionName"] = "BaixarConfiguracao",
+                ["caption"] = "Baixar Configuração"
+            }, null);
+
+            Assert.Null(result["error"]);
+            Assert.Equal("DoBaixarConfiguracao", result["event"]?.ToString());
+            XElement container = doc.Root.Element("table");
+            XElement action = container.Elements("userAction").Single();
+            Assert.Equal("BaixarConfiguracao", (string)action.Attribute("name"));
+            Assert.Equal("Baixar Configuração", (string)action.Attribute("caption"));
+            Assert.Null(action.Attribute("event"));
+            Assert.Equal("standardAction,footer", (string)container.Attribute("childrenOrderedList"));
+
+            var project = typeof(WwpActionService).GetMethod("Project", BindingFlags.Static | BindingFlags.NonPublic);
+            JObject catalog = (JObject)project.Invoke(null, new object[] { doc });
+            JObject projectedAction = (JObject)catalog["formContainers"]![0]!["actions"]![1];
+            Assert.Equal("BaixarConfiguracao", projectedAction["name"]?.ToString());
+            Assert.Equal("DoBaixarConfiguracao", projectedAction["event"]?.ToString());
+        }
+
+        [Fact]
+        public void AddFormUserAction_RejectsInvalidNamesDuplicatesAndUnknownContainers()
+        {
+            var invalidName = XDocument.Parse("<instance><table name='TableActions' /></instance>");
+            JObject invalid = WwpActionService.Apply(invalidName, "add_user_action", new JObject
+            {
+                ["actionName"] = "Baixar Configuracao", ["caption"] = "Baixar"
+            }, null);
+            Assert.Equal("InvalidActionName", invalid["code"]?.ToString());
+
+            var duplicate = XDocument.Parse("<instance><table name='TableActions'><userAction name='BaixarConfiguracao' /></table></instance>");
+            JObject alreadyExists = WwpActionService.Apply(duplicate, "add_user_action", new JObject
+            {
+                ["actionName"] = "BaixarConfiguracao", ["caption"] = "Baixar"
+            }, null);
+            Assert.Equal("ActionAlreadyExists", alreadyExists["code"]?.ToString());
+
+            JObject missingContainer = WwpActionService.Apply(duplicate, "add_user_action", new JObject
+            {
+                ["containerName"] = "MissingActions", ["actionName"] = "Retry", ["caption"] = "Retry"
+            }, null);
+            Assert.Equal("FormActionContainerNotFound", missingContainer["code"]?.ToString());
+            Assert.Contains("TableActions", missingContainer["availableContainers"]?.Values<string>() ?? Enumerable.Empty<string>());
+        }
+
         [Theory]
         [InlineData(null, "list_actions")]
         [InlineData("list", "list_actions")]

@@ -231,6 +231,8 @@ namespace GxMcp.Gateway
                 "// → InvoiceQueryPanel.WebForm now contains the template-derived layout\n" +
                 "```\n\n" +
                 "**Auto-project on edit:** subsequent `genexus_edit name=WorkWithPlus<X> part=PatternInstance` calls automatically run UpdateParentObject too — every PatternInstance edit lands on the parent object's WebForm in the same call. The response's `projection.status` field reports the outcome.\n\n" +
+                "## Typed PatternInstance actions\n" +
+                "Use `mode: 'actions'` for structural WWP edits. `action: 'add_user_action'` inserts a form-level UserAction directly under `containerName` (normally `TableActions`) and derives the event as `Do<actionName>`. Example: `{ name: 'WorkWithPlusImpressaoConfiguracao', pattern: 'WorkWithPlus', mode: 'actions', action: 'add_user_action', containerName: 'TableActions', actionName: 'BaixarConfiguracao', caption: 'Baixar Configuração', dryRun: true }`. The typed path persists and re-reads the PatternInstance when `dryRun` is false, verifies the projected state, attempts rollback when `rollbackOnFailure` is true, and never runs Specify, Generate, Build, Rebuild, compilation, publication, execution, or tests.\n\n" +
                 "## Response\n" +
                 "- `{ status: \"Success\", wasFirstApply: true|false, generatedObjects: [...] }` on the happy path.\n" +
                 "- `{ status: \"pattern_unavailable\", message: ... }` if `Artech.Packages.Patterns.dll` / license is missing — the call is **non-fatal**, treat as \"feature unavailable on this install\" and surface the message.\n" +
@@ -638,10 +640,11 @@ namespace GxMcp.Gateway
 
             ["genexus_wwp"] =
                 "# genexus_wwp\n\n" +
-                "Inspect and edit WorkWithPlus Action Groups, tabs, and grid attributes through the typed PatternInstance contract.\n\n" +
+                "Inspect and edit WorkWithPlus Action Groups, form-level actions, tabs, and grid attributes through the typed PatternInstance contract.\n\n" +
                 "## Actions\n" +
                 "- `list` — read the current action groups and ordered actions.\n" +
                 "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n" +
+                "- `add_user_action` — add a form-level UserAction directly under a named form container (usually `TableActions`). The event is derived deterministically as `Do<actionName>`; do not pass a Procedure.\n" +
                 "- `add_tab`, `move_tab`, and `remove_tab` — edit WebPanel tabs and typed nested controls.\n" +
                 "- `set_table_type` — change only an existing WWP table's native `type` (`Regular` or `Responsive`) by path, preserving child identity and metadata with reread/rollback guards.\n" +
                 "- `add_grid_attribute` — add one typed Attribute column without changing unrelated children.\n\n" +
@@ -649,7 +652,8 @@ namespace GxMcp.Gateway
                 "- `settings_templates` includes embedded Settings templates and separate WorkWithPlus for Web Template objects linked to Settings/Main. `guid` identifies Settings; `template=wwp:<guid>` selects a separate template. Use returned paths, offset/limit, and the same baseVersion on subsequent pages.\n" +
                 "- `settings_read` returns separate templates' stored XML attributes; offset=0, limit=0 also includes the exact XML. WWP default resolvers are not invoked. Embedded templates retain the SDK property projection.\n" +
                 "- `settings_edit` with dryRun=true previews one property without mutation. Separate templates support an existing table themeClass only; textEdit preserves every character outside that attribute value. Metadata is protected. Real saves remain refused with SettingsIsolationUnverified.\n" +
-                "For instance writes, preview with `dryRun`, pass the returned token as `baseVersion`, `expectedVersion`, or `versionToken`, and persist only after reviewing the typed diff. Instance writes require exact snapshots, re-read the PatternInstance, verify the parent WebForm projection, and roll back on divergence. No lifecycle operation is implicit.\n"
+                "For instance writes, preview with `dryRun`, pass the returned token as `baseVersion`, `expectedVersion`, or `versionToken`, and persist only after reviewing the typed diff. Instance writes require exact snapshots, re-read the PatternInstance, verify the parent WebForm projection, and roll back on divergence when `rollbackOnFailure` is true. No Specify, Generate, Build, Rebuild, compilation, reorganization, publication, execution, or tests are implicit.\n" +
+                "Example: `{ action: 'add_user_action', name: 'WorkWithPlusImpressaoConfiguracao', containerName: 'TableActions', actionName: 'BaixarConfiguracao', caption: 'Baixar Configuração', dryRun: true }`. Run again with `dryRun: false` to persist after reviewing the diff; the response includes the re-read form container and derived event.\n"
         };
 
         internal static string? Get(string toolName)

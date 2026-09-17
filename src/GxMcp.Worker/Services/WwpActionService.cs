@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Artech.Architecture.Common.Objects;
 using Newtonsoft.Json.Linq;
@@ -108,14 +109,19 @@ namespace GxMcp.Worker.Services
 
                 JObject after = Project(afterDocument);
                 var diff = new JObject { ["before"] = before, ["after"] = after };
-                if (args?["dryRun"]?.ToObject<bool?>() == true)
+                bool dryRun = args?["dryRun"]?.ToObject<bool?>() == true;
+                bool rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
+                if (dryRun)
                     return McpResponse.Ok(target: target, code: "DryRun", result: new JObject
                     {
                         ["instance"] = instance.Name,
                         ["operation"] = operation,
                         ["diff"] = diff,
                         ["versionToken"] = versionToken,
-                        ["saved"] = false
+                        ["saved"] = false,
+                        ["rollbackOnFailure"] = rollbackOnFailure,
+                        ["event"] = mutation["event"]?.ToString(),
+                        ["containerName"] = mutation["containerName"]?.ToString()
                     });
 
                 string writeRaw = _write.WriteObject(target, new JObject
@@ -125,8 +131,21 @@ namespace GxMcp.Worker.Services
                     ["content"] = afterDocument.ToString(SaveOptions.DisableFormatting),
                     ["validate"] = true
                 });
-                JObject write = JObject.Parse(writeRaw);
-                if (!IsSuccess(write)) return writeRaw;
+                JObject write;
+                try
+                {
+                    write = JObject.Parse(writeRaw);
+                }
+                catch (Exception parseEx)
+                {
+                    JObject rollback = TryRollback(target, requestedObject, xml, before, rollbackOnFailure, "write_response_not_json");
+                    return BuildWriteFailure(target, operation, writeRaw, parseEx.Message, rollbackOnFailure, rollback);
+                }
+                if (!IsSuccess(write))
+                {
+                    JObject rollback = TryRollback(target, requestedObject, xml, before, rollbackOnFailure, "write_failed");
+                    return BuildWriteFailure(target, operation, write, "The WorkWithPlus PatternInstance write was not accepted.", rollbackOnFailure, rollback);
+                }
 
                 KBObject refreshedTarget = _objects.FindObject(target) ?? requestedObject;
                 string persistedXml = _patterns.ReadPatternPartXml(refreshedTarget, "PatternInstance", out KBObject persistedInstance, out _);
@@ -134,16 +153,21 @@ namespace GxMcp.Worker.Services
                     ? new JObject()
                     : Project(XDocument.Parse(persistedXml, LoadOptions.PreserveWhitespace));
                 if (!JToken.DeepEquals(after, persisted))
+                {
+                    JObject rollback = TryRollback(target, refreshedTarget, xml, before, rollbackOnFailure, "post_write_verification_failed");
                     return McpResponse.Err(code: "WwpActionNotPersisted",
-                        message: "The PatternInstance save completed, but the requested action-group state was not persisted.",
+                        message: "The PatternInstance save completed, but the requested structural action state was not persisted.",
                         target: target, extra: new JObject
                         {
                             ["before"] = before,
                             ["requested"] = after,
                             ["persisted"] = persisted,
                             ["diff"] = new JObject { ["requested"] = after, ["persisted"] = persisted },
-                            ["saved"] = false
+                            ["saved"] = false,
+                            ["rollbackOnFailure"] = rollbackOnFailure,
+                            ["rollback"] = rollback
                         });
+                }
 
                 return McpResponse.Ok(target: target, code: "WwpActionUpdated", result: new JObject
                 {
@@ -154,6 +178,9 @@ namespace GxMcp.Worker.Services
                     ["persisted"] = persisted,
                     ["write"] = write,
                     ["saved"] = true,
+                    ["rollbackOnFailure"] = rollbackOnFailure,
+                    ["event"] = mutation["event"]?.ToString(),
+                    ["containerName"] = mutation["containerName"]?.ToString(),
                     ["specified"] = false,
                     ["generatedImpacts"] = new JObject
                     {
@@ -169,6 +196,59 @@ namespace GxMcp.Worker.Services
             {
                 return McpResponse.Err(code: "WwpActionFailed", message: ex.Message, target: target);
             }
+        }
+
+        private JObject TryRollback(string target, KBObject fallbackTarget, string originalXml,
+            JObject expectedProjection, bool rollbackOnFailure, string reason)
+        {
+            var result = new JObject
+            {
+                ["attempted"] = rollbackOnFailure,
+                ["reason"] = reason,
+                ["rolledBack"] = false
+            };
+            if (!rollbackOnFailure) return result;
+
+            try
+            {
+                string raw = _write.WriteObject(target, new JObject
+                {
+                    ["part"] = "PatternInstance",
+                    ["mode"] = "full",
+                    ["content"] = originalXml,
+                    ["validate"] = true
+                });
+                JObject write = JObject.Parse(raw);
+                result["write"] = write;
+                if (!IsSuccess(write)) return result;
+
+                KBObject refreshedTarget = _objects.FindObject(target) ?? fallbackTarget;
+                string persistedXml = _patterns.ReadPatternPartXml(refreshedTarget, "PatternInstance", out _, out _);
+                JObject persisted = string.IsNullOrWhiteSpace(persistedXml)
+                    ? new JObject()
+                    : Project(XDocument.Parse(persistedXml, LoadOptions.PreserveWhitespace));
+                result["persisted"] = persisted;
+                result["rolledBack"] = JToken.DeepEquals(expectedProjection, persisted);
+            }
+            catch (Exception ex)
+            {
+                result["error"] = ex.Message;
+            }
+            return result;
+        }
+
+        private static string BuildWriteFailure(string target, string operation, object write,
+            string message, bool rollbackOnFailure, JObject rollback)
+        {
+            return McpResponse.Err(code: "WwpActionWriteFailed", message: message, target: target,
+                extra: new JObject
+                {
+                    ["operation"] = operation,
+                    ["write"] = write is JToken token ? token : JValue.CreateString(write?.ToString() ?? string.Empty),
+                    ["saved"] = false,
+                    ["rollbackOnFailure"] = rollbackOnFailure,
+                    ["rollback"] = rollback
+                });
         }
 
         internal static bool IsExpectedVersion(string expected, string current) =>
@@ -187,12 +267,16 @@ namespace GxMcp.Worker.Services
             string normalized = (operation ?? "list").Trim().ToLowerInvariant();
             if (normalized == "list") return "list_actions";
             if (normalized == "add_action") return "add_grid_action";
+            if (normalized == "add_form_action") return "add_user_action";
             return normalized;
         }
 
         internal static JObject Apply(XDocument document, string operation, JObject args,
             Func<string, KBObject> procedureResolver)
         {
+            if (operation == "add_user_action")
+                return AddFormUserAction(document, args, procedureResolver);
+
             string groupName = args?["group"]?.ToString() ?? args?["fromGroup"]?.ToString();
             string actionName = args?["actionName"]?.ToString();
             XElement group = FindGroup(document, groupName);
@@ -254,6 +338,62 @@ namespace GxMcp.Worker.Services
             return new JObject { ["changed"] = true };
         }
 
+        private static JObject AddFormUserAction(XDocument document, JObject args,
+            Func<string, KBObject> procedureResolver)
+        {
+            string containerName = args?["containerName"]?.ToString()
+                ?? args?["container"]?.ToString()
+                ?? "TableActions";
+            string actionName = args?["actionName"]?.ToString()?.Trim();
+            string caption = args?["caption"]?.ToString()
+                ?? args?["description"]?.ToString();
+
+            if (string.IsNullOrWhiteSpace(actionName))
+                return Error("MissingActionName", "actionName is required for a form-level user action.");
+            if (!Regex.IsMatch(actionName, "^[A-Za-z_][A-Za-z0-9_]*$"))
+                return Error("InvalidActionName", "actionName must be a GeneXus event-safe identifier so the derived event is deterministic.");
+            if (string.IsNullOrWhiteSpace(caption))
+                return Error("MissingActionCaption", "caption is required for a form-level user action.");
+            if (args?["procedure"] != null && !string.IsNullOrWhiteSpace(args["procedure"]?.ToString()))
+                return Error("FormActionProcedureConflict", "A form-level user action derives its event as Do<actionName>; omit procedure when the action should fire that event.");
+
+            XElement container = FindFormContainer(document, containerName);
+            if (container == null)
+            {
+                var available = new JArray();
+                foreach (string availableName in GetFormActionContainers(document)
+                    .Select(e => Attr(e, "name")).Where(n => !string.IsNullOrWhiteSpace(n)))
+                    available.Add(availableName);
+                return new JObject
+                {
+                    ["code"] = "FormActionContainerNotFound",
+                    ["error"] = "Form action container '" + containerName + "' was not found.",
+                    ["availableContainers"] = available
+                };
+            }
+
+            XElement existing = container.Elements().FirstOrDefault(e =>
+                Is(e, "userAction") && Attr(e, "name").Equals(actionName, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+                return Error("ActionAlreadyExists", "Form action '" + actionName + "' already exists in container '" + containerName + "'.");
+
+            XElement action = new XElement(container.GetDefaultNamespace() + "userAction",
+                new XAttribute("name", actionName),
+                new XAttribute("caption", caption));
+            container.Add(action);
+            ApplyProperties(action, args, procedureResolver);
+
+            return new JObject
+            {
+                ["changed"] = true,
+                ["actionName"] = actionName,
+                ["caption"] = caption,
+                ["containerName"] = containerName,
+                ["event"] = "Do" + actionName,
+                ["eventBinding"] = "derived-from-user-action-name"
+            };
+        }
+
         private static void ApplyProperties(XElement action, JObject args, Func<string, KBObject> procedureResolver)
         {
             SetIfPresent(action, "caption", args?["caption"] ?? args?["description"]);
@@ -280,7 +420,7 @@ namespace GxMcp.Worker.Services
                 action.SetAttributeValue("confirmMessage", args["confirmation"].ToString());
             }
             SetIfPresent(action, "confirmTitle", args?["confirmTitle"]);
-            if (args?["procedure"] != null)
+            if (!string.IsNullOrWhiteSpace(args?["procedure"]?.ToString()))
             {
                 string procedure = args["procedure"].ToString();
                 KBObject obj = procedureResolver?.Invoke(procedure);
@@ -298,17 +438,53 @@ namespace GxMcp.Worker.Services
             {
                 var actions = new JArray();
                 foreach (XElement action in group.Elements().Where(e => Is(e, "userAction")))
-                    actions.Add(new JObject
-                    {
-                        ["name"] = Attr(action, "name"), ["caption"] = Attr(action, "caption"),
-                        ["procedure"] = Attr(action, "gxobject"), ["condition"] = Attr(action, "condition"),
-                        ["visibleCondition"] = Attr(action, "visibleCondition"), ["icon"] = Attr(action, "image"),
-                        ["confirmation"] = Attr(action, "confirmMessage"), ["multipleSelection"] = Attr(action, "multiRowSelection")
-                    });
+                    actions.Add(ProjectAction(action, deriveEvent: false));
                 groups.Add(new JObject { ["name"] = Attr(group, "name"), ["caption"] = Attr(group, "caption"), ["actions"] = actions });
             }
-            return new JObject { ["groups"] = groups };
+
+            var formContainers = new JArray();
+            foreach (XElement container in GetFormActionContainers(document))
+            {
+                var actions = new JArray(container.Elements()
+                    .Where(e => Is(e, "userAction") || Is(e, "standardAction"))
+                    .Select(action => ProjectAction(action, deriveEvent: true)));
+                formContainers.Add(new JObject
+                {
+                    ["name"] = Attr(container, "name"),
+                    ["actions"] = actions
+                });
+            }
+            return new JObject { ["groups"] = groups, ["formContainers"] = formContainers };
         }
+
+        private static JObject ProjectAction(XElement action, bool deriveEvent)
+        {
+            string name = Attr(action, "name");
+            var result = new JObject
+            {
+                ["name"] = name,
+                ["caption"] = Attr(action, "caption"),
+                ["procedure"] = Attr(action, "gxobject"),
+                ["condition"] = Attr(action, "condition"),
+                ["visibleCondition"] = Attr(action, "visibleCondition"),
+                ["icon"] = Attr(action, "image"),
+                ["confirmation"] = Attr(action, "confirmMessage"),
+                ["multipleSelection"] = Attr(action, "multiRowSelection")
+            };
+            if (deriveEvent && Is(action, "userAction")) result["event"] = "Do" + name;
+            return result;
+        }
+
+        private static IEnumerable<XElement> GetFormActionContainers(XDocument document) =>
+            document?.Descendants().Where(e => Is(e, "table") &&
+                (Attr(e, "name").Equals("TableActions", StringComparison.OrdinalIgnoreCase) ||
+                 e.Elements().Any(child => Is(child, "userAction") || Is(child, "standardAction"))))
+            ?? Enumerable.Empty<XElement>();
+
+        private static XElement FindFormContainer(XDocument document, string name) =>
+            GetFormActionContainers(document).FirstOrDefault(e =>
+                Attr(e, "name").Equals(name ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
+                Attr(e, "controlName").Equals(name ?? string.Empty, StringComparison.OrdinalIgnoreCase));
 
         private static XElement FindGroup(XDocument doc, string name) => string.IsNullOrWhiteSpace(name) ? null
             : doc.Descendants().FirstOrDefault(e => Is(e, "actionGroup") && Attr(e, "name").Equals(name, StringComparison.OrdinalIgnoreCase));
