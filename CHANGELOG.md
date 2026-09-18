@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Docs
+
+- add a reproducible anonymized static security audit report and PDF generator
+
 ### Added
 
 - **SDK-backed native Object Text tree and in-memory filesystem operations.** `genexus_io` now supports `format=native` for a dependency-aware `src/`/`ref/` projection, `all|newAndModified|newOnly` export modes, deterministic `.gx` documents, optional visual companions, dry-run imports, and safe XML/header/duplicate validation without loading GX4A DLLs. `list_text_files` and `validate_text_in_memory` inspect external trees without a KB read.
