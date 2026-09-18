@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- **Typed WorkWithPlus form-level UserAction editing.** `genexus_wwp` and
+  `genexus_apply_pattern mode=actions` now expose `add_user_action` for direct
+  insertion into containers such as `TableActions`, derive the `Do<name>` event
+  without inventing XML attributes, support dry-run diffs and verified rollback,
+  and re-read the persisted PatternInstance without invoking lifecycle actions.
+  See `docs/issues/wwp-form-level-user-action.md`.
+
+### Fixed
+
+- **Form-level WorkWithPlus action targeting now fails closed.** Empty container
+  selectors fall back to `TableActions`, `name`/`controlName` matches reject
+  ambiguous tables instead of selecting the first one, and the typed operation
+  reports the matching containers for deterministic correction.
+
 ## v3.6.0 - 2026-09-18
 
 
@@ -27,12 +43,6 @@
 ### Added
 
 - **Permanent live reload/lifecycle smoke promoted to `scripts/tests/test-live-reload-smoke.ps1`.** Parameterized, fail-closed smoke (`0` pass / `1` fail / `2` unavailable) that validates soft drain+replace reload, forced alias reload through the shared restore core, the `mode=hard` guards, lifecycle status/long-poll and the whoami SDK version smoke end to end against a real KB, with an isolated config, structured summary JSON and dedicated `GXMCP_LOG_DIR` per run. Documented in `docs/live-kb-test-harness.md`.
-- **Typed WorkWithPlus form-level UserAction editing.** `genexus_wwp` and
-  `genexus_apply_pattern mode=actions` now expose `add_user_action` for direct
-  insertion into containers such as `TableActions`, derive the `Do<name>` event
-  without inventing XML attributes, support dry-run diffs and verified rollback,
-  and re-read the persisted PatternInstance without invoking lifecycle actions.
-  See `docs/issues/wwp-form-level-user-action.md`.
 - **SDK-backed native Object Text tree and in-memory filesystem operations.** `genexus_io` now supports `format=native` for a dependency-aware `src/`/`ref/` projection, `all|newAndModified|newOnly` export modes, deterministic `.gx` documents, optional visual companions, dry-run imports, and safe XML/header/duplicate validation without loading GX4A DLLs. `list_text_files` and `validate_text_in_memory` inspect external trees without a KB read.
 - **Watermark-backed incremental text mirror.** `text_mirror_start|stop|status|catchup|set_references` coalesces watcher identities, queues SDK work onto the Worker's owning STA, persists `.mirror-sync`, removes verified orphan files during full reconciliation, mirrors explicit/MCP and detected external deletions by updating the manifest atomically, and exposes pending/batch/error counters.
 - **Official Module Manager task coverage.** `genexus_module` now exposes package, publish, restore, configured-server management, and server module search through the installed SDK's `IModuleManagerService`; external writes and uploads require explicit confirmation.
@@ -86,11 +96,6 @@
 - **Release preflight now verifies the changelog issue ledger.** Every issue selected for closure must have its canonical `/issues/<number>` URL in `## Unreleased`; grouped fixes must list each issue explicitly, and missing references fail before the release snapshot is written.
 
 ### Fixed
-
-- **Form-level WorkWithPlus action targeting now fails closed.** Empty container
-  selectors fall back to `TableActions`, `name`/`controlName` matches reject
-  ambiguous tables instead of selecting the first one, and the typed operation
-  reports the matching containers for deterministic correction.
 
 - **The integration preflight accepts a clean worktree.** Its changed-path validation now permits an empty path collection, so `-ValidateOnly` and clean-check invocations fail only on actual validation errors.
 

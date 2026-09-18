@@ -1,6 +1,7 @@
 using System.Xml.Linq;
 using System.Linq;
 using System;
+using System.IO;
 using System.Reflection;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
@@ -166,6 +167,36 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("FormActionContainerAmbiguous", result["code"]?.ToString());
             Assert.Equal(2, result["matchingContainers"]?.Count());
             Assert.Empty(document.Descendants("userAction"));
+        }
+
+        [Fact]
+        public void FormUserActionPersistencePathUsesNativeSdkInsteadOfGenericPatternWriter()
+        {
+            string serviceSource = File.ReadAllText(FindWorkerServiceFile("WwpActionService.cs"));
+            string nativeSource = File.ReadAllText(FindWorkerServiceFile("WwpActionService.FormActions.cs"));
+
+            Assert.Contains("RunFormUserActionOperation", serviceSource);
+            Assert.Contains("ApplyNativeFormUserAction", nativeSource);
+            Assert.Contains("CreateNativeChild(container, \"userAction\")", nativeSource);
+            Assert.Contains("SaveNativePattern(currentInstance, currentPart)", nativeSource);
+            Assert.DoesNotContain("_write.WriteObject(target, new JObject", nativeSource);
+        }
+
+        [Fact]
+        public void FormUserActionVerificationRequiresDerivedEventWithoutXmlEventAttribute()
+        {
+            var before = XDocument.Parse("<instance><table name='TableActions'><standardAction name='Cancel' /></table></instance>");
+            var persisted = XDocument.Parse("<instance><table name='TableActions'><standardAction name='Cancel'/><userAction name='Download' caption='Download'/></table></instance>");
+
+            JObject verified = WwpActionService.VerifyFormUserAction(
+                before, persisted, "TableActions", "Download", "Download");
+            Assert.True(verified["confirmed"]?.ToObject<bool>());
+            Assert.Equal("DoDownload", verified["event"]?.ToString());
+
+            persisted.Descendants("userAction").Single().SetAttributeValue("event", "DoDownload");
+            JObject rejected = WwpActionService.VerifyFormUserAction(
+                before, persisted, "TableActions", "Download", "Download");
+            Assert.Equal("WwpFormActionIntegrityFailed", rejected["code"]?.ToString());
         }
 
         [Theory]
@@ -443,6 +474,18 @@ namespace GxMcp.Worker.Tests
             Assert.Null(result["error"]);
             Assert.Equal("Responsive", (string)doc.Descendants("table").First().Attribute("type"));
             Assert.Equal("Regular", (string)doc.Descendants("table").Skip(1).First().Attribute("type"));
+        }
+
+        private static string FindWorkerServiceFile(string fileName)
+        {
+            var dir = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
+            while (dir != null)
+            {
+                string candidate = Path.Combine(dir.FullName, "src", "GxMcp.Worker", "Services", fileName);
+                if (File.Exists(candidate)) return candidate;
+                dir = dir.Parent;
+            }
+            throw new FileNotFoundException("Could not locate " + fileName + " starting from " + AppDomain.CurrentDomain.BaseDirectory);
         }
     }
 }
