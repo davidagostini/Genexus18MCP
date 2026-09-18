@@ -135,6 +135,39 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("TableActions", missingContainer["availableContainers"]?.Values<string>() ?? Enumerable.Empty<string>());
         }
 
+        [Fact]
+        public void AddFormUserAction_UsesDefaultForBlankContainerAndMatchesControlName()
+        {
+            var document = XDocument.Parse("<instance><table controlName='TableActions'><standardAction name='Cancel' /></table></instance>");
+
+            JObject result = WwpActionService.Apply(document, "add_user_action", new JObject
+            {
+                ["containerName"] = " ",
+                ["actionName"] = "Download",
+                ["caption"] = "Download"
+            }, null);
+
+            Assert.Null(result["error"]);
+            Assert.Single(document.Descendants("userAction"));
+        }
+
+        [Fact]
+        public void AddFormUserAction_RejectsAmbiguousContainerInsteadOfChoosingFirst()
+        {
+            var document = XDocument.Parse("<instance><table name='TableActions'><standardAction name='Cancel' /></table><table controlName='TableActions'><standardAction name='Close' /></table></instance>");
+
+            JObject result = WwpActionService.Apply(document, "add_user_action", new JObject
+            {
+                ["containerName"] = "TableActions",
+                ["actionName"] = "Download",
+                ["caption"] = "Download"
+            }, null);
+
+            Assert.Equal("FormActionContainerAmbiguous", result["code"]?.ToString());
+            Assert.Equal(2, result["matchingContainers"]?.Count());
+            Assert.Empty(document.Descendants("userAction"));
+        }
+
         [Theory]
         [InlineData(null, "list_actions")]
         [InlineData("list", "list_actions")]

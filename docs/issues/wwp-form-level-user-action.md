@@ -61,7 +61,9 @@ Successful writes include `saved: true`, `persisted`, `diff`, `containerName`,
 and `event: "DoBaixarConfiguracao"`. Failed writes include `rollback` with
 `attempted` and `rolledBack` fields. A missing container returns
 `FormActionContainerNotFound` and lists the containers detected in the
-PatternInstance.
+PatternInstance. An empty `containerName`/`container` uses `TableActions`;
+when `name` or `controlName` matches more than one table, the operation fails
+closed with `FormActionContainerAmbiguous` and reports the matching containers.
 
 ## Test fixture scope
 

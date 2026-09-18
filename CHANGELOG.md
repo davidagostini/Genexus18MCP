@@ -87,6 +87,11 @@
 
 ### Fixed
 
+- **Form-level WorkWithPlus action targeting now fails closed.** Empty container
+  selectors fall back to `TableActions`, `name`/`controlName` matches reject
+  ambiguous tables instead of selecting the first one, and the typed operation
+  reports the matching containers for deterministic correction.
+
 - **The integration preflight accepts a clean worktree.** Its changed-path validation now permits an empty path collection, so `-ValidateOnly` and clean-check invocations fail only on actual validation errors.
 
 - **Hardened the open issue paths for build, lifecycle, SDK compatibility, KB routing, transfers, structure DSL, and CLI configuration.**

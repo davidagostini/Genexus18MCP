@@ -341,9 +341,13 @@ namespace GxMcp.Worker.Services
         private static JObject AddFormUserAction(XDocument document, JObject args,
             Func<string, KBObject> procedureResolver)
         {
-            string containerName = args?["containerName"]?.ToString()
-                ?? args?["container"]?.ToString()
-                ?? "TableActions";
+            string containerName = args?["containerName"]?.ToString();
+            if (string.IsNullOrWhiteSpace(containerName))
+                containerName = args?["container"]?.ToString();
+            if (string.IsNullOrWhiteSpace(containerName))
+                containerName = "TableActions";
+            else
+                containerName = containerName.Trim();
             string actionName = args?["actionName"]?.ToString()?.Trim();
             string caption = args?["caption"]?.ToString()
                 ?? args?["description"]?.ToString();
@@ -357,7 +361,16 @@ namespace GxMcp.Worker.Services
             if (args?["procedure"] != null && !string.IsNullOrWhiteSpace(args["procedure"]?.ToString()))
                 return Error("FormActionProcedureConflict", "A form-level user action derives its event as Do<actionName>; omit procedure when the action should fire that event.");
 
-            XElement container = FindFormContainer(document, containerName);
+            List<XElement> matchingContainers = FindFormContainers(document, containerName).ToList();
+            if (matchingContainers.Count > 1)
+                return new JObject
+                {
+                    ["code"] = "FormActionContainerAmbiguous",
+                    ["error"] = "Form action container '" + containerName + "' matched more than one table.",
+                    ["matchingContainers"] = new JArray(matchingContainers.Select(DescribeFormContainer))
+                };
+
+            XElement container = matchingContainers.SingleOrDefault();
             if (container == null)
             {
                 var available = new JArray();
@@ -481,10 +494,21 @@ namespace GxMcp.Worker.Services
                  e.Elements().Any(child => Is(child, "userAction") || Is(child, "standardAction"))))
             ?? Enumerable.Empty<XElement>();
 
-        private static XElement FindFormContainer(XDocument document, string name) =>
-            GetFormActionContainers(document).FirstOrDefault(e =>
-                Attr(e, "name").Equals(name ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
-                Attr(e, "controlName").Equals(name ?? string.Empty, StringComparison.OrdinalIgnoreCase));
+        private static IEnumerable<XElement> FindFormContainers(XDocument document, string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return Enumerable.Empty<XElement>();
+            return GetFormActionContainers(document).Where(e =>
+                (!string.IsNullOrWhiteSpace(Attr(e, "name")) &&
+                 Attr(e, "name").Equals(name, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(Attr(e, "controlName")) &&
+                 Attr(e, "controlName").Equals(name, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private static JObject DescribeFormContainer(XElement container) => new JObject
+        {
+            ["name"] = Attr(container, "name"),
+            ["controlName"] = Attr(container, "controlName")
+        };
 
         private static XElement FindGroup(XDocument doc, string name) => string.IsNullOrWhiteSpace(name) ? null
             : doc.Descendants().FirstOrDefault(e => Is(e, "actionGroup") && Attr(e, "name").Equals(name, StringComparison.OrdinalIgnoreCase));
