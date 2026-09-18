@@ -1,6 +1,7 @@
 using System.Xml.Linq;
 using System.Linq;
 using System;
+using System.IO;
 using System.Reflection;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
@@ -81,6 +82,121 @@ namespace GxMcp.Worker.Tests
             Assert.Null(action.Attribute("SecFuntionKey"));
             Assert.Null(action.Attribute("addSecurityToCall"));
             Assert.Equal("Continue?", (string)action.Attribute("confirmMessage"));
+        }
+
+        [Fact]
+        public void AddFormUserAction_InsertsDirectlyIntoTableActionsAndDerivesEvent()
+        {
+            var doc = XDocument.Parse("<instance><table name='TableActions' childrenOrderedList='standardAction,footer'><standardAction name='Cancel' caption='Cancel'/><footer /></table></instance>");
+            JObject result = WwpActionService.Apply(doc, "add_user_action", new JObject
+            {
+                ["containerName"] = "TableActions",
+                ["actionName"] = "BaixarConfiguracao",
+                ["caption"] = "Baixar Configuração"
+            }, null);
+
+            Assert.Null(result["error"]);
+            Assert.Equal("DoBaixarConfiguracao", result["event"]?.ToString());
+            XElement container = doc.Root.Element("table");
+            XElement action = container.Elements("userAction").Single();
+            Assert.Equal("BaixarConfiguracao", (string)action.Attribute("name"));
+            Assert.Equal("Baixar Configuração", (string)action.Attribute("caption"));
+            Assert.Null(action.Attribute("event"));
+            Assert.Equal("standardAction,footer", (string)container.Attribute("childrenOrderedList"));
+
+            var project = typeof(WwpActionService).GetMethod("Project", BindingFlags.Static | BindingFlags.NonPublic);
+            JObject catalog = (JObject)project.Invoke(null, new object[] { doc });
+            JObject projectedAction = (JObject)catalog["formContainers"]![0]!["actions"]![1];
+            Assert.Equal("BaixarConfiguracao", projectedAction["name"]?.ToString());
+            Assert.Equal("DoBaixarConfiguracao", projectedAction["event"]?.ToString());
+        }
+
+        [Fact]
+        public void AddFormUserAction_RejectsInvalidNamesDuplicatesAndUnknownContainers()
+        {
+            var invalidName = XDocument.Parse("<instance><table name='TableActions' /></instance>");
+            JObject invalid = WwpActionService.Apply(invalidName, "add_user_action", new JObject
+            {
+                ["actionName"] = "Baixar Configuracao", ["caption"] = "Baixar"
+            }, null);
+            Assert.Equal("InvalidActionName", invalid["code"]?.ToString());
+
+            var duplicate = XDocument.Parse("<instance><table name='TableActions'><userAction name='BaixarConfiguracao' /></table></instance>");
+            JObject alreadyExists = WwpActionService.Apply(duplicate, "add_user_action", new JObject
+            {
+                ["actionName"] = "BaixarConfiguracao", ["caption"] = "Baixar"
+            }, null);
+            Assert.Equal("ActionAlreadyExists", alreadyExists["code"]?.ToString());
+
+            JObject missingContainer = WwpActionService.Apply(duplicate, "add_user_action", new JObject
+            {
+                ["containerName"] = "MissingActions", ["actionName"] = "Retry", ["caption"] = "Retry"
+            }, null);
+            Assert.Equal("FormActionContainerNotFound", missingContainer["code"]?.ToString());
+            Assert.Contains("TableActions", missingContainer["availableContainers"]?.Values<string>() ?? Enumerable.Empty<string>());
+        }
+
+        [Fact]
+        public void AddFormUserAction_UsesDefaultForBlankContainerAndMatchesControlName()
+        {
+            var document = XDocument.Parse("<instance><table controlName='TableActions'><standardAction name='Cancel' /></table></instance>");
+
+            JObject result = WwpActionService.Apply(document, "add_user_action", new JObject
+            {
+                ["containerName"] = " ",
+                ["actionName"] = "Download",
+                ["caption"] = "Download"
+            }, null);
+
+            Assert.Null(result["error"]);
+            Assert.Single(document.Descendants("userAction"));
+        }
+
+        [Fact]
+        public void AddFormUserAction_RejectsAmbiguousContainerInsteadOfChoosingFirst()
+        {
+            var document = XDocument.Parse("<instance><table name='TableActions'><standardAction name='Cancel' /></table><table controlName='TableActions'><standardAction name='Close' /></table></instance>");
+
+            JObject result = WwpActionService.Apply(document, "add_user_action", new JObject
+            {
+                ["containerName"] = "TableActions",
+                ["actionName"] = "Download",
+                ["caption"] = "Download"
+            }, null);
+
+            Assert.Equal("FormActionContainerAmbiguous", result["code"]?.ToString());
+            Assert.Equal(2, result["matchingContainers"]?.Count());
+            Assert.Empty(document.Descendants("userAction"));
+        }
+
+        [Fact]
+        public void FormUserActionPersistencePathUsesNativeSdkInsteadOfGenericPatternWriter()
+        {
+            string serviceSource = File.ReadAllText(FindWorkerServiceFile("WwpActionService.cs"));
+            string nativeSource = File.ReadAllText(FindWorkerServiceFile("WwpActionService.FormActions.cs"));
+
+            Assert.Contains("RunFormUserActionOperation", serviceSource);
+            Assert.Contains("ApplyNativeFormUserAction", nativeSource);
+            Assert.Contains("CreateNativeChild(container, \"userAction\")", nativeSource);
+            Assert.Contains("SaveNativePattern(currentInstance, currentPart)", nativeSource);
+            Assert.DoesNotContain("_write.WriteObject(target, new JObject", nativeSource);
+        }
+
+        [Fact]
+        public void FormUserActionVerificationRequiresDerivedEventWithoutXmlEventAttribute()
+        {
+            var before = XDocument.Parse("<instance><table name='TableActions'><standardAction name='Cancel' /></table></instance>");
+            var persisted = XDocument.Parse("<instance><table name='TableActions'><standardAction name='Cancel'/><userAction name='Download' caption='Download'/></table></instance>");
+
+            JObject verified = WwpActionService.VerifyFormUserAction(
+                before, persisted, "TableActions", "Download", "Download");
+            Assert.True(verified["confirmed"]?.ToObject<bool>());
+            Assert.Equal("DoDownload", verified["event"]?.ToString());
+
+            persisted.Descendants("userAction").Single().SetAttributeValue("event", "DoDownload");
+            JObject rejected = WwpActionService.VerifyFormUserAction(
+                before, persisted, "TableActions", "Download", "Download");
+            Assert.Equal("WwpFormActionIntegrityFailed", rejected["code"]?.ToString());
         }
 
         [Theory]
@@ -358,6 +474,18 @@ namespace GxMcp.Worker.Tests
             Assert.Null(result["error"]);
             Assert.Equal("Responsive", (string)doc.Descendants("table").First().Attribute("type"));
             Assert.Equal("Regular", (string)doc.Descendants("table").Skip(1).First().Attribute("type"));
+        }
+
+        private static string FindWorkerServiceFile(string fileName)
+        {
+            var dir = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
+            while (dir != null)
+            {
+                string candidate = Path.Combine(dir.FullName, "src", "GxMcp.Worker", "Services", fileName);
+                if (File.Exists(candidate)) return candidate;
+                dir = dir.Parent;
+            }
+            throw new FileNotFoundException("Could not locate " + fileName + " starting from " + AppDomain.CurrentDomain.BaseDirectory);
         }
     }
 }

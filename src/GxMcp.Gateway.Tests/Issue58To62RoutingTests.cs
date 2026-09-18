@@ -12,7 +12,8 @@ namespace GxMcp.Gateway.Tests
             var routed = JObject.FromObject(new OperationsRouter().ConvertToolCall("genexus_apply_pattern", new JObject
             {
                 ["name"] = "Customer", ["pattern"] = "WorkWithPlus", ["mode"] = "actions",
-                ["action"] = "list_actions"
+                ["action"] = "add_user_action", ["containerName"] = "TableActions",
+                ["actionName"] = "BaixarConfiguracao", ["caption"] = "Baixar Configuração"
             }));
             Assert.Equal("Pattern", (string)routed["module"]);
             Assert.Equal("ManageActions", (string)routed["action"]);

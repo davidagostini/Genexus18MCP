@@ -2803,7 +2803,7 @@ namespace GxMcp.Worker.Services
         private string Handle_WwpAction(JObject request, string method, string action, string target, string payload, JObject args)
         {
             // genexus_wwp — WorkWithPlus Action Group / grid-action editing (issue #58).
-            // list|add_action|update_action|move_action|remove_action over the host's
+            // list|add_action|add_user_action|update_action|move_action|remove_action over the host's
             // PatternInstance XML; dryRun supported; no Security permissions created.
             return _wwpActionService.Run(target, args ?? new JObject());
         }

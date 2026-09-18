@@ -84,6 +84,7 @@ namespace GxMcp.Gateway.Tests
         [InlineData("remove_tab")]
         [InlineData("set_table_type")]
         [InlineData("add_grid_attribute")]
+        [InlineData("add_user_action")]
         public void WorkWithPlusTypedWritesRespectPreviewBoundary(string action)
         {
             Assert.True(OperationClassifier.IsReadOnly("genexus_wwp", new JObject
@@ -94,6 +95,27 @@ namespace GxMcp.Gateway.Tests
             Assert.False(OperationClassifier.IsReadOnly("genexus_wwp", new JObject
             {
                 ["action"] = action,
+                ["dryRun"] = false
+            }));
+        }
+
+        [Fact]
+        public void FormActionIsClassifiedAsMutatingAndPreviewableThroughApplyPattern()
+        {
+            var args = new JObject
+            {
+                ["mode"] = "actions",
+                ["action"] = "add_user_action",
+                ["dryRun"] = true
+            };
+
+            Assert.Equal(OperationClassifier.OperationKind.Mutating,
+                OperationClassifier.ClassifyTool("genexus_apply_pattern", args));
+            Assert.True(OperationClassifier.IsReadOnly("genexus_apply_pattern", args));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_apply_pattern", new JObject
+            {
+                ["mode"] = "actions",
+                ["action"] = "add_user_action",
                 ["dryRun"] = false
             }));
         }

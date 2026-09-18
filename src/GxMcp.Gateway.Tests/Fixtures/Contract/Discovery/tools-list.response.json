@@ -256,7 +256,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent (IDE Right-click → Apply Pattern). Transaction=family-gen; WebPanel/WebComponent/SDPanel=direct-attach (pass settings.template). mode=diagnose (or dryRun=true) returns findings without mutating. Working on Smart Devices? → resources/read uri=genexus://kb/skills/sd-panel-mobile for Main object semantics. mode=actions manages typed grid actions and Action Groups, persists and re-reads PatternInstance, supports dryRun diff, and never adds security permissions automatically.",
+      "description": "Apply a pattern (e.g. WorkWithPlus) to a parent (IDE Right-click → Apply Pattern). Transaction=family-gen; WebPanel/WebComponent/SDPanel=direct-attach (pass settings.template). mode=diagnose (or dryRun=true) returns findings without mutating. Working on Smart Devices? → resources/read uri=genexus://kb/skills/sd-panel-mobile for Main object semantics. mode=actions manages typed grid and form-level actions, persists and re-reads PatternInstance, supports dryRun diff and rollbackOnFailure, and never adds security permissions automatically.",
       "inputSchema": {
         "examples": [
           {
@@ -277,6 +277,17 @@
             "name": "Customer",
             "pattern": "WorkWithPlus",
             "procedure": "ApproveCustomer"
+          },
+          {
+            "action": "add_user_action",
+            "actionName": "BaixarConfiguracao",
+            "caption": "Baixar Configuração",
+            "containerName": "TableActions",
+            "dryRun": true,
+            "mode": "actions",
+            "name": "WorkWithPlusImpressaoConfiguracao",
+            "pattern": "WorkWithPlus",
+            "rollbackOnFailure": true
           }
         ],
         "properties": {
@@ -285,6 +296,7 @@
             "enum": [
               "list_actions",
               "add_grid_action",
+              "add_user_action",
               "update_action",
               "move_action",
               "remove_action"
@@ -292,7 +304,11 @@
             "type": "string"
           },
           "actionName": {
-            "description": "Name of the action to add, update, or remove.",
+            "description": "Name of the action to add, update, or remove. Form-level actions derive the GeneXus event Do<actionName>.",
+            "type": "string"
+          },
+          "caption": {
+            "description": "Caption for add_user_action.",
             "type": "string"
           },
           "confirmTitle": {
@@ -301,6 +317,10 @@
           },
           "confirmation": {
             "description": "Confirmation message prompt.",
+            "type": "string"
+          },
+          "containerName": {
+            "description": "Form-level action container name, usually TableActions.",
             "type": "string"
           },
           "description": {
@@ -329,7 +349,7 @@
             "type": "string"
           },
           "mode": {
-            "description": "apply (default) mutates; diagnose returns reasons without applying. actions exposes typed WWP action-group editing.",
+            "description": "apply (default) mutates; diagnose returns reasons without applying. actions exposes typed WWP grid, form-level, and action-group editing.",
             "enum": [
               "apply",
               "diagnose",
@@ -363,6 +383,11 @@
             "description": "Re-run on existing instance.",
             "type": "boolean"
           },
+          "rollbackOnFailure": {
+            "default": true,
+            "description": "On a failed write or post-save verification, attempt to restore the original PatternInstance and report the rollback result.",
+            "type": "boolean"
+          },
           "selection": {
             "description": "Execution scope: current (single record) or multiple.",
             "enum": [
@@ -377,7 +402,7 @@
           },
           "validate": {
             "default": false,
-            "description": "After apply, build the generated host. Adds validation block (60-180s). Catches binding errors.",
+            "description": "apply mode only: optionally build the generated host. mode=actions never invokes Specify, Generate, Build, Rebuild, compilation, or tests.",
             "type": "boolean"
           },
           "visibleWhen": {
@@ -5208,7 +5233,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed WorkWithPlus action, tab, grid, native table-type, and structural edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. set_table_type mutates only an existing table type through the native PatternInstance SDK and preserves children, bindings, events, names, classes, defaultType, and childrenOrderedList. No lifecycle operation is implicit. Settings: embedded and separate WWP templates, paged reads and exact table-class dryRun; saves remain blocked.",
+      "description": "Typed WorkWithPlus action, form-level action, tab, grid, native table-type, and structural edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. set_table_type mutates only an existing table type through the native PatternInstance SDK and preserves children, bindings, events, names, classes, defaultType, and childrenOrderedList. No lifecycle operation is implicit. Settings: embedded and separate WWP templates, paged reads and exact table-class dryRun; saves remain blocked.",
       "inputSchema": {
         "$defs": {
           "wwpControl": {
@@ -5334,6 +5359,15 @@
             "name": "SamplePanel",
             "tablePath": "TableMain > TableContent > TableLogin",
             "tableType": "Responsive"
+          },
+          {
+            "action": "add_user_action",
+            "actionName": "BaixarConfiguracao",
+            "caption": "Baixar Configuração",
+            "containerName": "TableActions",
+            "dryRun": true,
+            "name": "WorkWithPlusImpressaoConfiguracao",
+            "rollbackOnFailure": true
           }
         ],
         "properties": {
@@ -5342,6 +5376,7 @@
             "enum": [
               "list",
               "add_action",
+              "add_user_action",
               "update_action",
               "move_action",
               "remove_action",
@@ -5358,7 +5393,7 @@
             "type": "string"
           },
           "actionName": {
-            "description": "Action name.",
+            "description": "Action name. add_user_action derives the GeneXus event Do<actionName>.",
             "type": "string"
           },
           "attribute": {
@@ -5387,6 +5422,10 @@
           "confirm": {
             "description": "Confirmation prompt; required to delete unless dryRun.",
             "type": "boolean"
+          },
+          "containerName": {
+            "description": "add_user_action: form-level action container, usually TableActions.",
+            "type": "string"
           },
           "controlName": {
             "description": "Tab ControlName.",
@@ -5471,6 +5510,11 @@
           "property": {
             "description": "Exact SDK property name.",
             "type": "string"
+          },
+          "rollbackOnFailure": {
+            "default": true,
+            "description": "On a failed write or post-save verification, restore the original PatternInstance when possible.",
+            "type": "boolean"
           },
           "selection": {
             "description": "add/update: execution scope for grid actions.",

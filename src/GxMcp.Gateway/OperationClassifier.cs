@@ -129,7 +129,7 @@ namespace GxMcp.Gateway
                     mutating: new[] { "routes_clone", "routes_update", "snapshot" }),
                 ["genexus_apply_pattern"] = Contract(
                     readOnly: new[] { "list_actions" },
-                    mutating: new[] { "add_grid_action", "update_action", "move_action", "remove_action" }),
+                    mutating: new[] { "add_grid_action", "add_user_action", "update_action", "move_action", "remove_action" }),
                 ["genexus_security"] = Contract(
                     readOnly: new[] { "audit_gam", "scan_secrets", "scan_native" },
                     mutating: Array.Empty<string>()),
@@ -180,7 +180,7 @@ namespace GxMcp.Gateway
                     mutating: new[] { "add", "remove" }),
                 ["genexus_wwp"] = Contract(
                     readOnly: new[] { "list", "settings_templates", "settings_read" },
-                    mutating: new[] { "add_action", "update_action", "move_action", "remove_action",
+                    mutating: new[] { "add_action", "add_user_action", "update_action", "move_action", "remove_action",
                         "add_tab", "move_tab", "remove_tab", "set_table_type", "add_grid_attribute",
                         "replace_web_component_with_user_action", "settings_edit" }),
                 ["genexus_sandbox"] = Contract(
@@ -221,6 +221,7 @@ namespace GxMcp.Gateway
             "genexus_refactor:ExtractSubroutine",
             "genexus_refactor:WWPSetCondition",
             "genexus_apply_pattern:add_grid_action",
+            "genexus_apply_pattern:add_user_action",
             "genexus_apply_pattern:update_action",
             "genexus_apply_pattern:move_action",
             "genexus_apply_pattern:remove_action",
@@ -244,6 +245,7 @@ namespace GxMcp.Gateway
             "genexus_db:records_update",
             "genexus_transfer:import",
             "genexus_wwp:add_action",
+            "genexus_wwp:add_user_action",
             "genexus_wwp:settings_edit",
             "genexus_wwp:update_action",
             "genexus_wwp:move_action",

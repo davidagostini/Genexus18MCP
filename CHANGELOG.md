@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- **Typed WorkWithPlus form-level UserAction editing.** `genexus_wwp` and
+  `genexus_apply_pattern mode=actions` now expose `add_user_action` for direct
+  insertion into containers such as `TableActions`, derive the `Do<name>` event
+  without inventing XML attributes, support dry-run diffs and verified rollback,
+  and re-read the persisted PatternInstance without invoking lifecycle actions.
+  See `docs/issues/wwp-form-level-user-action.md`.
+
+### Fixed
+
+- **Form-level WorkWithPlus action targeting now fails closed.** Empty container
+  selectors fall back to `TableActions`, `name`/`controlName` matches reject
+  ambiguous tables instead of selecting the first one, and the typed operation
+  reports the matching containers for deterministic correction.
+
 ## v3.6.0 - 2026-09-18
 
 
