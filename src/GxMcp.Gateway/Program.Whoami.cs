@@ -32,21 +32,20 @@ namespace GxMcp.Gateway
                 }
                 catch { }
             }
-            // Fallback: read FileVersion from GeneXus.exe metadata (standard install layout)
-            try
+            // Legacy GeneXus 8/9 installations expose gx.exe/gxdl32.dll
+            // instead of the modern GeneXus.exe anchor.
+            foreach (string executableName in new[] { "GeneXus.exe", "gx.exe", "gxdl32.dll" })
             {
-                string exePath = Path.Combine(installationPath, "GeneXus.exe");
-                if (File.Exists(exePath))
+                try
                 {
-                    var info = FileVersionInfo.GetVersionInfo(exePath);
+                    string executablePath = Path.Combine(installationPath, executableName);
+                    if (!File.Exists(executablePath)) continue;
+                    var info = FileVersionInfo.GetVersionInfo(executablePath);
                     string? version = info.ProductVersion ?? info.FileVersion;
-                    if (!string.IsNullOrWhiteSpace(version))
-                    {
-                        return version.Trim();
-                    }
+                    if (!string.IsNullOrWhiteSpace(version)) return version.Trim();
                 }
+                catch { }
             }
-            catch { }
             return null;
         }
 
@@ -68,8 +67,8 @@ namespace GxMcp.Gateway
                 Log($"[Gateway] GeneXus version not detected at '{gxPath}' (no version.txt). Supported majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}.");
                 return;
             }
-            Log($"[Gateway] Detected GeneXus version: {detected} (supported majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}).");
-            if (!GeneXusVersionCatalog.IsSupported(detected))
+            Log($"[Gateway] Detected GeneXus version: {detected} (native SDK majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}; legacy majors: {string.Join(", ", GeneXusVersionCatalog.LegacyMajors)}).");
+            if (!GeneXusVersionCatalog.IsSupportedOrLegacy(detected))
             {
                 Log($"[Gateway] WARNING: detected GeneXus version '{detected}' is outside the MCP compatibility catalog. Some tools may behave unexpectedly.");
             }

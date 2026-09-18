@@ -12,19 +12,21 @@
 
 ---
 
-**GeneXus MCP Server** lets AI agents — Claude Desktop, Claude Code, Cursor, Antigravity, and any MCP-compatible client — read, edit, analyze, and refactor objects inside a Knowledge Base supported by the selected GeneXus SDK. It talks to the **native GeneXus SDK**, so the agent works with the *real* KB, not a copy or a parsed approximation.
+**GeneXus MCP Server** lets AI agents — Claude Desktop, Claude Code, Cursor, Antigravity, and any MCP-compatible client — read, edit, analyze, and refactor objects inside a Knowledge Base supported by the selected native SDK or legacy compatibility driver. Native SDK paths work with the **real GeneXus SDK** and legacy paths use explicit reflection/COM adapters; neither path relies on a parsed copy of the KB.
 
 In practice: you point the MCP at your KB, then ask your AI assistant things like *"list all transactions with attribute CustomerId"*, *"add a rule to the Order transaction that validates the total"*, or *"refactor this procedure to use the new SDT"* — and it does it.
 
 ---
 
-## Multi-version SDK support
+## Multi-version GeneXus support
 
-The same MCP distribution supports the SDK majors listed in the generated
-compatibility document. Each configured MCP process selects one installed SDK
-with `--gx`; no separate MCP installation is required. The commands below are
-examples of switching the existing configuration, not running two majors in
-the same process:
+The same MCP distribution supports the official native SDK majors listed in the
+generated compatibility document. It also includes basic, best-effort
+compatibility for the legacy versions listed there through separate drivers;
+that path is not equivalent to full native-SDK support. Each configured MCP
+process selects one installed SDK or legacy driver with `--gx`; no separate MCP
+installation is required. The commands below are examples of switching the
+existing configuration, not running two majors in the same process:
 
 ```bash
 npx genexus-mcp@latest init --kb "C:\KBs\KBTeste17" --gx "C:\Program Files (x86)\GeneXus\GeneXus17Trial"
@@ -45,7 +47,9 @@ that checks every supported major against one published artifact.
 
 The Gateway reports the detected SDK through `genexus_whoami`:
 
-- `geneXus.supportedMajors`: explicitly validated SDK majors from the version catalog
+- `geneXus.supportedMajors`: explicitly validated native SDK majors from the version catalog
+- `geneXus.legacyMajors`: catalogued legacy majors handled by their compatibility drivers
+- `geneXus.sdkCompatibility.supportLevel`: `native-sdk` or `basic-legacy` for the detected installation
 - `geneXus.matchedMajor`: the major detected for the configured installation
 - `geneXus.versionMatches`: whether the detected installation is in that catalog
 - `geneXus.supportedMajor`: retained as the legacy single-major alias for the catalog primary
@@ -57,22 +61,28 @@ needed. Existing tool names, arguments, and MCP client configuration formats do
 not change.
 
 <!-- BEGIN GENERATED: gx-compatibility -->
-Supported SDK majors: **GeneXus 16, GeneXus 17, GeneXus 18**.
+Supported SDK majors: **GeneXus 16, GeneXus 17, GeneXus 18** (native SDK).
+Basic legacy compatibility: **GeneXus Evolution 3, GeneXus Evolution 2, GeneXus Evolution 1, GeneXus 15, GeneXus 9.0, GeneXus 8.0** via `com-gxpublic` and `dotnet-reflection` (not the native SDK build).
 Primary SDK: **GeneXus 18**.
 Source of truth: `config/gx-versions.json`.
 <!-- END GENERATED: gx-compatibility -->
 
-To add another GeneXus major in the future, add it to the explicit version
-catalog only after compiling the Worker with that SDK and passing the focused
-tests plus a live KB smoke. This prevents the server from claiming compatibility
-based only on a version string.
+To add another native-SDK major in the future, add it to the explicit
+`supportedMajors` catalog only after compiling the Worker with that SDK and
+passing the focused tests plus a live KB smoke. This prevents the server from
+claiming native-SDK compatibility based only on a version string.
 
-### Legacy GeneXus compatibility (GX8 to GX15)
+### Basic legacy compatibility (not native SDK support)
 
-The server also includes best-effort dynamic compatibility for legacy installations:
+Every legacy version currently declared in `legacyMajors` uses a best-effort
+driver rather than the native SDK build:
 - **GeneXus Evolution 1 (10.1), Evolution 2 (10.2), Evolution 3 (10.3), and GeneXus 15**: Driven via runtime reflection (`dotnet-reflection`), dynamically adapting to missing types or structural differences (such as module-less KBs without `QualifiedName`).
-- **GeneXus 8.0 and GeneXus 9.0**: Driven via classic Win32 COM automation (`com-gxpublic`), late-binding to `GXPublic.GXPublic` on an STA thread to open, inspect, and read objects from classic `.gxi` Knowledge Bases.
+- **GeneXus 8.0 and GeneXus 9.0**: Driven through the classic GXPublic surface (`com-gxpublic`), detected from `gx.exe`/`gxdl32.dll` and classic `.gxi` Knowledge Bases. GXPublic is a metadata-oriented OLE DB/COM surface; this path is intentionally limited to basic metadata/core operations and does not claim native-SDK source/edit parity.
 - **Graceful degradation**: Modern tools that require features introduced in newer GeneXus versions (such as `genexus_api`, `genexus_gam`, or `genexus_module`) return structured `UNSUPPORTED_IN_GENEXUS_VERSION` errors indicating the required minimum version rather than failing ungracefully.
+
+This legacy path is intended for basic core operations where implemented; it
+does not claim the same feature parity as the native SDK contract for GeneXus
+16, 17, and 18.
 
 ---
 
@@ -93,7 +103,10 @@ A quick map of what the agent can do against your real KB through the **50 tools
 | 🌿 **Versioning, transfer & teams** | KB model versions/branches, **real XPZ export/import** (dependency-aware), GXserver (Team Development) sync + **CI pipelines**, git-style history, multi-KB parallel work |
 | 🔐 **Security** | GAM / integrated-security provisioning, KB security audit + native Security Scanner |
 
-It works through the **native GeneXus SDK** — the same code paths the IDE uses — so edits are real and validated, not text hacks on KB files.
+Native SDK support works through the **native GeneXus SDK** — the same code paths
+the IDE uses — so edits are real and validated, not text hacks on KB files.
+Legacy support uses the reflection or COM driver listed in the catalog and
+degrades unsupported modern tools explicitly.
 
 ---
 
@@ -102,9 +115,9 @@ It works through the **native GeneXus SDK** — the same code paths the IDE uses
 Before you start, make sure you have:
 
 - ✅ **Windows** (GeneXus is Windows-only)
-- ✅ **A supported GeneXus SDK** installed locally (see [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md); pass another install path explicitly when needed)
-- ✅ **GeneXus 18** installed locally (the primary supported SDK; other catalogued majors are also supported)
-- ✅ **A Knowledge Base created with a supported GeneXus major** and opened at least once in the IDE (so it's initialized)
+- ✅ **A supported GeneXus installation** installed locally: GeneXus 16, 17, or 18 for native SDK support, or a catalogued legacy installation for basic compatibility (see [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md); pass another install path explicitly when needed)
+- ✅ **GeneXus 18** installed locally for the primary native-SDK path; other catalogued native and legacy versions are also supported according to their listed driver
+- ✅ **A Knowledge Base created with a supported native or legacy GeneXus major** and opened at least once in the IDE (so it's initialized)
 - ✅ **Node.js 22+** — check with `node --version` in a terminal; install from [nodejs.org](https://nodejs.org/) if missing
 - ✅ **An MCP-compatible AI client** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 

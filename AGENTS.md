@@ -7,11 +7,10 @@ below and should be read only when the task matches it.
 ## Project orientation
 
 Genexus18MCP is a two-process MCP server exposing Knowledge Bases from the
-explicitly supported GeneXus majors through the selected native SDK. It does
-not parse KB files or scrape IDE state; edits use the same SDK paths as the IDE.
-Version-specific SDK members are isolated behind compatibility adapters so an
-older SDK can fall back to its native source parts without changing the MCP
-contract.
+officially supported native-SDK majors and catalogued legacy versions through
+their selected driver. It does not parse KB files or scrape IDE state; native
+edits use the same SDK paths as the IDE, while legacy paths use explicit
+reflection/COM adapters without changing the MCP contract.
 
 ```text
 MCP client (Claude/Cursor/…)
@@ -23,7 +22,7 @@ GxMcp.Gateway (net10.0-windows: isolated per client in stdio-isolated mode; shar
 GxMcp.Worker (net48 STA, one per opened KB)
    │ compatibility adapters + Artech.* SDK
    ▼
-Selected supported GeneXus SDK → Knowledge Base on disk
+Selected native SDK or legacy driver → Knowledge Base on disk
 ```
 
 - Gateway: `src/GxMcp.Gateway/` (`net10.0-windows`); owns the worker pool and routes MCP tools. In `stdio-isolated` mode (`TransportMode: "stdio-isolated"`), each client runs its own dedicated gateway process without HTTP listener or shared lease. In legacy mode, gateways share a master process on the HTTP port with proxies.
@@ -31,10 +30,12 @@ Selected supported GeneXus SDK → Knowledge Base on disk
 - CLI: `cli/run.js`, `cli/index.js`, and `cli/lib/config.js`; configures MCP
   clients, forwards stdio, and ships the Windows launcher diagnostics.
 - Version catalog: `config/gx-versions.json` is the explicit compatibility list;
-  `src/GxMcp.Gateway/GeneXusVersionCatalog.cs` is its runtime loader.
+  `supportedMajors` is the native-SDK contract and `legacyMajors` is the basic
+  compatibility contract with its driver profile. `src/GxMcp.Gateway/GeneXusVersionCatalog.cs`
+  is the runtime loader.
   `src/GxMcp.Worker/Compatibility/` contains reusable runtime adapters for SDK
   members that vary between GeneXus majors.
-- SDK compatibility is a **GeneXus-major** contract, not an exact DLL build
+- Native SDK compatibility is a **GeneXus-major** contract, not an exact DLL build
   contract. Do not block a supported major because `ProductVersion`, patch or
   assembly hashes differ between installations; patch/build drift is expected
   and must be handled by the compatibility adapters plus focused/live smoke
@@ -42,6 +43,9 @@ Selected supported GeneXus SDK → Knowledge Base on disk
   verified adapter); never run a Worker against an unsupported major. Exact
   build fingerprints may be retained as diagnostics, but must not silently
   become a runtime compatibility gate again.
+- Legacy compatibility is intentionally best-effort and driver-backed rather
+  than SDK-backed: GeneXus 15 and Evolution 1–3 use `dotnet-reflection`, while
+  GeneXus 8.0 and 9.0 use `com-gxpublic`/`GXPublic.GXPublic` COM automation.
 - Design System compatibility: `DesignSystemSdkAdapter` uses the native helper
   when available and parses the `Tokens`/`Styles` source parts independently
   when an SDK helper member is absent.
@@ -49,12 +53,13 @@ Selected supported GeneXus SDK → Knowledge Base on disk
   `worker/GxMcp.Worker.exe` is one level below. The npm package includes it.
 
 <!-- BEGIN GENERATED: gx-compatibility -->
-Supported SDK majors: **GeneXus 16, GeneXus 17, GeneXus 18**.
+Supported SDK majors: **GeneXus 16, GeneXus 17, GeneXus 18** (native SDK).
+Basic legacy compatibility: **GeneXus Evolution 3, GeneXus Evolution 2, GeneXus Evolution 1, GeneXus 15, GeneXus 9.0, GeneXus 8.0** via `com-gxpublic` and `dotnet-reflection` (not the native SDK build).
 Primary SDK: **GeneXus 18**.
 Source of truth: `config/gx-versions.json`.
 <!-- END GENERATED: gx-compatibility -->
 
-- **Legacy GeneXus best-effort support (GX8 to GX15):** In addition to the primary supported SDK majors (GX 16, 17, 18), the server supports legacy GeneXus versions via dynamic degradation:
+- **Basic legacy GeneXus support (not native SDK support):** In addition to the primary native SDK majors (GX 16, 17, 18), the server supports every legacy version declared in `legacyMajors` via driver-specific degradation:
   - GeneXus Evolution 1 (10.1), Evolution 2 (10.2), Evolution 3 (10.3), and GeneXus 15 via `dotnet-reflection` (using `DynamicSdkBridge` and `OptionalSdkInvoker` for module-less vs `QualifiedName` and API differences).
   - GeneXus 8.0 and 9.0 via `com-gxpublic` (`ComGxPublicDriver` connecting to classic Win32 `GXPublic.GXPublic` COM automation on an STA thread for `.gxi` KBs).
   - Modern tools unsupported in earlier versions return structured degradation envelopes (`UNSUPPORTED_IN_GENEXUS_VERSION`).
@@ -93,6 +98,9 @@ Source of truth: `config/gx-versions.json`.
 For Worker builds, set the SDK path in the current PowerShell session:
 
 ```powershell
+$env:GX_PATH = 'C:\Program Files (x86)\GeneXus\GeneXus16'
+dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
+
 $env:GX_PATH = 'C:\Program Files (x86)\GeneXus\GeneXus17Trial'
 dotnet build src\GxMcp.Worker\GxMcp.Worker.csproj
 

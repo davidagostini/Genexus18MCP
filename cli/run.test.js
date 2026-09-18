@@ -20,6 +20,7 @@ const {
     getLauncher,
     getGeneXusMajor,
     getGeneXusCatalogEntries,
+    discoverGeneXusInstallation,
     readGeneXusInstallationIdentity,
     readGeneXusKbIdentity,
     compareGeneXusKbAndInstallation,
@@ -549,6 +550,37 @@ test('GeneXus installation identity falls back to executable metadata', () => {
             source: 'executable-metadata'
         });
     } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('classic GeneXus installation identity reads gx.exe metadata', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-classic-version-'));
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'gx.exe'), 'not-a-real-executable');
+        const identity = readGeneXusInstallationIdentity(tempRoot, {
+            readExecutableVersion: (exePath) => exePath.endsWith('gx.exe') ? '9.0.123' : null
+        });
+        assert.deepEqual(identity, {
+            version: '9.0.123',
+            major: '9',
+            source: 'executable-metadata'
+        });
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('classic GeneXus installation discovery accepts GENEXUS_HOME with gx.exe', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-classic-home-'));
+    const previousHome = process.env.GENEXUS_HOME;
+    try {
+        fs.writeFileSync(path.join(tempRoot, 'gx.exe'), 'not-a-real-executable');
+        process.env.GENEXUS_HOME = tempRoot;
+        assert.equal(discoverGeneXusInstallation(), tempRoot);
+    } finally {
+        if (previousHome === undefined) delete process.env.GENEXUS_HOME;
+        else process.env.GENEXUS_HOME = previousHome;
         removeTempPath(tempRoot, { recursive: true, force: true });
     }
 });

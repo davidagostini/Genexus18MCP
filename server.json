@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.lennix1337/genexus",
-  "description": "Read, edit, and analyze GeneXus 16, GeneXus 17, GeneXus 18 KB objects from Claude, Cursor, and AI agents.",
+  "description": "Read, edit, and analyze GeneXus 16, GeneXus 17, GeneXus 18 KB objects through the native SDK, with basic legacy compatibility for GeneXus Evolution 3, GeneXus Evolution 2, GeneXus Evolution 1, GeneXus 15, GeneXus 9.0, GeneXus 8.0 via com-gxpublic and dotnet-reflection drivers, from Claude, Cursor, and AI agents.",
   "repository": {
     "url": "https://github.com/lennix1337/Genexus18MCP",
     "source": "github"
   },
-  "version": "3.6.0",
+  "version": "3.6.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "genexus-mcp",
-      "version": "3.6.0",
+      "version": "3.6.1",
       "transport": {
         "type": "stdio"
       }

@@ -17,15 +17,16 @@ namespace GxMcp.Gateway
         private sealed class CatalogData
         {
             internal string PrimaryMajor { get; set; } = "18";
-            internal IReadOnlyList<string> SupportedMajors { get; set; } = new[] { "17", "18" };
-            internal IReadOnlyList<string> LegacyMajors { get; set; } = new[] { "10.3", "10.2", "10.1", "15", "9" };
+            internal IReadOnlyList<string> SupportedMajors { get; set; } = new[] { "16", "17", "18" };
+            internal IReadOnlyList<string> LegacyMajors { get; set; } = new[] { "10.3", "10.2", "10.1", "15", "9", "8" };
             internal Dictionary<string, string> LegacyDriverMap { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["10.3"] = "dotnet-reflection",
                 ["10.2"] = "dotnet-reflection",
                 ["10.1"] = "dotnet-reflection",
                 ["15"] = "dotnet-reflection",
-                ["9"] = "com-gxpublic"
+                ["9"] = "com-gxpublic",
+                ["8"] = "com-gxpublic"
             };
             internal string PrimaryInstallPath { get; set; } = @"C:\Program Files (x86)\GeneXus\GeneXus18";
             internal string Source { get; set; } = "built-in-fallback";
@@ -218,7 +219,8 @@ namespace GxMcp.Gateway
                     new JObject { ["major"] = "10.2", ["displayName"] = "GeneXus Evolution 2", ["driver"] = "dotnet-reflection" },
                     new JObject { ["major"] = "10.1", ["displayName"] = "GeneXus Evolution 1", ["driver"] = "dotnet-reflection" },
                     new JObject { ["major"] = "15", ["displayName"] = "GeneXus 15", ["driver"] = "dotnet-reflection" },
-                    new JObject { ["major"] = "9", ["displayName"] = "GeneXus 9.0", ["driver"] = "com-gxpublic" }
+                    new JObject { ["major"] = "9", ["displayName"] = "GeneXus 9.0", ["driver"] = "com-gxpublic" },
+                    new JObject { ["major"] = "8", ["displayName"] = "GeneXus 8.0", ["driver"] = "com-gxpublic" }
                 }
             };
         }

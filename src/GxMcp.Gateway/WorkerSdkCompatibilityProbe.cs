@@ -31,6 +31,10 @@ namespace GxMcp.Gateway
                 ["code"] = Code,
                 ["diagnostic"] = Diagnostic,
                 ["supportedMajors"] = JArray.FromObject(GeneXusVersionCatalog.SupportedMajors),
+                ["legacyMajors"] = JArray.FromObject(GeneXusVersionCatalog.LegacyMajors),
+                ["supportLevel"] = string.Equals(Driver, "native-sdk", StringComparison.OrdinalIgnoreCase)
+                    ? "native-sdk"
+                    : (string.IsNullOrWhiteSpace(Driver) ? null : "basic-legacy"),
                 ["catalogSource"] = GeneXusVersionCatalog.CatalogSource
             };
         }

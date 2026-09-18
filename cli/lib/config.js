@@ -113,6 +113,11 @@ function getGeneXusVersionCatalog() {
     };
 }
 
+function hasGeneXusExecutable(gxPath) {
+    return Boolean(gxPath) && ['genexus.exe', 'gx.exe']
+        .some((name) => fs.existsSync(path.join(gxPath, name)));
+}
+
 function getGeneXusCatalogEntries(preferredMajor = null) {
     const catalog = getGeneXusVersionCatalog();
     const all = [...catalog.supportedMajors, ...(catalog.legacyMajors || [])];
@@ -153,7 +158,7 @@ function discoverGeneXusFromRegistry(preferredMajor = null) {
                         const match = out.match(/InstallationDirectory\s+REG_SZ\s+(.+?)\r?\n/i);
                         if (match) {
                             const candidate = match[1].trim().replace(/[\\/]+$/, '');
-                            if (candidate && fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) {
+                            if (candidate && hasGeneXusExecutable(candidate) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) {
                                 return candidate;
                             }
                         }
@@ -172,7 +177,7 @@ function discoverGeneXusFromRegistry(preferredMajor = null) {
                         const match = out.match(/InstallPath\s+REG_SZ\s+(.+?)\r?\n/i);
                         if (match) {
                             const candidate = match[1].trim().replace(/[\\/]+$/, '');
-                            if (candidate && fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) return candidate;
+                            if (candidate && hasGeneXusExecutable(candidate) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) return candidate;
                         }
                     } catch {
                     }
@@ -187,7 +192,7 @@ function discoverGeneXusFromRegistry(preferredMajor = null) {
 function discoverGeneXusInstallation(preferredMajor = null) {
     if (process.env.GENEXUS_HOME) {
         const candidate = process.env.GENEXUS_HOME.replace(/[\\/]+$/, '');
-        if (fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) return candidate;
+        if (hasGeneXusExecutable(candidate) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) return candidate;
     }
 
     const fromRegistry = discoverGeneXusFromRegistry(preferredMajor);
@@ -205,7 +210,11 @@ function discoverGeneXusInstallation(preferredMajor = null) {
     const entries = getGeneXusCatalogEntries(preferredMajor);
     const seen = new Set();
     for (const base of programDirs) {
-        const root = path.join(base, 'GeneXus');
+        const roots = [
+            path.join(base, 'GeneXus'),
+            path.join(base, 'Artech', 'GeneXus')
+        ];
+        for (const root of roots) {
         const key = root.toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
@@ -217,7 +226,7 @@ function discoverGeneXusInstallation(preferredMajor = null) {
             for (const ver of candidateNames) {
                 if (!ver) continue;
                 const candidate = path.join(root, ver);
-                if (fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) {
+                if (hasGeneXusExecutable(candidate) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) {
                     return candidate;
                 }
             }
@@ -230,12 +239,13 @@ function discoverGeneXusInstallation(preferredMajor = null) {
                     const majorMatch = entry.match(/^GeneXus\s*(\d+)/i);
                     if (majorMatch && !entries.some((item) => String(item.major) === majorMatch[1])) continue;
                     const candidate = path.join(root, entry);
-                    if (fs.existsSync(path.join(candidate, 'genexus.exe')) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) {
+                    if (hasGeneXusExecutable(candidate) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) {
                         return candidate;
                     }
                 }
             }
         } catch {
+        }
         }
     }
 
@@ -249,15 +259,22 @@ function discoverGeneXusFromPath(preferredMajor = null) {
     if (process.platform !== 'win32') return null;
     try {
         const { execFileSync } = require('child_process');
-        const out = execFileSync('where.exe', ['genexus.exe'], {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-            windowsHide: true,
-            timeout: 3000
-        });
-        const first = out.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
-        if (first && fs.existsSync(first) && matchesPreferredGeneXusMajor(path.dirname(first), preferredMajor)) {
-            return path.dirname(first);
+        for (const executable of ['genexus.exe', 'gx.exe']) {
+            let out;
+            try {
+                out = execFileSync('where.exe', [executable], {
+                    encoding: 'utf8',
+                    stdio: ['ignore', 'pipe', 'ignore'],
+                    windowsHide: true,
+                    timeout: 3000
+                });
+            } catch {
+                continue;
+            }
+            const first = out.split('\n').map((s) => s.trim()).find(Boolean);
+            if (first && fs.existsSync(first) && matchesPreferredGeneXusMajor(path.dirname(first), preferredMajor)) {
+                return path.dirname(first);
+            }
         }
     } catch {
     }

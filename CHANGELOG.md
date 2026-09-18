@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.6.1 - 2026-09-18
+
+
 ### Added
 
 - **Typed WorkWithPlus form-level UserAction editing.** `genexus_wwp` and
@@ -10,6 +13,11 @@
   without inventing XML attributes, support dry-run diffs and verified rollback,
   and re-read the persisted PatternInstance without invoking lifecycle actions.
   See `docs/issues/wwp-form-level-user-action.md`.
+
+### Changed
+
+- **Support metadata now distinguishes native SDK support from basic legacy compatibility.** The package, MCP registry metadata, README, agent instructions, and generated version document identify GeneXus 16–18 as native SDK majors and GeneXus 8.0, 9.0, Evolution 1–3, and 15 as driver-backed legacy support via reflection or COM automation.
+- **Legacy compatibility diagnostics and discovery are more explicit.** Classic installations can be discovered through `gx.exe`/`gxdl32.dll` and Artech paths, Gateway diagnostics expose `supportLevel` plus the legacy catalog, and the built-in fallback catalog includes GeneXus 8. Live validation still requires an installed legacy GeneXus environment.
 
 ### Fixed
 

@@ -91,6 +91,8 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("17", supportedMajorValues);
             Assert.Contains("18", supportedMajorValues);
             Assert.Equal("18", payload["geneXus"]?["catalog"]?["primaryMajor"]?.ToString());
+            var legacyMajors = Assert.IsType<JArray>(payload["geneXus"]?["catalog"]?["legacyMajors"]);
+            Assert.Contains("8", legacyMajors.ToObject<string[]>() ?? Array.Empty<string>());
             Assert.NotNull(payload["geneXus"]?["catalog"]?["source"]);
         }
 
