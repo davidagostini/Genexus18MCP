@@ -41,6 +41,13 @@ foreach ($valid in @('0.0.0', '1.2.3-rc.1+build.7')) {
 foreach ($invalid in @('01.2.3', '1.02.3', '1.2.03', '1.2', '1.2.3-01')) {
     if (Test-StrictSemVer $invalid) { throw "Invalid semver was accepted: $invalid" }
 }
+$issueReferenceDefinition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-ChangelogIssueReferences' }, $true)
+if (-not $issueReferenceDefinition) { throw 'Canonical release entrypoint is missing changelog issue-reference validation.' }
+. ([scriptblock]::Create($issueReferenceDefinition.Extent.Text))
+Assert-ChangelogIssueReferences -IssueNumbers @(210, 227)
+$missingIssueReferenceFailed = $false
+try { Assert-ChangelogIssueReferences -IssueNumbers @(999999) } catch { $missingIssueReferenceFailed = $true }
+if (-not $missingIssueReferenceFailed) { throw 'Missing changelog issue reference was accepted.' }
 $lockDefinition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-LockfileVersion' }, $true)
 if (-not $lockDefinition) { throw 'Canonical release script is missing lockfile synchronization.' }
 . ([scriptblock]::Create($lockDefinition.Extent.Text))

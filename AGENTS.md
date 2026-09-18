@@ -189,6 +189,11 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   change gets an immediate entry under `CHANGELOG.md` → `## Unreleased`, using
   `### Added`, `### Changed`, `### Fixed`, or `### Internal`. Release-facing
   style and PR-credit rules are in `docs/release_protocol.md`.
+- For issue-driven fixes, read the current issue before editing and add its
+  canonical `https://github.com/lennix1337/Genexus18MCP/issues/<N>` URL to the
+  same `## Unreleased` entry. Grouped bullets must list every fixed issue
+  explicitly; a PR number or `/pull/<N>` URL is not an issue reference. The
+  release entrypoint verifies this ledger before publishing.
 - Any new KB-mutating tool must be registered in `Program.IsMutatingTool` and
   its invalidation behavior must have a regression test. See the detailed
   cache rules in `docs/agent_playbook.md`.

@@ -72,6 +72,22 @@ rerun for the same version reuses the existing snapshot. Use
 
 The script never infers issues from changelog text. By default it uses the explicit `fixed-pending-release` label; use `-SkipLabeledIssues` and omit `-CloseIssues`/`-CloseIssuesFile` to leave issue state untouched.
 
+## Changelog and issue-reference ledger
+
+Every issue selected for a release must already have its canonical issue URL in
+the current `## Unreleased` section before the release proceeds:
+
+```text
+https://github.com/lennix1337/Genexus18MCP/issues/<number>
+```
+
+Read each issue with `gh issue view` before writing the note. A grouped fix is
+allowed, but the bullet or its sub-bullets must link every issue it fixes.
+GitHub PR numbers and `/pull/<number>` URLs do not replace issue references.
+The canonical release entrypoint checks this set after collecting the explicit
+and `fixed-pending-release` issue batch, including in `-DryRun`, and fails
+before writing the release snapshot when a link is missing.
+
 Gateway, tests, and benchmarks build with the .NET 10 SDK; the Worker remains
 .NET Framework 4.8/x86 for the GeneXus SDK. The v3 corporate installer stages
 and probes an archive before swapping it into place, validates the manifest and
