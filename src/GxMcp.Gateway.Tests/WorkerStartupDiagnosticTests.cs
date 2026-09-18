@@ -12,8 +12,8 @@ namespace GxMcp.Gateway.Tests
         [InlineData("GXMCP_SDK_FINGERPRINT_DRIFT path=Artech.dll")]
         public void InformationalSdkDiagnosticsAreNotFatal(string diagnostic)
         {
-            Assert.False(WorkerStartupFailure.IsFatalSdkDiagnostic(diagnostic));
-            Assert.True(WorkerStartupFailure.IsInformationalSdkDiagnostic(diagnostic));
+            Assert.False(SdkDiagnosticClassifier.IsFatalDiagnostic(diagnostic));
+            Assert.True(SdkDiagnosticClassifier.IsInformationalDiagnostic(diagnostic));
         }
 
         [Theory]
@@ -21,15 +21,25 @@ namespace GxMcp.Gateway.Tests
         [InlineData("GXMCP_SDK_COMPATIBLE version=18.0.16\nGXMCP_SDK_ASSEMBLY_MISSING path=Artech.dll")]
         public void FatalSdkDiagnosticsRemainFatal(string diagnostic)
         {
-            Assert.True(WorkerStartupFailure.IsFatalSdkDiagnostic(diagnostic));
-            Assert.False(WorkerStartupFailure.IsInformationalSdkDiagnostic(diagnostic));
+            Assert.True(SdkDiagnosticClassifier.IsFatalDiagnostic(diagnostic));
+            Assert.False(SdkDiagnosticClassifier.IsInformationalDiagnostic(diagnostic));
+        }
+
+        [Theory]
+        [InlineData("GXMCP_SDK_COMPATIBLE version=18.0.16\nGXMCP_SDK_FINGERPRINT_DRIFT path=Artech.dll", "GXMCP_SDK_COMPATIBLE")]
+        [InlineData("GXMCP_SDK_COMPATIBLE major=18 GXMCP_SDK_VERSION_MISMATCH major=19", "GXMCP_SDK_VERSION_MISMATCH")]
+        [InlineData("startup crashed before reporting", "WORKER_STARTUP_FAILED")]
+        [InlineData("GXMCP_SDK_DEGRADED feature=mirror", "GXMCP_SDK_DEGRADED")]
+        public void ClassifyCodeSelectsTheRepresentativeCode(string diagnostic, string expected)
+        {
+            Assert.Equal(expected, SdkDiagnosticClassifier.ClassifyCode(diagnostic));
         }
 
         [Fact]
-        public void ExtractCodeUsesTheFirstSdkCodeInMultilineDiagnostic()
+        public void UnknownSdkCodesFailClosedAsFatal()
         {
-            Assert.Equal("GXMCP_SDK_COMPATIBLE", WorkerStartupFailure.ExtractCode(
-                "GXMCP_SDK_COMPATIBLE version=18.0.16\nGXMCP_SDK_FINGERPRINT_DRIFT path=Artech.dll"));
+            Assert.True(SdkDiagnosticClassifier.IsFatalCode("GXMCP_SDK_DEGRADED"));
+            Assert.Equal("GXMCP_SDK_DEGRADED", SdkDiagnosticClassifier.ClassifyCode("GXMCP_SDK_DEGRADED feature=mirror"));
         }
     }
 }

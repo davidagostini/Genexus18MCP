@@ -1094,7 +1094,7 @@ namespace GxMcp.Gateway
         }
 
         private static bool IsSdkCompatibilityFailure(string? diagnostic)
-            => WorkerStartupFailure.IsFatalSdkDiagnostic(diagnostic);
+            => SdkDiagnosticClassifier.IsFatalDiagnostic(diagnostic);
 
         // Invokes OnWorkerExited at most once per WorkerProcess lifetime. Both the async
         // Process.Exited event and StopProcess route through here; whichever runs first

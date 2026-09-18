@@ -22,13 +22,13 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void ForceHardReload_is_rejected_before_worker_shutdown()
         {
-            Assert.True(Program.IsForceHardReloadUnsupportedForTest(new JObject
+            Assert.True(Program.IsForceHardReloadUnsupported(new JObject
             {
                 ["force"] = true,
                 ["mode"] = "hard",
                 ["sourceDir"] = "C:/worker"
             }));
-            Assert.False(Program.IsForceHardReloadUnsupportedForTest(new JObject
+            Assert.False(Program.IsForceHardReloadUnsupported(new JObject
             {
                 ["force"] = true,
                 ["mode"] = "soft"

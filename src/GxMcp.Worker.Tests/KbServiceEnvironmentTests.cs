@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using GxMcp.Worker.Services;
+
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -120,7 +121,7 @@ namespace GxMcp.Worker.Tests
         public void IndexProgressWatchdog_UsesExplicitNoProgressDeadline(int elapsedSeconds, int timeoutSeconds, bool expected)
         {
             DateTime last = DateTime.UtcNow;
-            Assert.Equal(expected, KbService.IsIndexProgressStalled(last, last.AddSeconds(elapsedSeconds), timeoutSeconds));
+            Assert.Equal(expected, IndexBuildWatchdog.IsProgressStalled(last, last.AddSeconds(elapsedSeconds), timeoutSeconds));
         }
 
         [Fact]

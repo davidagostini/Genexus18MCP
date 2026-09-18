@@ -118,6 +118,24 @@ reported as a failed/unavailable gate with the run log path. Use the same
 `-TestFilter` with `test-live-matrix.ps1` to run the focused smoke for every
 selected SDK major.
 
+## Reload and lifecycle smoke
+
+`scripts/tests/test-live-reload-smoke.ps1` is a permanent fail-closed smoke for
+the worker reload and lifecycle surface (soft drain+replace, forced alias
+reload through the shared restore core, and the `mode=hard` guards), exercising
+the decomposed partial classes end to end:
+
+```powershell
+pwsh -NoProfile -File scripts/tests/test-live-reload-smoke.ps1 `
+  -KbPath C:\KBs\KBTeste
+```
+
+Parameters: `-KbPath` (or `GXMCP_SMOKE_KB`), `-GxPath`, `-GatewayExe` (defaults
+to `publish\GxMcp.Gateway.exe`), `-HttpPort` (random free port by default).
+Exit codes: `0` pass, `1` failed checks, `2` unavailable (missing gateway
+artifact or KB path). The run writes a structured summary JSON and an isolated
+`GXMCP_LOG_DIR` under ignored `scratchpad/`.
+
 ### Multi-major matrix
 
 Run the catalog-driven matrix when the same fixture must be checked with more

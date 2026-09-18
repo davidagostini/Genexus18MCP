@@ -30,34 +30,18 @@ namespace GxMcp.Worker.Services
         private Thread _liteIndexThread;
         private Thread _enrichIndexThread;
         private Thread _deltaIndexThread;
-        private Thread _indexWatchdogThread;
-        private long _lastIndexProgressTicks;
-        private volatile bool _stopIndexWatchdog;
-
-        internal static int ResolveIndexNoProgressSeconds()
-        {
-            const int defaultSeconds = 180;
-            string raw = Environment.GetEnvironmentVariable("GXMCP_INDEX_NO_PROGRESS_SEC");
-            int seconds;
-            return int.TryParse(raw, out seconds) ? Math.Max(30, Math.Min(3600, seconds)) : defaultSeconds;
-        }
-
-        internal static bool IsIndexProgressStalled(DateTime lastProgressUtc, DateTime nowUtc, int timeoutSeconds)
-        {
-            return lastProgressUtc != default(DateTime)
-                && (nowUtc - lastProgressUtc).TotalSeconds >= Math.Max(1, timeoutSeconds);
-        }
+        private IndexBuildWatchdog _indexWatchdog;
 
         private void MarkIndexProgressHeartbeat()
         {
-            Interlocked.Exchange(ref _lastIndexProgressTicks, DateTime.UtcNow.Ticks);
+            _indexWatchdog?.Beat();
         }
 
         private string CancelStalledIndexBuild()
         {
             int processed = _processedCount;
-            DateTime last = new DateTime(Interlocked.Read(ref _lastIndexProgressTicks), DateTimeKind.Utc);
-            _stopIndexWatchdog = true;
+            DateTime last = _indexWatchdog?.LastProgressUtc ?? DateTime.UtcNow;
+            _indexWatchdog?.Stop();
             try { _indexCacheService.EndLiteWalk(); } catch { }
             foreach (var thread in new[] { _liteIndexThread, _enrichIndexThread, _deltaIndexThread })
             {
@@ -77,34 +61,15 @@ namespace GxMcp.Worker.Services
                     ["cancelled"] = true,
                     ["processed"] = processed,
                     ["lastProgressAtUtc"] = last.ToString("o"),
-                    ["noProgressTimeoutSec"] = ResolveIndexNoProgressSeconds(),
+                    ["noProgressTimeoutSec"] = IndexBuildWatchdog.ResolveNoProgressSeconds(),
                     ["hint"] = "The stalled index build was cancelled. Re-issue force=true to start a fresh build; the last certified snapshot remains available on disk."
                 });
         }
 
         private void StartIndexWatchdog()
         {
-            _stopIndexWatchdog = false;
-            MarkIndexProgressHeartbeat();
-            int timeoutSeconds = ResolveIndexNoProgressSeconds();
-            _indexWatchdogThread = new Thread(() =>
-            {
-                while (!_stopIndexWatchdog && _isIndexing)
-                {
-                    Thread.Sleep(1000);
-                    long ticks = Interlocked.Read(ref _lastIndexProgressTicks);
-                    if (ticks <= 0) continue;
-                    var lastProgress = new DateTime(ticks, DateTimeKind.Utc);
-                    var stalledFor = DateTime.UtcNow - lastProgress;
-                    if (IsIndexProgressStalled(lastProgress, DateTime.UtcNow, timeoutSeconds))
-                    {
-                        Logger.Error("[INDEX-STALLED] no progress for " + (long)stalledFor.TotalSeconds + "s; cancelling build.");
-                        CancelStalledIndexBuild();
-                        break;
-                    }
-                }
-            }) { IsBackground = true, Name = "GxMcp-IndexWatchdog", Priority = ThreadPriority.BelowNormal };
-            _indexWatchdogThread.Start();
+            _indexWatchdog = new IndexBuildWatchdog(cancelBuild: () => CancelStalledIndexBuild());
+            _indexWatchdog.Start();
         }
 
         // Fase 0 instrumentation: last KB-open / datastore-probe elapsed, so Program.cs
@@ -884,7 +849,7 @@ namespace GxMcp.Worker.Services
                         _indexCacheService.MarkIndexComplete(_totalCount);
                         bulkSw.Stop();
                         _currentStatus = "Complete";
-                        _stopIndexWatchdog = true;
+                        _indexWatchdog?.Stop();
                         _isIndexing = false;
                         Logger.Info($"[ENRICH-LAZY] eager drain skipped — {_totalCount} objects catalogued, enrichment on-demand. litePassMs={liteSw.ElapsedMilliseconds}");
                         return;
@@ -930,7 +895,7 @@ namespace GxMcp.Worker.Services
                             try { _indexCacheService.MarkIndexFailed(); } catch { }
                             _currentStatus = "Error: " + ex.Message;
                         }
-                        finally { _stopIndexWatchdog = true; _isIndexing = false; }
+                        finally { _indexWatchdog?.Stop(); _isIndexing = false; }
                     }) {
                         IsBackground = true,
                         Priority = ThreadPriority.BelowNormal,
@@ -946,7 +911,7 @@ namespace GxMcp.Worker.Services
                     Logger.Error("[BULK-INDEX-LITE-FAIL] error=" + ex.Message);
                     try { _indexCacheService.MarkIndexFailed(); } catch { }
                     _currentStatus = "Error: " + ex.Message;
-                    _stopIndexWatchdog = true;
+                    _indexWatchdog?.Stop();
                     _isIndexing = false;
                 }
             }) {
@@ -1383,14 +1348,13 @@ namespace GxMcp.Worker.Services
             json["totalKnown"] = !_isIndexing;
             json["objectsWalked"] = _totalCount;
             json["status"] = _currentStatus;
-            long lastProgressTicks = Interlocked.Read(ref _lastIndexProgressTicks);
-            if (lastProgressTicks > 0)
+            DateTime? lastProgress = _indexWatchdog?.LastProgressUtc;
+            if (lastProgress.HasValue)
             {
-                var lastProgress = new DateTime(lastProgressTicks, DateTimeKind.Utc);
-                json["lastProgressAtUtc"] = lastProgress.ToString("o");
-                json["noProgressTimeoutSec"] = ResolveIndexNoProgressSeconds();
+                json["lastProgressAtUtc"] = lastProgress.Value.ToString("o");
+                json["noProgressTimeoutSec"] = IndexBuildWatchdog.ResolveNoProgressSeconds();
                 json["stalled"] = _isIndexing
-                    && (DateTime.UtcNow - lastProgress).TotalSeconds >= ResolveIndexNoProgressSeconds();
+                    && IndexBuildWatchdog.IsProgressStalled(lastProgress.Value, DateTime.UtcNow, IndexBuildWatchdog.ResolveNoProgressSeconds());
             }
             var state = _indexCacheService?.GetState();
             json["freshness"] = state?.Freshness ?? "stale";

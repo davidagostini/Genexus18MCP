@@ -210,10 +210,6 @@ namespace GxMcp.Worker.Services
                 // so returning after KBObject.Create was not a read-only preview.
                 if (dryRun && type.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
                 {
-                    string previewName = options?["firstItem"]?.ToString();
-                    if (string.IsNullOrWhiteSpace(previewName)) previewName = name + "Id";
-                    string previewType = options?["firstItemType"]?.ToString();
-                    if (string.IsNullOrWhiteSpace(previewType)) previewType = "Numeric(4)";
                     return McpResponse.Ok(
                         target: name,
                         code: "DryRun",
@@ -224,7 +220,7 @@ namespace GxMcp.Worker.Services
                             ["mutationDetected"] = false,
                             ["type"] = type,
                             ["name"] = name,
-                            ["seededDescription"] = previewName + " : " + previewType + " [Key]",
+                            ["seededDescription"] = SeedItemPlan.ForTransaction(name, options?["firstItem"]?.ToString(), options?["firstItemType"]?.ToString()).KeyDescription,
                             ["hint"] = "Re-run without dryRun to create the Transaction and its initial key attribute. Pass firstItem/firstItemType to choose it explicitly."
                         });
                 }
@@ -240,11 +236,7 @@ namespace GxMcp.Worker.Services
                     if (type.Equals("SDT", StringComparison.OrdinalIgnoreCase)
                         || type.Equals("StructuredDataType", StringComparison.OrdinalIgnoreCase))
                     {
-                        string itemName = options?["firstItem"]?.ToString();
-                        if (string.IsNullOrWhiteSpace(itemName)) itemName = "Item1";
-                        string itemType = options?["firstItemType"]?.ToString();
-                        if (string.IsNullOrWhiteSpace(itemType)) itemType = "VARCHAR";
-                        plannedSeed = itemName.Trim() + " : " + itemType.Trim();
+                        plannedSeed = SeedItemPlan.ForSdt(options?["firstItem"]?.ToString(), options?["firstItemType"]?.ToString()).Description;
                     }
                     var planned = new JObject
                     {
@@ -430,11 +422,9 @@ namespace GxMcp.Worker.Services
             }
             else if (newObj is Artech.Genexus.Common.Objects.Transaction newTrn)
             {
-                string firstItem = options?["firstItem"]?.ToString();
-                string firstItemType = options?["firstItemType"]?.ToString();
-                InitializeTransactionWithDefaultKey(newTrn, name, firstItem, firstItemType);
-                seededDescription = (string.IsNullOrWhiteSpace(firstItem) ? name + "Id" : firstItem.Trim())
-                    + " : " + (string.IsNullOrWhiteSpace(firstItemType) ? "Numeric(4)" : firstItemType.Trim()) + " [Key]";
+                var seed = SeedItemPlan.ForTransaction(name, options?["firstItem"]?.ToString(), options?["firstItemType"]?.ToString());
+                InitializeTransactionWithDefaultKey(newTrn, name, seed);
+                seededDescription = seed.KeyDescription;
             }
             else if (type.Equals("Domain", StringComparison.OrdinalIgnoreCase))
             {
@@ -1156,10 +1146,11 @@ namespace GxMcp.Worker.Services
         }
 
         // Mirrors the SDT init: a freshly created Transaction with zero attributes fails the
-        // SDK validation on Save. We seed it with a Numeric(4) key attribute named
-        // "<TrnName>Id" — same convention the GeneXus IDE uses when you create a new Trn.
+        // SDK validation on Save. We seed it with a key attribute named "<TrnName>Id" — same
+        // convention the GeneXus IDE uses when you create a new Trn. Seed name/type resolution
+        // is owned by SeedItemPlan so the preview and this executor cannot drift.
         private static void InitializeTransactionWithDefaultKey(Artech.Genexus.Common.Objects.Transaction trn, string trnName,
-            string requestedName = null, string requestedType = null)
+            SeedItemPlan seed)
         {
             try
             {
@@ -1170,8 +1161,8 @@ namespace GxMcp.Worker.Services
                 // If, somehow, attributes already exist, leave the Trn alone.
                 try { foreach (var _ in root.Attributes) return; } catch { }
 
-                string keyName = string.IsNullOrWhiteSpace(requestedName) ? trnName + "Id" : requestedName.Trim().TrimStart('&');
-                string typeText = string.IsNullOrWhiteSpace(requestedType) ? "Numeric(4)" : requestedType.Trim();
+                string keyName = seed.ItemName;
+                string typeText = seed.ItemType;
 
                 // Reuse an existing global Attribute with the conventional "<TrnName>Id" name;
                 // otherwise create one (Numeric(4)) — same convention the GeneXus IDE uses.

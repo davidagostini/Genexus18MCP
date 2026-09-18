@@ -10,6 +10,7 @@ using Artech.Architecture.Common.Objects;
 using Newtonsoft.Json.Linq;
 using Artech.Genexus.Common.Objects;
 using Artech.Genexus.Common.Parts;
+using GxMcp.Worker.Compatibility;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Services.Structure;
 
@@ -1723,18 +1724,12 @@ namespace GxMcp.Worker.Services
             {
                 if (attribute == null || snapshot.GlobalAttributeIds.Contains(attribute.Guid)
                     || referenced.Contains(attribute.Guid)) continue;
-                try
-                {
-                    var delete = attribute.GetType().GetMethod("Delete", Type.EmptyTypes)
-                        ?? attribute.GetType().GetMethod("Remove", Type.EmptyTypes);
-                    if (delete == null)
-                        throw new MissingMethodException(attribute.GetType().FullName, "Delete/Remove");
-                    delete.Invoke(attribute, null);
-                }
-                catch (Exception ex)
-                {
-                    throw new InvalidOperationException("Could not remove orphaned global Attribute '" + attribute.Name + "': " + ex.Message, ex);
-                }
+                // Delete vs Remove varies between GeneXus majors; the candidate order
+                // lives in the compatibility adapter, not inline here.
+                if (!SdkDeletionAdapter.TryDeleteOrRemove(attribute))
+                    throw new InvalidOperationException(
+                        "Could not remove orphaned global Attribute '" + attribute.Name
+                        + "': no Delete/Remove member is available on this SDK.");
             }
         }
 

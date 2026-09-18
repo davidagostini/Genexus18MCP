@@ -190,14 +190,14 @@ namespace GxMcp.Gateway.Tests
         [InlineData("WORKER_STARTUP_FAILED", false)]
         public void Sdk_diagnostic_classifies_only_rejections_as_fatal(string code, bool fatal)
         {
-            Assert.Equal(fatal, WorkerPool.IsFatalSdkDiagnosticCode(code));
+            Assert.Equal(fatal, SdkDiagnosticClassifier.IsFatalCode(code));
         }
 
         [Fact]
-        public void ExtractDiagnosticCode_skips_informational_code_before_fatal_code()
+        public void ClassifyCode_skips_informational_code_before_fatal_code()
         {
             string diagnostic = "GXMCP_SDK_COMPATIBLE major=18 GXMCP_SDK_VERSION_MISMATCH major=19";
-            Assert.Equal("GXMCP_SDK_VERSION_MISMATCH", WorkerPool.ExtractDiagnosticCode(diagnostic));
+            Assert.Equal("GXMCP_SDK_VERSION_MISMATCH", SdkDiagnosticClassifier.ClassifyCode(diagnostic));
         }
     }
 }

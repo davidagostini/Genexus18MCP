@@ -1056,7 +1056,7 @@ namespace GxMcp.Gateway
 
         private static JObject BuildStartupFailureHealth(string alias, WorkerStartupFailure failure)
         {
-            bool sdkFailure = WorkerStartupFailure.IsFatalSdkDiagnostic(failure.Code);
+            bool sdkFailure = SdkDiagnosticClassifier.IsFatalCode(failure.Code);
             var health = new JObject
             {
                 ["status"] = sdkFailure ? "sdk_incompatible" : "startup_failed",

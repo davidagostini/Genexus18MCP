@@ -408,6 +408,33 @@ namespace GxMcp.Gateway
                 && HasKnownSideEffects(effectiveTool, effectiveArgs["action"]?.ToString(), effectiveArgs);
         }
 
+        /// <summary>The gateway-owned KB management tool.</summary>
+        internal const string KbTool = "genexus_kb";
+
+        /// <summary>
+        /// KB-environment actions are worker-bound even though <see cref="KbTool"/> is a
+        /// gateway meta-tool: they read or select an environment on a specific KB.
+        /// </summary>
+        internal static bool IsKbEnvironmentAction(string? toolName, string? action)
+            => string.Equals(toolName, KbTool, StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(action, "list_environments", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "get_environment", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "set_environment", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>The only KB-environment action that mutates KB state.</summary>
+        internal static bool IsKbEnvironmentMutation(string? toolName, string? action)
+            => string.Equals(toolName, KbTool, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(action, "set_environment", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Read-labelled meta-tools that still address a specific KB when the caller
+        /// passes an explicit kb selector.
+        /// </summary>
+        internal static bool IsKbScopedReadMetaTool(string? toolName)
+            => string.Equals(toolName, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(toolName, "genexus_doc", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(toolName, "genexus_sdk_probe", StringComparison.OrdinalIgnoreCase);
+
         /// <summary>
         /// Returns true for operations whose result or side effects are tied to a
         /// session-owned KB context. Stateless catalog/help reads deliberately stay
