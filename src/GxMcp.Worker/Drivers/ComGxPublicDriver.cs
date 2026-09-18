@@ -14,11 +14,14 @@ namespace GxMcp.Worker.Drivers
         {
             "GXPublic.GXPublic",
             "GXPublic.Application",
-            "GXPublic.GXPublic.5"
+            "GXPublic.GXPublic.5",
+            "GXPubGXX.GXPublic.5",
+            "GXPubGXX.GXPublic"
         };
 
         private readonly Func<string, Type> _progIdResolver;
         private readonly Func<Type, object> _comInstanceFactory;
+        private readonly GxPublicOleDbDriver _oleDbDriver;
         private object _comInstance;
         private string _resolvedProgId;
         private Type _resolvedType;
@@ -31,15 +34,19 @@ namespace GxMcp.Worker.Drivers
             Func<string, Type> progIdResolver = null,
             Func<Type, object> comInstanceFactory = null)
         {
+            bool useOleDbProvider = progIdResolver == null && comInstanceFactory == null;
             _progIdResolver = progIdResolver ?? (progId => Type.GetTypeFromProgID(progId));
             _comInstanceFactory = comInstanceFactory ?? (type => Activator.CreateInstance(type));
-            ResolveProgId();
+            if (useOleDbProvider)
+                _oleDbDriver = new GxPublicOleDbDriver();
+            else
+                ResolveProgId();
         }
 
-        public bool IsRegistered => _resolvedType != null;
-        public string ResolvedProgId => _resolvedProgId;
-        public bool IsConnected => _isConnected;
-        public string ActiveKbPath => _activeKbPath;
+        public bool IsRegistered => _oleDbDriver != null ? _oleDbDriver.IsRegistered : _resolvedType != null;
+        public string ResolvedProgId => _oleDbDriver != null ? _oleDbDriver.ResolvedProgId : _resolvedProgId;
+        public bool IsConnected => _oleDbDriver != null ? _oleDbDriver.IsConnected : _isConnected;
+        public string ActiveKbPath => _oleDbDriver != null ? _oleDbDriver.ActiveKbPath : _activeKbPath;
 
         private void ResolveProgId()
         {
@@ -61,6 +68,9 @@ namespace GxMcp.Worker.Drivers
 
         public bool OpenKB(string kbPath, out string errorJson)
         {
+            if (_oleDbDriver != null)
+                return _oleDbDriver.OpenKB(kbPath, out errorJson);
+
             errorJson = null;
             if (!IsRegistered)
             {
@@ -112,6 +122,12 @@ namespace GxMcp.Worker.Drivers
 
         public void CloseKB()
         {
+            if (_oleDbDriver != null)
+            {
+                _oleDbDriver.CloseKB();
+                return;
+            }
+
             if (_comInstance != null)
             {
                 try
@@ -153,6 +169,9 @@ namespace GxMcp.Worker.Drivers
 
         public string ReadObjectPart(string objectName, string partName, out string error)
         {
+            if (_oleDbDriver != null)
+                return _oleDbDriver.ReadObjectPart(objectName, partName, out error);
+
             error = null;
             if (!_isConnected || _comInstance == null)
             {
@@ -183,8 +202,11 @@ namespace GxMcp.Worker.Drivers
             }
         }
 
-        public List<string> QueryObjects(string typeFilter, string nameFilter, out string error)
+        public List<string> QueryObjects(string typeFilter, string nameFilter, out string error, bool exactMatch = false)
         {
+            if (_oleDbDriver != null)
+                return _oleDbDriver.QueryObjects(typeFilter, nameFilter, out error, exactMatch);
+
             error = null;
             var list = new List<string>();
 
@@ -223,8 +245,23 @@ namespace GxMcp.Worker.Drivers
             }
         }
 
+        public List<GxPublicObjectMetadata> QueryObjectMetadata(string typeFilter, string nameFilter, out string error, bool exactMatch = false)
+        {
+            if (_oleDbDriver != null)
+                return _oleDbDriver.QueryObjectMetadata(typeFilter, nameFilter, out error, exactMatch);
+
+            var result = new List<GxPublicObjectMetadata>();
+            var names = QueryObjects(typeFilter, nameFilter, out error, exactMatch);
+            foreach (string name in names)
+                result.Add(new GxPublicObjectMetadata { Name = name, Type = typeFilter });
+            return result;
+        }
+
         public bool WriteObject(string objectName, string content, out string error)
         {
+            if (_oleDbDriver != null)
+                return _oleDbDriver.WriteObject(objectName, content, out error);
+
             error = null;
             if (!_isConnected || _comInstance == null)
             {
@@ -257,6 +294,9 @@ namespace GxMcp.Worker.Drivers
 
         public bool ExportXPZ(string xpzPath, IEnumerable<string> objectNames, out string error)
         {
+            if (_oleDbDriver != null)
+                return _oleDbDriver.ExportXPZ(xpzPath, objectNames, out error);
+
             error = null;
             if (!_isConnected || _comInstance == null)
             {
@@ -295,6 +335,9 @@ namespace GxMcp.Worker.Drivers
 
         public bool ImportXPZ(string xpzPath, out string error)
         {
+            if (_oleDbDriver != null)
+                return _oleDbDriver.ImportXPZ(xpzPath, out error);
+
             error = null;
             if (!_isConnected || _comInstance == null)
             {

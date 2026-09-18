@@ -40,6 +40,25 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ClassicDatKbMarkers_AreRecognizedAsPlausibleLegacyKb()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-classic-kb-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                foreach (string marker in new[] { "DATA001", "GXSPC001", "ATTRIBUT.DAT", "ATT.XPW" })
+                    File.WriteAllText(Path.Combine(tempDir, marker), "classic");
+
+                Assert.True(Configuration.LooksLikeKb(tempDir));
+                Assert.True(Configuration.IsPlausibleKbPath(tempDir));
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
         public void ParseConfig_KbPath_StrictMode_DoesNotAutoPromoteToDefaultKb()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
@@ -60,6 +79,44 @@ namespace GxMcp.Gateway.Tests
                 var single = Assert.Single(cfg.Environment.KBs);
                 Assert.Equal("strictdemo", single.Alias);
                 Assert.Null(cfg.Environment.DefaultKb);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
+        public void ParseConfig_StrictModeAcceptsPerKbLegacyDriverRouting()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-strict-legacy-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true },
+  ""Environment"": {
+    ""ResolutionPolicy"": ""strict"",
+    ""KBs"": {
+      ""SECT80"": {
+        ""Path"": ""D:\\GX80\\SECT"",
+        ""Driver"": ""com-gxpublic"",
+        ""InstallationPath"": ""C:\\Program Files (x86)\\ARTech\\GeneXus\\gxw80"",
+        ""Major"": ""8""
+      }
+    }
+  }
+}");
+
+                var cfg = ParseConfig(configPath);
+                var entry = Assert.Single(cfg.Environment!.KBs);
+                Assert.Equal("SECT80", entry.Alias);
+                Assert.Equal("com-gxpublic", entry.Driver);
+                Assert.Equal("8", entry.Major);
             }
             finally
             {
@@ -240,7 +297,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void ParseConfig_StrictV2_RejectsKbFields()
+        public void ParseConfig_StrictV2_AcceptsExplicitKbPathFields()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
@@ -255,8 +312,8 @@ namespace GxMcp.Gateway.Tests
   ""Environment"": { ""ResolutionPolicy"": ""strict"", ""KBPath"": ""C:\\KBs\\Demo"" }
 }");
 
-                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
-                Assert.Contains("Environment.KBPath", error.Message);
+                var cfg = ParseConfig(configPath);
+                Assert.Equal(@"C:\KBs\Demo", cfg.Environment!.KBPath);
             }
             finally
             {

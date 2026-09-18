@@ -57,7 +57,7 @@ namespace GxMcp.Worker.Compatibility
 
             if (string.IsNullOrEmpty(normalizedTool)) return true;
 
-            // COM driver check (GeneXus 8.0 & 9.0)
+            // GXPublic OLE DB driver check (GeneXus 8.0 & 9.0)
             if (IsComDriver)
             {
                 if (IsModernToolUnsupportedOnCom(normalizedTool))
@@ -72,7 +72,7 @@ namespace GxMcp.Worker.Compatibility
                             ["tool"] = normalizedTool,
                             ["currentMajor"] = CurrentMajor,
                             ["driver"] = CurrentDriver,
-                            ["minSupportedMajor"] = "10.1"
+                            ["minSupportedMajor"] = "8"
                         });
                     return false;
                 }
@@ -127,7 +127,7 @@ namespace GxMcp.Worker.Compatibility
 
         public static string GetComAlternativeGuidance(string tool)
         {
-            return $"Under GeneXus 8.0/9.0 (GXPublic COM driver), tool '{tool}' is not available. Supported tools include genexus_read, genexus_query, genexus_edit, genexus_transfer (xpz export/import), and object lifecycle.";
+            return $"Under GeneXus 8.0/9.0 (GXPublic OLE DB driver), tool '{tool}' is not available. Supported tools include genexus_kb, genexus_query, and genexus_list_objects; GXPublic provides read-only metadata and does not provide the native source/edit or XPZ contract.";
         }
 
         public static System.Text.Encoding GetEffectiveEncoding()
@@ -178,7 +178,23 @@ namespace GxMcp.Worker.Compatibility
 
         private static bool IsModernToolUnsupportedOnCom(string tool)
         {
-            return tool.StartsWith("genexus_gam", StringComparison.OrdinalIgnoreCase)
+            return tool.StartsWith("genexus_edit", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_create", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_delete", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_refactor", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_properties", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_structure", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_variable", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_transfer", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_build", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_inspect", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_analyze", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_search_source", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_navigation", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_types", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_doc", StringComparison.OrdinalIgnoreCase)
+                || tool.StartsWith("genexus_gam", StringComparison.OrdinalIgnoreCase)
                 || tool.StartsWith("genexus_api", StringComparison.OrdinalIgnoreCase)
                 || tool.StartsWith("genexus_design_system", StringComparison.OrdinalIgnoreCase)
                 || tool.StartsWith("genexus_module", StringComparison.OrdinalIgnoreCase)

@@ -133,7 +133,7 @@ namespace GxMcp.Gateway
                 if (declaredDefault != null)
                 {
                     selectionSource = "config-default";
-                    return new KbHandle(declaredDefault.Alias, declaredDefault.Path);
+                    return KbHandle.FromEntry(declaredDefault);
                 }
 
                 var knownDefault = knownKbs?.FirstOrDefault(
@@ -161,7 +161,7 @@ namespace GxMcp.Gateway
                 if (first != null)
                 {
                     selectionSource = "declared-first";
-                    return new KbHandle(first.Alias, first.Path);
+                    return KbHandle.FromEntry(first);
                 }
 
                 selectionSource = "none";
@@ -182,7 +182,7 @@ namespace GxMcp.Gateway
         {
             var declared = _config.Environment?.KBs?.FirstOrDefault(
                 k => string.Equals(k.Alias, kbArg, StringComparison.OrdinalIgnoreCase));
-            if (declared != null) return new KbHandle(declared.Alias, declared.Path);
+            if (declared != null) return KbHandle.FromEntry(declared);
 
             var openMatch = openKbs.FirstOrDefault(
                 k => string.Equals(k.Alias, kbArg, StringComparison.OrdinalIgnoreCase));

@@ -32,9 +32,9 @@ namespace GxMcp.Gateway
                 }
                 catch { }
             }
-            // Legacy GeneXus 8/9 installations expose gx.exe/gxdl32.dll
+            // Legacy GeneXus 8/9 installations expose gxw32.exe/gx.exe/gxdl32.dll
             // instead of the modern GeneXus.exe anchor.
-            foreach (string executableName in new[] { "GeneXus.exe", "gx.exe", "gxdl32.dll" })
+            foreach (string executableName in new[] { "GeneXus.exe", "gxw32.exe", "gx.exe", "gxdl32.dll" })
             {
                 try
                 {
@@ -1197,7 +1197,7 @@ namespace GxMcp.Gateway
                     foreach (var k in cfg.Environment.KBs)
                     {
                         if (!string.IsNullOrWhiteSpace(k.Alias))
-                            available[k.Alias] = new KbHandle(k.Alias, k.Path);
+                            available[k.Alias] = KbHandle.FromEntry(k);
                     }
                 }
                 foreach (var k in openKbs)

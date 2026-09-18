@@ -23,10 +23,10 @@ In practice: you point the MCP at your KB, then ask your AI assistant things lik
 The same MCP distribution supports the official native SDK majors listed in the
 generated compatibility document. It also includes basic, best-effort
 compatibility for the legacy versions listed there through separate drivers;
-that path is not equivalent to full native-SDK support. Each configured MCP
-process selects one installed SDK or legacy driver with `--gx`; no separate MCP
-installation is required. The commands below are examples of switching the
-existing configuration, not running two majors in the same process:
+that path is not equivalent to full native-SDK support. A process can route
+each declared KB to its own SDK/driver; `--gx` remains the convenient global
+default for a single-major configuration. The commands below are examples of
+switching the existing configuration:
 
 ```bash
 npx genexus-mcp@latest init --kb "C:\KBs\KBTeste17" --gx "C:\Program Files (x86)\GeneXus\GeneXus17Trial"
@@ -37,6 +37,32 @@ npx genexus-mcp@latest init --kb "C:\KBs\MyGX18KB" --gx "C:\Program Files (x86)\
 After switching the SDK or KB, fully restart the AI client so it reloads the
 MCP process and its tool schemas. If GX17 and GX18 must run simultaneously,
 use separate MCP configurations and ports.
+
+Classic GX8/GX9 KBs can be opened without changing the global GX18 default by
+declaring their driver and installation per KB (the Gateway accepts both the
+list and object catalog shapes):
+
+```json
+{
+  "Environment": {
+    "KBs": {
+      "SECT80": {
+        "Path": "D:\\GX80\\SECT",
+        "Driver": "com-gxpublic",
+        "InstallationPath": "C:\\Program Files (x86)\\ARTech\\GeneXus\\gxw80",
+        "Major": "8"
+      }
+    }
+  }
+}
+```
+
+The equivalent one-shot request is `genexus_kb action=open` with `path`,
+`alias`, `driver: "com-gxpublic"`, `installationPath`, and `major: "8"`.
+GX8 uses the registered 32-bit GXPublic provider; the documented `.4` ProgID
+and the installed `GXPubGXX.GXPublic(.5)` compatibility registration are
+recognized. Classic DAT KB roots are identified from their legacy markers
+(`DATA001`, `GXSPC001`, `kbdata`, `ATTRIBUT.DAT`, or `ATT.XPW`).
 
 `init` also reads the KB `.gxw` major and the selected `GeneXus.exe` metadata.
 It aborts before writing `config.json` when the majors conflict or an automatic
@@ -77,7 +103,7 @@ claiming native-SDK compatibility based only on a version string.
 Every legacy version currently declared in `legacyMajors` uses a best-effort
 driver rather than the native SDK build:
 - **GeneXus Evolution 1 (10.1), Evolution 2 (10.2), Evolution 3 (10.3), and GeneXus 15**: Driven via runtime reflection (`dotnet-reflection`), dynamically adapting to missing types or structural differences (such as module-less KBs without `QualifiedName`).
-- **GeneXus 8.0 and GeneXus 9.0**: Driven through the classic GXPublic surface (`com-gxpublic`), detected from `gx.exe`/`gxdl32.dll` and classic `.gxi` Knowledge Bases. GXPublic is a metadata-oriented OLE DB/COM surface; this path is intentionally limited to basic metadata/core operations and does not claim native-SDK source/edit parity.
+- **GeneXus 8.0 and GeneXus 9.0**: Driven through the classic GXPublic surface (`com-gxpublic`), detected from `gxw32.exe`/`gx.exe`/`gxdl32.dll` and classic `.gxi` Knowledge Bases. GXPublic is a metadata-oriented OLE DB surface; this path is intentionally limited to basic metadata/core operations and does not claim native-SDK source/edit parity.
 - **Graceful degradation**: Modern tools that require features introduced in newer GeneXus versions (such as `genexus_api`, `genexus_gam`, or `genexus_module`) return structured `UNSUPPORTED_IN_GENEXUS_VERSION` errors indicating the required minimum version rather than failing ungracefully.
 
 This legacy path is intended for basic core operations where implemented; it

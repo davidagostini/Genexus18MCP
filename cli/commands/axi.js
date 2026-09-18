@@ -603,25 +603,37 @@ function buildInProcessBuildAssemblyLoadCheck(gxPath) {
     };
 }
 
-function buildGxPublicComCheck(gxMajor, gxPath) {
+function buildGxPublicComCheck(gxMajor) {
     if (gxMajor !== '8' && gxMajor !== '9') {
         return { id: 'gxpublic_com_registration', status: 'not_applicable', detail: 'Not a GeneXus 8.0/9.0 installation.' };
     }
     const child_process = require('child_process');
-    let isRegistered = false;
-    try {
-        const res = child_process.spawnSync('reg', ['query', 'HKCR\\GXPublic.GXPublic'], { encoding: 'utf8', timeout: 2000 });
-        isRegistered = res.status === 0;
-    } catch { }
-
-    if (isRegistered) {
-        return { id: 'gxpublic_com_registration', status: 'pass', detail: 'GXPublic COM automation server (GXPublic.GXPublic) is registered.' };
+    const providers = ['GXPublic.GXPublic.4', 'GXPublic.GXPublic.5', 'GXPubGXX.GXPublic.5', 'GXPubGXX.GXPublic'];
+    const registered = [];
+    for (const provider of providers) {
+        try {
+            const res = child_process.spawnSync('reg', ['query', `HKCR\\${provider}`], { encoding: 'utf8', timeout: 2000 });
+            if (res.status === 0) registered.push(provider);
+        } catch { }
     }
-    const dllHint = gxPath ? path.join(gxPath, 'GxPublic.dll') : 'GxPublic.dll';
+
+    if (registered.length > 0) {
+        const matching = gxMajor === '8'
+            ? ['GXPublic.GXPublic.4', 'GXPubGXX.GXPublic.5', 'GXPubGXX.GXPublic']
+            : ['GXPublic.GXPublic.5', 'GXPubGXX.GXPublic.5', 'GXPubGXX.GXPublic'];
+        const hasMatchingProvider = registered.some((provider) => matching.includes(provider));
+        return {
+            id: 'gxpublic_com_registration',
+            status: hasMatchingProvider ? 'pass' : 'warn',
+            detail: hasMatchingProvider
+                ? `GXPublic OLE DB provider(s) registered for the 32-bit Worker: ${registered.join(', ')}.`
+                : `GXPublic provider(s) registered for the 32-bit Worker: ${registered.join(', ')}, but none is the documented GeneXus ${gxMajor}.0 provider (${matching.join(', ')}). Install the matching version before opening this KB.`
+        };
+    }
     return {
         id: 'gxpublic_com_registration',
         status: 'warn',
-        detail: `GXPublic COM component is not registered. Run 'regsvr32 "${dllHint}"' to enable GeneXus ${gxMajor}.0 COM automation.`
+        detail: `No supported GXPublic OLE DB provider is registered for GeneXus ${gxMajor}.0. Install the versioned GXPublic provider matching the KB generation (GXPublic 8.0 for GX8 or GXPublic Yi for GX9).`
     };
 }
 
@@ -795,7 +807,9 @@ async function handleDoctor(options, ctx) {
     const kbPath = data.kbPath;
     const gxPath = data.gxPath;
     const kbExists = !!(kbPath && fs.existsSync(kbPath));
-    const gxExeExists = !!(gxPath && (fs.existsSync(path.join(gxPath, 'genexus.exe')) || fs.existsSync(path.join(gxPath, 'gx.exe'))));
+    const gxExecutable = gxPath && ['genexus.exe', 'gx.exe', 'gxw32.exe']
+        .find((name) => fs.existsSync(path.join(gxPath, name)));
+    const gxExeExists = !!gxExecutable;
     const kbSdkCompatibility = kbExists && gxExeExists
         ? compareGeneXusKbAndInstallation(kbPath, gxPath)
         : null;
@@ -852,10 +866,10 @@ async function handleDoctor(options, ctx) {
         // that doesn't exist. Only when no KB is configured at all do we soften to warn.
         { id: 'kb_path_exists', status: kbExists ? 'pass' : (kbPath ? 'fail' : 'warn'), detail: kbExists ? 'Configured KB path exists.' : (kbPath ? `Configured KB path does not exist: ${kbPath}` : 'No KB path is configured.') },
         { id: 'kb_shape', status: data.kbLooksValid ? 'pass' : 'warn', detail: data.kbLooksValid ? 'KB folder shape looks valid.' : 'KB markers were not found in configured KB path.' },
-        // Same logic for the GeneXus install: missing genexus.exe at a configured path
+        // Same logic for the GeneXus install: missing the configured executable at a path
         // guarantees a worker crash on first MCP call. Promote from warn to fail so init
         // exits non-zero and the caller (install.ps1, AI client) actually sees the problem.
-        { id: 'gx_installation', status: gxExeExists ? 'pass' : (gxPath ? 'fail' : 'warn'), detail: gxExeExists ? `GeneXus installation has ${gxPath && fs.existsSync(path.join(gxPath, 'gx.exe')) && !fs.existsSync(path.join(gxPath, 'genexus.exe')) ? 'gx.exe' : 'genexus.exe'}${gxVersionLabel}.` : (gxPath ? `Configured GeneXus installation is missing executable at: ${gxPath}` : 'No GeneXus installation path is configured.') },
+        { id: 'gx_installation', status: gxExeExists ? 'pass' : (gxPath ? 'fail' : 'warn'), detail: gxExeExists ? `GeneXus installation has ${gxExecutable}${gxVersionLabel}.` : (gxPath ? `Configured GeneXus installation is missing executable at: ${gxPath}` : 'No GeneXus installation path is configured.') },
         {
             id: 'kb_sdk_compatibility',
             status: compatibilityStatus,
@@ -1506,7 +1520,9 @@ async function runInteractiveInit(ctx) {
             };
         }
 
-        if (!fs.existsSync(path.join(finalGx, 'genexus.exe'))) {
+        const gxExecutable = finalGx && ['genexus.exe', 'gx.exe', 'gxw32.exe']
+            .find((name) => fs.existsSync(path.join(finalGx, name)));
+        if (!gxExecutable) {
             const suggested = discoverGeneXusInstallation(kbIdentity.major);
             const help = [`Path checked: ${finalGx}`];
             if (suggested && suggested.toLowerCase() !== finalGx.toLowerCase()) {
@@ -1516,7 +1532,7 @@ async function runInteractiveInit(ctx) {
             return {
                 exitCode: ctx.EXIT_CODES.ERROR,
                 envelope: operationalErrorEnvelope(
-                    `GeneXus path does not contain genexus.exe. Aborted before writing config to avoid silent worker crashes.`,
+                    `GeneXus path does not contain a supported executable (genexus.exe, gx.exe, or gxw32.exe). Aborted before writing config to avoid silent worker crashes.`,
                     ctx.EXIT_CODES.ERROR,
                     help
                 )
@@ -1725,7 +1741,9 @@ async function handleInit(options, ctx) {
     // install (e.g. C:\...\GeneXus18u7 vs the GeneXus18 default) used to slip through
     // — init wrote the config, then the worker crashed on first MCP call with no
     // useful signal back to the operator.
-    if (!fs.existsSync(path.join(resolution.gx.value, 'genexus.exe'))) {
+    const gxExecutable = resolution.gx.value && ['genexus.exe', 'gx.exe', 'gxw32.exe']
+        .find((name) => fs.existsSync(path.join(resolution.gx.value, name)));
+    if (!gxExecutable) {
         const help = [
             `Path checked: ${resolution.gx.value}`,
             `Source: --${resolution.gx.source === 'flag' ? 'gx flag' : resolution.gx.source}`
@@ -1742,7 +1760,7 @@ async function handleInit(options, ctx) {
         return {
             exitCode: ctx.EXIT_CODES.ERROR,
             envelope: operationalErrorEnvelope(
-                `Configured GeneXus path does not contain genexus.exe. Init aborted before writing config to avoid silent worker crashes.`,
+                `Configured GeneXus path does not contain a supported executable (genexus.exe, gx.exe, or gxw32.exe). Init aborted before writing config to avoid silent worker crashes.`,
                 ctx.EXIT_CODES.ERROR,
                 help
             )

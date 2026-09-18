@@ -63,15 +63,17 @@
       "driver": "com-gxpublic",
       "defaultInstallPath": "C:\\Program Files (x86)\\ARTech\\GeneXus\\GeneXus 9.0",
       "registryNames": ["GeneXus 9.0"],
-      "legacyRegistryVersions": ["9.0"]
+      "legacyRegistryVersions": ["9.0"],
+      "legacySetupVersions": ["90"]
     },
     {
       "major": "8",
       "displayName": "GeneXus 8.0",
       "driver": "com-gxpublic",
-      "defaultInstallPath": "C:\\Program Files (x86)\\ARTech\\GeneXus\\GeneXus 8.0",
+      "defaultInstallPath": "C:\\Program Files (x86)\\ARTech\\GeneXus\\gxw80",
       "registryNames": ["GeneXus 8.0"],
-      "legacyRegistryVersions": ["8.0"]
+      "legacyRegistryVersions": ["8.0"],
+      "legacySetupVersions": ["80"]
     }
   ]
 }

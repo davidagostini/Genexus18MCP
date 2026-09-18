@@ -775,11 +775,46 @@ namespace GxMcp.Gateway
                 // compatibility catalog rejects. The Worker still performs the
                 // authoritative manifest/fingerprint validation; this preflight
                 // only prevents a deterministic unsupported-major respawn loop.
-                var sdkProbe = WorkerSdkCompatibilityProbe.Check(_config.GeneXus?.InstallationPath);
+                string? workerInstallationPath = string.IsNullOrWhiteSpace(Kb.InstallationPath)
+                    ? _config.GeneXus?.InstallationPath
+                    : Kb.InstallationPath;
+                var sdkProbe = WorkerSdkCompatibilityProbe.Check(workerInstallationPath);
                 if (sdkProbe.IsRejected)
                 {
                     ObserveStartupDiagnostic(sdkProbe.Diagnostic);
                     throw new InvalidOperationException(sdkProbe.Diagnostic);
+                }
+
+                string workerDriver = string.IsNullOrWhiteSpace(Kb.Driver)
+                    ? (sdkProbe.Driver ?? "native-sdk")
+                    : Kb.Driver!;
+                string workerMajor = string.IsNullOrWhiteSpace(Kb.Major)
+                    ? (sdkProbe.Major ?? string.Empty)
+                    : Kb.Major!;
+                if (!string.IsNullOrWhiteSpace(Kb.Driver)
+                    && !string.IsNullOrWhiteSpace(sdkProbe.Driver)
+                    && !string.Equals(Kb.Driver, sdkProbe.Driver, StringComparison.OrdinalIgnoreCase))
+                {
+                    string mismatch = $"GXMCP_KB_DRIVER_MISMATCH kb={Kb.Alias} requested={Kb.Driver} detected={sdkProbe.Driver} major={sdkProbe.Major}";
+                    ObserveStartupDiagnostic(mismatch);
+                    throw new InvalidOperationException(mismatch);
+                }
+
+                string? legacyProvider = null;
+                if (string.Equals(workerDriver, "com-gxpublic", StringComparison.OrdinalIgnoreCase)
+                    && (string.IsNullOrWhiteSpace(workerInstallationPath) || !Directory.Exists(workerInstallationPath)))
+                {
+                    string diagnostic = $"GXMCP_LEGACY_INSTALLATION_NOT_FOUND kb={Kb.Alias} major={workerMajor} path="
+                        + (string.IsNullOrWhiteSpace(workerInstallationPath) ? "<missing>" : workerInstallationPath);
+                    ObserveStartupDiagnostic(diagnostic);
+                    throw new InvalidOperationException(diagnostic);
+                }
+                if (string.Equals(workerDriver, "com-gxpublic", StringComparison.OrdinalIgnoreCase)
+                    && !WorkerSdkCompatibilityProbeResult.TryFindLegacyProvider(workerMajor, out legacyProvider))
+                {
+                    string diagnostic = $"GXMCP_GXPUBLIC_PROVIDER_NOT_REGISTERED kb={Kb.Alias} major={workerMajor}. Register a matching 32-bit GXPublic provider before opening this legacy KB.";
+                    ObserveStartupDiagnostic(diagnostic);
+                    throw new InvalidOperationException(diagnostic);
                 }
 
                 _ownershipLease = WorkerOwnershipRegistry.Acquire(workerPath, Kb.Path);
@@ -803,9 +838,11 @@ namespace GxMcp.Gateway
 
                 string kbPath = Kb.Path;
                 startInfo.Arguments = $"--kb \"{kbPath}\"";
-                startInfo.EnvironmentVariables["GX_PROGRAM_DIR"] = _config.GeneXus?.InstallationPath ?? string.Empty;
-                startInfo.EnvironmentVariables["GXMCP_DRIVER"] = sdkProbe.Driver ?? "native-sdk";
-                startInfo.EnvironmentVariables["GXMCP_TARGET_MAJOR"] = sdkProbe.Major ?? string.Empty;
+                startInfo.EnvironmentVariables["GX_PROGRAM_DIR"] = workerInstallationPath ?? string.Empty;
+                startInfo.EnvironmentVariables["GXMCP_DRIVER"] = workerDriver;
+                startInfo.EnvironmentVariables["GXMCP_TARGET_MAJOR"] = workerMajor;
+                if (!string.IsNullOrWhiteSpace(legacyProvider))
+                    startInfo.EnvironmentVariables["GXMCP_GXPUBLIC_PROVIDER"] = legacyProvider;
                 // GX_KB_PATH is always derived from the gateway-owned handle.
                 startInfo.EnvironmentVariables["GX_KB_PATH"] = kbPath;
                 startInfo.EnvironmentVariables["GXMCP_STATE_SCOPE_ID"] = StateScope.ProcessScopeId.ToString();
@@ -832,7 +869,7 @@ namespace GxMcp.Gateway
                 if (!string.IsNullOrWhiteSpace(Configuration.CurrentConfigPath))
                     startInfo.EnvironmentVariables["GXMCP_PROFILE_CONFIG_PATH"] = Configuration.CurrentConfigPath;
                 startInfo.EnvironmentVariables["GX_SHADOW_PATH"] = _config.Environment?.GX_SHADOW_PATH ?? Path.Combine(kbPath, ".gx_mirror");
-                startInfo.EnvironmentVariables["PATH"] = (_config.GeneXus?.InstallationPath ?? string.Empty) + ";" + Environment.GetEnvironmentVariable("PATH");
+                startInfo.EnvironmentVariables["PATH"] = (workerInstallationPath ?? string.Empty) + ";" + Environment.GetEnvironmentVariable("PATH");
 
                 // Forward any GXMCP_* env vars from the gateway process to the worker.
                 // Lets benchmarks / opt-outs (GXMCP_BUILD_COMPILE_ONLY, GXMCP_INPROCESS_BUILD_FASTPATH,

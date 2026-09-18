@@ -58,6 +58,14 @@ namespace GxMcp.Worker.Tests
         [InlineData("genexus_design_system")]
         [InlineData("genexus_apply_pattern")]
         [InlineData("genexus_wwp")]
+        [InlineData("genexus_edit")]
+        [InlineData("genexus_transfer")]
+        [InlineData("genexus_inspect")]
+        [InlineData("genexus_analyze")]
+        [InlineData("genexus_search_source")]
+        [InlineData("genexus_navigation")]
+        [InlineData("genexus_types")]
+        [InlineData("genexus_doc")]
         public void DynamicSdkBridge_RejectsModernToolsOnComDriver(string toolName)
         {
             using (DynamicSdkBridge.Scoped("com-gxpublic", "9"))

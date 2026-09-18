@@ -107,14 +107,14 @@ function getGeneXusVersionCatalog() {
         legacyMajors: [
             { major: '10.3', displayName: 'GeneXus Evolution 3', defaultInstallPath: 'C:\\Program Files (x86)\\GeneXus\\GeneXusXEv3' },
             { major: '9', displayName: 'GeneXus 9.0', defaultInstallPath: 'C:\\Program Files (x86)\\ARTech\\GeneXus\\GeneXus 9.0' },
-            { major: '8', displayName: 'GeneXus 8.0', defaultInstallPath: 'C:\\Program Files (x86)\\ARTech\\GeneXus\\GeneXus 8.0' }
+            { major: '8', displayName: 'GeneXus 8.0', defaultInstallPath: 'C:\\Program Files (x86)\\ARTech\\GeneXus\\gxw80' }
         ],
         source: 'built-in-fallback'
     };
 }
 
 function hasGeneXusExecutable(gxPath) {
-    return Boolean(gxPath) && ['genexus.exe', 'gx.exe']
+    return Boolean(gxPath) && ['genexus.exe', 'gx.exe', 'gxw32.exe']
         .some((name) => fs.existsSync(path.join(gxPath, name)));
 }
 
@@ -162,6 +162,24 @@ function discoverGeneXusFromRegistry(preferredMajor = null) {
                                 return candidate;
                             }
                         }
+                    } catch {
+                    }
+                }
+                // Classic ARTech installers store GX8/GX9 under Setup\\<version>
+                // and expose the actual IDE root in the Install value rather
+                // than the modern GeneXus <major>\\InstallationDirectory key.
+                for (const setupVersion of (entry.legacySetupVersions || [])) {
+                    const key = `${hive}\\\\${setupVersion}`;
+                    try {
+                        const out = execFileSync('reg.exe', ['query', key, '/v', 'Install'], {
+                            encoding: 'utf8',
+                            stdio: ['ignore', 'pipe', 'ignore'],
+                            windowsHide: true,
+                            timeout: 3000
+                        });
+                        const installLine = out.split(String.fromCharCode(10)).map((line) => line.trim()).find((line) => /^Install\s+REG_SZ\s+/i.test(line));
+                        const candidate = installLine ? installLine.replace(/^Install\s+REG_SZ\s+/i, '').trim() : null;
+                        if (candidate && hasGeneXusExecutable(candidate) && matchesPreferredGeneXusMajor(candidate, preferredMajor)) return candidate;
                     } catch {
                     }
                 }
@@ -259,7 +277,7 @@ function discoverGeneXusFromPath(preferredMajor = null) {
     if (process.platform !== 'win32') return null;
     try {
         const { execFileSync } = require('child_process');
-        for (const executable of ['genexus.exe', 'gx.exe']) {
+        for (const executable of ['genexus.exe', 'gx.exe', 'gxw32.exe']) {
             let out;
             try {
                 out = execFileSync('where.exe', [executable], {
@@ -361,7 +379,9 @@ function discoverKnowledgeBases(cwd, { maxResults = 25, scanDepth = 2 } = {}) {
 function directoryLooksLikeKnowledgeBase(dir) {
     try {
         const files = fs.readdirSync(dir);
-        return files.some((f) => f.toLowerCase().endsWith('.gxw') || f.toLowerCase() === 'knowledgebase.connection');
+        if (files.some((f) => f.toLowerCase().endsWith('.gxw') || f.toLowerCase() === 'knowledgebase.connection')) return true;
+        const classicMarkers = new Set(['data001', 'gxspc001', 'kbdata', 'attribut.dat', 'att.xpw', 'objects.dat', 'objects.idx']);
+        return files.filter((f) => classicMarkers.has(f.toLowerCase())).length >= 2;
     } catch {
         return false;
     }
@@ -1927,6 +1947,9 @@ function readGeneXusInstallationIdentity(gxPath, options = {}) {
     if (!executableVersion) {
         executableVersion = readExecutableVersion(path.join(gxPath, 'gx.exe'));
     }
+    if (!executableVersion) {
+        executableVersion = readExecutableVersion(path.join(gxPath, 'gxw32.exe'));
+    }
     if (executableVersion) {
         return {
             version: executableVersion,
@@ -2013,6 +2036,7 @@ function readGeneXusKbIdentity(kbPath) {
 
     let gxwFiles;
     let gxiFiles = [];
+    let classicMarkerCount = 0;
     try {
         const allFiles = fs.readdirSync(kbPath);
         gxwFiles = allFiles
@@ -2021,12 +2045,17 @@ function readGeneXusKbIdentity(kbPath) {
         gxiFiles = allFiles
             .filter((fileName) => fileName.toLowerCase().endsWith('.gxi'))
             .map((fileName) => path.join(kbPath, fileName));
+        const classicMarkers = new Set(['data001', 'gxspc001', 'kbdata', 'attribut.dat', 'att.xpw', 'objects.dat', 'objects.idx']);
+        classicMarkerCount = allFiles.filter((fileName) => classicMarkers.has(fileName.toLowerCase())).length;
     } catch {
         return { version: null, major: null, source: 'unavailable', reason: 'unreadable-kb-path' };
     }
     if (gxwFiles.length === 0) {
         if (gxiFiles.length > 0) {
             return { version: '9.0', major: '9', source: 'gxi-classic', reason: null };
+        }
+        if (classicMarkerCount >= 2) {
+            return { version: null, major: null, source: 'classic-dat', reason: 'classic-generation-requires-provider' };
         }
         return { version: null, major: null, source: 'unavailable', reason: 'no-gxw' };
     }
@@ -2049,29 +2078,60 @@ function readGeneXusKbIdentity(kbPath) {
     }
 }
 
-function compareGeneXusKbAndInstallation(kbPath, gxPath) {
+function compareGeneXusKbAndInstallation(kbPath, gxPath, options = {}) {
     const kb = readGeneXusKbIdentity(kbPath);
-    const gx = readGeneXusInstallationIdentity(gxPath);
+    const gx = readGeneXusInstallationIdentity(gxPath, options);
     let status = 'unresolved';
-    if (kb.major && gx.major) status = kb.major === gx.major ? 'match' : 'mismatch';
+    // A classic .gxi is shared by the GX8/GX9 family and does not carry a
+    // reliable generation marker. Do not turn the historical default of 9
+    // into a false GX8-vs-GX9 mismatch; the provider open is the authority.
+    if ((kb.source === 'gxi-classic' || kb.source === 'classic-dat') && (gx.major === '8' || gx.major === '9')) {
+        status = 'unresolved';
+    } else if (kb.major && gx.major) {
+        status = kb.major === gx.major ? 'match' : 'mismatch';
+    }
     return { status, kb, gx };
 }
 
 function normalizeKbCatalog(raw) {
+    const normalized = {};
+    const entries = {};
+    const add = (name, value) => {
+        if (typeof name !== 'string' || !name) return;
+        if (typeof value === 'string' && value) {
+            normalized[name] = value;
+            return;
+        }
+        if (!value || typeof value !== 'object') return;
+        const kbPath = typeof value.path === 'string' ? value.path : value.Path;
+        if (typeof kbPath !== 'string' || !kbPath) return;
+        normalized[name] = kbPath;
+        const metadata = { alias: name, path: kbPath };
+        let hasLegacyMetadata = false;
+        for (const [source, target] of [['driver', 'driver'], ['Driver', 'driver'], ['installationPath', 'installationPath'], ['InstallationPath', 'installationPath'], ['major', 'major'], ['Major', 'major']]) {
+            if (typeof value[source] === 'string' && value[source]) {
+                metadata[target] = value[source];
+                hasLegacyMetadata = true;
+            }
+        }
+        if (hasLegacyMetadata) entries[name] = metadata;
+    };
+
     if (Array.isArray(raw)) {
-        const normalized = {};
         for (const entry of raw) {
             if (!entry || typeof entry !== 'object') continue;
             const name = typeof entry.alias === 'string' ? entry.alias : entry.Alias;
-            const kbPath = typeof entry.path === 'string' ? entry.path : entry.Path;
-            if (typeof name === 'string' && name && typeof kbPath === 'string' && kbPath) {
-                normalized[name] = kbPath;
-            }
+            add(name, entry);
         }
+        Object.defineProperty(normalized, '__entries', { value: entries, enumerable: false, writable: true });
         return normalized;
     }
 
-    return raw && typeof raw === 'object' ? raw : {};
+    if (raw && typeof raw === 'object') {
+        for (const [name, value] of Object.entries(raw)) add(name, value);
+    }
+    Object.defineProperty(normalized, '__entries', { value: entries, enumerable: false, writable: true });
+    return normalized;
 }
 
 function readKbCatalog(configPath) {
@@ -2092,7 +2152,19 @@ function readKbCatalog(configPath) {
 function writeKbCatalog(configPath, { kbs, activeKb, kbPath }) {
     const cfg = readJsonFileSafe(configPath) || {};
     cfg.Environment = cfg.Environment || {};
-    cfg.Environment.KBs = kbs;
+    const serializedKbs = {};
+    for (const [name, kbPathValue] of Object.entries(kbs || {})) {
+        const metadata = kbs.__entries && kbs.__entries[name];
+        serializedKbs[name] = metadata
+            ? {
+                Path: kbPathValue,
+                ...(metadata.driver ? { Driver: metadata.driver } : {}),
+                ...(metadata.installationPath ? { InstallationPath: metadata.installationPath } : {}),
+                ...(metadata.major ? { Major: metadata.major } : {})
+            }
+            : kbPathValue;
+    }
+    cfg.Environment.KBs = serializedKbs;
     if (activeKb) {
         cfg.Environment.ActiveKb = activeKb;
         cfg.Environment.DefaultKb = activeKb;

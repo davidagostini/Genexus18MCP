@@ -118,6 +118,16 @@ reported as a failed/unavailable gate with the run log path. Use the same
 `-TestFilter` with `test-live-matrix.ps1` to run the focused smoke for every
 selected SDK major.
 
+For classic GX8/GX9, pass the installation folder containing `gxw32.exe`/`gx.exe`
+as `-GxPath` and use `-SkipBuild` after publishing the Worker with a native SDK.
+The harness recognizes the classic runtime anchor and keeps the prerequisite
+failure explicit when the matching GXPublic provider or a real legacy KB is not
+available; it never attempts to compile the Worker against the classic folder.
+For a mixed installation, configure `Environment.KBs[]`/the object catalog with
+the legacy KB's `Driver: "com-gxpublic"`, `InstallationPath`, and `Major: "8"`
+or pass those same fields to `genexus_kb action=open`; the Gateway routes that
+worker without replacing the global native SDK configuration.
+
 ## Reload and lifecycle smoke
 
 `scripts/tests/test-live-reload-smoke.ps1` is a permanent fail-closed smoke for

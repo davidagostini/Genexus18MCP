@@ -380,6 +380,7 @@ namespace GxMcp.Worker
                             }
                             else
                             {
+                                _dispatcher.MarkLegacyMetadataIndexReady();
                                 Logger.Info($"Worker connected KB via GXPublic COM successfully: {kbPath}");
                             }
                         }

@@ -13,7 +13,7 @@ Common issues when installing or running the GeneXus MCP server, and how to fix 
 The installer couldn't locate the primary GeneXus SDK from the version catalog in
 the default path.
 
-**Fix:** pass `--gx` explicitly. The path is the folder that contains `GeneXus.exe` — usually:
+**Fix:** pass `--gx` explicitly. The path is the folder that contains the GeneXus executable (`GeneXus.exe`, `gx.exe`, or classic GX8 `gxw32.exe`) — usually:
 
 ```bash
 npx genexus-mcp@latest init --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
@@ -59,6 +59,29 @@ The folder you passed isn't a GeneXus KB.
 - The path must point to the **KB root folder** (the one that contains the `.gx` file and folders like `Model/`, `WebSpa/`, etc.), not a parent directory.
 - The KB must have been **opened in GeneXus IDE at least once** so it's initialized and built.
 - Make sure the path doesn't have unescaped quotes or trailing slashes.
+
+For GX8/GX9 classic DAT KBs there may be no `.gxw` file. The Gateway accepts
+the legacy root when it contains at least two known markers such as `DATA001`,
+`GXSPC001`, `kbdata`, `ATTRIBUT.DAT`, or `ATT.XPW`. Open it with an explicit
+per-KB legacy driver so it does not inherit the global GX18 SDK:
+
+```json
+{
+  "action": "open",
+  "path": "D:\\GX80\\SECT",
+  "alias": "SECT80",
+  "driver": "com-gxpublic",
+  "installationPath": "C:\\Program Files (x86)\\ARTech\\GeneXus\\gxw80",
+  "major": "8"
+}
+```
+
+The GX8 installation is discovered from the classic `Setup\\80` registry key
+and `gxw32.exe`; GXPublic is discovered from the registered 32-bit ProgID. If
+the provider is missing, `open` now fails before spawning a worker with
+`GXMCP_GXPUBLIC_PROVIDER_NOT_REGISTERED` instead of leaving a misleading
+`no_worker`/`IndexNotReady` state. The documented `GXPublic.GXPublic.4` and the
+installed `GXPubGXX.GXPublic(.5)` compatibility registration are accepted.
 
 ```bash
 npx genexus-mcp@latest init --kb "C:\KBs\YourKB"

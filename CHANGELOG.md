@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- **GeneXus 8 classic discovery now matches the installed GX8 layout.** The catalog points to `C:\Program Files (x86)\ARTech\GeneXus\gxw80`, CLI/Gateway detection recognizes `gxw32.exe` and its 8.0 product metadata, and the generated supported-version document reports the real default path.
+- **GX8/GX9 compatibility now uses the documented GXPublic OLE DB metadata surface.** The Worker tries the versioned GXPublic providers in 32-bit mode, supports read-only `Object` metadata queries/lists, and returns explicit unsupported envelopes for source-part edits and XPZ operations instead of invoking guessed COM members.
+- **Classic metadata operations now bypass the native search-index gate safely.** GXPublic opens mark the gateway state ready from the provider catalogue, `genexus_query`/`genexus_list_objects` return canonical paged metadata results with a legacy capability block, and ambiguous `.gxi` generation is reported as unresolved until the matching provider opens the KB instead of being misclassified as a GX8/GX9 mismatch.
+- **The live harness now recognizes classic GX8/GX9 runtime anchors.** Legacy runs require a published Worker plus `-SkipBuild`, avoid compiling against the classic installation, and report missing provider/KB prerequisites as explicit unavailable evidence.
+
+### Fixed
+
+- [#237](https://github.com/lennix1337/Genexus18MCP/issues/237) **Legacy KBs can now be routed per KB.** `genexus_kb action=open` and `Environment.KBs` accept `driver`, `installationPath`, and `major`; GX8 classic DAT roots are recognized, `gxw80` is discoverable from the ARTech `Setup\\80` registry entry, GXPublic ProgIDs are checked before worker spawn, and provider absence fails with a structured diagnostic instead of a misleading `no_worker`/`IndexNotReady` state.
+
 ## v3.6.1 - 2026-09-18
 
 

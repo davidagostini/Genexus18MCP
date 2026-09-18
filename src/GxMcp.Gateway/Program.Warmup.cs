@@ -360,7 +360,7 @@ namespace GxMcp.Gateway
                     return;
                 }
 
-                var handle = new KbHandle(entry.Alias, entry.Path);
+                var handle = KbHandle.FromEntry(entry);
                 Log($"[Warmup] Pre-spawning worker for default KB '{entry.Alias}' ({entry.Path})");
                 await _workerPool.AcquireAsync(handle, CancellationToken.None);
                 Log($"[Warmup] Pre-spawn of '{entry.Alias}' completed.");

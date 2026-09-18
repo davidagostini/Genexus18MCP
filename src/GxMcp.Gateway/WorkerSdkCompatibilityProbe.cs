@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using Microsoft.Win32;
 using System.IO;
 using Newtonsoft.Json.Linq;
 
@@ -18,8 +19,51 @@ namespace GxMcp.Gateway
         internal bool IsCompatible => string.Equals(Status, "compatible", StringComparison.Ordinal);
         internal bool IsRejected => string.Equals(Status, "incompatible", StringComparison.Ordinal);
 
+        internal static bool TryFindLegacyProvider(string? major, out string? provider)
+        {
+            provider = null;
+            if (!OperatingSystem.IsWindows()) return false;
+
+            string[] candidates = string.Equals(major, "8", StringComparison.Ordinal)
+                ? new[] { "GXPublic.GXPublic.4", "GXPubGXX.GXPublic.5", "GXPubGXX.GXPublic" }
+                : new[] { "GXPublic.GXPublic.5", "GXPubGXX.GXPublic.5", "GXPubGXX.GXPublic", "GXPublic.GXPublic.4" };
+            try
+            {
+                using RegistryKey classesRoot = RegistryKey.OpenBaseKey(RegistryHive.ClassesRoot, RegistryView.Registry32);
+                foreach (string candidate in candidates)
+                {
+                    using RegistryKey? registration = classesRoot.OpenSubKey(candidate);
+                    if (registration != null)
+                    {
+                        provider = candidate;
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // The Worker remains the final authority; this probe only gives
+                // the Gateway a fail-fast diagnostic before spawning a dead worker.
+            }
+            return false;
+        }
+
         internal JObject ToDiagnosticObject()
         {
+            JObject? capabilities = null;
+            if (string.Equals(Driver, "com-gxpublic", StringComparison.OrdinalIgnoreCase))
+            {
+                capabilities = new JObject
+                {
+                    ["metadataQuery"] = "supported-after-provider-open",
+                    ["metadataList"] = "supported-after-provider-open",
+                    ["sourceParts"] = "unsupported-by-gxpublic-contract",
+                    ["objectMutation"] = "unsupported-by-gxpublic-contract",
+                    ["xpzTransfer"] = "unsupported-until-proven-by-matching-provider",
+                    ["index"] = "provider-catalogue-not-native-search-index"
+                };
+            }
+
             return new JObject
             {
                 ["installationPath"] = InstallationPath,
@@ -35,6 +79,7 @@ namespace GxMcp.Gateway
                 ["supportLevel"] = string.Equals(Driver, "native-sdk", StringComparison.OrdinalIgnoreCase)
                     ? "native-sdk"
                     : (string.IsNullOrWhiteSpace(Driver) ? null : "basic-legacy"),
+                ["capabilities"] = capabilities,
                 ["catalogSource"] = GeneXusVersionCatalog.CatalogSource
             };
         }
@@ -48,7 +93,7 @@ namespace GxMcp.Gateway
     /// </summary>
     internal static class WorkerSdkCompatibilityProbe
     {
-        private static readonly string[] ClassicAnchors = { "gx.exe", "gxdl32.dll" };
+        private static readonly string[] ClassicAnchors = { "gxw32.exe", "gx.exe", "gxdl32.dll" };
 
         [ThreadStatic]
         internal static Func<string, string?>? FileVersionReader;

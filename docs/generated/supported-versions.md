@@ -26,4 +26,4 @@ These entries are not native-SDK support; they use the driver shown below and de
 | 10.1 | GeneXus Evolution 1 | `dotnet-reflection` | `C:\Program Files (x86)\GeneXus\GeneXusXEv1` |
 | 15 | GeneXus 15 | `dotnet-reflection` | `C:\Program Files (x86)\GeneXus\GeneXus15` |
 | 9 | GeneXus 9.0 | `com-gxpublic` | `C:\Program Files (x86)\ARTech\GeneXus\GeneXus 9.0` |
-| 8 | GeneXus 8.0 | `com-gxpublic` | `C:\Program Files (x86)\ARTech\GeneXus\GeneXus 8.0` |
+| 8 | GeneXus 8.0 | `com-gxpublic` | `C:\Program Files (x86)\ARTech\GeneXus\gxw80` |

@@ -2727,6 +2727,15 @@
             "description": "create only: database user for SQL authentication (optional).",
             "type": "string"
           },
+          "driver": {
+            "description": "open only: per-KB driver override. Use com-gxpublic for classic GeneXus 8/9 KBs; otherwise omit to resolve the catalog driver.",
+            "enum": [
+              "native-sdk",
+              "dotnet-reflection",
+              "com-gxpublic"
+            ],
+            "type": "string"
+          },
           "dryRun": {
             "description": "create only: preview KB creation plan without creating directories or running MSBuild (default false).",
             "type": "boolean"
@@ -2735,12 +2744,16 @@
             "description": "Environment name/folder (required for set_environment), e.g. development.",
             "type": "string"
           },
+          "installationPath": {
+            "description": "open only: per-KB GeneXus installation/provider root. For GX8 this is typically the folder containing gxw32.exe (for example ...\\ARTech\\GeneXus\\gxw80).",
+            "type": "string"
+          },
           "kb": {
             "description": "KB alias for environment actions; required when more than one Worker is open.",
             "type": "string"
           },
           "major": {
-            "description": "create only: target GeneXus major version, e.g. '16', '17', or '18' (optional).",
+            "description": "open/create: target GeneXus major version, e.g. '8', '16', '17', or '18' (optional). For open, use with driver/installationPath to select a legacy SDK per KB.",
             "type": "string"
           },
           "name": {

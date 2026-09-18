@@ -319,10 +319,68 @@ namespace GxMcp.Gateway
 
             var environment = document["Environment"] as JObject
                 ?? throw new InvalidDataException("Strict config requires an Environment object.");
-            RejectUnknown(environment, new HashSet<string>(new[] { "ResolutionPolicy" }, StringComparer.Ordinal), "Environment", path);
+            RejectUnknown(environment, new HashSet<string>(new[] { "ResolutionPolicy", "KBPath", "DefaultKb", "ActiveKb", "KBs" }, StringComparer.Ordinal), "Environment", path);
             string? policy = environment.Value<string>("ResolutionPolicy")?.Trim().ToLowerInvariant();
             if (policy != "strict" && policy != "legacy")
                 throw new InvalidDataException("Strict config ResolutionPolicy must be 'strict' or 'legacy'.");
+            ValidateStrictKbCatalog(environment["KBs"], path);
+        }
+
+        private static void ValidateStrictKbCatalog(JToken? token, string path)
+        {
+            if (token == null || token.Type == JTokenType.Null) return;
+            if (token is JArray array)
+            {
+                foreach (var item in array)
+                {
+                    if (item is not JObject entry)
+                        throw new InvalidDataException($"Strict config Environment.KBs entries must be objects in '{path}'.");
+                    ValidateStrictKbEntry(entry, entry.Value<string>("Alias") ?? "<array-entry>", path);
+                }
+                return;
+            }
+            if (token is JObject map)
+            {
+                foreach (var property in map.Properties())
+                {
+                    if (property.Value.Type == JTokenType.String) continue;
+                    if (property.Value is not JObject entry)
+                        throw new InvalidDataException($"Strict config Environment.KBs['{property.Name}'] must be a path string or object in '{path}'.");
+                    ValidateStrictKbEntry(entry, property.Name, path);
+                }
+                return;
+            }
+            throw new InvalidDataException($"Strict config Environment.KBs must be an array or object in '{path}'.");
+        }
+
+        private static void ValidateStrictKbEntry(JObject entry, string alias, string path)
+        {
+            RejectUnknown(entry, new HashSet<string>(new[] { "Alias", "Path", "Driver", "InstallationPath", "Major" }, StringComparer.Ordinal), $"Environment.KBs[{alias}]", path);
+            RequireString(entry, "Path", $"Environment.KBs[{alias}]");
+            string? driver = entry.Value<string>("Driver")?.Trim();
+            string? major = entry.Value<string>("Major")?.Trim();
+            if (!string.IsNullOrWhiteSpace(driver)
+                && driver != "native-sdk"
+                && driver != "dotnet-reflection"
+                && driver != "com-gxpublic")
+            {
+                throw new InvalidDataException($"Strict config Environment.KBs[{alias}].Driver is not a supported driver.");
+            }
+            if (!string.IsNullOrWhiteSpace(major) && !GeneXusVersionCatalog.IsSupportedOrLegacy(major))
+                throw new InvalidDataException($"Strict config Environment.KBs[{alias}].Major is outside the compatibility catalog.");
+            string? expectedDriver = GeneXusVersionCatalog.GetDriverProfile(major);
+            if (!string.IsNullOrWhiteSpace(driver)
+                && !string.IsNullOrWhiteSpace(expectedDriver)
+                && !string.Equals(driver, expectedDriver, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException($"Strict config Environment.KBs[{alias}].Driver does not match major '{major}'.");
+            }
+            if (!string.IsNullOrWhiteSpace(driver)
+                && !string.Equals(driver, "native-sdk", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrWhiteSpace(entry.Value<string>("InstallationPath")))
+            {
+                throw new InvalidDataException($"Strict config Environment.KBs[{alias}] requires InstallationPath for legacy driver '{driver}'.");
+            }
         }
 
         private static void RejectStrictStructuralEnvironment()
@@ -362,11 +420,20 @@ namespace GxMcp.Gateway
             try
             {
                 if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return false;
-                foreach (var f in Directory.EnumerateFiles(path))
+                var entries = Directory.EnumerateFileSystemEntries(path)
+                    .Select(entry => Path.GetFileName(entry).ToLowerInvariant())
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var f in entries)
                 {
-                    var name = Path.GetFileName(f).ToLowerInvariant();
-                    if (name.EndsWith(".gxw") || name == "knowledgebase.connection") return true;
+                    if (f.EndsWith(".gxw") || f == "knowledgebase.connection") return true;
                 }
+
+                // GeneXus 8/9 classic KBs are DAT/model folders and may not
+                // carry a modern .gxw or connection marker. Require at least
+                // two independent classic markers so an arbitrary folder is
+                // not accepted as a KB and handed to a Worker.
+                string[] classicMarkers = { "data001", "gxspc001", "kbdata", "attribut.dat", "att.xpw", "objects.dat", "objects.idx" };
+                return classicMarkers.Count(entries.Contains) >= 2;
             }
             catch { /* unreadable dir → treat as not-a-KB */ }
             return false;
@@ -547,6 +614,9 @@ namespace GxMcp.Gateway
     {
         public string Alias { get; set; } = string.Empty;
         public string Path { get; set; } = string.Empty;
+        public string? InstallationPath { get; set; }
+        public string? Driver { get; set; }
+        public string? Major { get; set; }
     }
 
     // Accepts both schemas the codebase writes for Environment.KBs:
@@ -568,11 +638,19 @@ namespace GxMcp.Gateway
 
             if (reader.TokenType == JsonToken.StartObject)
             {
-                var dict = serializer.Deserialize<Dictionary<string, string>>(reader) ?? new Dictionary<string, string>();
-                var list = new List<KbEntry>(dict.Count);
-                foreach (var kv in dict)
+                var obj = JObject.Load(reader);
+                var list = new List<KbEntry>(obj.Count);
+                foreach (var property in obj.Properties())
                 {
-                    list.Add(new KbEntry { Alias = kv.Key, Path = kv.Value });
+                    if (property.Value.Type == JTokenType.String)
+                    {
+                        list.Add(new KbEntry { Alias = property.Name, Path = property.Value.ToString() });
+                        continue;
+                    }
+
+                    var entry = property.Value.ToObject<KbEntry>(serializer) ?? new KbEntry();
+                    if (string.IsNullOrWhiteSpace(entry.Alias)) entry.Alias = property.Name;
+                    list.Add(entry);
                 }
                 return list;
             }

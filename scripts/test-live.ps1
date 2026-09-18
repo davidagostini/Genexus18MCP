@@ -139,8 +139,16 @@ if ([string]::IsNullOrWhiteSpace($GxPath)) {
         Get-GxPrimaryInstallPath -Catalog $gxCatalog
     }
 }
-if (-not (Test-Path -LiteralPath (Join-Path $GxPath 'Artech.Architecture.Common.dll') -PathType Leaf)) {
-    Fail-Live "GeneXus SDK not found under '$GxPath'. Set -GxPath or GX_PATH."
+$nativeSdkPresent = Test-Path -LiteralPath (Join-Path $GxPath 'Artech.Architecture.Common.dll') -PathType Leaf
+$classicExecutable = @('gxw32.exe', 'gx.exe', 'gxdl32.dll') |
+    Where-Object { Test-Path -LiteralPath (Join-Path $GxPath $_) -PathType Leaf } |
+    Select-Object -First 1
+$legacyGxPath = -not $nativeSdkPresent -and -not [string]::IsNullOrWhiteSpace([string]$classicExecutable)
+if (-not $nativeSdkPresent -and -not $legacyGxPath) {
+    Fail-Live "GeneXus SDK or classic installation anchor not found under '$GxPath'. Set -GxPath or GX_PATH."
+}
+if ($legacyGxPath -and -not $SkipBuild) {
+    Fail-Live "Legacy GXPublic live runs require -SkipBuild after publishing the Worker with a native SDK. The legacy installation is a runtime provider, not a compilable Worker SDK."
 }
 
 $savedEnvironment = @{}
@@ -160,7 +168,10 @@ $env:GX_MCP_STDIO = 'true'
 
 Write-LiveProgress "Fixture validated: $KbPath"
 Write-Host "Live KB: $KbPath" -ForegroundColor Cyan
-Write-Host "GeneXus SDK: $GxPath" -ForegroundColor Cyan
+Write-Host "GeneXus installation: $GxPath" -ForegroundColor Cyan
+if ($legacyGxPath) {
+    Write-Host "Legacy GXPublic runtime anchor: $classicExecutable (published artifact required)" -ForegroundColor Yellow
+}
 Write-Host "Isolated HTTP port: $HttpPort" -ForegroundColor Cyan
 
 if (-not $SkipBuild) {

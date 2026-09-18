@@ -469,7 +469,7 @@ namespace GxMcp.Gateway
                 "- `get_startup` — read the persisted startup selection.\n\n" +
                 "## Mutating actions\n" +
                 "- `create` — create a brand new GeneXus Knowledge Base from scratch using native MSBuild tasks (supports path, name, alias, major, template, dbServer, dbName, openAfterCreate, persist, dryRun).\n" +
-                "- `open` / `close` — register or release a Worker and KB lease.\n" +
+                "- `open` / `close` — register or release a Worker and KB lease. `open` accepts per-KB `driver`, `installationPath`, and `major` overrides; use `driver: com-gxpublic` for classic GX8/GX9 KBs.\n" +
                 "- `select` / `set_session_default` — select a KB for the current session only without mutating config.json.\n" +
                 "- `set_default` / `set_startup` / `set_environment` — change session or persisted selection (set_default with persist: false acts like select).\n\n" +
                 "Use an explicit `kb` alias when a call must target a different open KB; do not rely on shared server-side selection between independent clients. In strict mode, `open`/`close` without the caller's lease fail with `KB_NOT_OWNED`; `select` is session-only and sessionless HTTP returns `KB_SESSION_UNAVAILABLE`.\n",

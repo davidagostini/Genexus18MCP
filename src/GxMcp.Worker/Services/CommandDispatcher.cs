@@ -365,6 +365,34 @@ namespace GxMcp.Worker.Services
         public IndexCacheService GetIndexCacheService() { return _indexCacheService; }
         public TextMirrorService GetTextMirrorService() { return _textMirrorService; }
 
+        /// <summary>
+        /// GXPublic exposes its own metadata catalogue and does not populate the
+        /// native SearchIndexService. Mark the gateway-facing index state usable
+        /// after a successful provider open so query/list reach the GXPublic
+        /// metadata path instead of being rejected as a cold native index.
+        /// </summary>
+        public void MarkLegacyMetadataIndexReady()
+        {
+            if (!GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver) return;
+
+            int objectCount = 0;
+            try
+            {
+                var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance
+                    .QueryObjects(null, null, out string metadataError);
+                if (metadataError == null && objects != null)
+                    objectCount = objects.Count;
+            }
+            catch
+            {
+                // The direct GXPublic operation will surface the provider error;
+                // the readiness flag only prevents the native-index gate from
+                // hiding that more useful error envelope.
+            }
+
+            _indexCacheService.MarkIndexComplete(objectCount);
+        }
+
         // Item 51 (Tier-S, EXPERIMENTAL) — capture IndexCacheService state to disk
         // before a warm reload. Returns a small JObject result the dispatcher
         // stitches into the soft-reload ack. Never throws — failures are surfaced
@@ -914,6 +942,7 @@ namespace GxMcp.Worker.Services
                     if (GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.OpenKB(target, out string openErr))
                     {
                         Environment.SetEnvironmentVariable("GX_KB_PATH", target);
+                        MarkLegacyMetadataIndexReady();
                         return Models.McpResponse.Ok(
                             target: target,
                             code: "GXMCP_KB_OPENED",
@@ -922,7 +951,17 @@ namespace GxMcp.Worker.Services
                                 ["kbPath"] = target,
                                 ["driver"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentDriver,
                                 ["major"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentMajor,
-                                ["progId"] = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ResolvedProgId
+                                ["progId"] = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ResolvedProgId,
+                                ["supportLevel"] = "basic-legacy",
+                                ["metadataOnly"] = true,
+                                ["capabilities"] = new JObject
+                                {
+                                    ["metadataQuery"] = "supported",
+                                    ["metadataList"] = "supported",
+                                    ["sourceParts"] = "unsupported",
+                                    ["objectMutation"] = "unsupported",
+                                    ["xpzTransfer"] = "unsupported"
+                                }
                             });
                     }
                     return openErr;
@@ -1286,24 +1325,115 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
+        private static string ParseLegacyMetadataQuery(string query, ref string typeFilter)
+        {
+            if (string.IsNullOrWhiteSpace(query)) return null;
+
+            var nameParts = new List<string>();
+            var freeParts = new List<string>();
+            foreach (string rawPart in query.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string part = rawPart.Trim();
+                if (part.StartsWith("type:", StringComparison.OrdinalIgnoreCase))
+                {
+                    typeFilter = part.Substring("type:".Length).Trim('"');
+                }
+                else if (part.StartsWith("name:", StringComparison.OrdinalIgnoreCase))
+                {
+                    nameParts.Add(part.Substring("name:".Length));
+                }
+                else if (!part.Contains(":"))
+                {
+                    freeParts.Add(part);
+                }
+            }
+
+            if (nameParts.Count > 0) return string.Join(" ", nameParts);
+            if (freeParts.Count > 0) return string.Join(" ", freeParts);
+            return null;
+        }
+
+        private static JObject BuildLegacyMetadataPage(
+            IList<GxMcp.Worker.Drivers.GxPublicObjectMetadata> rows,
+            int total,
+            int offset,
+            int limit,
+            string operation)
+        {
+            int safeOffset = Math.Max(0, offset);
+            int pageSize = limit <= 0 ? int.MaxValue : limit;
+            var page = rows.Skip(safeOffset).Take(pageSize).ToList();
+            var results = new JArray();
+            var names = new JArray();
+            foreach (var row in page)
+            {
+                var item = new JObject
+                {
+                    ["guid"] = JValue.CreateNull(),
+                    ["id"] = row.Id,
+                    ["name"] = row.Name,
+                    ["type"] = row.Type,
+                    ["description"] = row.Description,
+                    ["path"] = JValue.CreateNull(),
+                    ["modelName"] = row.ModelName,
+                    ["lastUpdate"] = row.LastUpdate,
+                    ["modelId"] = row.ModelId,
+                    ["classGuid"] = row.ClassGuid
+                };
+                results.Add(item);
+                names.Add(row.Name);
+            }
+
+            bool hasMore = safeOffset + page.Count < total;
+            return new JObject
+            {
+                ["count"] = page.Count,
+                ["total"] = total,
+                ["offset"] = safeOffset,
+                ["hasMore"] = hasMore,
+                ["nextOffset"] = hasMore ? (JToken)(safeOffset + page.Count) : JValue.CreateNull(),
+                ["results"] = results,
+                // Preserve the pre-existing COM branch field while publishing
+                // the canonical list/query `results` projection as well.
+                ["objects"] = names,
+                ["pagination"] = new JObject
+                {
+                    ["offset"] = safeOffset,
+                    ["limit"] = pageSize,
+                    ["returned"] = page.Count,
+                    ["total"] = total,
+                    ["hasMore"] = hasMore,
+                    ["nextOffset"] = hasMore ? (JToken)(safeOffset + page.Count) : JValue.CreateNull()
+                },
+                ["_meta"] = new JObject
+                {
+                    ["supportLevel"] = "basic-legacy",
+                    ["metadataOnly"] = true,
+                    ["driver"] = "com-gxpublic",
+                    ["operation"] = operation,
+                    ["sourceParts"] = "unsupported"
+                }
+            };
+        }
+
         private string Handle_Search(JObject request, string method, string action, string target, string payload, JObject args)
         {
             if (action == "Query")
             {
                 if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
                 {
-                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjects(args?["typeFilter"]?.ToString(), target, out string qErr);
+                    string typeFilter = args?["typeFilter"]?.ToString();
+                    string nameFilter = ParseLegacyMetadataQuery(target, ref typeFilter);
+                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjectMetadata(
+                        typeFilter,
+                        nameFilter,
+                        out string qErr,
+                        args?["exactMatch"]?.ToObject<bool?>() ?? false);
                     if (qErr != null) return Models.McpResponse.Err(code: "ComQueryError", message: qErr, target: target);
-                    var arr = new JArray();
-                    foreach (var obj in objects)
-                    {
-                        arr.Add(new JObject { ["name"] = obj });
-                    }
-                    return Models.McpResponse.Ok(code: "QueryResults", result: new JObject
-                    {
-                        ["objects"] = arr,
-                        ["total"] = arr.Count
-                    });
+                    int limit = args?["limit"]?.ToObject<int?>() ?? 50;
+                    return Models.McpResponse.Ok(
+                        code: "QueryResults",
+                        result: BuildLegacyMetadataPage(objects, objects.Count, 0, limit, "query"));
                 }
 
                 DateTime sinceArgQ = default(DateTime);
@@ -1387,18 +1517,24 @@ namespace GxMcp.Worker.Services
             {
                 if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
                 {
-                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjects(args?["typeFilter"]?.ToString(), args?["nameFilter"]?.ToString() ?? target, out string listErr);
+                    string typeFilter = args?["typeFilter"]?.ToString();
+                    string nameFilter = args?["nameFilter"]?.ToString() ?? target;
+                    nameFilter = ParseLegacyMetadataQuery(nameFilter, ref typeFilter) ?? nameFilter;
+                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjectMetadata(typeFilter, nameFilter, out string listErr);
                     if (listErr != null) return Models.McpResponse.Err(code: "ComListError", message: listErr, target: target);
-                    var arr = new JArray();
-                    foreach (var obj in objects)
+                    string descriptionFilter = args?["descriptionFilter"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(descriptionFilter))
                     {
-                        arr.Add(new JObject { ["name"] = obj });
+                        objects = objects
+                            .Where(item => (item.Description ?? string.Empty).IndexOf(descriptionFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                            .ToList();
                     }
-                    return Models.McpResponse.Ok(code: "ListObjects", result: new JObject
-                    {
-                        ["objects"] = arr,
-                        ["total"] = arr.Count
-                    });
+                    objects = objects.OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                    int offset = args?["offset"]?.ToObject<int?>() ?? 0;
+                    int limit = args?["limit"]?.ToObject<int?>() ?? 100;
+                    return Models.McpResponse.Ok(
+                        code: "ListObjects",
+                        result: BuildLegacyMetadataPage(objects, objects.Count, offset, limit, "list"));
                 }
 
                 DateTime sinceArg = default(DateTime);
@@ -1442,6 +1578,20 @@ namespace GxMcp.Worker.Services
                 string partContent = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ReadObjectPart(target, partName, out string readErr);
                 if (readErr != null)
                 {
+                    if (readErr.StartsWith("GXPUBLIC_SOURCE_UNSUPPORTED:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Models.McpResponse.Err(
+                            code: "UNSUPPORTED_IN_GENEXUS_VERSION",
+                            message: readErr.Substring("GXPUBLIC_SOURCE_UNSUPPORTED:".Length).Trim(),
+                            hint: GxMcp.Worker.Compatibility.DynamicSdkBridge.GetComAlternativeGuidance("genexus_read"),
+                            target: target,
+                            errorExtra: new JObject
+                            {
+                                ["driver"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentDriver,
+                                ["currentMajor"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentMajor,
+                                ["capability"] = "source-parts"
+                            });
+                    }
                     return Models.McpResponse.Err(code: "ComReadError", message: readErr, target: target);
                 }
                 return Models.McpResponse.Ok(target: target, code: "ObjectPart", result: new JObject

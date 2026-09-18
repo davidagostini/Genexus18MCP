@@ -23,6 +23,57 @@ namespace GxMcp.Gateway
     partial class Program
     {
 
+        private static readonly HashSet<string> KbDriverProfiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "native-sdk",
+            "dotnet-reflection",
+            "com-gxpublic"
+        };
+
+        private static void ValidateKbOpenOverrides(string? driver, string? installationPath, string? major)
+        {
+            if (!string.IsNullOrWhiteSpace(driver) && !KbDriverProfiles.Contains(driver.Trim()))
+                throw new ArgumentException($"Unsupported KB driver '{driver}'. Use native-sdk, dotnet-reflection, or com-gxpublic.");
+
+            if (!string.IsNullOrWhiteSpace(installationPath) && !Directory.Exists(installationPath.Trim()))
+                throw new ArgumentException($"KB installationPath does not exist: {installationPath}");
+
+            if (!string.IsNullOrWhiteSpace(major) && !GeneXusVersionCatalog.IsSupportedOrLegacy(major.Trim()))
+                throw new ArgumentException($"KB major '{major}' is outside the compatibility catalog.");
+
+            string? expectedDriver = GeneXusVersionCatalog.GetDriverProfile(major);
+            if (!string.IsNullOrWhiteSpace(driver)
+                && !string.IsNullOrWhiteSpace(expectedDriver)
+                && !string.Equals(driver.Trim(), expectedDriver, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"KB driver '{driver}' does not match catalog major '{major}' (expected '{expectedDriver}').");
+            }
+        }
+
+        private static KbHandle ApplyKbOpenOverrides(KbHandle handle, JObject? args)
+        {
+            string? driver = args?["driver"]?.ToString();
+            string? installationPath = args?["installationPath"]?.ToString();
+            string? major = args?["major"]?.ToString();
+            ValidateKbOpenOverrides(driver, installationPath, major);
+            if (!string.IsNullOrWhiteSpace(driver)
+                && !string.Equals(driver, "native-sdk", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrWhiteSpace(installationPath)
+                && string.IsNullOrWhiteSpace(handle.InstallationPath))
+            {
+                throw new ArgumentException($"KB driver '{driver}' requires installationPath so this KB does not inherit the global GeneXus installation.");
+            }
+            if (string.IsNullOrWhiteSpace(driver) && string.IsNullOrWhiteSpace(installationPath) && string.IsNullOrWhiteSpace(major))
+                return handle;
+
+            return new KbHandle(
+                handle.Alias,
+                handle.Path,
+                installationPath ?? handle.InstallationPath,
+                driver ?? handle.Driver,
+                major ?? handle.Major);
+        }
+
         internal static bool UpsertKbCatalogEntry(JObject environment, string alias, string path)
         {
             if (environment == null) throw new ArgumentNullException(nameof(environment));
@@ -163,7 +214,7 @@ namespace GxMcp.Gateway
                                 ["defaultKb"] = configuredAlias,
                                 ["declaredKbs"] = JArray.FromObject(
                                     (_activeConfig?.Environment?.KBs ?? new List<KbEntry>())
-                                        .Select(k => new { alias = k.Alias, path = k.Path }))
+                                        .Select(k => new { alias = k.Alias, path = k.Path, driver = k.Driver, installationPath = k.InstallationPath, major = k.Major }))
                             };
                             // Terse mode: the list action is a health snapshot; strip
                             // process telemetry (workingSet/pid/idle) and redundant
@@ -415,15 +466,26 @@ namespace GxMcp.Gateway
                                     isError = true;
                                     payload = new JObject
                                     {
-                                        ["error"] = $"'{path}' is not a GeneXus Knowledge Base root: no .gxw file and no knowledgebase.connection found. "
-                                            + "Point at the KB folder that contains the .gxw (not an environment/model subfolder).",
+                                        ["error"] = $"'{path}' is not a GeneXus Knowledge Base root: no modern .gxw/knowledgebase.connection marker and no classic DAT markers (DATA001, GXSPC001, kbdata, ATTRIBUT.DAT, or ATT.XPW). "
+                                            + "Point at the KB folder, not an environment/model subfolder.",
                                         ["code"] = "KbInvalidPath",
                                         ["path"] = path
                                     };
                                     return BuildToolTextResponse(idToken, payload, isError, "genexus_kb", args, payloadOwned: true);
                                 }
 
-                                handleToOpen = new KbHandle(finalAlias, path!);
+                                var declaredForPath = _activeConfig?.Environment?.KBs?.FirstOrDefault(entry =>
+                                {
+                                    if (!string.Equals(entry.Alias, finalAlias, StringComparison.OrdinalIgnoreCase)) return false;
+                                    try
+                                    {
+                                        return string.Equals(Path.GetFullPath(entry.Path), Path.GetFullPath(path!), StringComparison.OrdinalIgnoreCase);
+                                    }
+                                    catch { return string.Equals(entry.Path, path, StringComparison.OrdinalIgnoreCase); }
+                                });
+                                handleToOpen = declaredForPath != null
+                                    ? KbHandle.FromEntry(declaredForPath)
+                                    : new KbHandle(finalAlias, path!);
                             }
                             // No path → resolve the alias against config-declared KBs.
                             else if (!string.IsNullOrWhiteSpace(alias) && _activeConfig != null)
@@ -435,6 +497,7 @@ namespace GxMcp.Gateway
                                 throw new ArgumentException("Provide 'path' (ad-hoc) or 'alias' of a KB declared in config.Environment.KBs[].");
                             }
 
+                            handleToOpen = ApplyKbOpenOverrides(handleToOpen, args);
                             var w = await _workerPool.AcquireAsync(handleToOpen, CancellationToken.None);
                             TriggerIndexBootstrapOnce(handleToOpen.NormalizedAlias);
                             // Opening a worker must not mutate the persisted default or
@@ -455,6 +518,9 @@ namespace GxMcp.Gateway
                             {
                                 ["opened"] = handleToOpen.Alias,
                                 ["path"] = handleToOpen.Path,
+                                ["driver"] = handleToOpen.Driver,
+                                ["installationPath"] = handleToOpen.InstallationPath,
+                                ["major"] = handleToOpen.Major,
                                 ["workerPid"] = w?.Pid,
                                 ["selected"] = selected,
                                 ["active"] = selected,
@@ -576,7 +642,7 @@ namespace GxMcp.Gateway
                         throw new ArgumentException($"Unknown action '{action}'. Use warm_spares.");
                     int spareCount = args?["spareCount"]?.ToObject<int?>() ?? args?["count"]?.ToObject<int?>() ?? 0;
                     var declared = (_activeConfig?.Environment?.KBs ?? new List<KbEntry>())
-                        .Select(k => new KbHandle(k.Alias, k.Path))
+                        .Select(KbHandle.FromEntry)
                         .ToList();
                     var result = await _workerPool.ConfigureWarmSpares(spareCount, declared);
                     payload = new JObject
