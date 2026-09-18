@@ -1,13 +1,13 @@
 {
   "schema": "gxmcp-release-issues/1",
-  "version": "3.5.3",
-  "tag": "v3.5.3",
-  "collectedAtUtc": "2026-09-16T02:13:12.5077769Z",
+  "version": "3.6.0",
+  "tag": "v3.6.0",
+  "collectedAtUtc": "2026-09-18T03:42:37.5969176Z",
   "issues": [
     {
-      "number": 205,
-      "title": "Sugestão: delimitar escopo de genexus_edit mode=patch",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/205",
+      "number": 210,
+      "title": "[Docs] Checkout local: `npx clients add` pode reescrever o launcher do `install.ps1`",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/210",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -15,9 +15,9 @@
       "milestone": null
     },
     {
-      "number": 206,
-      "title": "Sugestão: validar indentação em genexus_edit mode=patch",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/206",
+      "number": 211,
+      "title": "[Bug] npm test no Windows: stub do gateway (cópia de cmd.exe) pode deixar o after-hook falhar com EPERM",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/211",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -25,9 +25,9 @@
       "milestone": null
     },
     {
-      "number": 207,
-      "title": "[Bug] genexus-mcp --version/-v/\u000bersion encerram com exit 0 sem imprimir a versão",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/207",
+      "number": 212,
+      "title": "[Bug] `records_query` falha após a troca de environment e pode resolver o datastore fora do `TargetModel` ativo",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/212",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -35,9 +35,9 @@
       "milestone": null
     },
     {
-      "number": 208,
-      "title": "Bug: WriteMetaSidecar incondicional pula objetos alterados em warm start",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/208",
+      "number": 215,
+      "title": "[Contrato/Bug] genexus_worker_reload force=true reinicia o pool e não aplica sourceDir em mode=hard",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/215",
       "state": "open",
       "labels": [
         "fixed-pending-release"
@@ -45,9 +45,109 @@
       "milestone": null
     },
     {
-      "number": 209,
-      "title": "Freshness gate: decisão de política e janela de bloqueio inconsistente (follow-up #196)",
-      "url": "https://github.com/lennix1337/Genexus18MCP/issues/209",
+      "number": 216,
+      "title": "[OpenCode] Possível divergência quando opencode.json e opencode.jsonc coexistem",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/216",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 217,
+      "title": "genexus_create Transaction auto-seeds a \"<Name>Id\" attribute that can't be removed; update_visual rollback leaves orphan global attributes",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/217",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 218,
+      "title": "[GX17] `Could not load type Artech.Genexus.Common.Objects.SuperApp` breaks create, save_as, delete, sql_ddl, wwp and not-found resolution",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/218",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 219,
+      "title": "Gateway does not exit on stdin EOF: orphan keeps worker ownership and the next session sees a false \"cold start\"",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/219",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 220,
+      "title": "[GX17] Full index rebuild stalls silently after `[LITE-ENUM]`; `index force=true` is refused with `AlreadyInProgress`",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/220",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 221,
+      "title": "`genexus_transfer import` reports \"no import was attempted\" but creates the object with every part empty",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/221",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 223,
+      "title": "[GX17] `genexus_kb action=list_environments` and `action=get_environment` return JSON-RPC `Internal error`",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/223",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 224,
+      "title": "[GX17] `genexus_db action=sql_navigation` builds SQL from concatenated node text",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/224",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 225,
+      "title": "KB lease expires about 20 minutes after `select` even with continuous `kb`-explicit calls",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/225",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 226,
+      "title": "[GX17] `specify` of an existing Main procedure: \"object not found in the Knowledge Base\", `Status: Failed` with `ExitCode: 0`, and `status wait` does not block",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/226",
+      "state": "open",
+      "labels": [
+        "fixed-pending-release"
+      ],
+      "milestone": null
+    },
+    {
+      "number": 227,
+      "title": "Smaller contract gaps: dryRun without target resolution, status wait vs worker timeout, delete preview needs confirm, pathPrefix, callers edges",
+      "url": "https://github.com/lennix1337/Genexus18MCP/issues/227",
       "state": "open",
       "labels": [
         "fixed-pending-release"

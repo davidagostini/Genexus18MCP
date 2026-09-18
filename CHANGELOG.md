@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## v3.6.0 - 2026-09-18
+
+
+### Tracked issues
+
+- [#210](https://github.com/lennix1337/Genexus18MCP/issues/210) — [Docs] Checkout local: `npx clients add` pode reescrever o launcher do `install.ps1`
+- [#211](https://github.com/lennix1337/Genexus18MCP/issues/211) — [Bug] npm test no Windows: stub do gateway (cópia de cmd.exe) pode deixar o after-hook falhar com EPERM
+- [#212](https://github.com/lennix1337/Genexus18MCP/issues/212) — [Bug] `records_query` falha após a troca de environment e pode resolver o datastore fora do `TargetModel` ativo
+- [#215](https://github.com/lennix1337/Genexus18MCP/issues/215) — [Contrato/Bug] genexus_worker_reload force=true reinicia o pool e não aplica sourceDir em mode=hard
+- [#216](https://github.com/lennix1337/Genexus18MCP/issues/216) — [OpenCode] Possível divergência quando opencode.json e opencode.jsonc coexistem
+- [#217](https://github.com/lennix1337/Genexus18MCP/issues/217) — genexus_create Transaction auto-seeds a "<Name>Id" attribute that can't be removed; update_visual rollback leaves orphan global attributes
+- [#218](https://github.com/lennix1337/Genexus18MCP/issues/218) — [GX17] `Could not load type Artech.Genexus.Common.Objects.SuperApp` breaks create, save_as, delete, sql_ddl, wwp and not-found resolution
+- [#219](https://github.com/lennix1337/Genexus18MCP/issues/219) — Gateway does not exit on stdin EOF: orphan keeps worker ownership and the next session sees a false "cold start"
+- [#220](https://github.com/lennix1337/Genexus18MCP/issues/220) — [GX17] Full index rebuild stalls silently after `[LITE-ENUM]`; `index force=true` is refused with `AlreadyInProgress`
+- [#221](https://github.com/lennix1337/Genexus18MCP/issues/221) — `genexus_transfer import` reports "no import was attempted" but creates the object with every part empty
+- [#223](https://github.com/lennix1337/Genexus18MCP/issues/223) — [GX17] `genexus_kb action=list_environments` and `action=get_environment` return JSON-RPC `Internal error`
+- [#224](https://github.com/lennix1337/Genexus18MCP/issues/224) — [GX17] `genexus_db action=sql_navigation` builds SQL from concatenated node text
+- [#225](https://github.com/lennix1337/Genexus18MCP/issues/225) — KB lease expires about 20 minutes after `select` even with continuous `kb`-explicit calls
+- [#226](https://github.com/lennix1337/Genexus18MCP/issues/226) — [GX17] `specify` of an existing Main procedure: "object not found in the Knowledge Base", `Status: Failed` with `ExitCode: 0`, and `status wait` does not block
+- [#227](https://github.com/lennix1337/Genexus18MCP/issues/227) — Smaller contract gaps: dryRun without target resolution, status wait vs worker timeout, delete preview needs confirm, pathPrefix, callers edges
+
+
 ### Added
 
 - **Permanent live reload/lifecycle smoke promoted to `scripts/tests/test-live-reload-smoke.ps1`.** Parameterized, fail-closed smoke (`0` pass / `1` fail / `2` unavailable) that validates soft drain+replace reload, forced alias reload through the shared restore core, the `mode=hard` guards, lifecycle status/long-poll and the whoami SDK version smoke end to end against a real KB, with an isolated config, structured summary JSON and dedicated `GXMCP_LOG_DIR` per run. Documented in `docs/live-kb-test-harness.md`.
