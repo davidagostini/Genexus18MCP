@@ -99,12 +99,13 @@ namespace GxMcp.Gateway.Tests
 
             var renewed = registry.Renew(lease.Token, "session-a", TimeSpan.FromMinutes(10));
             Assert.Equal(KbUseLeaseOperationStatus.Success, renewed.Status);
-            Assert.True(store.RefreshLease("session-a", renewed.Lease!));
+            var renewedLease = renewed.Lease!;
+            Assert.True(store.RefreshLease("session-a", renewedLease));
             Assert.True(store.TryGetSnapshot("session-a", out var snapshot));
             Assert.Equal("orders", snapshot!.KbId);
             Assert.Equal(1, snapshot.ContextGeneration);
-            Assert.Equal(renewed.Lease.Token, snapshot.Lease!.Token);
-            Assert.Equal(renewed.Lease.ExpiresAt, snapshot.Lease.ExpiresAt);
+            Assert.Equal(renewedLease.Token, snapshot.Lease!.Token);
+            Assert.Equal(renewedLease.ExpiresAt, snapshot.Lease.ExpiresAt);
         }
 
         [Fact]

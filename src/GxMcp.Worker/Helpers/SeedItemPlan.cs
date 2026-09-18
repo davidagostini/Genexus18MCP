@@ -1,3 +1,5 @@
+#nullable enable
+
 using System;
 
 namespace GxMcp.Worker.Helpers
@@ -29,14 +31,14 @@ namespace GxMcp.Worker.Helpers
         {
             string itemName = string.IsNullOrWhiteSpace(requestedName)
                 ? trnName + "Id"
-                : NormalizeIdentifier(requestedName);
+                : NormalizeIdentifier(requestedName!);
             return new SeedItemPlan(itemName, ResolveType(requestedType, DefaultTransactionKeyType));
         }
 
         public static SeedItemPlan ForSdt(string? requestedName, string? requestedType)
         {
             return new SeedItemPlan(
-                string.IsNullOrWhiteSpace(requestedName) ? SdtDefault.ItemName : NormalizeIdentifier(requestedName),
+                string.IsNullOrWhiteSpace(requestedName) ? SdtDefault.ItemName : NormalizeIdentifier(requestedName!),
                 ResolveType(requestedType, SdtDefault.ItemType));
         }
 
@@ -53,6 +55,6 @@ namespace GxMcp.Worker.Helpers
             => value.Trim().TrimStart('&');
 
         private static string ResolveType(string? requestedType, string fallback)
-            => string.IsNullOrWhiteSpace(requestedType) ? fallback : requestedType.Trim();
+            => string.IsNullOrWhiteSpace(requestedType) ? fallback : requestedType!.Trim();
     }
 }
