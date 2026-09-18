@@ -44,10 +44,27 @@ foreach ($invalid in @('01.2.3', '1.02.3', '1.2.03', '1.2', '1.2.3-01')) {
 $issueReferenceDefinition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-ChangelogIssueReferences' }, $true)
 if (-not $issueReferenceDefinition) { throw 'Canonical release entrypoint is missing changelog issue-reference validation.' }
 . ([scriptblock]::Create($issueReferenceDefinition.Extent.Text))
-Assert-ChangelogIssueReferences -IssueNumbers @(210, 227)
-$missingIssueReferenceFailed = $false
-try { Assert-ChangelogIssueReferences -IssueNumbers @(999999) } catch { $missingIssueReferenceFailed = $true }
-if (-not $missingIssueReferenceFailed) { throw 'Missing changelog issue reference was accepted.' }
+# Validate the issue-reference gate against an isolated fixture so the check
+# stays hermetic: mid-release the real CHANGELOG has already promoted its
+# ## Unreleased content to the version heading, which is a valid state.
+$fixtureChangelog = Join-Path $env:TEMP ('gxmcp-changelog-' + [guid]::NewGuid().ToString('N') + '.md')
+try {
+    @('# Changelog', '', '## Unreleased', '', '- Fixed a thing ([#210](https://github.com/lennix1337/Genexus18MCP/issues/210)) and another ([#227](https://github.com/lennix1337/Genexus18MCP/issues/227)).', '', '## v0.0.1 - 2026-01-01', '', '- Older.') -join "`r`n" | Set-Content -LiteralPath $fixtureChangelog -Encoding utf8
+    Assert-ChangelogIssueReferences -IssueNumbers @(210, 227) -ChangelogPath $fixtureChangelog -Version '0.0.2'
+    $missingIssueReferenceFailed = $false
+    try { Assert-ChangelogIssueReferences -IssueNumbers @(999999) -ChangelogPath $fixtureChangelog -Version '0.0.2' } catch { $missingIssueReferenceFailed = $true }
+    if (-not $missingIssueReferenceFailed) { throw 'Missing changelog issue reference was accepted.' }
+
+    # Mid-release rerun state: the links were already promoted under the
+    # version heading and ## Unreleased is empty; the gate must accept it.
+    @('# Changelog', '', '## Unreleased', '', '## v0.0.2 - 2026-01-02', '', '### Tracked issues', '', '- [#210](https://github.com/lennix1337/Genexus18MCP/issues/210) — one', '- [#227](https://github.com/lennix1337/Genexus18MCP/issues/227) — two', '', '## v0.0.1 - 2026-01-01', '', '- Older.') -join "`r`n" | Set-Content -LiteralPath $fixtureChangelog -Encoding utf8
+    Assert-ChangelogIssueReferences -IssueNumbers @(210, 227) -ChangelogPath $fixtureChangelog -Version '0.0.2'
+    $promotedGateFailed = $false
+    try { Assert-ChangelogIssueReferences -IssueNumbers @(210, 227) -ChangelogPath $fixtureChangelog -Version '0.0.3' } catch { $promotedGateFailed = $true }
+    if (-not $promotedGateFailed) { throw 'Promoted issue links satisfied a gate for a different version.' }
+} finally {
+    Remove-Item -LiteralPath $fixtureChangelog -ErrorAction SilentlyContinue
+}
 $lockDefinition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-LockfileVersion' }, $true)
 if (-not $lockDefinition) { throw 'Canonical release script is missing lockfile synchronization.' }
 . ([scriptblock]::Create($lockDefinition.Extent.Text))
