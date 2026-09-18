@@ -12,6 +12,9 @@
 ### Fixed
 
 - [#237](https://github.com/lennix1337/Genexus18MCP/issues/237) **Legacy KBs can now be routed per KB.** `genexus_kb action=open` and `Environment.KBs` accept `driver`, `installationPath`, and `major`; GX8 classic DAT roots are recognized, `gxw80` is discoverable from the ARTech `Setup\\80` registry entry, GXPublic ProgIDs are checked before worker spawn, and provider absence fails with a structured diagnostic instead of a misleading `no_worker`/`IndexNotReady` state.
+- [#234](https://github.com/lennix1337/Genexus18MCP/issues/234) **`records_query` now preserves safe database-failure context.** Provider errors retain the active environment/datastore, provider family, phase, exception type, provider code/state and sanitized message, while persistence flags and diagnostic context survive the canonical error envelope without exposing credentials, connection strings, parameters or record values.
+- [#235](https://github.com/lennix1337/Genexus18MCP/issues/235) **Datastore diagnostics now resolve the active environment only.** `db_info`, `whoami`'s database block and the KB-open datastore probe share the TargetModel-only resolver, so a DesignModel datastore cannot shadow the selected environment; unresolved metadata is reported explicitly.
+- [#236](https://github.com/lennix1337/Genexus18MCP/issues/236) **`records_query` now supports PostgreSQL datastores.** PostgreSQL/Npgsql detection accepts provider and DBMS descriptors, builds safe Host/Database/Search Path connection metadata when needed, resolves the bundled Npgsql factory and emits PostgreSQL identifier/limit SQL.
 
 ## v3.6.1 - 2026-09-18
 

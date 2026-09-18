@@ -82,7 +82,9 @@ namespace GxMcp.Worker.Services
 
             // Remove the least useful collection rows first until the result
             // fits. Rows are never sliced into invalid JSON or partial strings.
-            foreach (string name in CollectionNames.Reverse())
+            // Npgsql brings System.Memory into the net48 compile graph; qualify LINQ
+            // because Span<T>.Reverse() is a void extension with the same syntax.
+            foreach (string name in Enumerable.Reverse(CollectionNames))
             {
                 if (Fits(projected, budget)) break;
                 var array = projected[name] as JArray;

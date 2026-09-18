@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
@@ -27,7 +29,7 @@ namespace GxMcp.Worker.Tests
                     new AttributeMetadata { Name = "Stamp", Type = "INT" } });
                 Metadata.Keys.Add(key);
                 Database = new DatabaseMetadata { KbIdentity = "synthetic-kb", EnvironmentIdentity = "synthetic-env",
-                    Name = "Default", Family = "sqlserver", Schema = "dbo", Factory = Db, ConnectionString = "synthetic" };
+                    Name = "Default", Family = "sqlserver", Provider = "System.Data.SqlClient", Schema = "dbo", Factory = Db, ConnectionString = "synthetic" };
                 Service = new TransactionRecordsService(_ => Metadata, _ => Database);
                 Db.Rows.AddRange(Enumerable.Range(1, count).Select(i => TransactionRecordsFakeDatabase.Row(i)));
             }
@@ -71,6 +73,135 @@ namespace GxMcp.Worker.Tests
         [InlineData("oracle", "\"sales\".\"Order\"")]
         public void IdentifiersAreQuotedByProvider(string family, string expected)
             => Assert.Equal(expected, QuoteIdentifier("sales.Order", family));
+
+        [Theory]
+        [InlineData("Npgsql", 0, "postgres")]
+        [InlineData("PostgreSQL", 0, "postgres")]
+        [InlineData(null, 6, "postgres")]
+        [InlineData("System.Data.SqlClient", 0, "sqlserver")]
+        public void DetectFamily_RecognizesPostgreSqlProviderAndDbms(string provider, int dbms, string expected)
+            => Assert.Equal(expected, DetectFamily(provider, dbms));
+
+        [Fact]
+        public void PostgresFactory_IsAvailableForNativeRecordsAdapter()
+        {
+            var factory = ResolveFactory("Npgsql", "postgres");
+            Assert.Equal("Npgsql.NpgsqlFactory", factory.GetType().FullName);
+        }
+
+        [Fact]
+        public void PostgresConnectionString_UsesDatabaseSchemaAndTimeouts()
+        {
+            string connection = BuildPostgresConnectionString("server", "database", "public", "user", "secret", integrated: false);
+
+            Assert.Contains("Host=server", connection);
+            Assert.Contains("Database=database", connection);
+            Assert.Contains("Search Path=public", connection);
+            Assert.Contains("Timeout=15", connection);
+            Assert.Contains("Command Timeout=15", connection);
+        }
+
+        [Fact]
+        public void PostgresConnectionString_EscapesDatastoreMetadata()
+        {
+            string connection = BuildPostgresConnectionString(
+                "server;evil=1", "database;evil", "public;drop", "user;evil", "secret;evil", integrated: false, port: "5432");
+            var parsed = new DbConnectionStringBuilder { ConnectionString = connection };
+
+            Assert.Equal("server;evil=1", parsed["Host"]?.ToString());
+            Assert.Equal("database;evil", parsed["Database"]?.ToString());
+            Assert.Equal("public;drop", parsed["Search Path"]?.ToString());
+            Assert.Equal("5432", parsed["Port"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData("db2")]
+        [InlineData("informix")]
+        [InlineData("saphana")]
+        [InlineData("unknown")]
+        public void UnsupportedRecordFamilies_AreRejectedBeforeSqlGeneration(string family)
+        {
+            Assert.False(IsSupportedRecordFamily(family));
+        }
+
+        [Fact]
+        public void PostgresSelect_UsesPostgresLimitAndQuotedIdentifiers()
+        {
+            var f = new Fixture();
+            f.Database.Family = "postgres";
+            f.Database.Provider = "Npgsql";
+            f.Database.Bind(f.Metadata);
+            using (var connection = f.Db.CreateConnection())
+            using (var command = BuildSelect(connection, f.Metadata, f.Metadata.Attributes, null, 5, null, f.Database))
+            {
+                Assert.Contains("SELECT \"Id\", \"Value\", \"Stamp\"", command.CommandText);
+                Assert.Contains("FROM \"dbo\".\"SyntheticRecord\"", command.CommandText);
+                Assert.EndsWith(" LIMIT 5", command.CommandText);
+            }
+        }
+
+        [Fact]
+        public void QueryWithNoRows_RemainsSuccessfulWithEmptyRecords()
+        {
+            var f = new Fixture(0);
+            var response = f.Execute("QueryRecords", new JObject { ["limit"] = 5 });
+
+            Assert.Equal("ok", response["status"]?.Value<string>());
+            Assert.Equal("TransactionRecordsRead", response["code"]?.Value<string>());
+            Assert.Empty((JArray)response["result"]["records"]);
+            Assert.Equal(0, response["result"]["matchedCount"]?.Value<int>());
+        }
+
+        [Theory]
+        [InlineData(false, "open")]
+        [InlineData(true, "execute")]
+        public void DatabaseFailure_PreservesSanitizedContextAndPersistenceState(bool executeFailure, string expectedPhase)
+        {
+            var f = new Fixture();
+            f.Db.ThrowOnOpen = !executeFailure;
+            f.Db.ThrowOnExecuteReader = executeFailure;
+            var response = f.Execute("QueryRecords", new JObject { ["limit"] = 5 });
+            var error = Error(response, "TransactionRecordsDatabaseFailed");
+            var details = Assert.IsType<JObject>(error["details"]);
+
+            Assert.Equal(expectedPhase, details["phase"]?.Value<string>());
+            Assert.Equal("FakeDbException", details["exceptionType"]?.Value<string>());
+            Assert.Equal(4060, details["providerCode"]?.Value<int>());
+            Assert.Equal("sqlserver", details["providerFamily"]?.Value<string>());
+            Assert.Equal("synthetic-env", details["environment"]?.Value<string>());
+            Assert.Equal("Default", details["dataStore"]?.Value<string>());
+            Assert.Contains("database provider failed", error["diagnostic"]?.Value<string>());
+            Assert.False(error["persisted"]?.Value<bool>());
+            Assert.False(error["rereadConfirmed"]?.Value<bool>());
+            Assert.DoesNotContain("super-secret", response.ToString());
+            Assert.DoesNotContain("secret-host", response.ToString());
+            Assert.DoesNotContain("record-value", response.ToString());
+        }
+
+        [Fact]
+        public void DatabaseFailure_ReadPhaseIsRepresentedWithoutSensitiveText()
+        {
+            var f = new Fixture();
+            var exception = new TransactionRecordsFakeDatabase.FakeDbException(4060, "read failed for user 'db-user'; Password=super-secret");
+            var details = BuildDatabaseFailureDetails("read", exception, f.Database);
+
+            Assert.Equal("read", details["phase"]?.Value<string>());
+            Assert.Equal(4060, details["providerCode"]?.Value<int>());
+            Assert.DoesNotContain("super-secret", details.ToString());
+            Assert.DoesNotContain("db-user", details.ToString());
+        }
+
+        [Fact]
+        public void NonDbConnectionSetupFailure_UsesSanitizedDatabaseEnvelope()
+        {
+            var f = new Fixture();
+            f.Db.ThrowOnNonDatabaseOpen = true;
+            var error = Error(f.Execute("QueryRecords", new JObject { ["limit"] = 1 }), "TransactionRecordsDatabaseFailed");
+
+            Assert.Equal("open", error["details"]?["phase"]?.ToString());
+            Assert.Equal("ArgumentException", error["details"]?["exceptionType"]?.ToString());
+            Assert.DoesNotContain("connection setup secret", error.ToString());
+        }
 
         [Theory]
         [InlineData(false)]

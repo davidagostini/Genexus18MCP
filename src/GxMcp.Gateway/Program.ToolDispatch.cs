@@ -882,6 +882,8 @@ namespace GxMcp.Gateway
                             || string.Equals(innerErrObj["status"]?.ToString(), "NotImplemented", StringComparison.OrdinalIgnoreCase);
                         if (innerHasError) isErr = true;
                     }
+                    if (!isErr && OperationClassifier.IsKbEnvironmentMutation(tName, lcAction))
+                        InvalidateDatabaseInfoCache(kbScope);
 
                     if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
                     {

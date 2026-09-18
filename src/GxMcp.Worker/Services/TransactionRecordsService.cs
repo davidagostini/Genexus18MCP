@@ -8,6 +8,7 @@ using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Artech.Genexus.Common.Objects;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -87,14 +88,9 @@ namespace GxMcp.Worker.Services
             }
             catch (DbException ex)
             {
-                Logger.Error("[TRANSACTION-RECORDS] datastore failure: " + ex.GetType().Name);
-                return Error("TransactionRecordsDatabaseFailed", "The datastore rejected the Transaction records operation.", "Check the active datastore and retry; no GeneXus lifecycle action was run.", target,
-                    new JObject
-                    {
-                        ["persisted"] = false,
-                        ["rereadConfirmed"] = false,
-                        ["diagnostic"] = "The database provider returned an error; connection details were omitted."
-                    });
+                var failure = CreateDatabaseFailure("unknown", ex, null);
+                Logger.Error("[TRANSACTION-RECORDS] " + failure.Extra["diagnostic"]);
+                return Error(failure.Code, failure.Message, failure.Hint, target, failure.Extra);
             }
             catch (Exception ex)
             {
@@ -111,15 +107,13 @@ namespace GxMcp.Worker.Services
             var fields = ResolveFields(metadata, args["fields"] as JArray);
             int limit = ClampLimit(args["limit"]?.Value<int?>() ?? DefaultLimit);
             var db = OpenDatabase(args);
-            using (var connection = db.Factory.CreateConnection())
+            using (var connection = OpenConnection(db))
             {
                 db.Bind(metadata);
-                connection.ConnectionString = db.ConnectionString;
-                connection.Open();
                 using (var command = BuildSelect(connection, metadata, fields, filters, limit + 1, null, db))
                 {
                     command.CommandTimeout = ReadTimeout(args);
-                    var rows = ReadRows(command, fields);
+                    var rows = ReadRows(command, fields, db);
                     var result = BuildReadResult(metadata, db, fields, filters, rows, limit);
                     return McpResponse.Ok(target: metadata.Name, code: "TransactionRecordsRead", result: result);
                 }
@@ -180,11 +174,9 @@ namespace GxMcp.Worker.Services
             int timeout = ReadTimeout(args);
             try
             {
-                using (var connection = db.Factory.CreateConnection())
+                using (var connection = OpenConnection(db))
                 {
-                    connection.ConnectionString = db.ConnectionString;
-                    connection.Open();
-                    using (var tx = connection.BeginTransaction(IsolationLevel.Serializable))
+                    using (var tx = BeginTransaction(connection, db))
                     {
                         try
                         {
@@ -224,7 +216,8 @@ namespace GxMcp.Worker.Services
                             if (!VerifyRows(metadata, isInsert, normalizedValues, snapshot, expectedAfter, managedFields))
                                 throw new RecordOperationException("WriteVerificationFailed", "The write did not round-trip inside the transaction.", "Inspect the values and explicitly declare database-managed fields where appropriate.");
                             commitAttempted = true;
-                            tx.Commit();
+                            try { tx.Commit(); }
+                            catch (Exception ex) { throw CreateDatabaseFailure("execute", ex, db); }
                             commitConfirmed = true;
                         }
                         catch
@@ -240,10 +233,8 @@ namespace GxMcp.Worker.Services
                 }
 
                 var finalFilters = isInsert ? BuildKeyFilter(metadata, normalizedValues) : BuildKeyFilterForRows(metadata, snapshot);
-                using (var reread = db.Factory.CreateConnection())
+                using (var reread = OpenConnection(db))
                 {
-                    reread.ConnectionString = db.ConnectionString;
-                    reread.Open();
                     persisted = SelectRows(reread, null, db, metadata, finalFilters, timeout);
                 }
                 // Compare the complete observed state, including database-managed fields.
@@ -308,7 +299,7 @@ namespace GxMcp.Worker.Services
             using (var command = BuildSelect(connection, metadata, metadata.Attributes, filters, 2, tx, db))
             {
                 command.CommandTimeout = timeout;
-                return ReadRows(command, metadata.Attributes);
+                return ReadRows(command, metadata.Attributes, db);
             }
         }
 
@@ -386,11 +377,12 @@ namespace GxMcp.Worker.Services
             Dictionary<string, JToken> values, List<JObject> before, out JToken generatedKey, int timeout)
         {
             generatedKey = null;
-            var command = connection.CreateCommand();
-            command.Transaction = tx;
-            command.CommandTimeout = timeout;
+            DbCommand command = null;
             try
             {
+                command = connection.CreateCommand();
+                command.Transaction = tx;
+                command.CommandTimeout = timeout;
                 if (isInsert)
                 {
                     var missingKeys = db.Keys.Where(k => !values.ContainsKey(k.Name)).ToList();
@@ -412,7 +404,8 @@ namespace GxMcp.Worker.Services
                         + (missingKeys.Count == 1 ? "; SELECT @generatedKey = Value FROM @generatedKeys" : "");
                     // Triggers may emit arbitrary result sets. Read only the typed
                     // output parameter after the whole batch has completed.
-                    command.ExecuteNonQuery();
+                    try { command.ExecuteNonQuery(); }
+                    catch (Exception ex) { throw CreateDatabaseFailure("execute", ex, db); }
                     generatedKey = keyOutput == null ? null : ToJsonToken(keyOutput.Value);
                     return;
                 }
@@ -426,17 +419,28 @@ namespace GxMcp.Worker.Services
                 if (affected != before.Count)
                     throw new RecordOperationException("ConcurrentWriteDetected", "The update affected a different number of rows than the locked snapshot.", "Retry with the versionToken returned by a fresh dry-run.");
             }
-            finally { command.Dispose(); }
+            catch (RecordOperationException) { throw; }
+            catch (Exception ex) { throw CreateDatabaseFailure("execute", ex, db); }
+            finally
+            {
+                try { command?.Dispose(); }
+                catch (Exception ex) { throw CreateDatabaseFailure("execute", ex, db); }
+            }
         }
 
         private static int ExecuteAffected(DbCommand command, DatabaseMetadata db)
         {
-            if (db.Family != "sqlserver") return command.ExecuteNonQuery();
+            if (db.Family != "sqlserver")
+            {
+                try { return command.ExecuteNonQuery(); }
+                catch (Exception ex) { throw CreateDatabaseFailure("execute", ex, db); }
+            }
             // ExecuteNonQuery includes trigger row counts and can return -1 under
             // NOCOUNT. @@ROWCOUNT identifies the outer statement's affected rows.
             var affected = AddOutputParameter(command, "@affectedRows", DbType.Int32);
             command.CommandText += "; SET @affectedRows = @@ROWCOUNT";
-            command.ExecuteNonQuery();
+            try { command.ExecuteNonQuery(); }
+            catch (Exception ex) { throw CreateDatabaseFailure("execute", ex, db); }
             if (affected.Value == null || affected.Value == DBNull.Value)
                 throw new RecordOperationException("AffectedRowsUnavailable", "The datastore did not return the statement row count.", "Inspect the provider before obtaining a new preview.");
             return Convert.ToInt32(affected.Value, CultureInfo.InvariantCulture);
@@ -493,19 +497,33 @@ namespace GxMcp.Worker.Services
         }
 
 
-        private static DbCommand BuildSelect(DbConnection connection, TransactionMetadata metadata, IList<AttributeMetadata> fields,
+        internal static DbCommand BuildSelect(DbConnection connection, TransactionMetadata metadata, IList<AttributeMetadata> fields,
             Dictionary<string, JToken> filters, int limit, DbTransaction tx, DatabaseMetadata db)
         {
-            var command = connection.CreateCommand();
-            command.Transaction = tx;
-            string selectLimit = string.Empty;
-            string suffix = string.Empty;
-            if (limit > 0 && db.Family == "sqlserver") selectLimit = "TOP " + limit.ToString(CultureInfo.InvariantCulture) + " ";
-            else if (limit > 0 && db.Family == "oracle") suffix = " FETCH FIRST " + limit.ToString(CultureInfo.InvariantCulture) + " ROWS ONLY";
-            else if (limit > 0 && (db.Family == "postgres" || db.Family == "mysql")) suffix = " LIMIT " + limit.ToString(CultureInfo.InvariantCulture);
-            command.CommandText = "SELECT " + selectLimit + string.Join(", ", fields.Select(a => QuoteIdentifier(a.Name, db.Family)))
-                + " FROM " + db.QualifiedTable + BuildWhere(command, db, filters, ParameterPrefix(db.Family), "f") + suffix;
-            return command;
+            DbCommand command = null;
+            try
+            {
+                command = connection.CreateCommand();
+                command.Transaction = tx;
+                string selectLimit = string.Empty;
+                string suffix = string.Empty;
+                if (limit > 0 && db.Family == "sqlserver") selectLimit = "TOP " + limit.ToString(CultureInfo.InvariantCulture) + " ";
+                else if (limit > 0 && db.Family == "oracle") suffix = " FETCH FIRST " + limit.ToString(CultureInfo.InvariantCulture) + " ROWS ONLY";
+                else if (limit > 0 && (db.Family == "postgres" || db.Family == "mysql")) suffix = " LIMIT " + limit.ToString(CultureInfo.InvariantCulture);
+                command.CommandText = "SELECT " + selectLimit + string.Join(", ", fields.Select(a => QuoteIdentifier(a.Name, db.Family)))
+                    + " FROM " + db.QualifiedTable + BuildWhere(command, db, filters, ParameterPrefix(db.Family), "f") + suffix;
+                return command;
+            }
+            catch (RecordOperationException)
+            {
+                try { command?.Dispose(); } catch { }
+                throw;
+            }
+            catch (Exception ex)
+            {
+                try { command?.Dispose(); } catch { }
+                throw CreateDatabaseFailure("execute", ex, db);
+            }
         }
 
         private static string BuildWhere(DbCommand command, DatabaseMetadata db, Dictionary<string, JToken> filters, string prefix, string parameterStem)
@@ -530,17 +548,36 @@ namespace GxMcp.Worker.Services
             return " WHERE " + string.Join(" AND ", clauses);
         }
 
-        private static List<JObject> ReadRows(DbCommand command, IList<AttributeMetadata> fields)
+        private static List<JObject> ReadRows(DbCommand command, IList<AttributeMetadata> fields, DatabaseMetadata db)
         {
             var rows = new List<JObject>();
-            using (var reader = command.ExecuteReader())
+            DbDataReader reader;
+            try { reader = command.ExecuteReader(); }
+            catch (Exception ex) { throw CreateDatabaseFailure("execute", ex, db); }
+
+            try
             {
-                while (reader.Read())
+                while (true)
                 {
+                    bool hasRow;
+                    try { hasRow = reader.Read(); }
+                    catch (Exception ex) { throw CreateDatabaseFailure("read", ex, db); }
+                    if (!hasRow) break;
+
                     var row = new JObject();
-                    for (int i = 0; i < fields.Count; i++) row[fields[i].Name] = ToJsonToken(reader.IsDBNull(i) ? null : reader.GetValue(i));
+                    try
+                    {
+                        for (int i = 0; i < fields.Count; i++)
+                            row[fields[i].Name] = ToJsonToken(reader.IsDBNull(i) ? null : reader.GetValue(i));
+                    }
+                    catch (Exception ex) { throw CreateDatabaseFailure("read", ex, db); }
                     rows.Add(row);
                 }
+            }
+            finally
+            {
+                try { reader.Dispose(); }
+                catch (Exception ex) { throw CreateDatabaseFailure("read", ex, db); }
             }
             return rows;
         }
@@ -685,6 +722,134 @@ namespace GxMcp.Worker.Services
             return new TransactionMetadata { Identity = transaction.Guid.ToString("D"), Name = transaction.Name, Table = table, Attributes = attributes, Keys = keys };
         }
 
+        private static DbConnection OpenConnection(DatabaseMetadata db)
+        {
+            DbConnection connection = null;
+            try
+            {
+                connection = db.Factory.CreateConnection();
+                if (connection == null)
+                    throw new RecordOperationException("DataStoreProviderUnavailable", "The selected datastore provider could not create a connection.", "Install/register the provider used by the GeneXus environment before retrying.");
+                connection.ConnectionString = db.ConnectionString;
+                connection.Open();
+                return connection;
+            }
+            catch (RecordOperationException)
+            {
+                try { connection?.Dispose(); } catch { }
+                throw;
+            }
+            catch (Exception ex)
+            {
+                try { connection?.Dispose(); } catch { }
+                throw CreateDatabaseFailure("open", ex, db);
+            }
+        }
+
+        private static DbTransaction BeginTransaction(DbConnection connection, DatabaseMetadata db)
+        {
+            try { return connection.BeginTransaction(IsolationLevel.Serializable); }
+            catch (Exception ex) { throw CreateDatabaseFailure("open", ex, db); }
+        }
+
+        private static RecordOperationException CreateDatabaseFailure(string phase, Exception ex, DatabaseMetadata db)
+        {
+            JObject details = BuildDatabaseFailureDetails(phase, ex, db);
+            string family = details["providerFamily"]?.ToString() ?? "unknown";
+            string safePhase = details["phase"]?.ToString() ?? "unknown";
+            var extra = new JObject
+            {
+                ["persisted"] = false,
+                ["rereadConfirmed"] = false,
+                ["diagnostic"] = "The " + family + " database provider failed during " + safePhase + "; connection details and record values were omitted.",
+                ["details"] = details
+            };
+            return new RecordOperationException(
+                "TransactionRecordsDatabaseFailed",
+                "The datastore rejected the Transaction records operation.",
+                "Inspect error.details for the sanitized provider phase and retry only after checking the active datastore; no GeneXus lifecycle action was run.",
+                extra,
+                ex);
+        }
+
+        internal static JObject BuildDatabaseFailureDetails(string phase, Exception ex, DatabaseMetadata db)
+        {
+            return new JObject
+            {
+                ["environment"] = SanitizeLabel(db?.EnvironmentIdentity),
+                ["dataStore"] = SanitizeLabel(db?.Name),
+                ["providerFamily"] = SanitizeLabel(db?.Family ?? "unknown"),
+                ["provider"] = ProviderLabel(db?.Provider, db?.Family),
+                ["phase"] = SanitizeLabel(phase ?? "unknown"),
+                ["exceptionType"] = ex?.GetType().Name ?? "DatabaseException",
+                ["providerCode"] = ReadExceptionValue(ex, "Number", "Code", "ErrorCode"),
+                ["providerState"] = ReadExceptionValue(ex, "SqlState", "State", "Class"),
+                ["message"] = SanitizeProviderMessage(ex?.Message),
+                ["messageCategory"] = ClassifyProviderMessage(ex?.Message)
+            };
+        }
+
+        internal static string SanitizeProviderMessage(string message)
+        {
+            return "The database provider returned a sanitized diagnostic; sensitive provider text was omitted.";
+        }
+
+        private static string ClassifyProviderMessage(string message)
+        {
+            string text = message ?? string.Empty;
+            if (Regex.IsMatch(text, @"(?i)timeout|timed out|deadline")) return "timeout";
+            if (Regex.IsMatch(text, @"(?i)authentication|login failed|password")) return "authentication";
+            if (Regex.IsMatch(text, @"(?i)connection refused|actively refused|could not connect")) return "connection_refused";
+            if (Regex.IsMatch(text, @"(?i)does not exist|cannot open database|unknown database|database .*not found")) return "database_unavailable";
+            if (Regex.IsMatch(text, @"(?i)relation|table|column|invalid object|schema")) return "schema_or_object";
+            if (Regex.IsMatch(text, @"(?i)syntax|sql statement")) return "sql_syntax";
+            return "provider_rejected";
+        }
+
+        private static JToken ReadExceptionValue(Exception ex, params string[] names)
+        {
+            if (ex != null)
+            {
+                foreach (string name in names)
+                {
+                    object value = null;
+                    try { value = ex.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance)?.GetValue(ex, null); } catch { }
+                    if (value == null)
+                    {
+                        try { value = ex.GetType().GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(ex); } catch { }
+                    }
+                    if (value == null) continue;
+                    if (value is byte || value is short || value is int || value is long || value is sbyte || value is ushort || value is uint || value is ulong)
+                        return JToken.FromObject(value);
+                    string text = value.ToString();
+                    if (Regex.IsMatch(text ?? string.Empty, @"^[A-Za-z0-9_.:-]{1,64}$")) return text;
+                }
+            }
+            return "unavailable";
+        }
+
+        private static string SanitizeLabel(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "unresolved";
+            string safe = value.Trim().Replace(((char)13).ToString(), "_").Replace(((char)10).ToString(), "_").Replace(";", "_").Replace("=", "_");
+            return safe.Length <= 160 ? safe : safe.Substring(0, 160);
+        }
+
+        private static string ProviderLabel(string provider, string family)
+        {
+            if (!string.IsNullOrWhiteSpace(family))
+            {
+                switch (family.Trim().ToLowerInvariant())
+                {
+                    case "sqlserver": return "sqlserver";
+                    case "oracle": return "oracle";
+                    case "postgres": return "postgres";
+                    case "mysql": return "mysql";
+                }
+            }
+            return string.IsNullOrWhiteSpace(provider) ? "unresolved" : "registered";
+        }
+
         private DatabaseMetadata OpenDatabase(JObject args)
         {
             if (_databaseResolver != null) return _databaseResolver(args);
@@ -706,16 +871,18 @@ namespace GxMcp.Worker.Services
             if (selected == null)
                 throw new RecordOperationException("DataStoreNotFound", "The requested GeneXus datastore was not found in the active environment.", "Use the exact dataStore name returned by the datastore inspection.", requested);
 
-            string provider = FirstDynamicProperty(selected, "ADONET_DRIVER", "Provider", "AdoNetProvider");
-            string family = DetectFamily(provider, TryInt(() => selected.Dbms));
-            if (family == "unknown")
-                throw new RecordOperationException("DataStoreProviderUnsupported", "The active datastore provider could not be mapped to a supported SQL dialect.", "Use SQL Server or Oracle with a registered ADO.NET provider.");
+            string provider = DatabaseProviderResolver.GetProvider(selected);
+            object dbms = DatabaseProviderResolver.GetDbmsValue(selected);
+            string family = DatabaseProviderResolver.DetectFamily(provider, dbms);
+            if (!IsSupportedRecordFamily(family))
+                throw new RecordOperationException("DataStoreProviderUnsupported", "The active datastore provider could not be mapped to a supported SQL dialect.", "Use a datastore with a recognized SQL Server, Oracle, PostgreSQL or MySQL provider.");
             string connectionString = FirstConnectionString(selected, "CONNECTION_STRING", "ConnectionString", "CS_CONNECTIONSTRING", "DS_DBMS_ADDINFO", "DBMS_ADDINFO");
             if (string.IsNullOrWhiteSpace(connectionString))
             {
                 string server = FirstDynamicProperty(selected, "CS_SERVER", "ServerName", "Server");
                 string database = FirstDynamicProperty(selected, "CS_DBNAME", "CS_DATABASE", "DBNAME", "DATABASE", "DATABASE_NAME", "DB_NAME");
                 string schema = FirstDynamicProperty(selected, "CS_SCHEMA", "DatabaseSchema", "Schema");
+                string port = FirstDynamicProperty(selected, "CS_PORT", "PORT", "Port", "DBMS_PORT");
                 string user = FirstDynamicProperty(selected, "USER_ID", "UserId", "User");
                 string password = FirstDynamicProperty(selected, "USER_PASSWORD", "PASSWORD", "Password");
                 bool integrated = ParseYesNo(FirstDynamicProperty(selected, "TRUSTED_CONNECTION", "INTEGRATED_SECURITY", "IntegratedSecurity"));
@@ -723,15 +890,19 @@ namespace GxMcp.Worker.Services
                     throw new RecordOperationException("DataStoreConnectionUnavailable", "The selected datastore does not expose enough connection metadata for a safe native record operation.", "Use a datastore with server/database metadata; credentials and connection strings are never returned by this tool.");
                 if (family == "sqlserver")
                 {
-                    connectionString = "Server=" + server + ";Initial Catalog=" + database + ";" + (integrated ? "Integrated Security=SSPI;" : "User ID=" + user + ";Password=" + password + ";") + "Application Name=GeneXusMCP;Connect Timeout=15";
+                    connectionString = BuildSqlServerConnectionString(server, database, user, password, integrated);
                 }
                 else if (family == "oracle")
                 {
-                    connectionString = "Data Source=" + server + ";User Id=" + user + ";Password=" + password + ";Connection Timeout=15";
+                    connectionString = BuildOracleConnectionString(server, user, password);
+                }
+                else if (family == "postgres")
+                {
+                    connectionString = BuildPostgresConnectionString(server, database, schema, user, password, integrated, port);
                 }
                 else
                 {
-                    throw new RecordOperationException("DataStoreProviderUnsupported", "The active datastore provider is not supported by the native Transaction records adapter.", "Use SQL Server or Oracle with an ADO.NET provider registered in the worker.");
+                    throw new RecordOperationException("DataStoreProviderUnsupported", "The active datastore provider is not supported by the native Transaction records adapter.", "Use a datastore with a supported ADO.NET provider registered in the worker.");
                 }
             }
             var factory = ResolveFactory(provider, family);
@@ -740,6 +911,7 @@ namespace GxMcp.Worker.Services
             {
                 Name = FirstDynamicString(selected, "Name", "Category.Name", "Type") ?? "default",
                 Family = family,
+                Provider = provider,
                 Factory = factory,
                 ConnectionString = connectionString,
                 Schema = schemaName,
@@ -748,7 +920,7 @@ namespace GxMcp.Worker.Services
             };
         }
 
-        private static DbProviderFactory ResolveFactory(string provider, string family)
+        internal static DbProviderFactory ResolveFactory(string provider, string family)
         {
             if (family == "sqlserver") return System.Data.SqlClient.SqlClientFactory.Instance;
             if (family == "oracle")
@@ -756,6 +928,15 @@ namespace GxMcp.Worker.Services
                 var oracle = Type.GetType("Oracle.ManagedDataAccess.Client.OracleClientFactory, Oracle.ManagedDataAccess", false);
                 var instance = oracle?.GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?.GetValue(null, null) as DbProviderFactory;
                 if (instance != null) return instance;
+            }
+            if (family == "postgres")
+            {
+                if (!string.IsNullOrWhiteSpace(provider))
+                {
+                    try { return DbProviderFactories.GetFactory(provider); } catch { }
+                }
+                try { return Npgsql.NpgsqlFactory.Instance; }
+                catch { }
             }
             if (!string.IsNullOrWhiteSpace(provider))
             {
@@ -767,21 +948,66 @@ namespace GxMcp.Worker.Services
             throw new RecordOperationException("DataStoreProviderUnavailable", "The ADO.NET provider for the selected datastore is not available in the worker process.", "Install/register the provider used by the GeneXus environment before retrying.");
         }
 
-        private static string DetectFamily(string provider, int dbms)
+        internal static string DetectFamily(string provider, int dbms)
+            => DatabaseProviderResolver.DetectFamily(provider, dbms);
+
+        internal static bool IsSupportedRecordFamily(string family)
+            => string.Equals(family, "sqlserver", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(family, "oracle", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(family, "postgres", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(family, "mysql", StringComparison.OrdinalIgnoreCase);
+
+        internal static string BuildPostgresConnectionString(string server, string database, string schema, string user, string password, bool integrated, string port = null)
         {
-            string p = provider ?? string.Empty;
-            if (p.IndexOf("oracle", StringComparison.OrdinalIgnoreCase) >= 0) return "oracle";
-            if (p.IndexOf("sqlclient", StringComparison.OrdinalIgnoreCase) >= 0 || p.IndexOf("sql server", StringComparison.OrdinalIgnoreCase) >= 0) return "sqlserver";
-            if (p.IndexOf("mysql", StringComparison.OrdinalIgnoreCase) >= 0) return "mysql";
-            if (p.IndexOf("npgsql", StringComparison.OrdinalIgnoreCase) >= 0 || p.IndexOf("postgres", StringComparison.OrdinalIgnoreCase) >= 0) return "postgres";
-            switch (dbms)
+            var builder = new DbConnectionStringBuilder();
+            builder["Host"] = server ?? string.Empty;
+            builder["Database"] = database ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(port) && int.TryParse(port, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedPort)
+                && parsedPort > 0 && parsedPort <= 65535)
+                builder["Port"] = parsedPort;
+            if (integrated)
+                builder["Integrated Security"] = true;
+            else
             {
-                case 1: case 12: return "sqlserver";
-                case 4: case 7: return "oracle";
-                case 5: return "mysql";
-                case 6: return "postgres";
-                default: return "unknown";
+                builder["Username"] = user ?? string.Empty;
+                builder["Password"] = password ?? string.Empty;
             }
+            if (!string.IsNullOrWhiteSpace(schema)) builder["Search Path"] = schema;
+            builder["Application Name"] = "GeneXusMCP";
+            builder["Timeout"] = 15;
+            builder["Command Timeout"] = 15;
+            return builder.ConnectionString;
+        }
+
+        private static string BuildSqlServerConnectionString(string server, string database, string user, string password, bool integrated)
+        {
+            var builder = new DbConnectionStringBuilder
+            {
+                ["Data Source"] = server ?? string.Empty,
+                ["Initial Catalog"] = database ?? string.Empty,
+                ["Application Name"] = "GeneXusMCP",
+                ["Connect Timeout"] = 15
+            };
+            if (integrated)
+                builder["Integrated Security"] = "SSPI";
+            else
+            {
+                builder["User ID"] = user ?? string.Empty;
+                builder["Password"] = password ?? string.Empty;
+            }
+            return builder.ConnectionString;
+        }
+
+        private static string BuildOracleConnectionString(string server, string user, string password)
+        {
+            var builder = new DbConnectionStringBuilder
+            {
+                ["Data Source"] = server ?? string.Empty,
+                ["User Id"] = user ?? string.Empty,
+                ["Password"] = password ?? string.Empty,
+                ["Connection Timeout"] = 15
+            };
+            return builder.ConnectionString;
         }
 
         private static bool LooksLikeConnectionString(string value)
@@ -923,12 +1149,8 @@ namespace GxMcp.Worker.Services
         {
             foreach (string name in names)
             {
-                try
-                {
-                    object value = target.Properties.GetPropertyValue(name);
-                    if (value != null && !string.IsNullOrWhiteSpace(value.ToString())) return value.ToString();
-                }
-                catch { }
+                string value = DatabaseProviderResolver.TryProperty(target, name);
+                if (!string.IsNullOrWhiteSpace(value)) return value;
             }
             return null;
         }
@@ -1050,6 +1272,7 @@ namespace GxMcp.Worker.Services
             public string EnvironmentIdentity;
             public string Name;
             public string Family;
+            public string Provider;
             public string Schema;
             public DbProviderFactory Factory;
             public string ConnectionString;

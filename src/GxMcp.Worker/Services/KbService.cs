@@ -397,42 +397,23 @@ namespace GxMcp.Worker.Services
         private static string DescribeActiveDataStore(dynamic kb)
         {
             if (kb == null) return "kb=null";
-            Func<Func<string>, string> s = f => { try { return f() ?? ""; } catch { return ""; } };
+            // Reuse the same active-TargetModel-only resolver used by db_info and
+            // records_query. The previous DesignModel-first lookup could report a
+            // datastore from another environment during KB open.
+            JObject entry = DatabaseInfoService.GetDefaultDataStoreInfo(kb);
+            if (entry == null) return "datastore=<unresolved>";
 
-            // Primary: the DataStoresPart accessor (shared with DatabaseInfoService). The
-            // legacy Environment.DataStores / TargetModel.DataStore paths return null on many
-            // KBs, which is why this used to log <unresolved> even though the store exists.
-            dynamic def = null;
-            try
-            {
-                var stores = DatabaseInfoService.EnumerateViaDataStoresPart(kb);
-                foreach (dynamic ds in stores)
-                {
-                    if (ds == null) continue;
-                    if (def == null) def = ds;
-                    bool isDefault = false;
-                    try { isDefault = (bool)ds.IsDefault; } catch { }
-                    if (isDefault) { def = ds; break; }
-                }
-            }
-            catch { }
-            if (def == null) { try { def = kb.DesignModel?.Environment?.TargetModel?.DataStore; } catch { } }
-            if (def == null) return "datastore=<unresolved>";
+            string name = entry["name"]?.ToString();
+            string family = entry["dialect"]?.ToString();
+            string provider = entry["provider"]?.ToString();
+            string server = entry["serverName"]?.ToString();
+            string schema = entry["schema"]?.ToString();
 
-            string name = s(() => (string)def.Name);
-            if (name.Length == 0) name = s(() => (string)def.Category.Name);
-            if (name.Length == 0) name = s(() => (string)def.Type);
-            int dbms = -1; try { dbms = (int)def.Dbms; } catch { }
-            string family = ""; try { family = ExecutionPlanFetcher.ResolveDbmsFamily(dbms); } catch { }
-            string server = s(() => (string)def.ServerName);
-            if (server.Length == 0) server = s(() => (string)def.Server);
-            string schema = s(() => (string)def.DatabaseSchema);
-            if (schema.Length == 0) schema = s(() => (string)def.Schema);
-
-            return "name=" + (name.Length == 0 ? "?" : name)
-                 + " type=" + (family.Length == 0 ? ("dbms" + dbms) : family)
-                 + " server=" + (server.Length == 0 ? "<none>" : server)
-                 + " schema=" + (schema.Length == 0 ? "<none>" : schema);
+            return "name=" + (string.IsNullOrWhiteSpace(name) ? "?" : name)
+                 + " type=" + (string.IsNullOrWhiteSpace(family) ? "unknown" : family)
+                 + " provider=" + (string.IsNullOrWhiteSpace(provider) ? "<none>" : provider)
+                 + " server=" + (string.IsNullOrWhiteSpace(server) ? "<none>" : server)
+                 + " schema=" + (string.IsNullOrWhiteSpace(schema) ? "<none>" : schema);
         }
 
         private static string ResolveKbDirectory(string kbPath)

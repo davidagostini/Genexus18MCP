@@ -91,7 +91,9 @@ namespace GxMcp.Worker.Services
                 }
 
                 var lines = File.ReadAllLines(filePath);
-                var tail = lines.Reverse()
+                // Keep LINQ's sequence reversal explicit; System.Memory also exposes
+                // a void Span<T>.Reverse() once the Npgsql dependency is referenced.
+                var tail = Enumerable.Reverse(lines)
                     .Where(l => !string.IsNullOrWhiteSpace(l))
                     .Take(n)
                     .Reverse()

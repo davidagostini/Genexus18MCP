@@ -23,6 +23,9 @@ namespace GxMcp.Worker.Tests
         internal bool OmitOutputParameters;
         internal long NextId = 1000001;
         internal bool ThrowBeforeCommit, ThrowAfterCommit, ThrowRollback, FailRestore;
+        internal bool ThrowOnOpen, ThrowOnExecuteReader;
+        internal bool ThrowOnNonDatabaseOpen;
+        internal string FailureMessage = "Login failed for user 'db-user'; Password=super-secret; Server=secret-host; @p0=record-value";
         internal Action<TransactionRecordsFakeDatabase> AfterCommit;
         internal Action<TransactionRecordsFakeDatabase, int> BeforeSelect;
         internal Func<JObject, JObject> Trigger;
@@ -52,7 +55,12 @@ namespace GxMcp.Worker.Tests
             public override string ServerVersion => "1";
             public override ConnectionState State => _state;
             public override void ChangeDatabase(string databaseName) => throw new NotSupportedException();
-            public override void Open() { _state = ConnectionState.Open; }
+            public override void Open()
+            {
+                if (Db.ThrowOnNonDatabaseOpen) throw new ArgumentException("connection setup secret");
+                if (Db.ThrowOnOpen) throw new FakeDbException(4060, Db.FailureMessage);
+                _state = ConnectionState.Open;
+            }
             public override void Close() { _state = ConnectionState.Closed; }
             protected override DbCommand CreateDbCommand() => new Command(this);
             protected override DbTransaction BeginDbTransaction(IsolationLevel isolationLevel)
@@ -129,6 +137,7 @@ namespace GxMcp.Worker.Tests
             protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior)
             {
                 var db = _connection.Db;
+                if (db.ThrowOnExecuteReader) throw new FakeDbException(4060, db.FailureMessage);
                 db.Commands.Add(CommandText);
                 db.Selects++;
                 db.BeforeSelect?.Invoke(db, db.Selects);
@@ -250,9 +259,11 @@ namespace GxMcp.Worker.Tests
 
         internal sealed class FakeDbException : DbException
         {
-            internal readonly int Number;
-            internal FakeDbException(int number = 0)
-                : base(number == 257 ? "Implicit conversion from sql_variant to a typed output parameter is not allowed." : "SYNTHETIC_SECRET_DO_NOT_RETURN")
+            public int Number { get; }
+            public string SqlState { get; } = "08001";
+            public string State { get; } = "08";
+            internal FakeDbException(int number = 0, string message = null)
+                : base(message ?? (number == 257 ? "Implicit conversion from sql_variant to a typed output parameter is not allowed." : "The provider rejected the operation."))
             { Number = number; }
         }
         private sealed class Parameter : DbParameter

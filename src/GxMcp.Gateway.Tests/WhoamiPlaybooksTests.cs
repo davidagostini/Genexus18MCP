@@ -225,6 +225,26 @@ namespace GxMcp.Gateway.Tests
             Assert.Null(Program.ExtractDatabaseInfoFromWorkerResult(null));
         }
 
+        [Fact]
+        public void InvalidateDatabaseInfoCache_RemovesEnvironmentScopedEntry()
+        {
+            var field = typeof(Program).GetField("_databaseInfoByKb",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.NotNull(field);
+            var cache = (System.Collections.Concurrent.ConcurrentDictionary<string, JObject>)field!.GetValue(null)!;
+            const string alias = "whoami-environment-cache-test";
+            cache[alias] = new JObject { ["environment"] = "old" };
+            try
+            {
+                Program.InvalidateDatabaseInfoCache(alias);
+                Assert.False(cache.ContainsKey(alias));
+            }
+            finally
+            {
+                cache.TryRemove(alias, out _);
+            }
+        }
+
         // Regression (empty-KB vs not-built): a Ready index with 0 objects is a
         // legitimately-built empty KB (e.g. a missing LocalDB model). The gateway's
         // SDK-bound short-circuit must forward reads to the worker (which returns an
