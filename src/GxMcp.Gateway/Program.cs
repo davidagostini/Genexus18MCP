@@ -806,7 +806,8 @@ namespace GxMcp.Gateway
                     newConfig.GeneXus?.InstallationPath != config.GeneXus?.InstallationPath ||
                     newConfig.Environment?.GX_SHADOW_PATH != config.Environment?.GX_SHADOW_PATH ||
                     newConfig.Server?.HttpPort != config.Server?.HttpPort ||
-                    newConfig.Server?.WorkerIdleTimeoutMinutes != config.Server?.WorkerIdleTimeoutMinutes) {
+                    newConfig.Server?.WorkerIdleTimeoutMinutes != config.Server?.WorkerIdleTimeoutMinutes ||
+                    newConfig.Server?.WorkerSharingMode != config.Server?.WorkerSharingMode) {
                     Log($"[Gateway] Core configuration changed! Restarting Worker process...");
                     config = newConfig; // Update reference
                     _activeConfig = config;

@@ -1112,6 +1112,9 @@ namespace GxMcp.Worker.Services
             // write can detect the concurrent modification and report Stale.
             lock (AcquirePerTargetLock(target))
             {
+                IDisposable operationLock = null;
+                try
+                {
                 // The facade check happens before patch preparation, but another writer can
                 // finish while that preparation is in progress. Re-check after acquiring the
                 // canonical per-target lock so in-process writers cannot pass an old token into
@@ -1127,13 +1130,16 @@ namespace GxMcp.Worker.Services
             // Advisory lock check — honours GXMCP_WRITE_OWNER_ID / GXMCP_WRITE_FORCE env vars.
             // Reads the .gx/locks/<target>__<part>.lock file written by genexus_multi_agent_lock.
             // Returns an error envelope immediately if a different, non-expired owner holds the lock.
-            // Best-effort: any exception inside AdvisoryLockCheck is swallowed and the write proceeds.
+            // Lock-check failures return a typed error and fail closed; a malformed or
+            // unreadable lock must never be treated as permission to overwrite.
             if (!dryRun)
             {
-                string advisoryOwnerId = System.Environment.GetEnvironmentVariable("GXMCP_WRITE_OWNER_ID");
-                bool advisoryForce = string.Equals(
-                    System.Environment.GetEnvironmentVariable("GXMCP_WRITE_FORCE"), "1",
-                    StringComparison.Ordinal);
+                string advisoryOwnerId = GxMcp.Worker.Helpers.WritePipeline.CurrentOwnerId
+                    ?? System.Environment.GetEnvironmentVariable("GXMCP_WRITE_OWNER_ID");
+                bool advisoryForce = GxMcp.Worker.Helpers.WritePipeline.CurrentForce
+                    || string.Equals(
+                        System.Environment.GetEnvironmentVariable("GXMCP_WRITE_FORCE"), "1",
+                        StringComparison.Ordinal);
                 if (!string.IsNullOrWhiteSpace(advisoryOwnerId))
                 {
                     string kbPathForLock = null;
@@ -1142,6 +1148,17 @@ namespace GxMcp.Worker.Services
                         kbPathForLock, target, partName ?? "Source", advisoryOwnerId, advisoryForce);
                     if (lockError != null)
                         return lockError.ToString(Newtonsoft.Json.Formatting.None);
+
+                    string operationLockError;
+                    operationLock = TryAcquireOperationLock(
+                        kbPathForLock,
+                        target,
+                        partName ?? "Source",
+                        advisoryOwnerId,
+                        advisoryForce,
+                        out operationLockError);
+                    if (operationLockError != null)
+                        return operationLockError;
                 }
             }
 
@@ -1234,7 +1251,94 @@ namespace GxMcp.Worker.Services
             // The write timestamp above intentionally remains independent from this decision.
             if (!dryRun && ShouldMarkTargetDirty(wrapped)) MarkTargetDirty(target);
             return wrapped;
+                }
+                finally
+                {
+                    operationLock?.Dispose();
+                }
             } // end lock (AcquirePerTargetLock)
+        }
+
+        private static IDisposable TryAcquireOperationLock(
+            string kbPath,
+            string target,
+            string part,
+            string ownerId,
+            bool force,
+            out string error)
+        {
+            error = null;
+            if (GxMcp.Worker.Helpers.WritePipeline.HasActiveOwnedLock(kbPath, target, part, ownerId))
+                return null;
+
+            string acquired;
+            try
+            {
+                acquired = MultiAgentLockService.DispatchCore(kbPath, "acquire", target, part, ownerId, 300);
+            }
+            catch
+            {
+                error = McpResponse.Err(
+                    code: "LockCheckFailed",
+                    message: "The operation lock could not be acquired safely; the write was not attempted.",
+                    hint: "Retry after checking permissions for the .gx/locks directory.",
+                    target: target);
+                return null;
+            }
+
+            JObject envelope;
+            try { envelope = JObject.Parse(acquired); }
+            catch
+            {
+                error = McpResponse.Err(
+                    code: "LockCheckFailed",
+                    message: "The operation lock could not be acquired safely; the write was not attempted.",
+                    hint: "Retry after checking permissions for the .gx/locks directory.",
+                    target: target);
+                return null;
+            }
+
+            string code = envelope["code"]?.ToString();
+            if (string.Equals(code, "AlreadyHeld", StringComparison.OrdinalIgnoreCase) && force)
+                return null;
+            if (!string.Equals(code, "LockAcquired", StringComparison.OrdinalIgnoreCase))
+            {
+                error = acquired;
+                return null;
+            }
+
+            return new OperationLockLease(kbPath, target, part, ownerId);
+        }
+
+        private sealed class OperationLockLease : IDisposable
+        {
+            private readonly string _kbPath;
+            private readonly string _target;
+            private readonly string _part;
+            private readonly string _ownerId;
+            private bool _disposed;
+
+            internal OperationLockLease(string kbPath, string target, string part, string ownerId)
+            {
+                _kbPath = kbPath;
+                _target = target;
+                _part = part;
+                _ownerId = ownerId;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed) return;
+                _disposed = true;
+                try
+                {
+                    MultiAgentLockService.DispatchCore(_kbPath, "release", _target, _part, _ownerId, 300);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("[WritePipeline] operation lock release failed: " + ex.Message);
+                }
+            }
         }
 
         /// <summary>

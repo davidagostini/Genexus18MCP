@@ -13,20 +13,23 @@ edits use the same SDK paths as the IDE, while legacy paths use explicit
 reflection/COM adapters without changing the MCP contract.
 
 ```text
-MCP client (Claude/Cursor/…)
-   │ stdio JSON-RPC
+MCP clients (Claude/Cursor/…)
+   │ independent stdio JSON-RPC processes
    ▼
-GxMcp.Gateway (net10.0-windows: isolated per client in stdio-isolated mode; shared master/proxy in legacy HTTP mode)
-   │ pipes JSON-RPC to a worker
-   ▼
-GxMcp.Worker (net48 STA, one per opened KB)
-   │ compatibility adapters + Artech.* SDK
-   ▼
-Selected native SDK or legacy driver → Knowledge Base on disk
+GxMcp.Gateway (net10.0-windows, one logical MCP context per client)
+   ├─ isolated: owns a direct Worker child
+   └─ shared-host: attaches to a per-KB local WorkerHost broker
+                         │ one compatible Worker child
+                         ▼
+                 GxMcp.Worker (net48 STA)
+                         │ compatibility adapters + Artech.* SDK
+                         ▼
+                 Selected SDK/driver → Knowledge Base on disk
 ```
 
-- Gateway: `src/GxMcp.Gateway/` (`net10.0-windows`); owns the worker pool and routes MCP tools. In `stdio-isolated` mode (`TransportMode: "stdio-isolated"`), each client runs its own dedicated gateway process without HTTP listener or shared lease. In legacy mode, gateways share a master process on the HTTP port with proxies.
+- Gateway: `src/GxMcp.Gateway/` (`net10.0-windows`); owns the worker pool and routes MCP tools. In `stdio-isolated` mode (`TransportMode: "stdio-isolated"`), each client runs its own dedicated Gateway without an HTTP listener or shared Gateway lease. `Server.WorkerSharingMode: "shared-host"` optionally attaches compatible Gateways to one per-KB WorkerHost; `"isolated"` remains the default when separate Workers are required. In legacy HTTP mode, gateways share a master process on the HTTP port with proxies.
 - Worker: `src/GxMcp.Worker/`; hosts the COM-flavoured SDK on an STA thread.
+- Worker sharing: `src/GxMcp.Gateway/SharedWorker*` and `src/GxMcp.Worker/SharedWorkerHost*` implement the supported broker/attachment path. Sharing is keyed by physical KB, Worker executable, GeneXus installation, driver, and target major; it never merges Gateway sessions, authorization, caches, cancellation, progress, notifications, or artifacts.
 - CLI: `cli/run.js`, `cli/index.js`, and `cli/lib/config.js`; configures MCP
   clients, forwards stdio, and ships the Windows launcher diagnostics.
 - Version catalog: `config/gx-versions.json` is the explicit compatibility list;
@@ -77,6 +80,7 @@ Source of truth: `config/gx-versions.json`.
   `mcp.<name>` and `mcp.servers.<name>` layouts and unrelated servers.
 - Sessionless HTTP clients must use an explicit `kb` or persisted fallback; `select` on sessionless HTTP returns `KB_SESSION_UNAVAILABLE`. Do
   not introduce shared server-side selection between independent clients.
+- `genexus_whoami` and `genexus_doctor` must preserve actionable Worker diagnostics: effective sharing mode, physical identity, pipe/host/Worker identity, generation, attachment/connection state, startup/failure detail, and the likely failing stage. Keep credentials, tokens, connection strings, and other sensitive values redacted.
 
 ## Source of truth and tool changes
 
@@ -152,11 +156,19 @@ flaky tests are documented in the test section of `docs/agent_playbook.md`.
 - For Worker/lease/KB routing changes, a local green suite is insufficient:
   run the smallest live smoke available with `pwsh`, using an explicit KB and
   `GXMCP_LOG_DIR`. Record `workerPid`, selection state, error count and the
-  isolated log path. A live gate that cannot run is `unavailable`, not pass.
+  isolated log path. For `shared-host`, use two independent Gateway clients and
+  verify one broker/Worker identity, attachment isolation, same-object lock
+  rejection, distinct-object progress, and cleanup. A live gate that cannot run
+  is `unavailable`, not pass.
 - Use `ripwire src --for="<specific behavior>"` before source searches, then
   search narrowed file types (`*.cs`, `*.ps1`, `*.js`) and exclude generated
   `bin`, `obj`, `publish`, `TestResults` and `.trx` artifacts. Broad numeric
   searches are diagnostic noise, not evidence.
+- When a shared Worker smoke fails, inspect `worker.diagnostics` and
+  `workerHealth` before changing lifecycle code. Distinguish configuration or
+  identity mismatch, registry/mutex election, pipe/handshake, attachment,
+  startup, respawn, TTL, malformed-frame, and child-exit failures; do not reduce
+  them to a generic `no_worker` message.
 - Prefer bounded output for routine checks: `dotnet test ...
   --logger "console;verbosity=minimal"`. Repeat with normal verbosity only
   when the focused check fails or no test-run banner is present.

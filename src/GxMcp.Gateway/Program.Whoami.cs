@@ -1014,6 +1014,24 @@ namespace GxMcp.Gateway
                             ["hint"] = "The configured GeneXus major is outside the explicit compatibility catalog. Change GeneXus.InstallationPath or use a Worker build validated for that major; no respawn will be attempted."
                         };
                     }
+                    if (activeWorker != null
+                        && (activeWorker.IsSdkReady || activeWorker.SharedConnectionIsConnected))
+                    {
+                        var running = new JObject
+                        {
+                            ["status"] = "running",
+                            ["alias"] = alias,
+                            ["pid"] = activeWorker.Pid,
+                            ["sharingMode"] = activeWorker.IsSharedWorker ? "shared-host" : "stdio-isolated"
+                        };
+                        if (activeWorker.IsSharedWorker)
+                        {
+                            running["hostPid"] = activeWorker.HostPid;
+                            running["attachmentId"] = activeWorker.AttachmentId;
+                            running["workerGeneration"] = activeWorker.WorkerGeneration;
+                        }
+                        return running;
+                    }
                 }
 
                 if (!string.IsNullOrEmpty(alias) && pool.IsSpawning(alias))
@@ -1122,7 +1140,14 @@ namespace GxMcp.Gateway
 
             string workerStatus = health["status"]?.ToString() ?? "unknown";
             if (workerStatus != "running")
-                warnings.Add("Worker status: " + workerStatus + ".");
+            {
+                string failureDetail = health["error"]?.ToString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(failureDetail))
+                    failureDetail = worker["diagnostics"]?["failureDiagnostic"]?.ToString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(failureDetail))
+                    failureDetail = "no failure detail was recorded";
+                warnings.Add("Worker status: " + workerStatus + ". Cause: " + failureDetail);
+            }
             if (kb["active"] == null || kb["active"]!.Type == JTokenType.Null)
                 warnings.Add("No active KB is selected.");
 
@@ -1143,6 +1168,7 @@ namespace GxMcp.Gateway
                 ["geneXus"] = geneXus,
                 ["kb"] = kb,
                 ["worker"] = worker,
+                ["diagnostics"] = worker["diagnostics"]?.DeepClone() ?? new JObject(),
                 ["workerHealth"] = health,
                 ["cache"] = new JObject
                 {
@@ -1881,8 +1907,55 @@ namespace GxMcp.Gateway
                     ["status"] = wp.Pid.HasValue ? "running" : "stopped",
                     ["pid"] = wp.Pid,
                     ["memoryMb"] = memoryMb,
-                    ["uptimeMin"] = uptimeMin
+                    ["uptimeMin"] = uptimeMin,
+                    ["sharingMode"] = wp.IsSharedWorker ? "shared-host" : "isolated"
                 };
+                var diagnostics = new JObject
+                {
+                    ["mode"] = wp.IsSharedWorker ? "shared-host" : "stdio-isolated",
+                    ["status"] = wp.Pid.HasValue ? "running" : "stopped",
+                    ["configured"] = new JObject
+                    {
+                        ["kbPath"] = wp.IsSharedWorker ? wp.SharedKbPath : wp.Kb?.Path,
+                        ["workerExecutable"] = wp.IsSharedWorker ? wp.SharedWorkerExecutable : wp.SpawnedExePath,
+                        ["installationPath"] = wp.IsSharedWorker ? wp.SharedInstallationPath : wp.Kb?.InstallationPath,
+                        ["driver"] = wp.IsSharedWorker ? wp.SharedDriver : wp.Kb?.Driver,
+                        ["major"] = wp.IsSharedWorker ? wp.SharedMajor : wp.Kb?.Major
+                    },
+                    ["lastExitCode"] = wp.LastExitCode,
+                    ["startupDiagnostic"] = wp.StartupDiagnostic,
+                    ["failureDiagnostic"] = wp.LastFailureDiagnostic
+                };
+                string? failureDiagnostic = wp.LastFailureDiagnostic ?? wp.StartupDiagnostic;
+                if (!string.IsNullOrWhiteSpace(failureDiagnostic))
+                {
+                    diagnostics["failureCode"] = failureDiagnostic.IndexOf("stage=child_exit", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? "WORKER_CHILD_EXIT"
+                        : SdkDiagnosticClassifier.ClassifyCode(failureDiagnostic);
+                    diagnostics["failureSummary"] = failureDiagnostic!.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0];
+                }
+                if (wp.IsSharedWorker)
+                {
+                    diagnostics["sharedHost"] = new JObject
+                    {
+                        ["identityKey"] = wp.SharedIdentityKey,
+                        ["pipeName"] = wp.SharedPipeName,
+                        ["connected"] = wp.SharedConnectionIsConnected,
+                        ["hostPid"] = wp.HostPid,
+                        ["workerPid"] = wp.Pid,
+                        ["generation"] = wp.WorkerGeneration,
+                        ["attachmentId"] = wp.AttachmentId,
+                        ["connectionError"] = wp.SharedConnectionError
+                    };
+                }
+                workerBlock["diagnostics"] = diagnostics;
+
+                if (wp.IsSharedWorker)
+                {
+                    workerBlock["hostPid"] = wp.HostPid;
+                    workerBlock["attachmentId"] = wp.AttachmentId;
+                    workerBlock["workerGeneration"] = wp.WorkerGeneration;
+                }
                 // Terse mode: exePath/exeSource/builtAtUtc/spawnMs/sdkInitMs are
                 // install forensics for doctor-style debugging (~300 bytes), not
                 // per-turn data. reloadHint (actionable) is kept.

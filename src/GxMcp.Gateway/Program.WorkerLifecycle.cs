@@ -551,6 +551,18 @@ namespace GxMcp.Gateway
                 });
             }
 
+            // Shared-host writes need a stable Gateway-local owner identity. The
+            // field is internal transport metadata, not a public MCP argument;
+            // it lets the Worker reject a foreign genexus_multi_agent_lock while
+            // keeping independent sessions distinct on one shared SDK process.
+            if (workerCommand["_gxmcpOwnerId"] == null)
+            {
+                workerCommand["_gxmcpOwnerId"] = "gateway:" + StateScope.ProcessScopeId.ToString();
+                bool forceLock = toolArgs?["force"]?.ToObject<bool?>() == true
+                    || toolArgs?["lockForce"]?.ToObject<bool?>() == true;
+                if (forceLock) workerCommand["_gxmcpForce"] = true;
+            }
+
             workerCommand["correlationId"] = correlationId;
 
             // issue #25 #2: idempotent single retry for read-only tools. When a worker

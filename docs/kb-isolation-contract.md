@@ -22,6 +22,13 @@ The supported combinations are:
 `stdio-isolated` never uses `GatewayProcessLease`, HTTP, master/proxy,
 promotion, or port recovery. A hybrid configuration is invalid in strict mode.
 
+`Server.WorkerSharingMode` defaults to `isolated`. The supported value
+`shared-host` is valid only with `GatewayMode=stdio-isolated`; it shares the
+SDK Worker process through a per-KB local broker while keeping every Gateway
+session and authorization context isolated. Agents that need more than one
+Worker keep `WorkerSharingMode="isolated"`. It does not turn one Gateway into
+the master of another and does not share MCP sessions.
+
 ## Local-friendly authorization
 
 The default local-friendly policy treats an explicit absolute path to a valid

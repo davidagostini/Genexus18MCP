@@ -736,6 +736,9 @@ namespace GxMcp.Worker.Services
                 // builds/edits started by the gateway never registered their job_id and a
                 // matching lifecycle action=cancel returned NotFound on the worker side.
                 string commandCancelToken = args?["cancelToken"]?.ToString();
+                using (GxMcp.Worker.Helpers.WritePipeline.UseWriteContext(
+                    args?["_gxmcpOwnerId"]?.ToString(),
+                    args?["_gxmcpForce"]?.ToObject<bool?>() ?? false))
                 using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(commandCancelToken, out _))
                 using (GxMcp.Worker.Helpers.ProgressContext.Use(progressToken))
                 {
@@ -2986,7 +2989,9 @@ namespace GxMcp.Worker.Services
                 action,
                 target ?? args?["target"]?.ToString(),
                 args?["part"]?.ToString(),
-                args?["ownerId"]?.ToString(),
+                string.IsNullOrWhiteSpace(args?["ownerId"]?.ToString())
+                    ? GxMcp.Worker.Helpers.WritePipeline.CurrentOwnerId
+                    : args?["ownerId"]?.ToString(),
                 args?["ttlSec"]?.ToObject<int?>() ?? 300,
                 kbPathOverride: null,
                 dryRun: request["dryRun"]?.ToObject<bool?>() ?? false);

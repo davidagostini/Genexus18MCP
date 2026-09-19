@@ -303,7 +303,7 @@ namespace GxMcp.Gateway
                 "HttpPort", "McpStdio", "BindAddress", "AllowedOrigins", "SessionIdleTimeoutMinutes",
                 "WorkerIdleTimeoutMinutes", "WedgedCommandTimeoutMinutes", "WorkerHeapRecycleMB",
                 "ArtifactOutputDirectory", "IdempotencyTtlMinutes", "IdempotencyCacheSize", "BuildSyncThresholdSeconds", "MaxOpenKbs",
-                "ToolProfile", "EmitStructuredContent", "TerseResponses"
+                "ToolProfile", "EmitStructuredContent", "TerseResponses", "WorkerSharingMode"
             }, StringComparer.Ordinal), "Server", path);
             if (server["HttpPort"]?.Type != JTokenType.Integer || server["McpStdio"]?.Type != JTokenType.Boolean)
                 throw new InvalidDataException("Strict config requires typed Server.HttpPort and Server.McpStdio.");
@@ -313,6 +313,12 @@ namespace GxMcp.Gateway
                 throw new InvalidDataException("stdio-isolated requires HttpPort=0 and McpStdio=true.");
             if (mode == "http-shared" && (port <= 0 || stdio))
                 throw new InvalidDataException("http-shared requires HttpPort>0 and McpStdio=false.");
+
+            string sharingMode = server.Value<string>("WorkerSharingMode")?.Trim().ToLowerInvariant() ?? "isolated";
+            if (sharingMode != "isolated" && sharingMode != "shared-host")
+                throw new InvalidDataException("Strict config Server.WorkerSharingMode must be 'isolated' or 'shared-host'.");
+            if (sharingMode == "shared-host" && mode != "stdio-isolated")
+                throw new InvalidDataException("Strict config Server.WorkerSharingMode='shared-host' requires GatewayMode='stdio-isolated'.");
 
             if (document["Logging"] is JObject logging)
                 RejectUnknown(logging, new HashSet<string>(new[] { "Level", "Path" }, StringComparer.Ordinal), "Logging", path);
@@ -510,6 +516,7 @@ namespace GxMcp.Gateway
     public class ServerConfig
     {
         public string TransportMode { get; set; } = "legacy";
+        public string WorkerSharingMode { get; set; } = "isolated";
         public int HttpPort { get; set; } = 5000;
         public bool McpStdio { get; set; } = true;
         public bool SharedGateway { get; set; } = false;
