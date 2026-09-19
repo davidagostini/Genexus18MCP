@@ -91,7 +91,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_edit_form` | — | `add_textblock`, `add_button`, `set_visibility`, `remove_control`, `wrap_in_fieldset` |
 | `genexus_module` | `list` (SDK identity/path-aware, deterministic), `list_modules_servers`, `search_modules_in_servers` | `install`, `install_builtin`, `update`, `package`, `publish`, `restore`, `add_modules_server` |
 | `genexus_gxserver` | `status`, `pending`, `ignored`, `conflicts`, `history`, `pipeline_list`, `pipeline_runs`, `pipeline_output` | `commit`, `update`, `lock`, `resolve`, `pipeline_run`, `pipeline_abort` |
-| `genexus_kb_version` | `list` | `freeze`, `branch`, `set_active`, `revert` |
+| `genexus_kb_version` | `list`, `changed_objects` (Design vs frozen, paginated, read-only) | `freeze`, `branch`, `set_active`, `revert` |
 | `genexus_browser` | `smoke`, `a11y`, `wcag`, `capture`, `cross`, `preview` | — |
 | `genexus_db` | `drift_check`, `drift_report`, `optimize_analyze`, `optimize_suggest`, `optimize_report`, `sql_ddl`, `sql_navigation`, `records_query`, `types_list`, `types_describe`, `types_validate`, `reorg_impact`, `reorg_preview` | `sample_data`, `records_insert`, `records_update`, `translations_import` |
 | `genexus_versioning` | `history_list`, `history_get`, `time_travel`, `blame`, `diff`, `diff_generated` | `history_save`, `history_restore`, `undo` |
@@ -136,7 +136,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_structure` | active | `Structure -> GetVisualStructure | UpdateVisualStructure | GetVisualIndexes | GetLogicStructure | CheckSubtypes`; supports `type` disambiguation, `remove_attribute`, `move_attribute` |
 | `genexus_refactor` | active | `Refactor -> RenameObject | RenameAttribute | RenameVariable | ExtractProcedure | ExtractSubroutine | WWPSetCondition` |
 | `genexus_format` | active | `Formatting -> Format` |
-| `genexus_properties` | active | `Property -> Get | Set | Move` |
+| `genexus_properties` | active | `Property -> Get | Set | Move`; move accepts `destination`/`folder`/`module`/`targetModule` and tolerates Folder-destination placement property echoes (issue #238) |
 | `genexus_versioning` | active | Versioning umbrella: `History -> List | Get_Source | Save | Restore`, `Undo`, `TimeTravel`, `Blame`, `Diff` |
 | `genexus_io` | active | IO umbrella: `Asset -> Find | Read | Write`, Object Text batch `ExportKbToText | ImportTextToKb | ValidateKbTextFiles | ValidateTextInMemory | ListTextInMemory | DeleteKbObjects`, native SDK tree `src/`/`ref/` with incremental modes and sectioned `part=all`/`parts[]` documents, installed reference modules/packages routed to `ref/`, module metadata (`module.toml`) and optional official packages (`.opc`) and Transaction table projections (`#tables`), filesystem controls (`listOnly | skip | stopOnError | includeChildren | ignore | forceSave | rollbackOnFailure`), manifest/hash validation, watermark mirror (`Start | Stop | Status | Catchup | SetReferences`), `Object -> ExportText | ImportText`, `Export -> Unified`, `ScreenshotPublish` |
 | `genexus_db` | active | Database umbrella: `DbDrift`, `DbOptimize`, `Analyze -> GetSQL / GetSqlForNavigation / GenerateSampleData`, typed Transaction records (`QueryRecords / InsertRecord / UpdateRecord`), `Types`, `ReorgImpact` |
@@ -146,7 +146,7 @@ semantics documented in #65, and the homonym-routing behavior tracked in #34.
 | `genexus_wwp` | active | Typed WorkWithPlus grid/form actions, tabs, nested controls, native table-type changes, grid attributes, and native WebComponent-to-DropDownComponent replacement with preview, concurrency checks, verification, and rollback |
 | `genexus_security` | active | `Security -> audit_gam | scan_secrets | scan_native` (native SDK scanner) |
 | `genexus_kb` | active | Multi-KB pool management, startup object, and environment switching |
-| `genexus_kb_version` | active | SDK `KBVersionHelper` model version tree and branch management |
+| `genexus_kb_version` | active | SDK `KBVersionHelper` model version tree and branch management; `changed_objects` provides a read-only Design-vs-frozen NEW/CHANGED inventory or stable `ChangedObjectsNotSupported` when the SDK surface is unavailable |
 | `genexus_gam` | active | SDK `IIntegratedSecurityService` GAM provisioning and deploy |
 | `genexus_transfer` | active | Native XPZ export and import |
 | `genexus_deploy` | active | Application deployment targets and execution |

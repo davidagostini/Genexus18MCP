@@ -2866,11 +2866,15 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "KB model-version management (Create Version/Branch/Activate/Revert) over the SDK's KBVersionHelper — the IDE Version menu's code path. action=list is read-only; freeze/branch/set_active/revert mutate the KB's version tree. Version results keep lastUpdate separate from createdAt; createdAt is null with createdAtAvailable=false when the SDK has no reliable creation timestamp.",
+      "description": "SDK KB version tree via KBVersionHelper. list and changed_objects are read-only; changed_objects compares active Design with a frozen version and returns paged NEW/CHANGED items without SQL. Other actions mutate. createdAt may be unavailable; lastUpdate is separate.",
       "inputSchema": {
         "examples": [
           {
             "action": "list"
+          },
+          {
+            "action": "changed_objects",
+            "fromVersion": "v1.0"
           },
           {
             "action": "freeze",
@@ -2884,9 +2888,10 @@
         ],
         "properties": {
           "action": {
-            "description": "KB model-version or branch operation to perform.",
+            "description": "Version delta or tree operation.",
             "enum": [
               "list",
+              "changed_objects",
               "freeze",
               "branch",
               "set_active",
@@ -2895,11 +2900,11 @@
             "type": "string"
           },
           "autoUpdate": {
-            "description": "set_active: auto-update the working model. Default false.",
+            "description": "set_active.",
             "type": "boolean"
           },
           "backupModel": {
-            "description": "freeze: back up the KB model. Default false.",
+            "description": "freeze.",
             "type": "boolean"
           },
           "description": {
@@ -2907,20 +2912,31 @@
             "type": "string"
           },
           "fromVersion": {
-            "description": "revert: source version. Defaults to the active version.",
+            "description": "changed_objects frozen baseline; revert source; omit for latest frozen.",
             "type": "string"
           },
           "includeEnvironments": {
-            "description": "branch: include environments. Default false.",
+            "description": "branch.",
             "type": "boolean"
           },
           "kb": {
             "description": "KB alias.",
             "type": "string"
           },
+          "limit": {
+            "description": "limit.",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
           "name": {
             "description": "New version/branch name (freeze/branch).",
             "type": "string"
+          },
+          "offset": {
+            "description": "offset.",
+            "minimum": 0,
+            "type": "integer"
           },
           "parentVersion": {
             "description": "Parent version name (freeze/branch). Defaults to the active version.",
@@ -3705,7 +3721,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Read/update object properties. action=get|set|move. move snapshots every persisted part, checks baseVersion, verifies inside the SDK transaction and after commit, and rolls back divergence. Use destination for a Folder/Module or targetModule for a Module; destKind disambiguates equal names. dryRun does not save or change the token. Move never runs lifecycle, compilation, execution, or tests. Description is the WebPanel/Popup title-bar text. Use genexus_layout set_property for layout controls.",
+      "description": "Read/update object properties. action=get|set|move. move snapshots every part, checks baseVersion, verifies in and after the SDK transaction, rolls back divergence. Use destination (or folder/module aliases) for a Folder/Module or targetModule; destKind disambiguates equal names. dryRun does not save or change the token. Move never runs lifecycle or tests. Description is the WebPanel/Popup title-bar text. Use genexus_layout set_property for layout controls.",
       "inputSchema": {
         "examples": [
           {
@@ -3767,8 +3783,16 @@
             "description": "move: preview from/to and preserved parts without persisting.",
             "type": "boolean"
           },
+          "folder": {
+            "description": "move: destination alias with Folder kind.",
+            "type": "string"
+          },
           "kb": {
             "description": "KB alias.",
+            "type": "string"
+          },
+          "module": {
+            "description": "move: destination alias with Module kind.",
             "type": "string"
           },
           "name": {

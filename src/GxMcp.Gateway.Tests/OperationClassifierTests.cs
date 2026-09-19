@@ -30,6 +30,17 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("never", unknown.Retry);
         }
 
+        [Fact]
+        public void ChangedObjectsIsReadOnlyWhileVersionTreeWritesRemainMutating()
+        {
+            Assert.Equal(OperationClassifier.OperationKind.ReadOnly,
+                OperationClassifier.ClassifyTool("genexus_kb_version",
+                    new JObject { ["action"] = "changed_objects" }));
+            Assert.Equal(OperationClassifier.OperationKind.Mutating,
+                OperationClassifier.ClassifyTool("genexus_kb_version",
+                    new JObject { ["action"] = "freeze" }));
+        }
+
         [Theory]
         [InlineData("genexus_navigation", "view")]
         [InlineData("genexus_db", "sample_data")]

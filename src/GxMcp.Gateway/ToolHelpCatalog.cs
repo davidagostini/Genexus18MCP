@@ -396,9 +396,10 @@ namespace GxMcp.Gateway
 
             ["genexus_kb_version"] =
                 "# genexus_kb_version\n\n" +
-                "Manage KB model versions and development branches via the SDK's KBVersionHelper.\n\n" +
+                "Manage KB model versions and development branches via the SDK's KBVersionHelper. `changed_objects` is a read-only Design-versus-frozen inventory and never uses SQL/internal tables.\n\n" +
                 "## Actions\n" +
                 "- `list` — enumerate all versions and branches in the KB version tree.\n" +
+                "- `changed_objects` — inventory NEW/CHANGED named objects in the active Design model against a frozen `fromVersion`; omit `fromVersion` to use the latest frozen version. Results are stable, paginated with `offset`/`limit`, and include GUID/entity-key identity when available. This is not the same as `genexus_list_objects since=`; it is the XPZ/Parte N inventory use case. If the installed SDK cannot expose the read-only model snapshot, the action returns stable `ChangedObjectsNotSupported` rather than falling back to SQL.\n" +
                 "- `freeze` — freeze current version into an immutable baseline (`name`, `description`, `parentVersion`).\n" +
                 "- `branch` — create a new parallel branch from a parent version (`name`, `includeEnvironments`).\n" +
                 "- `set_active` — switch the active development version/branch (`targetVersion`, `autoUpdate`).\n" +

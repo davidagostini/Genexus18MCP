@@ -2170,9 +2170,13 @@ namespace GxMcp.Worker.Services
                         // Validate inside the transaction before exposing the new placement.
                         // This is especially important for the SaveWithParent fallback on U16,
                         // which can rebuild default Procedure parts while reporting success.
+                        // Issue #238: the destination name is passed so the SDK's Folder-destination
+                        // re-parent bookkeeping (a generic property VALUE re-pointed at the new
+                        // folder, e.g. Properties/Property[2]/Value[1]) is tolerated here while
+                        // every authored divergence still fails the move.
                         MarkReadCacheDirty(current);
                         var pending = kb.DesignModel.Objects.Get(obj.Guid) ?? current;
-                        var pendingComparison = snapshot.Compare(pending);
+                        var pendingComparison = snapshot.Compare(pending, destination, Array.Empty<string>());
                         string pendingParent = ImmediateParentName(pending);
                         if (!string.Equals(pendingParent, destination, StringComparison.OrdinalIgnoreCase))
                             throw new InvalidOperationException("The SDK did not persist the requested parent inside the move transaction.");
@@ -2212,7 +2216,9 @@ namespace GxMcp.Worker.Services
                     MarkReadCacheDirty(obj);
                     fresh = kb.DesignModel.Objects.Get(obj.Guid) ?? obj;
                     to = ImmediateParentName(fresh);
-                    comparison = snapshot.Compare(fresh);
+                    // Issue #238: same placement-aware tolerance as the in-transaction check;
+                    // the Folder-destination property echo must not fail post-commit either.
+                    comparison = snapshot.Compare(fresh, destination, Array.Empty<string>());
                 }
                 catch (Exception ex)
                 {

@@ -1242,20 +1242,26 @@ namespace GxMcp.Gateway.Routers
 
             if (action.Equals("move", System.StringComparison.OrdinalIgnoreCase))
             {
+                // Issue #238: folder/module are first-class aliases of destination (matching
+                // genexus_create action=object naming) and carry their kind with them.
                 string? targetModule = args?["targetModule"]?.ToString();
                 string? explicitDestination = args?["destination"]?.ToString();
+                string? folderAlias = args?["folder"]?.ToString();
+                string? moduleAlias = args?["module"]?.ToString();
                 return new
                 {
                     module = "Property",
                     action = "Move",
                     target = args?["name"]?.ToString(),
-                    destination = explicitDestination ?? targetModule,
+                    destination = explicitDestination ?? targetModule ?? folderAlias ?? moduleAlias,
                     targetModule,
-                    folder = args?["folder"]?.ToString(),
-                    module_ = args?["module"]?.ToString(),
+                    folder = !string.IsNullOrWhiteSpace(folderAlias) ? folderAlias : args?["destModule"]?.ToString(),
+                    module_ = moduleAlias,
                     destModule = args?["destModule"]?.ToString(),
                     destKind = args?["destKind"]?.ToString()
-                        ?? (string.IsNullOrWhiteSpace(explicitDestination)
+                        ?? (!string.IsNullOrWhiteSpace(folderAlias) ? "Folder"
+                            : !string.IsNullOrWhiteSpace(moduleAlias) ? "Module"
+                            : string.IsNullOrWhiteSpace(explicitDestination)
                             && !string.IsNullOrWhiteSpace(targetModule) ? "Module" : null),
                     dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
                     baseVersion = args?["baseVersion"]?.ToString(),

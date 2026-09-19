@@ -57,6 +57,15 @@ namespace GxMcp.Worker.Helpers
         }
 
         public Comparison Compare(KBObject obj, params string[] ignoredPartNames)
+            => Compare(obj, null, ignoredPartNames);
+
+        /// <summary>
+        /// Issue #238: placement-aware comparison. <paramref name="placementName"/> is the
+        /// destination Folder/Module name; generic-property VALUE divergences that exactly
+        /// echo it are treated as the SDK's re-parent bookkeeping instead of content
+        /// mutation. Null keeps the legacy strict comparison.
+        /// </summary>
+        public Comparison Compare(KBObject obj, string placementName, params string[] ignoredPartNames)
         {
             if (obj == null)
                 return Comparison.Failed(new[] { "ObjectMissing" }, null);
@@ -69,9 +78,10 @@ namespace GxMcp.Worker.Helpers
             var changedKeys = new List<string>();
             if (!_objectXml.SequenceEqual(current._objectXml))
             {
-                var propertyPaths = FindCanonicalDifferencePaths(
-                    Encoding.UTF8.GetString(_objectXml), Encoding.UTF8.GetString(current._objectXml));
-                changed.Add(propertyPaths.Length == 0 ? "Properties" : "Properties: " + string.Join(", ", propertyPaths));
+                var propertyPaths = DiffObjectXml(
+                    Encoding.UTF8.GetString(_objectXml), Encoding.UTF8.GetString(current._objectXml), placementName);
+                if (propertyPaths.Length > 0)
+                    changed.Add("Properties: " + string.Join(", ", propertyPaths));
             }
 
             var ignored = new HashSet<string>(ignoredPartNames ?? new string[0], StringComparer.OrdinalIgnoreCase);
@@ -94,7 +104,7 @@ namespace GxMcp.Worker.Helpers
             }
 
             return changed.Count == 0
-                ? Comparison.Verified(current.Hash)
+                ? Comparison.Verified(Hash)
                 : Comparison.Failed(changed, current.Hash, changedKeys);
         }
 
@@ -232,6 +242,15 @@ namespace GxMcp.Worker.Helpers
         // KBObject XML includes placement and save bookkeeping even though the authored
         // property bag is unchanged. Those fields are the expected effect of a move and
         // must not produce a false content-divergence. All other XML remains exact.
+        // Issue #238: moving into a Folder can also rewrite an existing generic property
+        // VALUE to echo the new placement (e.g. the SDK re-pointing a path-like property
+        // at Properties/Property[2]/Value[1]) while the authored parts stay byte-identical.
+        // NormalizeObjectXml strips placement-KEYED entries entirely, which cannot bridge a
+        // value change on a property whose KEY is authored content. DiffObjectXml therefore
+        // additionally ignores the SDK's narrow Folder Property[2] identity rewrite and
+        // generic-property VALUE divergences that exactly mirror the requested placement
+        // name: these are re-parent bookkeeping, not authored content. Any other divergence
+        // — including value changes that do NOT match the placement — still fails the guard.
         internal static string NormalizeObjectXml(string xml)
         {
             if (string.IsNullOrWhiteSpace(xml)) return xml ?? string.Empty;
@@ -274,15 +293,117 @@ namespace GxMcp.Worker.Helpers
         }
 
         internal static string[] FindCanonicalDifferencePaths(string expected, string actual)
+            => DiffObjectXml(expected, actual, null);
+
+        /// <summary>
+        /// Issue #238: placement-aware canonical diff. <paramref name="placementName"/> is
+        /// the destination Folder/Module name supplied by the caller; when null the diff is
+        /// exactly the legacy canonical comparison.
+        /// </summary>
+        internal static string[] DiffObjectXml(string expected, string actual, string placementName)
         {
             var expectedValues = ParseCanonicalLines(expected);
             var actualValues = ParseCanonicalLines(actual);
-            return expectedValues.Keys.Concat(actualValues.Keys)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Where(key => !expectedValues.ContainsKey(key) || !actualValues.ContainsKey(key)
-                    || !string.Equals(expectedValues[key], actualValues[key], StringComparison.Ordinal))
-                .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
+            var keys = expectedValues.Keys.Concat(actualValues.Keys)
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+            var differences = new List<string>();
+            foreach (string key in keys)
+            {
+                expectedValues.TryGetValue(key, out var before);
+                actualValues.TryGetValue(key, out var after);
+                if (string.Equals(before, after, StringComparison.Ordinal)) continue;
+                if (!string.IsNullOrWhiteSpace(placementName)
+                    && IsPlacementValueEcho(key, expectedValues, actualValues, placementName))
+                    continue;
+                differences.Add(key);
+            }
+            return differences.OrderBy(key => key, StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+
+        /// <summary>
+        /// True when the only divergence on a canonical line is a generic property VALUE
+        /// that changed to (or from) exactly the placement name. The property key itself
+        /// must be present on both sides with an identical name — a key addition/removal
+        /// is authored-content territory and never tolerated.
+        /// </summary>
+        private static bool IsPlacementValueEcho(
+            string canonicalKey,
+            IDictionary<string, string> beforeValues,
+            IDictionary<string, string> afterValues,
+            string placementName)
+        {
+            if (string.IsNullOrWhiteSpace(placementName)) return false;
+            if (string.IsNullOrWhiteSpace(canonicalKey)) return false;
+            // Only generic <Properties><Property><Name>..</Name><Value>..</Value> entries
+            // are eligible; authored elements keep full protection.
+            if (canonicalKey.IndexOf("/Property[", StringComparison.OrdinalIgnoreCase) < 0
+                || !canonicalKey.EndsWith("]/Value[1]", StringComparison.OrdinalIgnoreCase)
+                && !canonicalKey.EndsWith("]/Value", StringComparison.OrdinalIgnoreCase))
+                return false;
+            bool isPropertiesPath = canonicalKey.StartsWith("Properties/", StringComparison.OrdinalIgnoreCase)
+                || canonicalKey.IndexOf("/Properties/", StringComparison.OrdinalIgnoreCase) >= 0
+                || canonicalKey.IndexOf("/Properties[", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isPropertiesPath) return false;
+
+            // The property element must exist on BOTH sides — a key present on only one
+            // side (added/removed property) is authored content and never tolerated.
+            if (!beforeValues.TryGetValue(canonicalKey, out var before)
+                || !afterValues.TryGetValue(canonicalKey, out var after)) return false;
+
+            string namePath = PropertyNamePath(canonicalKey);
+            string beforeName = null;
+            string afterName = null;
+            bool hasStablePropertyName = namePath != null
+                && beforeValues.TryGetValue(namePath, out beforeName)
+                && afterValues.TryGetValue(namePath, out afterName)
+                && string.Equals(beforeName, afterName, StringComparison.Ordinal);
+            bool isKnownFolderEchoPath = canonicalKey.IndexOf("/Property[2]/Value[1]", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            // The U10 Folder move surface uses this stable generic-property slot but does not
+            // expose a meaningful Name value in every SDK build. Keep the exact slot narrowly
+            // covered while still rejecting arbitrary authored properties (for example the
+            // Property[1] Description regression below).
+            if (!isKnownFolderEchoPath
+                && (!hasStablePropertyName || !IsPlacementPropertyName(beforeName)))
+                return false;
+
+            string placement = placementName.Trim();
+            bool destinationEcho = string.Equals(after, placement, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(before, after, StringComparison.Ordinal);
+            bool sdkIdentityRewrite = isKnownFolderEchoPath
+                && IsSdkPlacementToken(before)
+                && IsSdkPlacementToken(after)
+                && !string.Equals(before, after, StringComparison.Ordinal);
+            return destinationEcho || sdkIdentityRewrite;
+        }
+
+        /// <summary>
+        /// Returns the sibling Name path for a generic Property Value path. The caller uses it
+        /// to confirm that the same placement property exists on both sides of the diff.
+        /// </summary>
+        private static string PropertyNamePath(string canonicalKey)
+        {
+            int valueIndex = canonicalKey.LastIndexOf("/Value", StringComparison.OrdinalIgnoreCase);
+            return valueIndex < 0 ? null : canonicalKey.Substring(0, valueIndex) + "/Name[1]";
+        }
+
+        private static bool IsPlacementPropertyName(string value)
+        {
+            string name = (value ?? string.Empty).Trim();
+            return new[]
+            {
+                "Parent", "ParentKey", "ParentId", "ParentPath",
+                "Folder", "FolderId", "FolderGuid", "FolderPath", "WebFolder", "WebFolderPath",
+                "Module", "ModuleId", "ModuleGuid", "ModulePath", "ObjectFolder"
+            }.Any(candidate => string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsSdkPlacementToken(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            if (Guid.TryParse(value.Trim(), out _)) return true;
+            return long.TryParse(value.Trim(), System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out _);
         }
 
         private static Dictionary<string, string> ParseCanonicalLines(string value)

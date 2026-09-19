@@ -237,6 +237,33 @@ namespace GxMcp.Gateway.Tests
             finally
             {
                 Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", null);
+                Program.InvalidateEnvProbeCache();
+            }
+        }
+
+        [Fact]
+        public void LifecycleResult_ShouldKeepStructuredContent_WhenLeanModeIsDisabled()
+        {
+            Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", "1");
+            Program.InvalidateEnvProbeCache();
+            try
+            {
+                var response = Program.BuildToolTextResponse(
+                    new JValue("1"),
+                    new JObject { ["status"] = "Ready", ["code"] = "LifecycleStatus" },
+                    isError: false,
+                    toolName: "genexus_lifecycle");
+
+                var result = response["result"] as JObject;
+                Assert.NotNull(result);
+                Assert.Equal("Ready", result!["structuredContent"]?["status"]?.ToString());
+                Assert.Equal("{\"status\":\"Ready\",\"code\":\"LifecycleStatus\"}",
+                    result["content"]?[0]?["text"]?.ToString());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", null);
+                Program.InvalidateEnvProbeCache();
             }
         }
     }

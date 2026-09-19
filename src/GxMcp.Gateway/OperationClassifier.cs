@@ -143,7 +143,7 @@ namespace GxMcp.Gateway
                     readOnly: new[] { "status", "pending", "ignored", "conflicts", "history", "pipeline_list", "pipeline_runs", "pipeline_output" },
                     mutating: new[] { "commit", "update", "lock", "resolve", "pipeline_run", "pipeline_abort" }),
                 ["genexus_kb_version"] = Contract(
-                    readOnly: new[] { "list" },
+                    readOnly: new[] { "list", "changed_objects" },
                     mutating: new[] { "freeze", "branch", "set_active", "revert" }),
                 ["genexus_browser"] = Contract(
                     readOnly: new[] { "smoke", "a11y", "wcag", "capture", "cross", "preview" },

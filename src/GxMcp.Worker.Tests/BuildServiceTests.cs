@@ -585,6 +585,45 @@ namespace GxMcp.Worker.Tests
             Assert.False(BuildService.IsBuildTarget("", status));
         }
 
+        [Fact]
+        public void BuildTaskStatus_LivenessBaselineIncludesObjectAndLineProgress()
+        {
+            var first = new BuildService.BuildTaskStatus
+            {
+                Status = "Running", Phase = "Specifying", TargetsDone = 0,
+                CurrentObject = "ProcA", LineCount = 10
+            };
+            var nextObject = new BuildService.BuildTaskStatus
+            {
+                Status = "Running", Phase = "Specifying", TargetsDone = 0,
+                CurrentObject = "ProcB", LineCount = 10
+            };
+            var nextLine = new BuildService.BuildTaskStatus
+            {
+                Status = "Running", Phase = "Specifying", TargetsDone = 0,
+                CurrentObject = "ProcA", LineCount = 11
+            };
+
+            Assert.Equal(first.ComputeBaseline(), nextObject.ComputeBaseline());
+            Assert.NotEqual(first.ComputeLivenessBaseline(), nextObject.ComputeLivenessBaseline());
+            Assert.NotEqual(first.ComputeLivenessBaseline(), nextLine.ComputeLivenessBaseline());
+        }
+
+        [Fact]
+        public void WatchdogFailure_PreservesPhaseInEnvelopeAndMessage()
+        {
+            var status = new BuildService.BuildTaskStatus
+            {
+                Status = "Running", Phase = "Generating", StartedAt = DateTime.UtcNow.AddSeconds(-3)
+            };
+
+            Assert.True(BuildService.TrySetWatchdogFailure(status,
+                phase => "watchdog failure at phase '" + phase + "'"));
+            Assert.Equal("Failed", status.Status);
+            Assert.Equal("Generating", status.Phase);
+            Assert.Equal("watchdog failure at phase 'Generating'", status.Error);
+        }
+
         // ── issue #42: no-progress watchdog env parsing ─────────────────────
 
         [Fact]

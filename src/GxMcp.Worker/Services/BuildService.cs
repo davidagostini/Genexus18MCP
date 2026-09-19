@@ -778,6 +778,19 @@ namespace GxMcp.Worker.Services
             {
                 return (Phase ?? "") + "|" + (TargetsDone?.ToString() ?? "") + "|" + ErrorCount + "|" + WarningCount + "|" + (Status ?? "");
             }
+
+            /// <summary>
+            /// Progress-only fingerprint for the no-progress watchdog. This is deliberately
+            /// separate from ComputeBaseline(), whose compact shape is an external ETag for
+            /// status long-polling. A build can advance through objects and output lines while
+            /// its phase, target count, and diagnostic counts remain unchanged.
+            /// </summary>
+            internal string ComputeLivenessBaseline()
+            {
+                return (Phase ?? "") + "|" + (TargetsDone?.ToString() ?? "") + "|"
+                    + (CurrentObject ?? "") + "|" + LineCount + "|" + ErrorCount + "|"
+                    + WarningCount + "|" + (Status ?? "");
+            }
         }
 
         // v2.6.6 Stream F: terminal statuses always return immediately from GetStatusWait.
@@ -786,6 +799,26 @@ namespace GxMcp.Worker.Services
             { "Succeeded", "Failed", "Cancelled", "Error", "ReorgRequired" };
         private static bool IsTerminalStatus(string s)
             => !string.IsNullOrEmpty(s) && _terminalStatuses.Contains(s);
+
+        /// <summary>
+        /// Terminalizes a watchdog failure without replacing the diagnostic phase with the
+        /// normal successful-build terminal phase (Done). The phase captured under the same
+        /// lock is passed to the caller's message factory, so the envelope and text agree.
+        /// </summary>
+        internal static bool TrySetWatchdogFailure(BuildTaskStatus status, Func<string, string> errorFactory)
+        {
+            if (status == null || errorFactory == null) return false;
+            lock (status._lock)
+            {
+                if (IsTerminalStatus(status.Status)) return false;
+                string phase = status.Phase ?? "?";
+                status.Status = "Failed";
+                status.Error = errorFactory(phase);
+                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                return true;
+            }
+        }
 
         // Item 28 (mcp-improvements-2026-05-22, Tier-S) — EXPERIMENTAL. Pluggable
         // decision strategy for the fastIncremental opt-in. Default impl reads
@@ -2901,12 +2934,10 @@ namespace GxMcp.Worker.Services
                         lock (status._lock)
                         {
                             if (IsTerminalStatus(status.Status)) return;
-                            status.Status = "Failed";
-                            status.Phase = "Done";
-                            status.Error = "Build timed out after " + timeoutSec + "s at phase '" + (status.Phase ?? "?")
-                                + "' and was terminated. If this was a full deploy/reorg step (WebAppConfig, CheckAndInstallDatabase), it may still be running in the SDK; check the KB in the IDE. Raise the cap with GXMCP_BUILD_TIMEOUT_SEC if the KB legitimately needs longer.";
-                            status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                            status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                            if (!TrySetWatchdogFailure(status, phase =>
+                                "Build timed out after " + timeoutSec + "s at phase '" + phase
+                                + "' and was terminated. If this was a full deploy/reorg step (WebAppConfig, CheckAndInstallDatabase), it may still be running in the SDK; check the KB in the IDE. Raise the cap with GXMCP_BUILD_TIMEOUT_SEC if the KB legitimately needs longer."))
+                                return;
                         }
                         MaybeNotifyOnFailure(status);
                         try { status.StateChangeSignal.Set(); } catch { }
@@ -2918,12 +2949,12 @@ namespace GxMcp.Worker.Services
                 // fires after the FULL timeout (900s/2400s); a build that wedges early
                 // (phase + counts frozen) would otherwise sit "Running" for the whole
                 // cap. This lighter timer force-fails once no observable progress
-                // (phase / error / warning / targetsDone) has been seen for
+                // (phase / object / output-line / error / warning / targetsDone) has been seen for
                 // noProgressSec. Disabled when noProgressSec <= 0.
                 int noProgressSec = ResolveBuildNoProgressSeconds();
                 if (noProgressSec > 0)
                 {
-                    string lastBaseline = status.ComputeBaseline();
+                    string lastBaseline = status.ComputeLivenessBaseline();
                     DateTime lastProgressUtc = DateTime.UtcNow;
                     int tickMs = Math.Max(5000, Math.Min(30000, noProgressSec * 1000 / 4));
                     noProgressWatchdog = new System.Threading.Timer(_ =>
@@ -2931,7 +2962,7 @@ namespace GxMcp.Worker.Services
                         try
                         {
                             if (IsTerminalStatus(status.Status)) return;
-                            string cur = status.ComputeBaseline();
+                            string cur = status.ComputeLivenessBaseline();
                             if (!string.Equals(cur, lastBaseline, StringComparison.Ordinal))
                             {
                                 lastBaseline = cur;
@@ -2945,13 +2976,11 @@ namespace GxMcp.Worker.Services
                             lock (status._lock)
                             {
                                 if (IsTerminalStatus(status.Status)) return;
-                                status.Status = "Failed";
-                                status.Phase = "Done";
-                                status.Error = "Build made no observable progress for " + noProgressSec + "s at phase '"
-                                    + (status.Phase ?? "?") + "' and was terminated (no-progress watchdog). The SDK build step "
-                                    + "may be wedged; check the KB in the IDE. Tune with GXMCP_BUILD_NOPROGRESS_SEC (0 disables).";
-                                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                                if (!TrySetWatchdogFailure(status, phase =>
+                                    "Build made no observable progress for " + noProgressSec + "s at phase '"
+                                    + phase + "' and was terminated (no-progress watchdog). The SDK build step "
+                                    + "may be wedged; check the KB in the IDE. Tune with GXMCP_BUILD_NOPROGRESS_SEC (0 disables)."))
+                                    return;
                             }
                             MaybeNotifyOnFailure(status);
                             try { status.StateChangeSignal.Set(); } catch { }

@@ -604,11 +604,16 @@ namespace GxMcp.Gateway
             }
             // MCP's structuredContent lets modern clients consume the JSON result
             // without reparsing the text content. Keep the text representation for
-            // legacy clients and omit structuredContent on tool errors.
+            // legacy clients and omit structuredContent on tool errors. Lifecycle is
+            // the one published tool with outputSchema: even in lean mode it must carry
+            // structuredContent or strict MCP clients reject the successful result as
+            // -32600. Other tools retain the lean omission behavior.
             // Perf: structuredContent duplicates the whole payload (~+55% bytes per
             // response, measured). Gated by Server.EmitStructuredContent / env
-            // GXMCP_NO_STRUCTURED_CONTENT so lean deployments can drop it.
-            if (!isError && EmitStructuredContentEnabledCached()
+            // GXMCP_NO_STRUCTURED_CONTENT for tools without an advertised output schema.
+            if (!isError
+                && (EmitStructuredContentEnabledCached()
+                    || string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
                 && (axiPayload.Type == JTokenType.Object || axiPayload.Type == JTokenType.Array))
             {
                 result["structuredContent"] = axiPayload;
