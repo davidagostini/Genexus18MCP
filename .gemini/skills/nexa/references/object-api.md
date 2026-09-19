@@ -13,16 +13,15 @@ An `API` object (or `API`) consists of entry points defining services delegating
 Protocol guidance:
 - Prefer `REST` as default protocol
 	* Applies to public/external integrations and standard HTTP clients
-	* Set `Call Protocol = HTTP`
-	* Set `gRPC Protocol = False`
-- Choose `gRPC` only when explicitly requested
+	* Set `RESTProtocol = true`
+	* Set `GRPCProtocol = false`
+- Choose `gRPC` only when explicitly requested and satisfies backend support
 	* Applies to internal service-to-service contracts with strict typing
-	* Set `gRPC Protocol = True`
-	* Set `Generate OpenAPI interface = No`
+	* Set `GRPCProtocol = true`
+	* Set `GenerateOpenAPIInterface = "No"`
 - Keep one service definition mode:
 	* Prefer `API` object exposure layer with reference to implementation objects
 	* Define `Web Service` exposure in target object only when explicitly requested
-
 
 ---
 
@@ -32,19 +31,7 @@ API <name>
 {
 	<name>
 	{
-		[<annotation-1-1>]
-		…
-		[<annotation-1-M>]
-		<service-1>(<parameter-list-1>)
-			=> <implementation-1>(<argument-list-1>);
-
-		…
-
-		[<annotation-N-1>]
-		…
-		[<annotation-N-K>]
-		<service-N>(<parameter-list-N>)
-			=> <implementation-N>(<argument-list-N>);
+		<services>
 	}
 
 	#Events
@@ -67,20 +54,47 @@ API <name>
 
 Where:
 - `<name>`: Object name using alphanumeric or underscore, starting with letter
-- `<annotation-i-j>`: j-th annotation for i-th service (RestMethod, RestPath, Header, Description, SecurityLevel, SecurityPermission)
-- `<service-i>`: i-th service exposed name with parameters
-- `<parameter-list-i>`: Comma-separated variable parameters with operator (`in`, `out`, `inout`); optional parameters in brackets
-- `<implementation-i>`: Implementation object (Procedure, DataProvider, or other callable object)
-- `<argument-list-i>`: Comma-separated variables or constants for implementation call
+- `<services>`: Service definition list; see [SERVICE](#service) section
 - `<events>`: Event handlers (Before, After, service-specific)
 - `<variables>`: Variable definitions with mandatory `DataType`
 - `<properties>`: Optional object properties in TOML syntax; see [properties](./properties-object-api.md)
-- `<documentation>`: Optional object documentation; check [common-markdown](./common-markdown.md)
+- `<documentation>`: Optional object documentation; see [markdown](./common-markdown.md)
 
+---
+
+# SERVICE
+Defines one exposed service delegated to one implementation call
+
+Syntax:
+~~~
+<annotations>
+<name>(<parameters>)
+	=> <implementation>(<arguments>);
+~~~
+
+Where:
+- `<annotations>`: Breakline separated annotations; see [ANNOTATIONS](#annotations)
+- `<name>`: Service exposed name with parameters
+- `<parameters>`: Comma-separated variable parameters with operator (`in`, `out`, `inout`); optional parameters in brackets
+- `<implementation>`: Implementation object (`Procedure`, `DataProvider`, or other callable object)
+- `<arguments>`: Comma-separated variables or constants for implementation call
+
+Rules:
+- Write annotations immediately before the service declaration
+- Keep one implementation call per service
+- Give all implementation arguments explicitly; use constants when no binding exists
+- Bind implementation outputs (when present) using return-by-reference scheme only:
+	* Detect output contract from implementation definition
+		* For `DataProvider` objects, check `Output` and `Collection` properties
+		* For other callable objects, check `parm` rule `out` variables
+	* Derive service `out` argument from detected output
+	* Assign service variable to inferred `out` parameter
+	* Invoke service implementation using service that variable as `out` argument
 
 ---
 
 # ANNOTATIONS
+Defines optional protocol-specific metadata for a service declaration
 
 ## RestMethod
 Defines REST method
@@ -142,7 +156,7 @@ Where:
 - `<level>`: Access requirement
 	* `None`: No authentication (default)
 	* `Authentication`: User must be authenticated
-	* `Authorize`: User must be authenticated and authorized
+	* `Authorization`: User must be authenticated and authorized
 
 Example:
 ~~~
@@ -195,7 +209,7 @@ EndEvent
 ---
 
 # OUTPUT
-Use [global-output](./global-output.md) with `<type>` value: `api`
+Use [global-output](./global-output.md)
 
 ---
 
@@ -207,7 +221,7 @@ Use [global-output](./global-output.md) with `<type>` value: `api`
 - Service parameters can omit `in` params (initialized in Before event)
 - Service can define `out` params not in implementation (initialized in After event)
 - Event code must be orchestration only; never include direct DB access commands
-- Keep API execution under HTTP semantics by setting `Call Protocol = HTTP` when exposing REST behavior
+- Keep API execution under HTTP semantics by setting `RESTProtocol = true` when exposing REST behavior
 - Keep either `API` object references or object-level `Web Service` definition, never both
 
 ---
@@ -383,7 +397,7 @@ API CustomerAPI
 		GetCustomer(in: &CustomerId, out: &CustomerInfo)
 			=> GetCustomer(&CustomerId, &CustomerInfo);
 	}
-	...
+	…
 }
 ~~~
 

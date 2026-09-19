@@ -18,7 +18,6 @@ import {
   CONFIG_AUTO_START, 
   CONFIG_KB_PATH,
   CONFIG_INSTALL_PATH,
-  MODULE_HEALTH,
   HEALTH_CHECK_INTERVAL,
   HEALTH_CHECK_TIMEOUT,
   HEALTH_CHECK_TIMEOUT_INDEXING
@@ -40,13 +39,38 @@ export class BackendManager {
     );
   }
 
+  /**
+   * Starting the Gateway persists KB/install configuration and spawns a local
+   * process. VS Code must explicitly trust the workspace before either side
+   * effect is allowed.
+   */
+  static isWorkspaceTrusted(): boolean {
+    return BackendManager.canStartWorkspace(vscode.workspace.isTrusted);
+  }
+
+  static canStartWorkspace(isTrusted: boolean | undefined): boolean {
+    return isTrusted !== false;
+  }
+
+  static shouldPersistRuntimeConfig(forceStart: boolean, autoStart: boolean | undefined): boolean {
+    return forceStart || autoStart === true;
+  }
+
   async start(provider: GxFileSystemProvider, forceStart = false): Promise<boolean> {
+    if (!BackendManager.isWorkspaceTrusted()) {
+      this.trace("Backend startup blocked because the workspace is not trusted.");
+      Logger.warn(
+        "[BackendManager] Workspace is not trusted; backend startup and config persistence are blocked.",
+      );
+      return false;
+    }
+
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
-    const autoStart = config.get(CONFIG_AUTO_START);
+    const autoStart = config.get<boolean>(CONFIG_AUTO_START, false);
 
     const resolvedBackend = this.resolveBackendDirectory();
-    let backendDir = resolvedBackend.backendDir;
-    let gatewayExe = resolvedBackend.gatewayExe;
+    const backendDir = resolvedBackend.backendDir;
+    const gatewayExe = resolvedBackend.gatewayExe;
 
     const configFile = resolveGatewayConfigPath(this.context.extensionPath);
 
@@ -86,21 +110,6 @@ export class BackendManager {
       return false;
     }
 
-    if (fs.existsSync(configFile)) {
-      try {
-        const currentConfig = persistedConfig ?? readJsonFile(configFile);
-        currentConfig.GeneXus = currentConfig.GeneXus || {};
-        currentConfig.Environment = currentConfig.Environment || {};
-        currentConfig.Server = currentConfig.Server || {};
-        currentConfig.GeneXus.InstallationPath = installationPath;
-        currentConfig.Environment.KBPath = kbPath;
-        currentConfig.Server.HttpPort = this.getEffectivePort(config);
-        fs.writeFileSync(configFile, JSON.stringify(currentConfig, null, 2));
-      } catch (e) {
-        Logger.error(`[BackendManager] Failed to update canonical config.json: ${e}`);
-      }
-    }
-
     const gatewayIdentity = buildGatewayIdentity(
       this.context.extensionPath,
       config,
@@ -119,10 +128,21 @@ export class BackendManager {
       return true;
     }
 
-    if (!forceStart && !autoStart) {
+    if (!BackendManager.shouldPersistRuntimeConfig(forceStart, autoStart)) {
       this.trace("Auto-start disabled and no ready gateway was detected.");
       return false;
     }
+
+    // Persist only after an effective start was authorized. In particular,
+    // autoStart=false must not rewrite the shared config as a background side
+    // effect while the extension is merely probing for a ready gateway.
+    this.persistRuntimeConfig(
+      configFile,
+      persistedConfig,
+      installationPath,
+      kbPath,
+      config,
+    );
 
     await this.cleanupBrokenGatewayInstance(gatewayIdentity, provider);
 
@@ -192,7 +212,7 @@ export class BackendManager {
 
   private async findBestKbPath(): Promise<string> {
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
-    let kbPath = config.get<string>(CONFIG_KB_PATH, "");
+    const kbPath = config.get<string>(CONFIG_KB_PATH, "");
 
     if (kbPath && fs.existsSync(kbPath)) {
       return kbPath;
@@ -229,6 +249,28 @@ export class BackendManager {
 
   private getEffectivePort(config: vscode.WorkspaceConfiguration): number {
     return resolveGatewayHttpPort(this.context.extensionPath, config);
+  }
+
+  private persistRuntimeConfig(
+    configFile: string,
+    persistedConfig: any,
+    installationPath: string,
+    kbPath: string,
+    config: vscode.WorkspaceConfiguration,
+  ): void {
+    if (!fs.existsSync(configFile)) return;
+    try {
+      const currentConfig = persistedConfig ?? readJsonFile(configFile);
+      currentConfig.GeneXus = currentConfig.GeneXus || {};
+      currentConfig.Environment = currentConfig.Environment || {};
+      currentConfig.Server = currentConfig.Server || {};
+      currentConfig.GeneXus.InstallationPath = installationPath;
+      currentConfig.Environment.KBPath = kbPath;
+      currentConfig.Server.HttpPort = this.getEffectivePort(config);
+      fs.writeFileSync(configFile, JSON.stringify(currentConfig, null, 2));
+    } catch (e) {
+      Logger.error(`[BackendManager] Failed to update canonical config.json: ${e}`);
+    }
   }
 
   async restart(provider: GxFileSystemProvider, forceStart = false) {
@@ -279,7 +321,7 @@ export class BackendManager {
         "GxMcp.Gateway",
         "bin",
         "Debug",
-        "net8.0-windows",
+        "net10.0-windows",
       );
       const devGatewayExe = path.join(devGatewayDir, "GxMcp.Gateway.exe");
 
@@ -501,7 +543,7 @@ class BackendHealthMonitor {
       } else {
         throw new Error("No response");
       }
-    } catch (e) {
+    } catch {
       if (isIndexing) return;
 
       this._consecutiveFailures++;

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using GxMcp.Worker.Helpers;
+using GxMcp.Worker.Services;
 using Xunit;
 
 namespace GxMcp.Worker.Tests
@@ -37,6 +38,29 @@ namespace GxMcp.Worker.Tests
             string root = EditSnapshotStore.ResolveRoot(null);
             Assert.False(string.IsNullOrWhiteSpace(root));
             Assert.Contains("edit-snapshots", root);
+        }
+
+        [Fact]
+        public void HistoryRoot_UsesKbScopedEditSnapshotStore()
+        {
+            string kbPath = Path.Combine(_root, "KbA");
+            Assert.Equal(
+                Path.Combine(kbPath, ".gx", "snapshots"),
+                HistoryService.ResolveHistoryRoot(kbPath));
+        }
+
+        [Fact]
+        public void LegacyHistoryCandidates_AreReportedWithoutCrossKbRestore()
+        {
+            string legacyRoot = Path.Combine(_root, ".history");
+            Directory.CreateDirectory(legacyRoot);
+            string legacyFile = Path.Combine(legacyRoot, "Procedure_Sample_20260101_010203.txt");
+            File.WriteAllText(legacyFile, "legacy");
+
+            var candidates = HistoryService.FindLegacySnapshotFiles(legacyRoot, "Procedure_Sample");
+
+            Assert.Single(candidates);
+            Assert.Equal(legacyFile, candidates[0]);
         }
 
         [Fact]

@@ -49,5 +49,29 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("CustomerId", payload["oldName"]!.ToString());
             Assert.True(payload["type"] == null || payload["type"]!.Type == JTokenType.Null);
         }
+
+        [Fact]
+        public void ExtractSubroutine_Routes_Properly_With_Payload()
+        {
+            var router = new OperationsRouter();
+            var args = new JObject
+            {
+                ["action"] = "ExtractSubroutine",
+                ["target"] = "MyProcedure",
+                ["code"] = "&Total = 0\r\n&Count = 0",
+                ["subroutineName"] = "ResetCounters",
+                ["dryRun"] = true
+            };
+            var routed = router.ConvertToolCall("genexus_refactor", args);
+            Assert.NotNull(routed);
+            var jo = JObject.FromObject(routed!);
+            Assert.Equal("Refactor", jo["module"]!.ToString());
+            Assert.Equal("ExtractSubroutine", jo["action"]!.ToString());
+            Assert.Equal("MyProcedure", jo["target"]!.ToString());
+            Assert.True(jo["dryRun"]!.Value<bool>());
+            var payload = JObject.Parse(jo["payload"]!.ToString());
+            Assert.Equal("&Total = 0\r\n&Count = 0", payload["code"]!.ToString());
+            Assert.Equal("ResetCounters", payload["subroutineName"]!.ToString());
+        }
     }
 }

@@ -49,9 +49,7 @@ namespace GxMcp.Worker.Helpers
             // Exact-name matches across the index (case-insensitive). If 2+
             // come back with different types and no type filter was applied,
             // that's ambiguity — surface candidates so the LLM picks one.
-            var exactMatches = index.Objects.Values
-                .Where(e => string.Equals(e.Name, target, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var exactMatches = index.FindByName(target);
 
             if (exactMatches.Count >= 2)
             {

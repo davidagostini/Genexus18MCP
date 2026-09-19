@@ -1,0 +1,161 @@
+{
+	"Show": {
+		"Description": "Displays an Action Group on screen",
+		"Scope": "Native"
+	},
+	"AddItem": {
+		"Description": "Adds an item (code/description pair) to a control's item collection",
+		"Constraints": [
+			"Call Clear first when fully reloading the collection from scratch"
+		],
+		"Arguments": {
+			"Code": "Item code value",
+			"Description": "Item display text",
+			"Index": "(Optional) 1-based insertion position; append at end if omitted"
+		}
+	},
+	"Clear": {
+		"Description": "Empties a control's item collection or clears drawn shapes from a map",
+		"Arguments": {
+			"GeographyId": "(Optional, maps only) ID of the shape to clear; clears all shapes if omitted"
+		}
+	},
+	"Reload": {
+		"Description": "Re-reads the underlying table and refreshes a dynamic control's item list at runtime",
+		"Constraints": [
+			"Applies only at execution time; use when source data changed and the list needs refreshing without navigating away"
+		]
+	},
+	"RemoveItem": {
+		"Description": "Removes an item from a collection of controls",
+		"Arguments": {
+			"Code": "Code value of the item to remove"
+		}
+	},
+	"Repaint": {
+		"Description": "Repaints a control to reflect runtime property changes",
+		"Constraints": [
+			"Required after setting runtime properties (color, font, size, etc.) to make changes visually effective"
+		],
+		"Scope": "Web"
+	},
+	"Value": {
+		"Description": "Returns the code of the item at a given position in a control's collection",
+		"Arguments": {
+			"Index": "1-based position of the item to retrieve"
+		}
+	},
+	"FirstPage": {
+		"Description": "Navigates a paginated grid to its first page",
+		"Constraints": [
+			"Only effective when automatic paging is enabled (grid Rows property ≠ 0)"
+		],
+		"Scope": "Web"
+	},
+	"PreviousPage": {
+		"Description": "Navigates a paginated grid to its previous page",
+		"Constraints": [
+			"Only effective when automatic paging is enabled (grid Rows property ≠ 0)"
+		],
+		"Scope": "Web"
+	},
+	"NextPage": {
+		"Description": "Navigates a paginated grid to its next page",
+		"Constraints": [
+			"Only effective when automatic paging is enabled (grid Rows property ≠ 0)"
+		],
+		"Scope": "Web"
+	},
+	"LastPage": {
+		"Description": "Navigates a paginated grid to its last page",
+		"Constraints": [
+			"Only effective when automatic paging is enabled (grid Rows property ≠ 0)"
+		],
+		"Scope": "Web"
+	},
+	"Load": {
+		"Description": "Loads the current row into a grid during its Load event",
+		"Constraints": [
+			"Must be used only from owner grid `Load` event",
+			"Required with multiple grids to identify row ownership",
+			"Required in base-table-less grids; otherwise no rows are loaded"
+		]
+	},
+	"Refresh": {
+		"Description": "Reloads a grid by triggering its Refresh event followed by its Load event",
+		"Constraints": [
+			"Refreshes only the target grid, not the entire form",
+			"Useful when multiple grids coexist on the same panel"
+		]
+	},
+	"Select": {
+		"Description": "Selects a grid row by its position",
+		"Arguments": {
+			"Index": "1-based row position to select"
+		}
+	},
+	"SetLayerVisible": {
+		"Description": "Shows or hides a map layer by its identifier",
+		"Arguments": {
+			"LayerId": "Identifier of the map layer",
+			"Visible": "Boolean; true to show, false to hide"
+		},
+		"Scope": "Native"
+	},
+	"ScrollIntoView": {
+		"Description": "Scrolls the form to bring a control into view at a specified position",
+		"Arguments": {
+			"Y": "Vertical offset; based on GeneXus.VerticalPosition enum domain",
+			"X": "(Optional) Horizontal offset; based on GeneXus.HorizontalPosition enum domain"
+		},
+		"Scope": "Native"
+	},
+	"JSEvent": {
+		"Description": "Binds JavaScript code to a control's click or change event",
+		"Constraints": [
+			"JavaScript must return `true` to trigger the GeneXus event or `false` to suppress it"
+		],
+		"Arguments": {
+			"JsEventName": [
+				"Use 'onclick' for input, button, image, and TextBlock",
+				"Use 'onchange' for comboBox, dynamicComboBox, listBox, and dynamicListBox"
+			],
+			"JsCodeString": "JavaScript expression to evaluate on the event"
+		},
+		"Scope": "Web"
+	},
+	"PrintForm": {
+		"Description": "Prints the current form layout to the default printer",
+		"Scope": "Web"
+	},
+	"SetFocus": {
+		"Description": "Moves input focus to the control"
+	},
+	"Pause": {
+		"Description": "Pauses the current animation",
+		"Scope": "Native"
+	},
+	"Play": {
+		"Description": "Starts the current animation",
+		"Arguments": {
+			"FromPosition": "(Optional) Start position from 0 to 1",
+			"ToPosition": "(Optional) End position from 0 to 1"
+		},
+		"Scope": "Native"
+	},
+	"SetAnimation": {
+		"Description": "Loads a Lottie animation from a Theme or DSO class",
+		"Arguments": {
+			"Class": "Animation class containing the animation",
+			"Loop": "Boolean; indicates whether animation repeats"
+		},
+		"Scope": "Native"
+	},
+	"SetProgress": {
+		"Description": "Sets the current animation progress position",
+		"Arguments": {
+			"Progress": "Progress position from 0 to 1"
+		},
+		"Scope": "Native"
+	}
+}

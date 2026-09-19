@@ -18,6 +18,26 @@ Status values:
 | local bind default | active | Defaults to `127.0.0.1` through config |
 | origin validation | partial | Loopback safe by default, configurable allowlist supported |
 | session expiration | active | Idle sessions are removed automatically |
+| HTTP shared-secret boundary | active | `GXMCP_HTTP_TOKEN` is required on every `/mcp` request when set; non-loopback binds refuse requests without it |
+
+## KB context and ownership
+
+The default neutral runtime is local-friendly `stdio-isolated` with
+`ResolutionPolicy: "strict"`. An explicit valid local path may be opened without
+pre-registering a trust root; hardened deployments add OS ACL/root/network
+controls outside the MCP client registration. Strict resolution is explicit
+`kb` → session `select`/`set_session_default` → strict rules. Persisted defaults
+do not seed a session and declared KBs are not auto-opened. Explicit
+`ResolutionPolicy: "legacy"` preserves `config-default` → `single-open` →
+`declared-first` and the legacy persistent `set_default` operation.
+
+`open` owns a worker reference through an owner-scoped lease; `select` changes
+only the current session; `close` releases only the caller's reference. A
+stateful KB-bound operation without its own active lease fails with
+`KB_NOT_OWNED`; invalid/mismatched and expired leases use
+`KB_LEASE_INVALID`/`KB_LEASE_EXPIRED`. Worker duplicate-lock startup is
+`KB_LOCKED` (internal marker `WORKER_HANDSHAKE_REJECT_BUSY`). Neutral gateway
+operations and explicitly lease-free reads must not be used to infer a KB.
 
 ## Tools
 
@@ -45,29 +65,100 @@ Optional response-shaping arguments for list-heavy tools:
 - `meta.fields` is returned when field projection is active.
 - `meta.totalByType` may be emitted when result rows expose a `type` field.
 
+## Action contract
+
+The table below is the machine-checkable action contract for every umbrella tool. An action appears in exactly one column. A mutating action changes KB, gateway, filesystem, database, team-server, or deployment state; `dryRun` is read-only only where the tool explicitly supports that preview mode.
+
+| Tool | Read-only actions | Mutating actions |
+| --- | --- | --- |
+| `genexus_data_view` | `inspect`, `dry_run` | `create`, `update`, `delete` |
+| `genexus_recipe` | `list`, `describe`, `suggest_macro` | `crystallize` |
+| `genexus_lifecycle` | `inspect`, `reorg_preview`, `status`, `result`, `snapshots-list` | `build`, `build_all`, `cancel`, `reconcile`, `specify`, `validate`, `validate-kb`, `rebuild`, `reorg`, `sync`, `index`, `snapshots-restore` |
+| `genexus_refactor` | — | `RenameAttribute`, `RenameVariable`, `RenameObject`, `ExtractProcedure`, `ExtractSubroutine`, `WWPSetCondition` |
+| `genexus_gam` | `status` | `define_api`, `deploy` |
+| `genexus_properties` | `get` | `set`, `move` |
+| `genexus_structure` | `get_visual`, `get_indexes`, `get_logic`, `check_subtypes` | `update_visual`, `create_index`, `drop_index`, `set_attribute`, `set_level`, `set_domain`, `update_group`, `move_attribute`, `remove_attribute` |
+| `genexus_authoring` | — | `add_external_method`, `add_external_property`, `add_menu_option`, `add_condition` |
+| `genexus_layout` | `get_tree`, `find_controls`, `inspect_surface`, `get_preview`, `scan_mutators`, `list_controls`, `design_system` | `set_property`, `set_properties`, `rename_printblock`, `add_printblock`, `delete_printblock` |
+| `genexus_doc` | `health` | `wiki`, `visualize` |
+| `genexus_kb` | `list`, `list_environments`, `get_environment`, `get_startup` | `open`, `close`, `select`, `set_session_default`, `set_default`, `set_persistent_default`, `set_startup`, `set_environment`, `create` |
+| `genexus_navigation` | — | `view` |
+| `genexus_api` | `list`, `describe`, `routes_inspect`, `diff_baseline`, `export_openapi`, `import_openapi` | `routes_clone`, `routes_update`, `snapshot` |
+| `genexus_apply_pattern` | `list_actions` | `add_grid_action`, `add_user_action`, `update_action`, `move_action`, `remove_action` |
+| `genexus_security` | `audit_gam`, `scan_secrets`, `scan_native` | — |
+| `genexus_sandbox` | — | `create`, `remove` |
+| `genexus_worker_pool` | — | `warm_spares` |
+| `genexus_edit_form` | — | `add_textblock`, `add_button`, `set_visibility`, `remove_control`, `wrap_in_fieldset` |
+| `genexus_module` | `list` (SDK identity/path-aware, deterministic), `list_modules_servers`, `search_modules_in_servers` | `install`, `install_builtin`, `update`, `package`, `publish`, `restore`, `add_modules_server` |
+| `genexus_gxserver` | `status`, `pending`, `ignored`, `conflicts`, `history`, `pipeline_list`, `pipeline_runs`, `pipeline_output` | `commit`, `update`, `lock`, `resolve`, `pipeline_run`, `pipeline_abort` |
+| `genexus_kb_version` | `list`, `changed_objects` (Design vs frozen, paginated, read-only) | `freeze`, `branch`, `set_active`, `revert` |
+| `genexus_browser` | `smoke`, `a11y`, `wcag`, `capture`, `cross`, `preview` | — |
+| `genexus_db` | `drift_check`, `drift_report`, `optimize_analyze`, `optimize_suggest`, `optimize_report`, `sql_ddl`, `sql_navigation`, `records_query`, `types_list`, `types_describe`, `types_validate`, `reorg_impact`, `reorg_preview` | `sample_data`, `records_insert`, `records_update`, `translations_import` |
+| `genexus_versioning` | `history_list`, `history_get`, `time_travel`, `blame`, `diff`, `diff_generated` | `history_save`, `history_restore`, `undo` |
+| `genexus_io` | `asset_find`, `asset_read`, `read_blob`, `ocr`, `validate_kb_text_files`, `validate_text_in_memory`, `list_text_files`, `text_mirror_status` | `asset_write`, `export_part`, `import_part`, `export_kb_to_text`, `import_text_to_kb`, `text_mirror_start`, `text_mirror_stop`, `text_mirror_catchup`, `text_mirror_set_references`, `delete_kb_objects`, `export_unified`, `screenshot_publish` |
+| `genexus_variable` | — | `add`, `delete`, `modify` |
+| `genexus_telemetry` | `executions`, `watch_event`, `friction_tail`, `learning_report`, `logs`, `profile_analyze`, `profile_hotspots`, `profile_correlate` | `friction_append` |
+| `genexus_create` | `sd_panel_inspect` | `object`, `object_atomic`, `popup`, `sd_panel_create`, `sd_panel_edit`, `save_as`, `scaffold`, `translate`, `sample`, `template`, `curl_procedure` |
+| `genexus_memory` | `recall`, `list` | `save`, `forget`, `promote`, `consolidate` |
+| `genexus_transfer` | `inspect` | `export`, `import` |
+| `genexus_deploy` | `list_targets` | `deploy` |
+| `genexus_generator_reference` | `list`, `dry_run_add`, `dry_run_remove` | `add`, `remove` |
+| `genexus_wwp` | `list`, `settings_templates`, `settings_read` | `add_action`, `add_user_action`, `update_action`, `move_action`, `remove_action`, `add_tab`, `move_tab`, `remove_tab`, `set_table_type`, `add_grid_attribute`, `replace_web_component_with_user_action`, `settings_edit` |
+
+Real-KB validation gate: `genexus_structure action=get_visual` with a homonymous
+target must be exercised against a KB that contains the relevant Transaction/Table
+or WebPanel collision, using `type=Transaction` (or the other intended type). The
+automated tests verify schema, routing, and contract parity; they do not claim to
+exercise GeneXus SDK object resolution in CI. Follow the controlled SDK procedure
+in [`docs/agent_playbook.md`](agent_playbook.md) for that manual check.
+
+Parameter-dependent side effects are classified conservatively in the gateway:
+`genexus_browser action=preview` remains read-only only when `buildFirst=false`,
+`updateBaseline=false`, and the capture list excludes `screenshot`. The navigation
+`view` action refreshes the per-KB navigation cache, and transfer `export` writes
+the requested XPZ file.
+
+This follow-up preserves the multi-action contract delivered in #131, the placement
+semantics documented in #65, and the homonym-routing behavior tracked in #34.
+
+## Tool inventory
+
 | Tool | Status | Worker path |
 | --- | --- | --- |
 | `genexus_query` | active | `Search -> Query` |
 | `genexus_list_objects` | active | `List -> Objects` |
 | `genexus_read` | active | `Read -> ExtractSource`; `targets[]` plural form routes to `Batch -> BatchRead` |
-| `genexus_batch_read` | **removed (v2.0.0)** | superseded by `genexus_read` with `targets[]` |
-| `genexus_edit` | active | `Write`, `SemanticOps -> Apply` (mode=ops), `JsonPatch -> Apply` (mode=patch + array), or legacy `Patch -> Apply` (mode=patch + string); `targets[]` plural form routes to `Batch -> MultiEdit` |
-| `genexus_batch_edit` | **removed (v2.0.0)** | superseded by `genexus_edit` with `targets[]` |
+| `genexus_edit` | active | `Write`, `SemanticOps -> Apply` (mode=ops), `JsonPatch -> Apply` (mode=patch + array), or `Patch -> Apply` (mode=patch + string, and the abbreviated `patch={find,replace}` form that additionally accepts `patch.scope` / `patch.indentation`); `targets[]` plural form routes to `Batch -> MultiEdit`, `parts[]` to `Batch -> BatchEdit`, `changeSet` to `Mutation -> ChangeSet` |
 | `genexus_inspect` | active | `Analyze -> GetConversionContext` |
 | `genexus_analyze` | active | `Analyze`, `Linter`, or `UI` depending on mode |
-| `genexus_summarize` | active | `Analyze -> Summarize` |
-| `genexus_inject_context` | active | `Analyze -> InjectContext` |
-| `genexus_lifecycle` | active | `Build`, `KB`, or `Validation` depending on action |
-| `genexus_forge` | partial | `Forge`, `Conversion`, and `Pattern` are now routed, but generation quality is still basic |
-| `genexus_test` | active | `Test -> Run` |
-| `genexus_get_sql` | active | `Analyze -> GetSQL` |
-| `genexus_create_object` | active | `Object -> Create` |
-| `genexus_refactor` | active | `Refactor -> RenameAttribute | RenameVariable | RenameObject | ExtractProcedure` |
+| `genexus_lifecycle` | active | `Build`, `KB`, or `Validation` depending on action (specify, compile_check, build, build_all, rebuild, index, status, result, reorg, validate); index `status` waits accept `wait`/`since`/`freshness` and report `waitSatisfied` |
+| `genexus_create` | active | Object creation umbrella: Transaction, Procedure, WebPanel, SDT, API, Domain, Popup, SDPanel, SaveAs, Template, `object_atomic` |
+| `genexus_structure` | active | `Structure -> GetVisualStructure | UpdateVisualStructure | GetVisualIndexes | GetLogicStructure | CheckSubtypes`; supports `type` disambiguation, `remove_attribute`, `move_attribute` |
+| `genexus_refactor` | active | `Refactor -> RenameObject | RenameAttribute | RenameVariable | ExtractProcedure | ExtractSubroutine | WWPSetCondition` |
 | `genexus_format` | active | `Formatting -> Format` |
-| `genexus_properties` | active | `Property -> Get | Set` |
-| `genexus_history` | active | `History -> List | Get_Source | Save | Restore` |
-| `genexus_structure` | active | `Structure -> GetVisualStructure | UpdateVisualStructure | GetVisualIndexes | GetLogicStructure` |
+| `genexus_properties` | active | `Property -> Get | Set | Move`; move accepts `destination`/`folder`/`module`/`targetModule` and tolerates Folder-destination placement property echoes (issue #238) |
+| `genexus_versioning` | active | Versioning umbrella: `History -> List | Get_Source | Save | Restore`, `Undo`, `TimeTravel`, `Blame`, `Diff` |
+| `genexus_io` | active | IO umbrella: `Asset -> Find | Read | Write`, Object Text batch `ExportKbToText | ImportTextToKb | ValidateKbTextFiles | ValidateTextInMemory | ListTextInMemory | DeleteKbObjects`, native SDK tree `src/`/`ref/` with incremental modes and sectioned `part=all`/`parts[]` documents, installed reference modules/packages routed to `ref/`, module metadata (`module.toml`) and optional official packages (`.opc`) and Transaction table projections (`#tables`), filesystem controls (`listOnly | skip | stopOnError | includeChildren | ignore | forceSave | rollbackOnFailure`), manifest/hash validation, watermark mirror (`Start | Stop | Status | Catchup | SetReferences`), `Object -> ExportText | ImportText`, `Export -> Unified`, `ScreenshotPublish` |
+| `genexus_db` | active | Database umbrella: `DbDrift`, `DbOptimize`, `Analyze -> GetSQL / GetSqlForNavigation / GenerateSampleData`, typed Transaction records (`QueryRecords / InsertRecord / UpdateRecord`), `Types`, `ReorgImpact` |
+| `genexus_layout` | active | WebForm control tree, layout properties, printblock management |
+| `genexus_edit_form` | active | Semantic WebForm element manipulation |
+| `genexus_apply_pattern` | active | Pattern application and WorkWithPlus action-group/form-action configuration |
+| `genexus_wwp` | active | Typed WorkWithPlus grid/form actions, tabs, nested controls, native table-type changes, grid attributes, and native WebComponent-to-DropDownComponent replacement with preview, concurrency checks, verification, and rollback |
+| `genexus_security` | active | `Security -> audit_gam | scan_secrets | scan_native` (native SDK scanner) |
+| `genexus_kb` | active | Multi-KB pool management, startup object, and environment switching |
+| `genexus_kb_version` | active | SDK `KBVersionHelper` model version tree and branch management; `changed_objects` provides a read-only Design-vs-frozen NEW/CHANGED inventory or stable `ChangedObjectsNotSupported` when the SDK surface is unavailable |
+| `genexus_gam` | active | SDK `IIntegratedSecurityService` GAM provisioning and deploy |
+| `genexus_transfer` | active | Native XPZ export and import |
+| `genexus_deploy` | active | Application deployment targets and execution |
 | `genexus_doc` | active | `Wiki`, `Visualizer`, or `Health` depending on action |
+| `genexus_recipe` | active | Named playbooks, macro suggestion, and crystallization |
+| `genexus_generator_reference` | active | Native typed .NET generator references |
+| `genexus_data_view` | active | Native typed Transaction + Data View authoring |
+| `genexus_whoami` | active | KB context, version, health, and playbook/skills discovery |
+| `genexus_kb_diff` | active (gateway-only) | Filesystem comparison of two explicit KB aliases/paths; not KB-bound and does not dispatch to a Worker |
+| `genexus_kb_import` | active (gateway-only) | Filesystem object copy between explicit source/target KBs; target may fall back to the active KB and must be indexed afterwards |
+| `genexus_sandbox` | active (gateway-only) | Filesystem sandbox create/remove; no SDK dispatch |
+| `genexus_worker_pool` | active (gateway-only) | Worker-pool warm-spare configuration; no KB selection or Worker tool dispatch |
 
 ## Resources
 
@@ -77,6 +168,8 @@ Optional response-shaping arguments for list-heavy tools:
 | `genexus://kb/health` | active | Gateway and worker health report |
 | `genexus://kb/agent-playbook` | active | Agent-native operating playbook for MCP, verification, and Git-friendly change control |
 | `genexus://kb/llm-playbook` | active | Protocol-first guide for LLM usage across CLI AXI and MCP tool flows |
+| `genexus://kb/skills/nexa` | active | Official Nexa skill for GeneXus modeling, properties, commands, and KB workflows |
+| `genexus://kb/skills/nexa/references/{name}` | active | On-demand Markdown references from the official Nexa skill pack |
 | `genexus://objects` | active | Browsable index of objects |
 | `genexus://attributes` | active | Browsable attribute listing |
 | `genexus://objects/{name}/part/{part}` | active | Part-specific object reading |
@@ -91,7 +184,7 @@ Optional response-shaping arguments for list-heavy tools:
 | `genexus://objects/{name}/indexes` | active | Visual indexes for Transaction/Table objects |
 | `genexus://objects/{name}/logic-structure` | active | Logical structure for Transaction/Table objects |
 | `genexus://attributes/{name}` | active | Attribute metadata |
-| resource subscriptions | partial | Subscription capability is advertised and notifications are emitted through the SSE session stream |
+| resource subscriptions | partial | Legacy `resources/subscribe` remains session-scoped over GET/SSE; modern 2026 clients can use bounded POST `subscriptions/listen` with opt-in list/resource filters and per-stream subscription ids. Resource notifications now carry `kbAlias`, `cacheRevision`, and a KB-qualified `resourceUri`; full wire/reconnect coverage remains pending. |
 
 ## Prompts
 
@@ -122,6 +215,7 @@ Optional response-shaping arguments for list-heavy tools:
 | tools list changed notification | active | Emitted through the HTTP SSE session stream |
 | resources list changed notification | active | Emitted through the HTTP SSE session stream |
 | resource updated notification | active | Emitted through the HTTP SSE session stream |
+| modern subscriptions/listen | partial | Acknowledgement and filtered SSE delivery are implemented; stream capacity/queue limits, disconnect cleanup, and KB/revision-qualified resource metadata are enforced. Full wire/reconnect coverage remains pending. |
 
 Operational notes:
 - `genexus_lifecycle(action='status'|'result', target='op:<operationId>')` resolves gateway-tracked MCP operations.

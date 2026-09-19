@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Services;
+using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
 using SdkServices = Artech.Architecture.Common.Services.Services;
@@ -222,7 +223,7 @@ namespace GxMcp.Worker.Services
                                 ["name"] = SafeStr(() => (string)d.Name),
                                 ["guid"] = SafeStr(() => d.Guid.ToString()),
                                 ["objectType"] = SafeStr(() => d.ObjectType.ToString()),
-                                ["versionDate"] = SafeStr(() => ((DateTime)d.VersionDate).ToUniversalTime().ToString("o"))
+                                ["versionDate"] = SafeStr(() => SdkTimestampNormalizer.NormalizeUtc((DateTime)d.VersionDate).ToString("o"))
                             });
                         }
                         return McpResponse.Ok(

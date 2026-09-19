@@ -78,5 +78,18 @@ namespace GxMcp.Worker.Tests
             Assert.False(nodes[0].IsKey);
             Assert.Equal("Character(60)", nodes[0].TypeStr);
         }
+
+        [Fact]
+        public void InlineComment_PreservesDescriptionAndFormulaMetadata()
+        {
+            var nodes = DslParserUtils.ParseLinesIntoNodes(new List<string>
+            {
+                "Label : VarChar(30) // \"Etiqueta\", [Formula: find(Code,Id=&Id,'')]"
+            });
+
+            Assert.Single(nodes);
+            Assert.Equal("Etiqueta", nodes[0].Description);
+            Assert.Equal("find(Code,Id=&Id,'')", nodes[0].Formula);
+        }
     }
 }

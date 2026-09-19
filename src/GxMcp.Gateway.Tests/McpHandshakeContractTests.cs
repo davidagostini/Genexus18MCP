@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json.Linq;
@@ -54,6 +55,7 @@ namespace GxMcp.Gateway.Tests
         {
             var response = Dispatch("tools/list");
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
             var tools = response["tools"] as JArray;
             Assert.NotNull(tools);
 
@@ -77,10 +79,47 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ToolsList_AnalyzeExplain_ShouldDeclareCodeArgument()
+        {
+            var tools = Dispatch("tools/list")["tools"] as JArray;
+            Assert.NotNull(tools);
+
+            var analyze = Assert.Single(tools!, tool =>
+                string.Equals(tool["name"]?.ToString(), "genexus_analyze", StringComparison.Ordinal));
+            Assert.Equal("string", analyze["inputSchema"]?["properties"]?["code"]?["type"]?.ToString());
+        }
+
+        [Fact]
+        public void ToolsList_LifecycleShouldDeclareCompatibleStructuredOutputSchema()
+        {
+            var tools = Dispatch("tools/list")["tools"] as JArray;
+            Assert.NotNull(tools);
+
+            var lifecycle = Assert.Single(tools!, tool =>
+                string.Equals(tool["name"]?.ToString(), "genexus_lifecycle", StringComparison.Ordinal));
+            Assert.Equal("object", lifecycle["outputSchema"]?["type"]?.ToString());
+            Assert.True(lifecycle["outputSchema"]?["additionalProperties"]?.Value<bool>() == true);
+            Assert.Equal("string", lifecycle["outputSchema"]?["properties"]?["status"]?["type"]?.ToString());
+        }
+
+        [Fact]
+        public void ToolsList_ShouldBeDeterministicallySortedByName()
+        {
+            var tools = Dispatch("tools/list")["tools"] as JArray;
+            Assert.NotNull(tools);
+
+            var names = tools!.Select(tool => tool["name"]?.ToString() ?? string.Empty).ToList();
+            Assert.Equal(names.OrderBy(name => name, System.StringComparer.Ordinal), names);
+        }
+
+        [Fact]
         public void ResourcesList_ShouldExposeRequiredPlaybookUris()
         {
             var response = Dispatch("resources/list");
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
+            Assert.True(response["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", response["cacheScope"]?.ToString());
             var resources = response["resources"] as JArray;
             Assert.NotNull(resources);
 
@@ -89,6 +128,8 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("genexus://kb/llm-playbook", uris);
             Assert.Contains("genexus://kb/index-status", uris);
             Assert.Contains("genexus://kb/health", uris);
+            Assert.Contains("genexus://kb/capabilities", uris);
+            Assert.Contains("genexus://kb/skills/nexa", uris);
         }
 
         [Fact]
@@ -96,6 +137,9 @@ namespace GxMcp.Gateway.Tests
         {
             var response = Dispatch("resources/templates/list");
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
+            Assert.True(response["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", response["cacheScope"]?.ToString());
             var templates = response["resourceTemplates"] as JArray;
             Assert.NotNull(templates);
             Assert.NotEmpty(templates!);
@@ -107,6 +151,7 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains(templateUris, uri => uri.StartsWith("genexus://objects/{name}/part/"));
             Assert.Contains(templateUris, uri => uri.Contains("/variables"));
             Assert.Contains(templateUris, uri => uri.Contains("/navigation"));
+            Assert.Contains("genexus://kb/skills/nexa/references/{name}", templateUris);
         }
 
         [Fact]
@@ -114,6 +159,9 @@ namespace GxMcp.Gateway.Tests
         {
             var response = Dispatch("prompts/list");
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
+            Assert.True(response["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", response["cacheScope"]?.ToString());
             var prompts = response["prompts"] as JArray;
             Assert.NotNull(prompts);
 
@@ -130,6 +178,9 @@ namespace GxMcp.Gateway.Tests
             var parameters = new JObject { ["uri"] = "genexus://kb/agent-playbook" };
             var response = Dispatch("resources/read", parameters: parameters);
 
+            Assert.Equal("complete", response["resultType"]?.ToString());
+            Assert.True(response["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", response["cacheScope"]?.ToString());
             var contents = response["contents"] as JArray;
             Assert.NotNull(contents);
             Assert.NotEmpty(contents!);
@@ -138,6 +189,82 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(entry);
             Assert.Equal("genexus://kb/agent-playbook", entry!["uri"]?.ToString());
             Assert.False(string.IsNullOrWhiteSpace(entry["text"]?.ToString()));
+        }
+
+        [Fact]
+        public void ToolResult_ShouldExposeStructuredContentAlongsideText()
+        {
+            // PERF round 3: sibling tests flip GXMCP_NO_STRUCTURED_CONTENT and the probe
+            // result is TTL-cached — reset so this test sees the default (enabled).
+            Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", null);
+            Program.InvalidateEnvProbeCache();
+            var response = Program.BuildToolTextResponse(
+                new JValue("1"),
+                new JObject { ["status"] = "ok", ["count"] = 1 },
+                isError: false,
+                toolName: "genexus_read");
+
+            var result = response["result"] as JObject;
+            Assert.NotNull(result);
+            Assert.Equal("complete", result!["resultType"]?.ToString());
+            Assert.Equal("ok", result["structuredContent"]?["status"]?.ToString());
+            Assert.Equal("{\"status\":\"ok\",\"count\":1}",
+                result["content"]?[0]?["text"]?.ToString());
+        }
+
+        [Fact]
+        public void ToolResult_ShouldOmitStructuredContent_WhenDisabled()
+        {
+            Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", "1");
+            // PERF round 3: the env probe is TTL-cached; drop the cache so the
+            // freshly-set variable is observed immediately.
+            Program.InvalidateEnvProbeCache();
+            try
+            {
+                var response = Program.BuildToolTextResponse(
+                    new JValue("1"),
+                    new JObject { ["status"] = "ok", ["count"] = 1 },
+                    isError: false,
+                    toolName: "genexus_read");
+
+                var result = response["result"] as JObject;
+                Assert.NotNull(result);
+                // text content is always preserved — that's what LLM clients read.
+                Assert.Equal("{\"status\":\"ok\",\"count\":1}",
+                    result!["content"]?[0]?["text"]?.ToString());
+                Assert.Null(result["structuredContent"]);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", null);
+                Program.InvalidateEnvProbeCache();
+            }
+        }
+
+        [Fact]
+        public void LifecycleResult_ShouldKeepStructuredContent_WhenLeanModeIsDisabled()
+        {
+            Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", "1");
+            Program.InvalidateEnvProbeCache();
+            try
+            {
+                var response = Program.BuildToolTextResponse(
+                    new JValue("1"),
+                    new JObject { ["status"] = "Ready", ["code"] = "LifecycleStatus" },
+                    isError: false,
+                    toolName: "genexus_lifecycle");
+
+                var result = response["result"] as JObject;
+                Assert.NotNull(result);
+                Assert.Equal("Ready", result!["structuredContent"]?["status"]?.ToString());
+                Assert.Equal("{\"status\":\"Ready\",\"code\":\"LifecycleStatus\"}",
+                    result["content"]?[0]?["text"]?.ToString());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", null);
+                Program.InvalidateEnvProbeCache();
+            }
         }
     }
 }

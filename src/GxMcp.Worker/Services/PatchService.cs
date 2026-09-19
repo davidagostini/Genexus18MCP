@@ -2,7 +2,6 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
-using System.Text.RegularExpressions;
 using System.Diagnostics;
 using GxMcp.Worker.Helpers;
 using Newtonsoft.Json.Linq;
@@ -16,7 +15,15 @@ namespace GxMcp.Worker.Services
         private sealed class SourceCacheEntry
         {
             public string Source { get; set; }
+            public string VersionToken { get; set; }
             public DateTime UpdatedUtc { get; set; }
+        }
+
+        private sealed class ObjectMetadataSnapshot
+        {
+            public string Revision { get; set; }
+            public string LastUpdate { get; set; }
+            public KBObject Object { get; set; }
         }
 
         private static readonly ConcurrentDictionary<string, SourceCacheEntry> _sourceCache =
@@ -149,8 +156,16 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false)
+        public string ApplyPatch(string target, string partName, string operation, string content, string context = null, int expectedCount = 1, string typeFilter = null, bool dryRun = false, bool verifyRollback = false, bool returnPostState = true, bool verbose = false, bool replaceAll = false, string verifyMode = null, string baseVersion = null, bool rollbackOnFailure = false, bool autoInjectVariables = false, bool requireObjectSave = false, JObject scope = null, JObject indentation = null, bool patchShorthand = false)
         {
+            string guardedPartName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+            partName = guardedPartName;
+            if (TextPayloadGuard.AppliesToPart(guardedPartName))
+            {
+                string literalLineBreakError = TextPayloadGuard.BuildWriteError(target, guardedPartName, "content", content);
+                if (literalLineBreakError != null) return literalLineBreakError;
+            }
+
             // Friction 2026-05-22: capture entry timestamp so a NoMatch we see at
             // the end can be cross-checked against WriteService.WasTargetWrittenSince
             // — if the file changed while this patch was queued/running, the context
@@ -161,6 +176,57 @@ namespace GxMcp.Worker.Services
             DateTime patchEnteredAtUtc = DateTime.UtcNow;
             try
             {
+                string resolvedVerifyMode;
+                try
+                {
+                    resolvedVerifyMode = TextPersistenceVerifier.ResolveMode(verifyMode, partName);
+                }
+                catch (ArgumentException ex)
+                {
+                    return Models.McpResponse.Err(code: "InvalidVerifyMode", message: ex.Message, target: target);
+                }
+
+                if (requireObjectSave && !string.Equals(partName, "Events", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Models.McpResponse.Err(
+                        code: "RequireObjectSaveUnsupportedPart",
+                        message: "requireObjectSave is supported only for part=Events in patch mode.",
+                        target: target);
+                }
+                if (requireObjectSave && !dryRun && string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    return Models.McpResponse.Err(
+                        code: "BaseVersionRequired",
+                        message: "A complete Events object save requires baseVersion so a concurrent IDE or MCP change cannot be overwritten.",
+                        hint: "Re-read Events and retry with the returned versionToken as baseVersion.",
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["requireObjectSave"] = true,
+                            ["partPersisted"] = false,
+                            ["objectSaved"] = false,
+                            ["metadataUpdated"] = false
+                        });
+                }
+
+                // Issue #205/#206: `scope` and `indentation` are honored ONLY by the abbreviated
+                // mode=patch form (`patch: {find, replace}`). The gateway already rejects the
+                // incompatible forms before normalizing them to context/content; this second gate
+                // exists so the protection can never be silently dropped if a call reaches the
+                // worker by another route. It runs before any SDK read: a rejected form must not
+                // touch the KB at all.
+                if ((scope != null || indentation != null)
+                    && !(patchShorthand && string.Equals(NormalizeOperation(operation), "replace", StringComparison.OrdinalIgnoreCase)))
+                {
+                    bool scopeForm = scope != null;
+                    return Models.McpResponse.Err(
+                        code: scopeForm ? "ScopeUnsupportedPatchForm" : "IndentationUnsupportedPatchForm",
+                        message: $"patch.{(scopeForm ? "scope" : "indentation")} is supported only in the abbreviated mode=patch form "
+                            + "(patch={find,replace}). It cannot be combined with operation, mode=ops, targets[], parts[], Insert_After or Append. No write was attempted.",
+                        hint: "Drop the option, or express the edit as patch={find,replace}.",
+                        target: target);
+                }
+
                 // Probe pattern-shadow warning ONCE before doing any work. If the agent
                 // is patching a WebForm/Layout on an object whose WorkWithPlus host has
                 // a populated PatternInstance, attach a warning to the terminal response
@@ -169,9 +235,10 @@ namespace GxMcp.Worker.Services
                 JArray patternShadowWarnings = BuildPatternShadowWarningsIfAny(target, partName, typeFilter);
 
                 string cacheKey = BuildCacheKey(target, partName, typeFilter);
-                bool sourceFromCache = false;
+                const bool sourceFromCache = false;
                 long readMs = 0;
                 string originalSource = null;
+                string snapshotVersion = null;
                 // v2.6.9 perf: reuse a fresh cache entry when no write has landed
                 // since we filled it. WriteService._lastWriteAtUtc tracks every
                 // write path; if WasTargetWrittenSince(target, entry.UpdatedUtc)
@@ -184,60 +251,50 @@ namespace GxMcp.Worker.Services
                 // we drop the cache + force a fresh read. The 20s TTL is the
                 // last-resort safety net for edits the worker didn't observe
                 // at all (e.g. straight filesystem touches).
-                if (_sourceCache.TryGetValue(cacheKey, out var cacheEntry) && cacheEntry != null)
+                // A caller that requests optimistic concurrency or rollback needs a
+                // fresh snapshot; a cache entry is not sufficient evidence for either.
+                // A write patch must always match the live SDK source. A cached snapshot can
+                // still contain a unique oldString after an IDE/worker write under another
+                // alias, turning a narrow edit into a last-writer-wins overwrite.
+                _objectService.MarkReadCacheDirty(_objectService.FindObject(target, typeFilter), partName);
+                var readStopwatch = Stopwatch.StartNew();
+                string currentResponse = _objectService.ReadObjectSourceForVerification(target, partName, typeFilter);
+                readStopwatch.Stop();
+                readMs = readStopwatch.ElapsedMilliseconds;
+                if (!TryReadCompleteSource(currentResponse, out JObject readJson, out originalSource, out string readError))
                 {
-                    bool ttlOk = (DateTime.UtcNow - cacheEntry.UpdatedUtc) < SourceCacheTtl;
-                    bool noConcurrentWrite = !WriteService.WasTargetWrittenSince(target, cacheEntry.UpdatedUtc);
-                    if (ttlOk && noConcurrentWrite)
-                    {
-                        originalSource = cacheEntry.Source;
-                        sourceFromCache = true;
-                    }
-                    else
-                    {
-                        _sourceCache.TryRemove(cacheKey, out _);
-                        _objectService.MarkReadCacheDirty(_objectService.FindObject(target, typeFilter), partName);
-                    }
+                    string readCode = TryExtractErrorCode(currentResponse);
+                    return Models.McpResponse.Err(
+                        // Keep the patch API's stable top-level failure contract while
+                        // retaining the more specific read diagnosis for callers that
+                        // need to distinguish a warming index from another read error.
+                        code: "PatchReadFailed",
+                        message: "Patch read failed: " + (readError ?? "The complete source could not be read."),
+                        hint: "Ensure the target object and part exist in the active KB and that the source read is complete.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep(
+                            tool: "genexus_read",
+                            args: new JObject { ["name"] = target, ["part"] = partName },
+                            why: "Verify the part is accessible and not truncated before patching.")),
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["readCode"] = readCode,
+                            ["readCompleted"] = false,
+                            ["readError"] = readError
+                        });
                 }
-                else
-                {
-                    _objectService.MarkReadCacheDirty(_objectService.FindObject(target, typeFilter), partName);
-                }
-                if (originalSource == null)
-                {
-                    var readStopwatch = Stopwatch.StartNew();
-                    string currentResponse = ReadSourceFast(target, partName, typeFilter);
-                    readStopwatch.Stop();
-                    readMs = readStopwatch.ElapsedMilliseconds;
-                    string readError = TryExtractError(currentResponse);
-                    if (!string.IsNullOrWhiteSpace(readError))
-                    {
-                        return Models.McpResponse.Err(
-                            code: "PatchReadFailed",
-                            message: "Patch read failed: " + readError,
-                            hint: "Ensure the target object and part exist in the active KB.",
-                            nextSteps: new JArray(Models.McpResponse.NextStep(
-                                tool: "genexus_read",
-                                args: new JObject { ["name"] = target, ["part"] = partName },
-                                why: "Verify the part is accessible before patching.")),
-                            target: target);
-                    }
 
-                    var json = JObject.Parse(currentResponse);
-                    originalSource = json["source"]?.ToString();
-                    if (originalSource == null)
-                    {
-                        return Models.McpResponse.Err(
-                            code: "PatchReadSourceNull",
-                            message: "Could not retrieve source for the requested part.",
-                            hint: "The part may not expose a text source. Use genexus_read to inspect available parts.",
-                            nextSteps: new JArray(Models.McpResponse.NextStep(
-                                tool: "genexus_read",
-                                args: new JObject { ["name"] = target },
-                                why: "Lists available parts for this object.")),
-                            target: target);
-                    }
-                    UpdateCachedSource(cacheKey, originalSource);
+                snapshotVersion = readJson["versionToken"]?.ToString();
+                UpdateCachedSource(cacheKey, originalSource, snapshotVersion);
+
+                if (!string.IsNullOrWhiteSpace(baseVersion) &&
+                    !string.Equals(baseVersion, snapshotVersion, StringComparison.Ordinal))
+                {
+                    return Models.McpResponse.Err(
+                        code: "VersionConflict",
+                        message: "The object Source changed after the caller read it.",
+                        target: target,
+                        extra: new JObject { ["baseVersion"] = baseVersion, ["currentVersion"] = snapshotVersion });
                 }
 
                 // Normalize line endings for internal processing
@@ -246,7 +303,12 @@ namespace GxMcp.Worker.Services
                 string workContent = (content ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n");
 
                 var sourceLines = workSource.Split('\n');
-                var contextLines = workContext?.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                // Preserve blank lines, including a terminal newline. Removing empty
+                // entries changed the matched byte range: a context ending in CRLF
+                // matched only the visible lines, then a replacement that also ended
+                // in CRLF left the original terminator behind and produced an extra
+                // blank line. That breaks exact verification and empty deletions.
+                var contextLines = workContext?.Split(new[] { '\n' }, StringSplitOptions.None);
                 string normalizedOperation = NormalizeOperation(operation);
 
                 // 2. Matching Logic
@@ -260,6 +322,10 @@ namespace GxMcp.Worker.Services
                     return BuildPatchResult("Error", partName, normalizedOperation, expectedCount, 0, "expectedCount must be >= 1.");
                 }
 
+                // The gate above already accepted this form, so the protections are live here.
+                bool protectedPatch = scope != null || indentation != null;
+                PatchTextEditor.ScopedReplaceOutcome scopedOutcome = null;
+
                 var patchStopwatch = Stopwatch.StartNew();
                 switch (normalizedOperation)
                 {
@@ -268,12 +334,24 @@ namespace GxMcp.Worker.Services
                             return BuildPatchResult("Error", partName, normalizedOperation, expectedCount, 0,
                                 "Replace needs the text to find. Use mode=patch with operation=\"Replace\", context=\"<exact existing lines>\", content=\"<new lines>\" — or the shorthand patch={\"find\":\"<existing>\",\"replace\":\"<new>\"}. A bare patch string / content-only has nothing to match against.");
 
-                        if (NormalizeSourceForComparison(workContext) == NormalizeSourceForComparison(workContent))
+                        if (!requireObjectSave && NormalizeSourceForComparison(workContext) == NormalizeSourceForComparison(workContent))
                         {
                             return BuildPatchResult("NoChange", partName, normalizedOperation, expectedCount, 1, "Patch content is identical to context. Write skipped.");
                         }
 
-                        updatedSource = TryReplace(sourceLines, contextLines ?? new string[0], workContent, expectedCount, out status, out details, out matchCount, replaceAll);
+                        if (protectedPatch)
+                        {
+                            scopedOutcome = RunScopedReplace(target, sourceLines, scope, contextLines ?? new string[0], workContent, expectedCount, replaceAll, out string scopeError);
+                            if (scopeError != null) return scopeError;
+                            updatedSource = scopedOutcome.UpdatedSource;
+                            status = scopedOutcome.Status;
+                            details = scopedOutcome.Details;
+                            matchCount = scopedOutcome.MatchCount;
+                        }
+                        else
+                        {
+                            updatedSource = TryReplace(sourceLines, contextLines ?? new string[0], workContent, expectedCount, out status, out details, out matchCount, replaceAll);
+                        }
                         break;
 
                     case "insert_after":
@@ -302,42 +380,13 @@ namespace GxMcp.Worker.Services
                 long patchMs = patchStopwatch.ElapsedMilliseconds;
 
                 // One guarded retry against stale cache: refresh source once and recompute.
-                if (sourceFromCache &&
-                    string.IsNullOrEmpty(updatedSource) &&
-                    (string.Equals(status, "NoMatch", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(status, "Ambiguous", StringComparison.OrdinalIgnoreCase)))
-                {
-                    var refreshReadSw = Stopwatch.StartNew();
-                    string refreshedResponse = ReadSourceFast(target, partName, typeFilter);
-                    refreshReadSw.Stop();
-                    readMs += refreshReadSw.ElapsedMilliseconds;
-                    string refreshedError = TryExtractError(refreshedResponse);
-                    if (string.IsNullOrWhiteSpace(refreshedError))
-                    {
-                        var refreshedJson = JObject.Parse(refreshedResponse);
-                        string refreshedSource = refreshedJson["source"]?.ToString();
-                        if (refreshedSource != null)
-                        {
-                            UpdateCachedSource(cacheKey, refreshedSource);
-                            originalSource = refreshedSource;
-                            workSource = originalSource.Replace("\r\n", "\n").Replace("\r", "\n");
-                            sourceLines = workSource.Split('\n');
-                            patchStopwatch.Restart();
-                            if (normalizedOperation == "replace")
-                            {
-                                updatedSource = TryReplace(sourceLines, contextLines ?? new string[0], workContent, expectedCount, out status, out details, out matchCount, replaceAll);
-                            }
-                            else if (normalizedOperation == "insert_after")
-                            {
-                                updatedSource = TryInsertAfter(sourceLines, contextLines ?? new string[0], workContent, expectedCount, out status, out details, out matchCount);
-                            }
-                            patchStopwatch.Stop();
-                            patchMs += patchStopwatch.ElapsedMilliseconds;
-                        }
-                    }
-                }
-
-                if (string.IsNullOrEmpty(updatedSource))
+                // An empty updated source is a valid result when Replace matched the
+                // complete part and the requested replacement is empty. Match failures
+                // also return an empty string, so status (not payload length) is the
+                // discriminator that keeps the no-match safety guard intact.
+                if (updatedSource == null ||
+                    (!string.Equals(status, "Applied", StringComparison.OrdinalIgnoreCase) &&
+                     string.IsNullOrEmpty(updatedSource)))
                 {
                     string dbg = string.Empty;
                     if (sourceLines.Length > 0 && contextLines?.Length > 0)
@@ -350,6 +399,12 @@ namespace GxMcp.Worker.Services
                     string failedDetails = string.IsNullOrWhiteSpace(details)
                         ? $"Context not found. Ensure the context matches a unique block in the source code.{dbg}"
                         : details;
+                    // Issue #205: a scope-bounded miss is not a typo in `find` — say so, so the
+                    // caller knows a match elsewhere in the part does not satisfy the scope.
+                    if (scope != null && scopedOutcome != null)
+                    {
+                        failedDetails += $" The search was limited to the patch.scope region (lines {scopedOutcome.EditableStartLine + 1}–{scopedOutcome.EditableEndLineExclusive + 1} of {sourceLines.Length}); a match outside those lines does not satisfy the scope.";
+                    }
 
                     // Friction 2026-05-22: distinguish "match truly absent" from
                     // "a sibling write to this same target landed before us".
@@ -376,7 +431,7 @@ namespace GxMcp.Worker.Services
                         // "not found" and no diagnostics. Raised to 120.
                         var near = contextLines.Length <= 120
                             ? FindNearMatches(sourceLines, contextLines, topN: 3)
-                            : new List<NearMatch>();
+                            : new List<PatchTextEditor.NearMatch>();
                         if (near.Count == 0)
                         {
                             // Issue #27 item 6: previously, when no similar window was found the
@@ -493,7 +548,8 @@ namespace GxMcp.Worker.Services
                     return AttachTimings(failure, readMs, patchMs, 0, sourceFromCache);
                 }
 
-                if (NormalizeForPartCompare(partName, workSource) == NormalizeForPartCompare(partName, updatedSource))
+                bool noContentChange = NormalizeForPartCompare(partName, workSource) == NormalizeForPartCompare(partName, updatedSource);
+                if (noContentChange && !requireObjectSave)
                 {
                     // Friction 2026-05-22: distinguish the two NoChange cases.
                     // case-a: matched + content identical to context (caught earlier
@@ -521,9 +577,136 @@ namespace GxMcp.Worker.Services
                     return AttachTimings(noChange, readMs, patchMs, 0, sourceFromCache);
                 }
 
+                // Events may already have been saved only as a part. Requiring the
+                // object save still means ForceSave + verification when the text is
+                // unchanged. Preserve its exact bytes instead of normalizing again.
+                if (noContentChange) updatedSource = workSource;
+
+                bool commentOnlyChange = CommentOnlyPatch.TryClassify(
+                    partName, normalizedOperation, workContext, workContent, out string commentStyle);
+                if (commentOnlyChange && !dryRun && string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    string missingVersion = Models.McpResponse.Err(
+                        code: "BaseVersionRequired",
+                        message: "Comment-only Source replacements require baseVersion; no write was attempted.",
+                        hint: "Re-read the Source, then retry with the returned versionToken as baseVersion.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep(
+                            tool: "genexus_read",
+                            args: new JObject { ["name"] = target, ["part"] = partName },
+                            why: "Obtains the current Source and versionToken for optimistic concurrency.")),
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["part"] = partName,
+                            ["operation"] = normalizedOperation,
+                            ["commentOnly"] = true,
+                            ["commentStyle"] = commentStyle,
+                            ["matchCount"] = matchCount,
+                            ["saved"] = false,
+                            ["verified"] = false,
+                            ["implicitOperations"] = new JArray()
+                        });
+                    return AttachTimings(missingVersion, readMs, patchMs, 0, sourceFromCache);
+                }
+
+                // Issue #206: `indentation.mode=validate` decides BEFORE the save whether the
+                // replacement carries the same base indentation as the located match. A dry run
+                // reports the evidence so it can be reviewed without failing; a real write stops
+                // here with IndentationMismatch / IndentationNotComparable and persists nothing.
+                JObject indentationEvidence = null;
+                if (indentation != null && scopedOutcome != null && string.Equals(status, "Applied", StringComparison.OrdinalIgnoreCase))
+                {
+                    string indentCode = CheckIndentation(sourceLines, scopedOutcome, workContent, out string indentMessage, out indentationEvidence);
+                    if (indentCode != null)
+                    {
+                        indentationEvidence["code"] = indentCode;
+                        indentationEvidence["validated"] = false;
+                        indentationEvidence["blockedWrite"] = !dryRun;
+                        if (!dryRun)
+                        {
+                            return Models.McpResponse.Err(
+                                code: indentCode,
+                                message: indentMessage,
+                                hint: "Send `replace` with the same leading tabs/spaces as the matched line, or omit patch.indentation to insert the text literally.",
+                                target: target,
+                                extra: new JObject
+                                {
+                                    ["part"] = partName,
+                                    ["saved"] = false,
+                                    ["persisted"] = false,
+                                    ["indentation"] = indentationEvidence
+                                });
+                        }
+                    }
+                    else
+                    {
+                        indentationEvidence["validated"] = true;
+                    }
+                }
+
+                // Issue #205 rule 6: line evidence for the scope, 1-based with an exclusive end.
+                JObject scopeEvidence = null;
+                if (scope != null && scopedOutcome != null)
+                {
+                    scopeEvidence = new JObject
+                    {
+                        ["editableStartLine"] = scopedOutcome.EditableStartLine + 1,
+                        ["editableEndLineExclusive"] = scopedOutcome.EditableEndLineExclusive + 1,
+                        ["scopeEndsAtEof"] = scopedOutcome.EndsAtEof,
+                        ["totalLines"] = sourceLines.Length
+                    };
+                    if (scopedOutcome.Matches.Count > 0)
+                    {
+                        scopeEvidence["matchStartLine"] = scopedOutcome.Matches[0].StartLine + 1;
+                        scopeEvidence["matchEndLineExclusive"] = scopedOutcome.Matches[0].EndLineExclusive + 1;
+                    }
+                }
+
                 if (dryRun)
                 {
                     string dryRunResult = BuildPatchResult("Applied", partName, normalizedOperation, expectedCount, matchCount, "Dry-run succeeded. Write skipped.");
+                    try
+                    {
+                        var dryRunJson = JObject.Parse(dryRunResult);
+                        var dryRunBody = dryRunJson["result"] as JObject ?? dryRunJson;
+                        var dryRunEvidence = TextPersistenceVerifier.Evaluate(
+                            requested: requireObjectSave && noContentChange ? originalSource : ToSdkLineEndings(updatedSource),
+                            persisted: originalSource, requestedMode: resolvedVerifyMode, partName: partName);
+                        dryRunBody["persisted"] = false;
+                        dryRunBody["saved"] = false;
+                        dryRunBody["verified"] = false;
+                        dryRunBody["requireObjectSave"] = requireObjectSave;
+                        dryRunBody["noContentChange"] = noContentChange;
+                        if (requireObjectSave)
+                        {
+                            var isolation = _writeService.InspectEventsIsolation(target, typeFilter);
+                            dryRunBody["objectSaveIsolation"] = isolation;
+                            if (isolation["blocker"] != null) dryRunBody["writeBlocker"] = isolation["blocker"];
+                        }
+                        dryRunBody["requestedHash"] = dryRunEvidence.RequestedHash;
+                        dryRunBody["persistedHash"] = dryRunEvidence.PersistedHash;
+                        dryRunBody["commentOnly"] = commentOnlyChange;
+                        if (commentOnlyChange)
+                        {
+                            dryRunBody["commentStyle"] = commentStyle;
+                            dryRunBody["before"] = context;
+                            dryRunBody["after"] = content ?? string.Empty;
+                            dryRunBody["matchedCount"] = matchCount;
+                        }
+                        dryRunBody["implicitOperations"] = new JArray();
+                        if (scopeEvidence != null) dryRunBody["scope"] = scopeEvidence;
+                        if (indentationEvidence != null) dryRunBody["indentation"] = indentationEvidence;
+                        if (!string.IsNullOrWhiteSpace(snapshotVersion)) dryRunBody["versionToken"] = snapshotVersion;
+                        dryRunBody["verification"] = new JObject
+                        {
+                            ["mode"] = resolvedVerifyMode,
+                            ["matchCount"] = matchCount,
+                            ["reReadConfirmed"] = false,
+                            ["skipped"] = "dryRun"
+                        };
+                        dryRunResult = dryRunJson.ToString();
+                    }
+                    catch { }
                     dryRunResult = AttachWarningsToJson(dryRunResult, patternShadowWarnings);
                     return AttachTimings(dryRunResult, readMs, patchMs, 0, sourceFromCache);
                 }
@@ -603,286 +786,344 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
+                // Re-check at the write boundary as well as entry, reducing the
+                // read/patch/write race window for optimistic concurrency callers.
+                if (!string.IsNullOrWhiteSpace(baseVersion))
+                {
+                    string currentVersion = ReadFreshVersionToken(target, partName, typeFilter);
+                    if (!string.Equals(baseVersion, currentVersion, StringComparison.Ordinal))
+                        return Models.McpResponse.Err(
+                            code: "VersionConflict",
+                            message: "The object changed while the patch was being prepared; no write was attempted.",
+                            target: target,
+                            extra: new JObject { ["baseVersion"] = baseVersion, ["currentVersion"] = currentVersion });
+                }
+
+                if (requireObjectSave)
+                {
+                    var requiredSaveWatch = Stopwatch.StartNew();
+                    string requiredSave = _writeService.WriteIsolatedEvents(target,
+                        noContentChange ? originalSource : ToSdkLineEndings(updatedSource), typeFilter, baseVersion);
+                    requiredSaveWatch.Stop();
+                    return AttachTimings(requiredSave, readMs, patchMs, requiredSaveWatch.ElapsedMilliseconds, sourceFromCache);
+                }
+
                 // 3. Write Back (re-normalize to CRLF for GeneXus)
-                string finalCode = updatedSource.Replace("\n", Environment.NewLine);
+                string finalCode = ToSdkLineEndings(updatedSource);
+                ObjectMetadataSnapshot metadataBefore = null;
+                ObjectMoveSnapshot fullObjectSnapshot = null;
+                if (requireObjectSave && !dryRun)
+                {
+                    try
+                    {
+                        metadataBefore = ReadFreshObjectMetadata(target, typeFilter);
+                        if (metadataBefore?.Object == null)
+                            throw new InvalidOperationException("The target object could not be reloaded for a complete pre-write snapshot.");
+                        fullObjectSnapshot = ObjectMoveSnapshot.Capture(metadataBefore.Object);
+                    }
+                    catch (Exception snapshotEx)
+                    {
+                        return Models.McpResponse.Err(
+                            code: "ObjectSnapshotFailed",
+                            message: "A complete object save was requested, but the pre-write snapshot could not be captured. No write was attempted.",
+                            hint: "Re-read the object and retry only after the SDK can enumerate all persisted parts.",
+                            target: target,
+                            extra: new JObject
+                            {
+                                ["requireObjectSave"] = true,
+                                ["partPersisted"] = false,
+                                ["objectSaved"] = false,
+                                ["metadataUpdated"] = false,
+                                ["details"] = snapshotEx.Message
+                            });
+                    }
+                }
                 var writeStopwatch = Stopwatch.StartNew();
-                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
+                // Do not use the object-only fast path for textual patches. On GX18 U16,
+                // obj.Save() can advance the object's version and leave the changed ISource
+                // only in the live SDK instance. The full path saves the part explicitly and
+                // commits the object transaction, matching mode=full persistence semantics.
+                string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: autoInjectVariables, baseVersion: baseVersion);
                 writeStopwatch.Stop();
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
                 JObject writePayload = ParseWriteResult(writeResult);
+                writePayload["implicitOperations"] = new JArray();
+                PatchPersistenceReceipt.AttachContentEvidence(writePayload, finalCode, finalCode, null);
+                if (commentOnlyChange)
+                {
+                    writePayload["commentOnly"] = true;
+                    writePayload["commentStyle"] = commentStyle;
+                    writePayload["before"] = context;
+                    writePayload["after"] = content ?? string.Empty;
+                    writePayload["matchedCount"] = matchCount;
+                }
 
                 bool primaryWriteSuccess = string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
+                bool writeReportedVerificationMismatch = string.Equals(writePayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase);
+                bool writeReportedVerificationUnavailable = string.Equals(writePayload["code"]?.ToString(), "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
+                bool writeReportedApplied = string.Equals(writePayload["code"]?.ToString(), "WriteApplied", StringComparison.OrdinalIgnoreCase);
+                bool writeReportedNoChange = string.Equals(writePayload["code"]?.ToString(), "WriteNoChange", StringComparison.OrdinalIgnoreCase);
+                bool writeReportedVersionConflict = string.Equals(writePayload["code"]?.ToString(), "StaleObject", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(writePayload["code"]?.ToString(), "VersionConflict", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(writePayload["code"]?.ToString(), "VersionCheckUnavailable", StringComparison.OrdinalIgnoreCase);
                 bool persistedMatches = false;
-                // Pattern parts: trust WriteService's own XmlEquivalence verification (it runs
-                // INSIDE WritePatternPart after the SDK save). PatchService's byte-level re-verify
-                // here would compare against `finalCode` — the pre-reconciler input — and would
-                // flag legitimate childrenOrderedList rewrites and SDK attribute reordering as
-                // false negatives. The WriteService payload already says Success only when the
-                // persisted pattern XML matches the saved content semantically.
+                bool saveReported = (primaryWriteSuccess && !writeReportedNoChange)
+                    || writeReportedVerificationMismatch
+                    || writeReportedVerificationUnavailable;
+                string confirmedPersistedSource = null;
                 bool isPatternPart = Services.PatternAnalysisService.IsPatternPart(partName);
-                if (primaryWriteSuccess && isPatternPart)
+
+                if (writeReportedVerificationUnavailable)
                 {
-                    persistedMatches = true;
-                    writePayload["persistedVerified"] = true;
-                    writePayload["persistedVerifyNote"] = "Pattern parts use WriteService's internal XmlEquivalence verification; byte-level re-verify was skipped because the auto-reconcile of childrenOrderedList legitimately reshapes the input.";
+                    bool writeAttempted = writePayload["saveAttempted"]?.Value<bool?>()
+                        ?? writePayload["error"]?["saveAttempted"]?.Value<bool?>()
+                        ?? true;
+                    PatchPersistenceReceipt.MarkVerificationUnavailable(
+                        writePayload,
+                        saveAttempted: writeAttempted,
+                        reason: writePayload["postSaveVerification"]?["reason"]?.ToString()
+                            ?? writePayload["error"]?["postSaveVerification"]?["reason"]?.ToString()
+                            ?? writePayload["verification"]?["reason"]?.ToString()
+                            ?? writePayload["error"]?["verification"]?["reason"]?.ToString()
+                            ?? writePayload["persistedVerifyError"]?.ToString()
+                            ?? writePayload["error"]?["message"]?.ToString()
+                            ?? "WriteService could not complete a post-save read.");
+                    if (writeAttempted) WriteService.NotePerTargetWrite(target);
+                    if (rollbackOnFailure)
+                        PatchPersistenceReceipt.MarkRollbackNotAttempted(
+                            writePayload,
+                            "Rollback was not attempted because the post-save state is unknown.");
                 }
-                else if (primaryWriteSuccess)
+                else if (primaryWriteSuccess && isPatternPart)
                 {
-                    // v2.6.9 perf: skip the post-write SDK re-read (~85 ms per call)
-                    // when WriteService returned a clean Success envelope — meaning
-                    // its own internal Save() returned without throwing AND the
-                    // payload doesn't carry warnings that hint at a partial flush.
-                    // The verify path was originally there to defend against the
-                    // SDK Save-returns-before-flush quirk (FR#2 2026-05-14); but on
-                    // a clean Success WriteService already exercised the flush
-                    // sequence (EnsureSave, etc.) before returning Success. When
-                    // the payload carries `warnings`, `partialFlush`, an explicit
-                    // `persistedVerified=false`, or `noChange`, fall back to the
-                    // full verify so the safety net stays in place for the cases
-                    // that historically tripped it. Net: bench-measured patch p50
-                    // 197 ms -> 122 ms for the happy path, no behaviour change for
-                    // the suspect path.
-                    bool writeHasWarnings = writePayload["warnings"] is JArray warnArr && warnArr.Count > 0;
-                    bool writeFlaggedUnverified =
-                        writePayload["persistedVerified"]?.Type == JTokenType.Boolean
-                        && writePayload["persistedVerified"]!.Value<bool>() == false;
-                    bool writeFlaggedPartial = writePayload["partialFlush"]?.Value<bool>() == true
-                        || writePayload["postWriteHashDrift"]?.Value<bool>() == true;
-                    bool writeFlaggedNoChange = string.Equals(writePayload["details"]?.ToString(), "No change", StringComparison.OrdinalIgnoreCase);
-                    bool trustClean = !writeHasWarnings && !writeFlaggedUnverified && !writeFlaggedPartial && !writeFlaggedNoChange;
-                    string verifyError = null;
-                    if (trustClean)
+                    // Pattern XML is reconciled before persistence and is already checked with
+                    // XML equivalence inside WriteService. Text verify modes intentionally apply
+                    // only to Source/Rules-like parts.
+                    var patternVerification = writePayload["postSaveVerification"] as JObject;
+                    bool patternReadConfirmed = patternVerification?["reReadConfirmed"]?.Value<bool?>() == true
+                        && writePayload["persisted"]?.Value<bool?>() == true
+                        && writePayload["mutation"]?["diff"]?["matches"]?.Value<bool?>() != false;
+                    bool patternVerificationWarning = writePayload["verificationWarning"] != null;
+                    bool patternReadUnavailable = patternVerification == null
+                        || patternVerification["reReadConfirmed"]?.Value<bool?>() != true
+                        || patternVerificationWarning;
+                    if (patternReadConfirmed && !patternVerificationWarning)
                     {
                         persistedMatches = true;
                         writePayload["persistedVerified"] = true;
-                        writePayload["persistedVerifyNote"] = "Skipped byte-level re-verify: WriteService returned clean Success.";
+                        writePayload["persisted"] = true;
                     }
                     else
                     {
-                        persistedMatches = VerifyPersistedSource(target, partName, typeFilter, finalCode, out verifyError);
-                        writePayload["persistedVerified"] = persistedMatches;
-                    }
-                    if (!string.IsNullOrWhiteSpace(verifyError))
-                    {
-                        writePayload["persistedVerifyError"] = verifyError;
-                    }
-
-                    if (!persistedMatches)
-                    {
-                        AttachPersistedSnippet(writePayload, target, partName, typeFilter, finalCode);
-                        // Fast path can report success before the physical source part is fully persisted.
-                        string fallbackWrite = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
-                        JObject fallbackPayload = ParseWriteResult(fallbackWrite);
-
-                        bool fallbackSuccess = string.Equals(fallbackPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
-                        writePayload["fallbackWriteStatus"] = fallbackPayload["status"]?.ToString() ?? "Error";
-                        // Friction 2026-05-22 #8: classifier helper extracted so the envelope shape
-                        // is unit-testable without standing up an SDK. See ClassifyFallbackFailure.
-                        if (!fallbackSuccess)
+                        persistedMatches = false;
+                        if (patternReadUnavailable)
                         {
-                            // Friction 2026-05-22 #8: differentiate two distinct failure modes
-                            // the agent previously couldn't tell apart from this single error.
-                            //
-                            // (a) write_not_persisted — neither write reached disk. Retry-safe
-                            //     because the on-disk source is still the original. SDK
-                            //     reported failure on the fallback AND a re-verify shows the
-                            //     persisted bytes still match the original.
-                            //
-                            // (b) persisted_with_concurrent_change — the primary write DID land
-                            //     (or a sibling write landed) and the persisted bytes diverge
-                            //     from the original (and from finalCode). Hash drifted *post-
-                            //     write*. Returning Error here forced the agent to retry,
-                            //     which then either no-op'd or clobbered the sibling. Surface
-                            //     as Success + postWriteHashDrift warning so the agent knows
-                            //     to re-read instead of re-write.
-                            string fallbackErrText = fallbackPayload["error"]?.ToString() ?? "Unknown fallback write error.";
-                            try
-                            {
-                                bool matchesOriginal = VerifyPersistedSource(target, partName, typeFilter, originalSource, out _);
-                                bool matchesFinal = VerifyPersistedSource(target, partName, typeFilter, finalCode, out _);
-                                var classification = ClassifyFallbackFailure(matchesOriginal, matchesFinal, fallbackErrText);
-                                writePayload["_internalStatus"] = classification.Status;
-                                writePayload["code"] = classification.Code;
-                                if (classification.PatchLanded)
-                                {
-                                    writePayload["persistedVerified"] = true;
-                                    writePayload["persistedVerifyError"] = null;
-                                    persistedMatches = true;
-                                    UpdateCachedSource(cacheKey, finalCode);
-                                }
-                                else if (string.Equals(classification.Status, "Success", StringComparison.Ordinal))
-                                {
-                                    // Concurrent write without our content — keep persistedVerified=false
-                                    // and surface a re-read hint.
-                                    writePayload["persistedVerified"] = false;
-                                    writePayload["persistedVerifyError"] = "concurrent write detected; persisted bytes diverged from both original and patched content.";
-                                }
-                                if (string.Equals(classification.Status, "Success", StringComparison.Ordinal))
-                                {
-                                    var meta = writePayload["_meta"] as JObject ?? new JObject();
-                                    var drift = new JObject
-                                    {
-                                        ["code"] = classification.Code,
-                                        ["mode"] = classification.Mode,
-                                        ["message"] = classification.Message,
-                                        ["fallbackWriteError"] = fallbackErrText
-                                    };
-                                    if (classification.RequiresReread)
-                                    {
-                                        drift["suggestedAction"] = "re-read target then re-targeted patch (do not blindly retry the same patch).";
-                                    }
-                                    meta["postWriteHashDrift"] = drift;
-                                    writePayload["_meta"] = meta;
-                                }
-                                else
-                                {
-                                    writePayload["message"] = classification.Message;
-                                    writePayload["fallbackWriteError"] = fallbackErrText;
-                                    writePayload["suggested_next_step"] = "Retry the same patch — on-disk source is the same as before the attempt.";
-                                }
-                            }
-                            catch (Exception verifyEx)
-                            {
-                                // Verify itself failed — fall back to the legacy generic error so
-                                // we don't lose the signal. Keep status=Error.
-                                Logger.Debug("[PATCH] post-fallback verify failed: " + verifyEx.Message);
-                                writePayload["_internalStatus"] = "Error";
-                                writePayload["message"] = "Patch write fallback failed after persistence mismatch.";
-                                writePayload["fallbackWriteError"] = fallbackErrText;
-                            }
+                            PatchPersistenceReceipt.MarkVerificationUnavailable(
+                                writePayload,
+                                saveReported,
+                                patternVerificationWarning
+                                    ? "The post-save PatternInstance read was indeterminate."
+                                    : "The post-save PatternInstance read was not confirmed.");
+                            if (saveReported) WriteService.NotePerTargetWrite(target);
+                            if (rollbackOnFailure)
+                                PatchPersistenceReceipt.MarkRollbackNotAttempted(
+                                    writePayload,
+                                    "Rollback was not attempted because the post-save PatternInstance state is unknown.");
                         }
                         else
                         {
-                            persistedMatches = VerifyPersistedSource(target, partName, typeFilter, finalCode, out string fallbackVerifyError);
-                            writePayload["persistedVerified"] = persistedMatches;
-                            if (!string.IsNullOrWhiteSpace(fallbackVerifyError))
+                            PatchPersistenceReceipt.MarkNotPersisted(
+                                writePayload,
+                                saveReported,
+                                "The post-save PatternInstance content does not match the requested content.");
+                            if (rollbackOnFailure)
+                                PatchPersistenceReceipt.MarkRollbackNotAttempted(
+                                    writePayload,
+                                    "Rollback for PatternInstance is unavailable without a verified version fence.",
+                                    verificationUnavailable: false);
+                        }
+                    }
+                }
+                else if (!writeReportedVersionConflict && (primaryWriteSuccess || writeReportedVerificationMismatch || requireObjectSave))
+                {
+                    string persistedSource;
+                    string verifyError;
+                    TextPersistenceVerifier.Result verification = ReadAndVerifyPersistedSource(
+                        target, partName, typeFilter, finalCode, resolvedVerifyMode, out persistedSource, out verifyError);
+
+                    bool verificationUnavailable = false;
+                    if (verification != null)
+                    {
+                        confirmedPersistedSource = persistedSource;
+                        persistedMatches = PatchPersistenceReceipt.AttachVerification(
+                            writePayload,
+                            verification,
+                            content,
+                            context,
+                            finalCode,
+                            persistedSource,
+                            resolvedVerifyMode,
+                            partName,
+                            matchCount,
+                            commentOnlyChange);
+                    }
+                    else
+                    {
+                        verificationUnavailable = true;
+                        writePayload["verification"] = new JObject
+                        {
+                            ["mode"] = resolvedVerifyMode,
+                            ["matchCount"] = matchCount,
+                            ["reReadConfirmed"] = false,
+                            ["readCompleted"] = false,
+                            ["reason"] = verifyError ?? "unknown"
+                        };
+                    }
+
+                    if (persistedMatches && (primaryWriteSuccess || writeReportedVerificationMismatch))
+                    {
+                        // A WriteService false negative is superseded by the mandatory forced
+                        // re-read. No second write is performed.
+                        PatchPersistenceReceipt.MarkVerified(writePayload, saveReported);
+                        if (writeReportedVerificationMismatch || writeReportedApplied)
+                            WriteService.NotePerTargetWrite(target);
+                    }
+                    else if (!persistedMatches)
+                    {
+                        if (verificationUnavailable)
+                        {
+                            // The save may have landed, but an incomplete/error/stale read
+                            // cannot prove either outcome. Never label this as a mismatch and
+                            // never run an automatic rollback against an unknown state.
+                            PatchPersistenceReceipt.MarkVerificationUnavailable(writePayload, saveReported, verifyError);
+                            if (saveReported) WriteService.NotePerTargetWrite(target);
+                            if (rollbackOnFailure)
+                                PatchPersistenceReceipt.MarkRollbackNotAttempted(
+                                    writePayload,
+                                    "Rollback was not attempted because the post-save state is unknown.");
+                        }
+                        else
+                        {
+                            PatchPersistenceReceipt.MarkNotPersisted(writePayload, saveReported, verifyError, commentOnlyChange);
+                            if (confirmedPersistedSource != null
+                                && originalSource != null
+                                && !string.Equals(
+                                    NormalizeForPartCompare(partName, confirmedPersistedSource),
+                                    NormalizeForPartCompare(partName, originalSource),
+                                    StringComparison.Ordinal))
                             {
-                                writePayload["persistedVerifyError"] = fallbackVerifyError;
+                                WriteService.NotePerTargetWrite(target);
                             }
 
-                            if (!persistedMatches)
+                            // Rollback is never implicit. It is attempted once only when explicitly
+                            // requested and the fresh pre-write snapshot is available. A read
+                            // failure is handled above because rollback would target unknown state.
+                            string rollbackBaseVersion = writePayload["postSaveVerification"]?["versionToken"]?.ToString();
+                            if (string.IsNullOrWhiteSpace(rollbackBaseVersion))
+                                rollbackBaseVersion = writePayload["verification"]?["versionToken"]?.ToString();
+                            if (PatchPersistenceReceipt.CanAttemptRollback(
+                                    persistedMatches,
+                                    rollbackOnFailure,
+                                    rollbackBaseVersion)
+                                && originalSource != null)
                             {
-                                // v2.3.8 Task 4.6 (friction-report #13 / #6): before rolling back,
-                                // classify the divergence. If every hunk between the source we asked
-                                // the SDK to save (`finalCode`) and the actual persisted source lies
-                                // OUTSIDE the lines we actually edited, this is an SDK
-                                // side-effect normalization (e.g. `DATETIME(10,5)` → `DATETIME(8,5)`
-                                // on an untouched line) and not a verification failure. Surface the
-                                // normalizations under `_meta.sideEffectNormalizations` and keep
-                                // status=Success. Only when an in-window hunk diverges do we treat
-                                // it as a real divergence and roll back.
-                                if (TryClassifyOutOfWindowOnly(target, partName, typeFilter, workSource, updatedSource, finalCode, out var sideEffects))
-                                {
-                                    writePayload["_internalStatus"] = "Success";
-                                    writePayload["persistedVerified"] = true;
-                                    writePayload["persistedVerifyError"] = null;
-                                    var meta = writePayload["_meta"] as JObject ?? new JObject();
-                                    meta["sideEffectNormalizations"] = sideEffects;
-                                    writePayload["_meta"] = meta;
-                                    persistedMatches = true;
-                                    UpdateCachedSource(cacheKey, finalCode);
-                                }
-                                else
-                                {
-                                writePayload["_internalStatus"] = "Error";
-                                writePayload["message"] = "Patch write verification mismatch after fallback write.";
-                                AttachPersistedSnippet(writePayload, target, partName, typeFilter, finalCode);
-
-                                // Restore original source: without this, a fallback write that reports
-                                // success but fails verification leaves the matched context deleted and
-                                // the replacement missing (data loss).
-                                try
-                                {
-                                    string rollbackBody = originalSource.Replace("\n", Environment.NewLine);
-                                    string rollbackResult = _writeService.WriteObject(target, partName, rollbackBody, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: false);
-                                    JObject rbPayload = ParseWriteResult(rollbackResult);
-                                    bool rbSuccess = string.Equals(rbPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
-                                    bool rbVerified = false;
-                                    if (rbSuccess)
-                                    {
-                                        rbVerified = VerifyPersistedSource(target, partName, typeFilter, originalSource, out _);
-                                    }
-                                    writePayload["autoRollbackStatus"] = rbSuccess ? (rbVerified ? "Restored" : "WriteSucceededVerifyFailed") : "Failed";
-                                    writePayload["message"] = rbVerified
-                                        ? "Patch write verification mismatch after fallback write. Original source restored — re-read and retry."
-                                        : "Patch write verification mismatch after fallback write. Auto-rollback could not be verified — re-read source to confirm state.";
-                                    if (rbVerified)
-                                    {
-                                        UpdateCachedSource(cacheKey, originalSource);
-                                    }
-                                }
-                                catch (Exception rbEx)
-                                {
-                                    writePayload["autoRollbackStatus"] = "Failed";
-                                    writePayload["autoRollbackError"] = rbEx.Message;
-                                }
-                                }
+                                string rollbackResult = _writeService.WriteObject(
+                                    target,
+                                    partName,
+                                    originalSource,
+                                    typeFilter,
+                                    autoValidate: false,
+                                    preferFastSourceSave: false,
+                                    autoInjectVariables: false,
+                                    baseVersion: rollbackBaseVersion);
+                                JObject rollbackPayload = ParseWriteResult(rollbackResult);
+                                // WriteService's legacy verifier may call a durable rollback
+                                // WriteNotPersisted solely because it applies a different text
+                                // equivalence rule. In both cases the SDK save completed, so always
+                                // perform this operation's selected-mode forced re-read.
+                                bool rollbackVerificationUnavailable = string.Equals(rollbackPayload["code"]?.ToString(), "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
+                                bool rollbackSaved = string.Equals(rollbackPayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(rollbackPayload["code"]?.ToString(), "WriteNotPersisted", StringComparison.OrdinalIgnoreCase)
+                                    || rollbackVerificationUnavailable;
+                                string rollbackPersisted = null;
+                                string rollbackError = null;
+                                TextPersistenceVerifier.Result rollbackVerification = null;
+                                if (rollbackSaved)
+                                    rollbackVerification = ReadAndVerifyPersistedSource(target, partName, typeFilter, originalSource, resolvedVerifyMode, out rollbackPersisted, out rollbackError);
+                                bool rollbackVerified = rollbackVerification != null && rollbackVerification.Matches;
+                                writePayload["rollback"] = PatchPersistenceReceipt.BuildRollback(
+                                    rollbackSaved,
+                                    rollbackVerification,
+                                    rollbackError ?? rollbackPayload["message"]?.ToString());
+                                ((JObject)writePayload["rollback"])["saveAttempted"] = rollbackSaved;
+                                ((JObject)writePayload["rollback"])["verificationUnavailable"] = rollbackVerificationUnavailable
+                                    || (rollbackSaved && rollbackVerification == null);
+                                ((JObject)writePayload["rollback"])["baseVersion"] = rollbackBaseVersion;
+                                writePayload["rolledBack"] = rollbackVerified;
+                                if (rollbackVerified) UpdateCachedSource(cacheKey, originalSource, snapshotVersion);
+                            }
+                            else if (PatchPersistenceReceipt.ShouldRollback(persistedMatches, rollbackOnFailure)
+                                && originalSource != null)
+                            {
+                                // A rollback without the version observed after the failed
+                                // write could overwrite a concurrent edit. Refuse that recovery
+                                // path and surface the missing fence instead of guessing.
+                                PatchPersistenceReceipt.MarkRollbackNotAttempted(
+                                    writePayload,
+                                    "Rollback was not attempted because the post-save version token was unavailable.");
                             }
                         }
                     }
                 }
+
+                // Always expose the save/verification distinction, including SDK-save
+                // failures where no post-save comparison could run.
+                if (writePayload["saved"] == null) writePayload["saved"] = saveReported;
+                if (writePayload["verified"] == null) writePayload["verified"] = persistedMatches;
+                if (requireObjectSave && writeReportedVersionConflict)
+                {
+                    writePayload["requireObjectSave"] = true;
+                    writePayload["persistencePath"] = "object_save";
+                    writePayload["partPersisted"] = false;
+                    writePayload["objectSaved"] = false;
+                    writePayload["metadataUpdated"] = false;
+                }
+
+                if (requireObjectSave && !writeReportedVersionConflict)
+                {
+                    ObjectMetadataSnapshot metadataAfter = ReadFreshObjectMetadata(target, typeFilter);
+                    var comparison = fullObjectSnapshot.CompareParts(metadataAfter?.Object, partName);
+                    bool metadataStampPersisted = writePayload["metadataStampPersisted"]?.ToObject<bool?>()
+                        ?? (writePayload["result"] as JObject)?["metadataStampPersisted"]?.ToObject<bool?>()
+                        ?? false;
+                    bool objectSaved = saveReported;
+                    PatchPersistenceReceipt.AttachObjectSaveEvidence(
+                        writePayload,
+                        persistedMatches,
+                        objectSaved,
+                        metadataBefore?.Revision,
+                        metadataAfter?.Revision,
+                        metadataBefore?.LastUpdate,
+                        metadataAfter?.LastUpdate,
+                        comparison.Equal,
+                        metadataStampPersisted: metadataStampPersisted,
+                        unexpectedChangedParts: comparison.ChangedParts);
+                    writePayload["requireObjectSave"] = true;
+                    writePayload["persistencePath"] = "object_save";
+
+                    PatchPersistenceReceipt.RequireCompleteObjectSave(writePayload);
+                }
+                string versionToken = null;
+                try
+                {
+                    versionToken = ReadFreshVersionToken(target, partName, typeFilter);
+                    if (!string.IsNullOrWhiteSpace(versionToken)) writePayload["versionToken"] = versionToken;
+                }
+                catch { }
 
                 if (string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase) && persistedMatches)
                 {
-                    UpdateCachedSource(cacheKey, finalCode);
-                }
-
-                if (verifyRollback && string.Equals(writePayload["_internalStatus"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase))
-                {
-                    string verifyReadResponse = ReadSourceFast(target, partName, typeFilter);
-                    string verifyReadError = TryExtractError(verifyReadResponse);
-                    if (!string.IsNullOrWhiteSpace(verifyReadError))
-                    {
-                        writePayload["_internalStatus"] = "Error";
-                        writePayload["message"] = "Apply verification read failed: " + verifyReadError;
-                        writePayload["verifyRollback"] = true;
-                    }
-                    else
-                    {
-                        var verifyJson = JObject.Parse(verifyReadResponse);
-                        string persistedSource = verifyJson["source"]?.ToString() ?? string.Empty;
-                        bool applyVerified = NormalizeForPartCompare(partName, persistedSource) == NormalizeForPartCompare(partName, finalCode);
-                        writePayload["applyVerified"] = applyVerified;
-                        writePayload["verifyRollback"] = true;
-                        if (!applyVerified)
-                        {
-                            writePayload["_internalStatus"] = "Error";
-                            writePayload["message"] = "Apply verification mismatch: persisted content differs from patched content.";
-                        }
-                    }
-
-                    string rollbackWrite = _writeService.WriteObject(target, partName, originalSource, typeFilter, autoValidate: false, preferFastSourceSave: true, autoInjectVariables: false);
-                    JObject rollbackPayload = ParseWriteResult(rollbackWrite);
-
-                    bool rollbackSuccess = string.Equals(rollbackPayload["status"]?.ToString(), "Success", StringComparison.OrdinalIgnoreCase);
-                    writePayload["rollbackStatus"] = rollbackPayload["status"]?.ToString() ?? "Error";
-                    if (!rollbackSuccess)
-                    {
-                        writePayload["_internalStatus"] = "Error";
-                        writePayload["rollbackError"] = rollbackPayload["message"]?.ToString() ?? rollbackPayload["error"]?.ToString() ?? "Rollback failed.";
-                    }
-                    else
-                    {
-                        string rollbackReadResponse = ReadSourceFast(target, partName, typeFilter);
-                        string rollbackReadError = TryExtractError(rollbackReadResponse);
-                        if (!string.IsNullOrWhiteSpace(rollbackReadError))
-                        {
-                            writePayload["_internalStatus"] = "Error";
-                            writePayload["rollbackError"] = "Rollback verification read failed: " + rollbackReadError;
-                        }
-                        else
-                        {
-                            var rollbackReadJson = JObject.Parse(rollbackReadResponse);
-                            string rollbackSource = rollbackReadJson["source"]?.ToString() ?? string.Empty;
-                            bool rollbackVerified = NormalizeForPartCompare(partName, rollbackSource) == NormalizeForPartCompare(partName, originalSource);
-                            writePayload["rollbackVerified"] = rollbackVerified;
-                            if (!rollbackVerified)
-                            {
-                                writePayload["_internalStatus"] = "Error";
-                                writePayload["rollbackError"] = "Rollback verification mismatch: current content differs from original content.";
-                            }
-                        }
-                    }
+                    UpdateCachedSource(cacheKey, confirmedPersistedSource ?? finalCode, versionToken);
                 }
 
                 // v2.8.0: convert the WriteService legacy envelope (status=Success/Error) to canonical shape.
@@ -909,12 +1150,20 @@ namespace GxMcp.Worker.Services
                     if (pn == "status" || pn == "action" || pn == "target") continue;
                     if (resultObj[pn] == null) resultObj[pn] = prop.Value;
                 }
+                // Issues #205/#206: keep the scope/indentation evidence on the write envelope too,
+                // so a persisted edit is as auditable as its preview.
+                if (scopeEvidence != null) resultObj["scope"] = scopeEvidence;
+                if (indentationEvidence != null) resultObj["indentation"] = indentationEvidence;
                 if (returnPostState && finalSuccess && updatedSource != null)
-                    resultObj["post_state"] = GxMcp.Worker.Services.JsonPatchService.BuildPostState(originalSource, updatedSource, verbose);
+                    resultObj["post_state"] = GxMcp.Worker.Services.JsonPatchService.BuildPostState(
+                        originalSource,
+                        updatedSource,
+                        verbose,
+                        persistedAfter: confirmedPersistedSource);
 
                 if (finalSuccess)
                 {
-                    string finalCode2 = finalSuccess ? "PatchApplied" : "PatchFailed";
+                    string finalCode2 = resultObj["code"]?.ToString() ?? "Applied";
                     var canonical = JObject.Parse(Models.McpResponse.Ok(target: target, code: finalCode2, result: resultObj));
                     if (patternShadowWarnings != null && patternShadowWarnings.Count > 0)
                         canonical["warnings"] = patternShadowWarnings;
@@ -925,14 +1174,23 @@ namespace GxMcp.Worker.Services
                     string writeMsg = writePayload["message"]?.ToString() ?? writePayload["error"]?.ToString() ?? "Patch write failed.";
                     string writeCode = writePayload["code"]?.ToString();
                     string errCode = !string.IsNullOrWhiteSpace(writeCode) ? writeCode : "PatchWriteFailed";
+                    bool objectSaveIncomplete = string.Equals(errCode, "ObjectSaveIncomplete", StringComparison.OrdinalIgnoreCase);
+                    bool verificationUnavailable = string.Equals(errCode, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase);
+                    string recoveryHint = objectSaveIncomplete
+                        ? writePayload["manualRecovery"]?.ToString()
+                        : verificationUnavailable
+                            ? writePayload["hint"]?.ToString()
+                        : "Re-read the object source and verify the part is writable, then retry.";
                     var canonical = JObject.Parse(Models.McpResponse.Err(
                         code: errCode,
                         message: writeMsg,
-                        hint: "Re-read the object source and verify the part is writable, then retry.",
+                        hint: recoveryHint,
                         nextSteps: new JArray(Models.McpResponse.NextStep(
                             tool: "genexus_read",
                             args: new JObject { ["name"] = target, ["part"] = partName },
-                            why: "Confirm the part content and state before retrying the patch.")),
+                            why: objectSaveIncomplete
+                                ? "Confirm the actual persisted content before deciding whether any further action is safe."
+                                : "Confirm the part content and state before retrying the patch.")),
                         target: target,
                         extra: resultObj));
                     if (patternShadowWarnings != null && patternShadowWarnings.Count > 0)
@@ -947,365 +1205,215 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string TryReplace(string[] sourceLines, string[] contextLines, string newContent, int expectedCount, out string status, out string details, out int matchCount, bool replaceAll = false)
+        private ObjectMetadataSnapshot ReadFreshObjectMetadata(string target, string typeFilter)
         {
-            status = "Applied";
-            details = string.Empty;
-            matchCount = 0;
-
-            string source = string.Join("\n", sourceLines);
-            string context = string.Join("\n", contextLines);
-
-            // 1. Exact match attempt
-            int exactCount = CountOccurrences(source, context);
-            matchCount = exactCount;
-            // Item 9: replaceAll=true → treat expectedCount as "however many exist"
-            int effectiveExpected = replaceAll && exactCount > 0 ? exactCount : expectedCount;
-            if (exactCount == effectiveExpected && exactCount > 0)
+            try
             {
-                Logger.Info("[PATCH] Exact match found.");
-                return source.Replace(context, newContent);
-            }
-            if (exactCount > 0 && !replaceAll)
-            {
-                status = "Ambiguous";
-                details = $"Ambiguous patch: Found {exactCount} exact matches, but expected {expectedCount}. Provide more context to uniquely identify the block, or pass replaceAll=true to apply to all occurrences.";
-                return string.Empty;
-            }
-
-            // 2. Fuzzy match attempt
-            Logger.Info("[PATCH] Exact match failed or count mismatch (" + exactCount + " vs " + expectedCount + "). Attempting fuzzy match.");
-            var indices = FindFuzzyMatches(sourceLines, contextLines);
-            matchCount = indices.Count;
-            int fuzzyEffective = replaceAll && indices.Count > 0 ? indices.Count : expectedCount;
-
-            if (indices.Count == fuzzyEffective && indices.Count > 0)
-            {
-                var resultLines = new List<string>(sourceLines);
-                var replacementLines = newContent.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
-                indices.Sort();
-                indices.Reverse();
-                foreach (int idx in indices)
+                KBObject obj = _objectService.FindObjectFresh(target, typeFilter);
+                if (obj == null) return null;
+                string revision = null;
+                string lastUpdate = null;
+                try { revision = obj.VersionId.ToString(System.Globalization.CultureInfo.InvariantCulture); } catch { }
+                try
                 {
-                    Logger.Info($"[PATCH] Fuzzy match found at line {idx}.");
-                    resultLines.RemoveRange(idx, contextLines.Length);
-                    resultLines.InsertRange(idx, replacementLines);
+                    if (SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate) > DateTime.MinValue)
+                        lastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate).ToString("o");
                 }
-                return string.Join("\n", resultLines);
-            }
-
-            if (indices.Count > 0 && !replaceAll)
-            {
-                status = "Ambiguous";
-                details = $"Ambiguous patch: Found {indices.Count} fuzzy matches, but expected {expectedCount}. Provide more context to uniquely identify the block, or pass replaceAll=true to apply to all occurrences.";
-                return string.Empty;
-            }
-
-            // FR#17 (friction-report 2026-05-14): last-resort whitespace-normalized match.
-            // Handles the tab-vs-space context case where the user's context is semantically
-            // identical to source but used different indentation characters than the file.
-            // We collapse runs of whitespace on both sides, find the unique block window,
-            // then apply the replacement preserving source's original characters.
-            string normalizedSource = NormalizeWhitespace(source);
-            string normalizedContext = NormalizeWhitespace(context);
-            if (!string.IsNullOrEmpty(normalizedContext))
-            {
-                int normalizedHits = CountOccurrences(normalizedSource, normalizedContext);
-                // Item 9 follow-up: honor replaceAll on the whitespace-normalized fallback too,
-                // so the flag isn't silently ignored when only this last-resort path finds matches.
-                int normalizedExpected = replaceAll && normalizedHits > 0 ? normalizedHits : expectedCount;
-                if (normalizedHits == normalizedExpected && normalizedHits > 0)
+                catch { }
+                return new ObjectMetadataSnapshot
                 {
-                    // Walk source line-by-line accumulating windows until a window's collapsed
-                    // form equals the normalized context, then splice in the replacement.
-                    var rebuilt = TryWhitespaceNormalizedReplace(sourceLines, contextLines, newContent);
-                    if (rebuilt != null)
-                    {
-                        Logger.Info("[PATCH] Whitespace-normalized match applied.");
-                        matchCount = normalizedHits;
-                        return rebuilt;
-                    }
-                }
-                else if (normalizedHits > 0 && !replaceAll)
-                {
-                    status = "Ambiguous";
-                    matchCount = normalizedHits;
-                    details = $"Ambiguous patch (whitespace-normalized): {normalizedHits} matches, expected {expectedCount}. Pass replaceAll=true to apply to every match.";
-                    return string.Empty;
-                }
+                    Object = obj,
+                    Revision = revision,
+                    LastUpdate = lastUpdate
+                };
             }
-
-            // v2.3.8 Task 3.1 (friction-report #4): final EOL-normalized fallback.
-            // Both the exact match and the prior fuzzy/whitespace-normalized passes
-            // already collapse CRLF→LF up-front (workContext is normalized at entry),
-            // but they do NOT tolerate per-line trailing whitespace differences. The
-            // helper below normalizes both axes (EOL + trailing whitespace) and maps
-            // the normalized hit back to original-source indices so the splice
-            // preserves the on-disk bytes outside the matched window.
-            if (expectedCount == 1 && contextLines != null && contextLines.Length > 0)
-            {
-                if (WriteService.TryMatch(source, context, out int splStart, out int splEnd) && splEnd > splStart)
-                {
-                    Logger.Info("[PATCH] EOL/trailing-whitespace normalized match applied.");
-                    matchCount = 1;
-                    string replacement = (newContent ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n");
-                    return source.Substring(0, splStart) + replacement + source.Substring(splEnd);
-                }
-            }
-
-            status = "NoMatch";
-            details = "Context block not found.";
-            return string.Empty;
+            catch { return null; }
         }
 
-        private static string TryWhitespaceNormalizedReplace(string[] sourceLines, string[] contextLines, string newContent)
+        private string TryReplace(string[] sourceLines, string[] contextLines, string newContent, int expectedCount, out string status, out string details, out int matchCount, bool replaceAll = false)
         {
-            // Slide a window of contextLines.Length over source; compare collapsed text.
-            if (sourceLines == null || contextLines == null || contextLines.Length == 0) return null;
-            if (sourceLines.Length < contextLines.Length) return null;
+            return PatchTextEditor.TryReplace(
+                sourceLines, contextLines, newContent, expectedCount,
+                out status, out details, out matchCount, replaceAll);
+        }
 
-            string normalizedTarget = NormalizeWhitespace(string.Join("\n", contextLines));
-            for (int i = 0; i <= sourceLines.Length - contextLines.Length; i++)
+        // Issue #205: resolve the scope anchors and run the slice-bounded matching pipeline.
+        // `error` receives an already-built error envelope when the anchors are unusable; a
+        // status failure (NoMatch/Ambiguous) comes back on the outcome instead, so the normal
+        // failure reporting (near matches, stale detection) still runs.
+        private static PatchTextEditor.ScopedReplaceOutcome RunScopedReplace(
+            string target,
+            string[] sourceLines,
+            JObject scope,
+            string[] contextLines,
+            string content,
+            int expectedCount,
+            bool replaceAll,
+            out string error)
+        {
+            error = null;
+            int scopeStart = 0;
+            int scopeEnd = sourceLines.Length;
+            bool endsAtEof = true;
+
+            if (scope != null)
             {
-                string window = string.Join("\n", sourceLines, i, contextLines.Length);
-                if (NormalizeWhitespace(window) == normalizedTarget)
+                string startAnchor = scope["start"]?.ToString();
+                if (string.IsNullOrEmpty(startAnchor))
                 {
-                    var resultLines = new List<string>(sourceLines);
-                    var replacementLines = newContent.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
-                    resultLines.RemoveRange(i, contextLines.Length);
-                    resultLines.InsertRange(i, replacementLines);
-                    return string.Join("\n", resultLines);
+                    error = Models.McpResponse.Err(
+                        code: "ScopeStartRequired",
+                        message: "patch.scope.start is required; a scope without a start anchor would silently search the whole part.",
+                        hint: "Provide patch.scope={start:\"<complete line before the region>\"} (optionally end). No write was attempted.",
+                        target: target);
+                    return null;
+                }
+
+                string endAnchor = scope["end"]?.ToString();
+                var startLines = PatchTextEditor.SplitAnchorLines(startAnchor);
+                var endLines = string.IsNullOrEmpty(endAnchor) ? null : PatchTextEditor.SplitAnchorLines(endAnchor);
+
+                var resolved = PatchTextEditor.ResolveScope(sourceLines, startLines, endLines, out string anchorCode, out string anchorMessage);
+                if (resolved == null)
+                {
+                    error = Models.McpResponse.Err(
+                        code: anchorCode,
+                        message: anchorMessage,
+                        hint: "Anchors must be complete lines of the part (only CRLF/LF are normalized) and must be unique; extend a short anchor with more lines when it is ambiguous. No write was attempted.",
+                        target: target,
+                        extra: new JObject
+                        {
+                            ["scope"] = new JObject
+                            {
+                                ["start"] = startAnchor,
+                                ["end"] = endAnchor != null ? (JToken)endAnchor : JValue.CreateNull()
+                            }
+                        });
+                    return null;
+                }
+
+                scopeStart = resolved.StartLine;
+                scopeEnd = resolved.EndLineExclusive;
+                endsAtEof = resolved.EndsAtEof;
+            }
+
+            var outcome = PatchTextEditor.ReplaceWithinScope(sourceLines, scopeStart, scopeEnd, contextLines, content, expectedCount, replaceAll);
+            outcome.EditableStartLine = scopeStart;
+            outcome.EditableEndLineExclusive = scopeEnd;
+            outcome.EndsAtEof = endsAtEof;
+            return outcome;
+        }
+
+        // Issue #206: compare the base indentation of each match site against the indentation
+        // the replacement will actually have there. Only the first line of `replace` is
+        // considered; tabs and spaces are compared as distinct characters.
+        internal static string CheckIndentation(
+            string[] sourceLines,
+            PatchTextEditor.ScopedReplaceOutcome outcome,
+            string workContent,
+            out string message,
+            out JObject evidence)
+        {
+            message = null;
+            evidence = new JObject();
+            var replacementLines = NormalizeEol(workContent).Split('\n');
+            string firstLine = replacementLines.Length > 0 ? replacementLines[0] : string.Empty;
+            string received = LeadingWhitespace(firstLine);
+            evidence["receivedPrefix"] = PatchTextEditor.ShowControlChars(received);
+            evidence["strategy"] = outcome.Matches.Count > 0 ? outcome.Matches[0].Strategy : string.Empty;
+
+            if (firstLine.Trim().Length == 0)
+            {
+                evidence["comparable"] = false;
+                message = "patch.indentation.mode=validate needs a first line of `replace` with a non-whitespace character; an empty or whitespace-only first line has no base indentation to validate.";
+                return "IndentationNotComparable";
+            }
+
+            var sites = new JArray();
+            foreach (var span in outcome.Matches)
+            {
+                string sourceLine = span.StartLine >= 0 && span.StartLine < sourceLines.Length ? sourceLines[span.StartLine] : string.Empty;
+                string baseIndent = LeadingWhitespace(sourceLine);
+                string preserved = span.StartColumn > 0 && span.StartColumn <= sourceLine.Length
+                    ? sourceLine.Substring(0, span.StartColumn)
+                    : string.Empty;
+                var site = new JObject
+                {
+                    ["matchStartLine"] = span.StartLine + 1,
+                    ["matchEndLineExclusive"] = span.EndLineExclusive + 1,
+                    ["strategy"] = span.Strategy,
+                    ["expectedPrefix"] = PatchTextEditor.ShowControlChars(baseIndent),
+                    ["preservedPrefix"] = PatchTextEditor.ShowControlChars(preserved),
+                    ["receivedPrefix"] = PatchTextEditor.ShowControlChars(received)
+                };
+
+                // Comparable only when the match starts at the line start (nothing preserved)
+                // or immediately after the whole base indentation. Mid-content / mid-indent
+                // starts have no equivalent position by design.
+                bool comparable = preserved.Length == 0 || string.Equals(preserved, baseIndent, StringComparison.Ordinal);
+                if (!comparable)
+                {
+                    site["comparable"] = false;
+                    sites.Add(site);
+                    evidence["sites"] = sites;
+                    evidence["comparable"] = false;
+                    message = "The matched text starts inside the line content or in the middle of its indentation, so there is no base indentation to compare against. Make `find` start at a line start or right after the full indentation.";
+                    return "IndentationNotComparable";
+                }
+
+                string resulting = preserved + received;
+                bool matches = string.Equals(resulting, baseIndent, StringComparison.Ordinal);
+                site["resultingPrefix"] = PatchTextEditor.ShowControlChars(resulting);
+                site["comparable"] = true;
+                site["matches"] = matches;
+                sites.Add(site);
+                if (!matches)
+                {
+                    evidence["sites"] = sites;
+                    evidence["comparable"] = true;
+                    message = $"The replacement's base indentation ({PatchTextEditor.ShowControlChars(resulting)}) differs from the matched line's ({PatchTextEditor.ShowControlChars(baseIndent)}). Send `replace` with the same leading tabs/spaces, or drop patch.indentation to insert the text literally.";
+                    return "IndentationMismatch";
                 }
             }
+
+            evidence["sites"] = sites;
+            evidence["comparable"] = true;
             return null;
+        }
+
+        private static string LeadingWhitespace(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            int i = 0;
+            while (i < value.Length && (value[i] == ' ' || value[i] == '\t')) i++;
+            return value.Substring(0, i);
+        }
+
+        private static string NormalizeEol(string value)
+        {
+            return (value ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n");
         }
 
         private string TryInsertAfter(string[] sourceLines, string[] contextLines, string newContent, int expectedCount, out string status, out string details, out int matchCount)
         {
-            status = "Applied";
-            details = string.Empty;
-            matchCount = 0;
-
-            var exactIndices = FindExactMatches(sourceLines, contextLines);
-            matchCount = exactIndices.Count;
-            if (exactIndices.Count == expectedCount && exactIndices.Count > 0)
-            {
-                return InsertAfterIndices(sourceLines, contextLines, newContent, exactIndices);
-            }
-
-            if (exactIndices.Count > 0)
-            {
-                status = "Ambiguous";
-                details = $"Ambiguous anchor: Found {exactIndices.Count} exact matches for the anchor, expected {expectedCount}.";
-                return string.Empty;
-            }
-
-            var fuzzyIndices = FindFuzzyMatches(sourceLines, contextLines);
-            matchCount = fuzzyIndices.Count;
-            if (fuzzyIndices.Count == expectedCount && fuzzyIndices.Count > 0)
-            {
-                return InsertAfterIndices(sourceLines, contextLines, newContent, fuzzyIndices);
-            }
-
-            if (fuzzyIndices.Count > 0)
-            {
-                status = "Ambiguous";
-                details = $"Ambiguous anchor: Found {fuzzyIndices.Count} fuzzy matches for the anchor, expected {expectedCount}.";
-                return string.Empty;
-            }
-
-            status = "NoMatch";
-            details = "Anchor block not found.";
-            return string.Empty;
+            return PatchTextEditor.TryInsertAfter(
+                sourceLines, contextLines, newContent, expectedCount,
+                out status, out details, out matchCount);
         }
 
-        private List<int> FindFuzzyMatches(string[] sourceLines, string[] targetLines)
+        private static List<PatchTextEditor.NearMatch> FindNearMatches(string[] sourceLines, string[] contextLines, int topN)
         {
-            var matches = new List<int>();
-            if (targetLines.Length == 0 || sourceLines.Length < targetLines.Length) return matches;
-
-            string normalizedFirst = NormalizeWhitespace(targetLines[0]);
-            string normalizedLast = NormalizeWhitespace(targetLines[targetLines.Length - 1]);
-
-            for (int i = 0; i <= sourceLines.Length - targetLines.Length; i++)
-            {
-                if (!string.Equals(NormalizeWhitespace(sourceLines[i]), normalizedFirst, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                int tailIndex = i + targetLines.Length - 1;
-                if (!string.Equals(NormalizeWhitespace(sourceLines[tailIndex]), normalizedLast, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                bool match = true;
-                for (int j = 0; j < targetLines.Length; j++)
-                {
-                    if (!LinesMatchFuzzy(sourceLines[i + j], targetLines[j]))
-                    {
-                        match = false;
-                        break;
-                    }
-                }
-                if (match) matches.Add(i);
-            }
-            return matches;
+            return PatchTextEditor.FindNearMatches(sourceLines, contextLines, topN);
         }
 
-        private List<int> FindExactMatches(string[] sourceLines, string[] targetLines)
+        private static string ShowControlChars(string value)
         {
-            var matches = new List<int>();
-            if (targetLines.Length == 0 || sourceLines.Length < targetLines.Length) return matches;
-
-            for (int i = 0; i <= sourceLines.Length - targetLines.Length; i++)
-            {
-                bool match = true;
-                for (int j = 0; j < targetLines.Length; j++)
-                {
-                    if (!string.Equals(sourceLines[i + j], targetLines[j], StringComparison.Ordinal))
-                    {
-                        match = false;
-                        break;
-                    }
-                }
-
-                if (match)
-                {
-                    matches.Add(i);
-                }
-            }
-
-            return matches;
+            return PatchTextEditor.ShowControlChars(value);
         }
 
-        private string InsertAfterIndices(string[] sourceLines, string[] contextLines, string newContent, List<int> indices)
-        {
-            var resultLines = new List<string>(sourceLines);
-            var insertLinesRaw = newContent.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
-
-            indices.Sort();
-            indices.Reverse();
-            foreach (int idx in indices)
-            {
-                resultLines.InsertRange(idx + contextLines.Length, insertLinesRaw);
-            }
-
-            return string.Join("\n", resultLines);
-        }
-
-        // FR#18 (friction-report 2026-05-14): produce a small list of "looks-similar" windows
-        // when an exact/fuzzy match fails. Score = ratio of fuzzy-matching lines per window;
-        // we keep the top-N. Only the first line is used as the snippet to keep responses small.
-        private sealed class NearMatch
-        {
-            public int StartLine;
-            public double Similarity;
-            public string Snippet = string.Empty;
-        }
-
-        private List<NearMatch> FindNearMatches(string[] sourceLines, string[] contextLines, int topN)
-        {
-            var hits = new List<NearMatch>();
-            if (sourceLines == null || contextLines == null) return hits;
-            if (contextLines.Length == 0 || sourceLines.Length < contextLines.Length) return hits;
-
-            // Pre-normalize both sides once; the inner comparison drops from a regex+trim per
-            // call to a direct OrdinalIgnoreCase string equals.
-            string[] normalizedSource = new string[sourceLines.Length];
-            for (int i = 0; i < sourceLines.Length; i++) normalizedSource[i] = NormalizeWhitespace(sourceLines[i]);
-            string[] normalizedContext = new string[contextLines.Length];
-            for (int j = 0; j < contextLines.Length; j++) normalizedContext[j] = NormalizeWhitespace(contextLines[j]);
-
-            int maxStart = sourceLines.Length - contextLines.Length;
-            for (int i = 0; i <= maxStart; i++)
-            {
-                int matches = 0;
-                for (int j = 0; j < contextLines.Length; j++)
-                {
-                    if (string.Equals(normalizedSource[i + j], normalizedContext[j], StringComparison.OrdinalIgnoreCase))
-                        matches++;
-                }
-                double similarity = (double)matches / contextLines.Length;
-                if (similarity < 0.4) continue; // ignore noise
-
-                string snippet = sourceLines[i].Trim();
-                if (snippet.Length > 120) snippet = snippet.Substring(0, 117) + "...";
-
-                hits.Add(new NearMatch { StartLine = i, Similarity = similarity, Snippet = snippet });
-            }
-
-            hits.Sort((a, b) => b.Similarity.CompareTo(a.Similarity));
-            if (hits.Count > topN) hits = hits.GetRange(0, topN);
-            return hits;
-        }
-
-        // Item 4 (friction 2026-05-22): render control characters visibly so the
-        // agent can see CRLF vs LF differences in the eolDiff output.
-        private static string ShowControlChars(string s)
-        {
-            if (s == null) return string.Empty;
-            return s.Replace("\r\n", "↵\n").Replace("\r", "←").Replace("\t", "→");
-        }
-
-        // Item 17 (friction 2026-05-22): Levenshtein edit distance with early-exit
-        // when the running minimum exceeds maxDist (avoids O(n²) on large mismatches).
-        // maxDist = -1 means "no limit".
         internal static int LevenshteinDistance(string a, string b, int maxDist = -1)
         {
-            if (a == null) a = string.Empty;
-            if (b == null) b = string.Empty;
-            int m = a.Length, n = b.Length;
-            bool hasLimit = maxDist >= 0;
-            if (hasLimit && Math.Abs(m - n) > maxDist) return maxDist + 1;
-            if (m == 0) return n;
-            if (n == 0) return m;
-
-            // Use two rows to limit memory; strings > 4 KB are capped to avoid O(n²) pathology.
-            const int MaxLen = 4096;
-            if (m > MaxLen || n > MaxLen) return hasLimit ? maxDist + 1 : int.MaxValue;
-
-            var prev = new int[n + 1];
-            var curr = new int[n + 1];
-            for (int j = 0; j <= n; j++) prev[j] = j;
-
-            for (int i = 1; i <= m; i++)
-            {
-                curr[0] = i;
-                int rowMin = curr[0];
-                for (int j = 1; j <= n; j++)
-                {
-                    int cost = a[i - 1] == b[j - 1] ? 0 : 1;
-                    curr[j] = Math.Min(Math.Min(prev[j] + 1, curr[j - 1] + 1), prev[j - 1] + cost);
-                    if (curr[j] < rowMin) rowMin = curr[j];
-                }
-                if (hasLimit && rowMin > maxDist) return maxDist + 1;
-                var tmp = prev; prev = curr; curr = tmp;
-            }
-            return prev[n];
-        }
-
-        private static bool LinesMatchFuzzy(string s1, string s2)
-        {
-            string n1 = NormalizeWhitespace(s1);
-            string n2 = NormalizeWhitespace(s2);
-            return string.Equals(n1, n2, StringComparison.OrdinalIgnoreCase);
-        }
-
-        // Trim + collapse runs of whitespace to a single space.
-        private static string NormalizeWhitespace(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return string.Empty;
-            return Regex.Replace(s.Trim(), @"\s+", " ");
-        }
-
-        private int CountOccurrences(string text, string pattern)
-        {
-            if (string.IsNullOrEmpty(pattern)) return 0;
-            int count = 0, i = 0;
-            while ((i = text.IndexOf(pattern, i)) != -1) { i += pattern.Length; count++; }
-            return count;
+            return PatchTextEditor.LevenshteinDistance(a, b, maxDist);
         }
 
         private static string NormalizeOperation(string operation)
@@ -1325,6 +1433,12 @@ namespace GxMcp.Worker.Services
         {
             if (text == null) return string.Empty;
             return text.Replace("\r\n", "\n").Replace("\r", "\n").TrimEnd('\n');
+        }
+
+        private static string ToSdkLineEndings(string text)
+        {
+            return (text ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n")
+                .Replace("\n", Environment.NewLine);
         }
 
         // Friction-report #5 write-side: VariablesPart's underlying SDK collection inserts new
@@ -1402,6 +1516,22 @@ namespace GxMcp.Worker.Services
                     // code (e.g. "AmbiguousObjectName") behind a generic one.
                     if (jo["code"] == null && jo["error"]?["code"] != null)
                         jo["code"] = jo["error"]["code"];
+
+                    // Preserve persistence evidence from canonical error extras so the
+                    // patch receipt can distinguish an unknown read from a real mismatch.
+                    var errorObject = jo["error"] as JObject;
+                    if (errorObject != null)
+                    {
+                        foreach (string evidenceName in new[]
+                        {
+                            "postSaveVerification", "verification", "saveAttempted", "saved",
+                            "persisted", "source", "content", "persistedHash", "persistedSnippet"
+                        })
+                        {
+                            if (jo[evidenceName] == null && errorObject[evidenceName] != null)
+                                jo[evidenceName] = errorObject[evidenceName].DeepClone();
+                        }
+                    }
                 }
                 return jo;
             }
@@ -1430,6 +1560,10 @@ namespace GxMcp.Worker.Services
                 }
                 // Legacy error: { "status":"Error", "message":"..." }
                 if (string.Equals(status, "Error", StringComparison.OrdinalIgnoreCase))
+                    return json["message"]?.ToString() ?? json["error"]?.ToString() ?? "error";
+                // Some SDK read paths return { error: ... } without a status field.
+                // Never interpret that diagnostic as an empty source.
+                if (json["error"] != null)
                     return json["message"]?.ToString() ?? json["error"]?.ToString() ?? "error";
                 return null; // ok / partial / accepted — not an error
             }
@@ -1464,9 +1598,20 @@ namespace GxMcp.Worker.Services
                 // PatternAnalysisService so patch-mode can read & rewrite pattern XML.
                 if (_patternAnalysisService != null && PatternAnalysisService.IsPatternPart(resolvedPart))
                 {
-                    string patternXml = _patternAnalysisService.ReadPatternPartXml(obj, resolvedPart, out _, out var resolvedPatternPartName);
+                    string patternXml = _patternAnalysisService.ReadPatternPartXmlFresh(obj, resolvedPart, out _, out var resolvedPatternPartName);
                     if (patternXml == null)
                     {
+                        var freshDiagnostic = _objectService.GetLastResolutionDiagnostic();
+                        if (string.Equals(freshDiagnostic?["code"]?.ToString(), "FreshReadUnavailable", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return Models.McpResponse.Err(
+                                code: "FreshReadUnavailable",
+                                message: freshDiagnostic["message"]?.ToString(),
+                                hint: freshDiagnostic["hint"]?.ToString(),
+                                target: target,
+                                errorExtra: freshDiagnostic);
+                        }
+
                         return Models.McpResponse.Err(
                             code: "PatternPartNotFound",
                             message: "The object does not expose the requested pattern part.",
@@ -1576,12 +1721,13 @@ namespace GxMcp.Worker.Services
             return entry.Source;
         }
 
-        private static void UpdateCachedSource(string cacheKey, string source)
+        private static void UpdateCachedSource(string cacheKey, string source, string versionToken = null)
         {
             if (string.IsNullOrWhiteSpace(cacheKey) || source == null) return;
             _sourceCache[cacheKey] = new SourceCacheEntry
             {
                 Source = source,
+                VersionToken = versionToken,
                 UpdatedUtc = DateTime.UtcNow
             };
         }
@@ -1648,6 +1794,8 @@ namespace GxMcp.Worker.Services
             };
         }
 
+        internal static void InvalidateAllSourceCaches() => _sourceCache.Clear();
+
         public static void InvalidateCachedSource(string target, string partName, string typeFilter)
         {
             try
@@ -1667,6 +1815,110 @@ namespace GxMcp.Worker.Services
                 if (key.IndexOf("|" + normalizedTarget + "|", StringComparison.OrdinalIgnoreCase) >= 0)
                     _sourceCache.TryRemove(key, out _);
             }
+        }
+
+        private string ReadFreshVersionToken(string target, string partName, string typeFilter)
+        {
+            try
+            {
+                string response = _objectService.ReadObjectSourceForVerification(target, partName, typeFilter);
+                if (!string.IsNullOrWhiteSpace(TryExtractError(response))) return null;
+                return JObject.Parse(response)["versionToken"]?.ToString();
+            }
+            catch { return null; }
+        }
+
+        private TextPersistenceVerifier.Result ReadAndVerifyPersistedSource(
+            string target,
+            string partName,
+            string typeFilter,
+            string expectedSource,
+            string verifyMode,
+            out string persistedSource,
+            out string error)
+        {
+            persistedSource = null;
+            error = null;
+            try
+            {
+                string verifyKey = BuildCacheKey(target, partName, typeFilter);
+                _sourceCache.TryRemove(verifyKey, out _);
+                string readResponse = _objectService.ReadObjectSourceForVerification(target, partName, typeFilter);
+                if (!TryReadCompleteSource(readResponse, out _, out persistedSource, out error)) return null;
+                return TextPersistenceVerifier.Evaluate(expectedSource, persistedSource, verifyMode, partName);
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return null;
+            }
+        }
+
+        private static string TryExtractErrorCode(string response)
+        {
+            try
+            {
+                var json = JObject.Parse(response);
+                return json["code"]?.ToString() ?? json["error"]?["code"]?.ToString();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        internal static bool TryReadCompleteSource(
+            string response,
+            out JObject readJson,
+            out string source,
+            out string error)
+        {
+            readJson = null;
+            source = null;
+            error = null;
+            if (string.IsNullOrWhiteSpace(response))
+            {
+                error = "The verification read returned no response.";
+                return false;
+            }
+
+            try
+            {
+                readJson = JObject.Parse(response);
+            }
+            catch
+            {
+                error = "The verification read returned invalid JSON.";
+                return false;
+            }
+
+            error = TryExtractError(response);
+            if (!string.IsNullOrWhiteSpace(error)) return false;
+            if (readJson["isBase64"]?.Value<bool?>() == true
+                || readJson["serializedPart"]?.Value<bool?>() == true
+                || readJson["projected"]?.Value<bool?>() == true)
+            {
+                error = readJson["isBase64"]?.Value<bool?>() == true
+                    ? "The verification read returned base64 content instead of complete text."
+                    : "The verification read returned a serialized or projected part, not an editable text source.";
+                return false;
+            }
+            if (readJson["truncated"]?.Value<bool?>() == true
+                || readJson["isTruncatedByWorker"]?.Value<bool?>() == true)
+            {
+                error = "The verification read was truncated.";
+                return false;
+            }
+
+            JToken sourceToken = readJson["source"] ?? readJson["content"];
+            if (sourceToken == null || sourceToken.Type != JTokenType.String)
+            {
+                error = "The verification read did not return a complete text source.";
+                return false;
+            }
+
+            source = sourceToken.ToString();
+            return true;
         }
 
         private bool VerifyPersistedSource(string target, string partName, string typeFilter, string expectedSource, out string error)

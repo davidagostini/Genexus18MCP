@@ -1,6 +1,6 @@
 # Security Policy
 
-`genexus-mcp` is a Model Context Protocol server that lets AI agents drive a real GeneXus 18 Knowledge Base. That means it shells out, touches the filesystem, talks to a local worker over IPC, and runs against your actual KB. Treat it accordingly.
+`genexus-mcp` is a Model Context Protocol server that lets AI agents drive a real Knowledge Base through a supported GeneXus SDK. That means it shells out, touches the filesystem, talks to a local worker over IPC, and runs against your actual KB. Treat it accordingly.
 
 ## Reporting a vulnerability
 
@@ -23,8 +23,8 @@ Only the **latest minor** receives security fixes. Older minors are not backport
 
 | Version | Supported |
 |---------|-----------|
-| 2.3.x   | ✅ |
-| < 2.3   | ❌ |
+| 3.0.x   | ✅ |
+| < 3.0   | ❌ |
 
 ## Threat model — what's in scope
 

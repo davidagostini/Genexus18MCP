@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
+using GxMcp.Worker.Models;
 
 namespace GxMcp.Worker.Services
 {
@@ -39,6 +40,7 @@ namespace GxMcp.Worker.Services
         private bool _isRunning = false;
         private Thread _watcherThread;
         private readonly Action<string, string, DateTime> _onObjectChanged;
+        private readonly Action<string, string, DateTime> _onObjectDeleted;
         private readonly HashSet<Guid> _notifiedInLastTick = new HashSet<Guid>();
 
         // v2.6.6 Stream H (FR#26) — fires when the active environment changes
@@ -52,11 +54,12 @@ namespace GxMcp.Worker.Services
         private string _lastObservedEnvVersion;
         private bool _hasObservedEnv;
 
-        public KbWatcherService(KbService kbService, Action<string, string, DateTime> onObjectChanged, IndexCacheService indexCache = null)
+        public KbWatcherService(KbService kbService, Action<string, string, DateTime> onObjectChanged, IndexCacheService indexCache = null, Action<string, string, DateTime> onObjectDeleted = null)
         {
             _kbService = kbService;
             _onObjectChanged = onObjectChanged;
             _indexCache = indexCache;
+            _onObjectDeleted = onObjectDeleted;
             _lastCheckTime = DateTime.UtcNow; // Changed to UtcNow because KBObject.LastUpdate uses UTC. This prevents an initial flood of notifications.
         }
 
@@ -122,8 +125,8 @@ namespace GxMcp.Worker.Services
         {
             using (var done = new ManualResetEventSlim(false))
             {
-                Program.SdkActionQueue.Enqueue(() =>
-                {
+            bool queued = Program.EnqueueSdkAction(() =>
+            {
                     try
                     {
                         var kb = _kbService.GetKB();
@@ -141,12 +144,16 @@ namespace GxMcp.Worker.Services
                     {
                         try { done.Set(); } catch { }
                     }
-                });
+            });
+            if (!queued)
+            {
+                Logger.Warn("[Watcher] SDK action queue is full; skipping this tick until the next poll.");
+            }
 
                 // Bounded wait: if the dispatcher STA thread is busy with a long-running
                 // command, don't block this thread forever — the queued job still runs
                 // and completes on its own; the next tick is simply posted a cycle later.
-                done.Wait(15000);
+                if (queued) done.Wait(15000);
             }
         }
 
@@ -206,72 +213,81 @@ namespace GxMcp.Worker.Services
         {
             try
             {
-                // FAST PATH: Use GetKeys with DateTime to find modified objects since last check.
                 var modifiedKeys = kb.DesignModel.Objects.GetKeys(_lastCheckTime);
-                
                 DateTime nextCheckTime = _lastCheckTime;
                 bool foundNewer = false;
-                var batch = new List<dynamic>();
+                var batch = new List<KBObject>();
 
                 foreach (var key in (System.Collections.IEnumerable)modifiedKeys)
                 {
                     try
                     {
-                        var obj = kb.DesignModel.Objects.Get((Artech.Udm.Framework.EntityKey)key);
-                        if (obj == null) continue;
-
-                        if (obj.LastUpdate > _lastCheckTime)
-                        {
-                            if (obj.LastUpdate > nextCheckTime) 
-                            {
-                                nextCheckTime = obj.LastUpdate;
-                                foundNewer = true;
-                            }
-                            batch.Add(obj);
-                        }
-                        else if (obj.LastUpdate == _lastCheckTime && !_notifiedInLastTick.Contains(obj.Guid))
-                        {
-                            batch.Add(obj);
-                        }
+                        if (!TryGetChangedObject(kb, key, out KBObject obj)) continue;
+                        ConsiderChangedObject(obj, batch, ref nextCheckTime, ref foundNewer);
                     }
                     catch { }
                 }
 
-                if (batch.Count > 0)
-                {
-                    if (foundNewer)
-                    {
-                        _notifiedInLastTick.Clear();
-                    }
-
-                    foreach (var obj in batch)
-                    {
-                        if (obj.LastUpdate == nextCheckTime)
-                        {
-                            _notifiedInLastTick.Add(obj.Guid);
-                        }
-
-                        Logger.Info($"External change detected: {obj.Name} ({obj.TypeDescriptor.Name}) at {obj.LastUpdate}");
-                        // Fase 2: keep the in-memory index warm on live edits. The watcher
-                        // thread is STA and already holds the KBObject, so UpdateEntry runs in
-                        // the right context. This re-enriches the changed object (and collapses
-                        // renames via Guid — see UpdateEntry) without waiting for a reindex.
-                        // Skipped during write transactions by the IsWriteInProgress gate above.
-                        try { _indexCache?.UpdateEntry((global::Artech.Architecture.Common.Objects.KBObject)obj); }
-                        catch (Exception ixe) { Logger.Debug($"Watcher index update failed for {obj.Name}: {ixe.Message}"); }
-                        _onObjectChanged?.Invoke(obj.Name, obj.TypeDescriptor.Name, obj.LastUpdate);
-                    }
-
-                    _lastCheckTime = nextCheckTime;
-                }
+                NotifyChangedObjects(batch, nextCheckTime, foundNewer);
             }
             catch (Exception ex)
             {
                 if (!ex.Message.Contains("KB is busy"))
-                {
                     Logger.Debug($"CheckForChanges error: {ex.Message}");
-                }
             }
+        }
+
+        private bool TryGetChangedObject(dynamic kb, object rawKey, out KBObject changed)
+        {
+            changed = null;
+            var key = (Artech.Udm.Framework.EntityKey)rawKey;
+            changed = kb.DesignModel.Objects.Get(key) as KBObject;
+            if (changed != null) return true;
+
+            SearchIndex.IndexEntry deleted = null;
+            try { deleted = _indexCache?.GetIndex()?.FindByEntityKey(Convert.ToString(key)); } catch { }
+            if (deleted == null) return false;
+
+            _indexCache.RemoveEntryByGuid(deleted.Guid);
+            DateTime deletionTime = DateTime.UtcNow;
+            _onObjectDeleted?.Invoke(deleted.Name, deleted.Type, deletionTime);
+            Logger.Info($"External deletion detected: {deleted.Name} ({deleted.Type}) at {deletionTime:o}");
+            return false;
+        }
+
+        private void ConsiderChangedObject(KBObject obj, List<KBObject> batch, ref DateTime nextCheckTime, ref bool foundNewer)
+        {
+            DateTime objectLastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate);
+            if (objectLastUpdate > _lastCheckTime)
+            {
+                if (objectLastUpdate > nextCheckTime)
+                {
+                    nextCheckTime = objectLastUpdate;
+                    foundNewer = true;
+                }
+                batch.Add(obj);
+            }
+            else if (objectLastUpdate == _lastCheckTime && !_notifiedInLastTick.Contains(obj.Guid))
+            {
+                batch.Add(obj);
+            }
+        }
+
+        private void NotifyChangedObjects(List<KBObject> batch, DateTime nextCheckTime, bool foundNewer)
+        {
+            if (batch.Count == 0) return;
+            if (foundNewer) _notifiedInLastTick.Clear();
+
+            foreach (KBObject obj in batch)
+            {
+                DateTime objectLastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate);
+                if (objectLastUpdate == nextCheckTime) _notifiedInLastTick.Add(obj.Guid);
+                Logger.Info($"External change detected: {obj.Name} ({obj.TypeDescriptor.Name}) at {objectLastUpdate:o}");
+                try { _indexCache?.UpdateEntry(obj); }
+                catch (Exception ex) { Logger.Debug($"Watcher index update failed for {obj.Name}: {ex.Message}"); }
+                _onObjectChanged?.Invoke(obj.Name, obj.TypeDescriptor.Name, objectLastUpdate);
+            }
+            _lastCheckTime = nextCheckTime;
         }
     }
 }

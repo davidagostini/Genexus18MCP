@@ -1,68 +1,60 @@
 # Release Process
 
-This document describes how `genexus-mcp` is published to npm. **Only the maintainer can run this** — it requires GeneXus 18 installed locally and push access to this repository.
+This file is a navigation pointer. The normative release, merge, npm, issue,
+resume, and changelog rules live in [`release_protocol.md`](release_protocol.md).
+Read that document before any release operation.
 
-## Why the build runs locally
+## Fast path
 
-`src/GxMcp.Worker` references private GeneXus 18 SDK DLLs from `C:\Program Files (x86)\GeneXus\GeneXus18` (see the `<HintPath>` entries in `GxMcp.Worker.csproj`). GitHub-hosted runners don't have GeneXus, so the .NET artifacts must be built on a machine that does. The actual `npm publish` still happens in GitHub Actions, which preserves the **npm provenance** badge via OIDC Trusted Publishing.
+From a clean `main` checkout, after explicit maintainer approval:
 
-## Prerequisites (one-time)
-
-- Windows with **.NET 8 SDK**
-- **GeneXus 18** installed at `C:\Program Files (x86)\GeneXus\GeneXus18` (or override via `config.json`)
-- **GitHub CLI** authenticated: `gh auth status` must succeed
-- npm account is a maintainer of `genexus-mcp` (Trusted Publishing already configured for this repo + workflow)
-- Clean working tree on `main` branch
-
-## Publish a new version
-
-From the repo root, in PowerShell:
-
-```pwsh
-.\scripts\release.ps1 patch    # bug fix:     2.1.2 -> 2.1.3
-.\scripts\release.ps1 minor    # new feature: 2.1.2 -> 2.2.0
-.\scripts\release.ps1 major    # breaking:    2.1.2 -> 3.0.0
-.\scripts\release.ps1 2.1.5    # explicit version (e.g. skip a number)
+```powershell
+pwsh -NoProfile -File .\release.ps1 -Version <X.Y.Z>
 ```
 
-The script will:
+`release.ps1` is the only publication entrypoint. It commits the exact source
+state before building, runs the canonical preflight, creates the manifest and
+checksum, packages `publish.zip` and the Nexus VSIX, creates or resumes the
+GitHub Release, and leaves npm publication to `.github/workflows/release.yml`.
 
-1. Verify you're on `main` with a clean tree and `gh` is authenticated.
-2. Pull the latest `main`.
-3. Bump `package.json` (`npm version`).
-4. Run `.\build.ps1` to produce `publish/` with Gateway + Worker + Definitions.
-5. Zip `publish/` into `publish.zip`.
-6. Commit, tag (`vX.Y.Z`), and push.
-7. Create the GitHub Release with `publish.zip` as an asset.
+The preflight performs cheap fail-fast checks first, then runs independent CLI,
+PowerShell, Nexus, and solution-test phases in parallel. The MSBuild
+warning-baseline and live-artifact phases remain outside that wave: live also
+invokes `dotnet test` against Gateway test binaries, so sequencing both phases
+prevents races in shared `bin/obj` and testhost outputs. Its JSON summary records
+`sourceCommit`, `artifactFingerprint`, phase timings, and any reused phase.
 
-That Release **published** event triggers `.github/workflows/release.yml`, which:
+If a preflight phase fails after the source commit and artifacts were produced,
+rerun the same version. The entrypoint resumes only when the version, source
+commit, SDK path, live inputs, and artifact fingerprint all match; otherwise it
+rebuilds and runs the full gate. Do not manually skip individual phases.
 
-1. Downloads `publish.zip` from the Release.
-2. Unpacks it into `publish/`.
-3. Runs `npm publish --access public --provenance` via OIDC.
+## Verification
 
-## Verify
+Wait for the release workflow and verify the exact package version through the
+registry, not the npm website CDN:
 
-```pwsh
-gh run watch                                  # watch the publish workflow
-npm view genexus-mcp@<version> dist           # confirm fileCount > 150, size > 2 MB
-npm view genexus-mcp@<version> --json | jq .  # confirm provenance present
+```powershell
+gh run list --workflow release.yml
+npm view genexus-mcp@<version> version
+npm view genexus-mcp@<version> dist
 ```
 
-The package page at https://www.npmjs.com/package/genexus-mcp should show the **"Provenance"** badge.
+The workflow keeps npm verification synchronous and exact. It reports publish
+acceptance, registry visibility, probe count, and propagation seconds in the
+GitHub Step Summary. A package becoming visible in the registry can still take
+about 90 seconds; that external delay is not removed by local parallelism.
 
 ## Recovery
 
-**Build failed locally**: the script reverts the `package.json` change before exiting. No tag is created, no Release is published. Fix and re-run.
+- Build or preflight failure: keep the same untagged source commit, fix the
+  cause, and rerun the same version.
+- Existing release without assets: rerun the same entrypoint; it uploads the
+  missing assets instead of creating a duplicate.
+- Workflow failure after publication: inspect the exact workflow run and npm
+  registry state before retrying. The workflow is idempotent for an already
+  published exact version.
 
-**Tag pushed but workflow failed**: re-run from the Actions tab, or trigger manually:
-```pwsh
-gh workflow run release.yml
-```
-The workflow is idempotent — if the version is already on npm it skips automatically.
-
-**Need to unpublish**: npm only allows unpublish within 72 hours. Prefer publishing a patch with the fix.
-
-## Contributing (non-maintainers)
-
-You don't need any of this to contribute. Open a PR against `main`; `ci.yml` runs the test suite on your branch. Only the maintainer can cut releases. Even if you fork the repo and push tags, npm Trusted Publishing rejects publishes that don't originate from `lennix1337/Genexus18MCP`'s `release.yml`.
+For issue collection, live SDK/KB evidence, warning baselines, detached status
+files, and merge discipline, use `release_protocol.md` and its linked guides.
+Contributors should open a PR against `main`; only the maintainer publishes.

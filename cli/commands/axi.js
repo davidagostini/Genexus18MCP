@@ -5,10 +5,12 @@ const fs = require('fs');
 const {
     getGatewayExePath,
     getToolDefinitionsPath,
+    generateNeutralConfig,
     resolveConfigPathNoMutate,
     readJsonFileSafe,
     directoryLooksLikeKnowledgeBase,
     createConfigFile,
+    migrateLegacyConfig,
     patchClientConfig,
     unpatchClientConfig,
     getClientConfigTargets,
@@ -17,7 +19,10 @@ const {
     filterClientTargets,
     listSupportedClientIds,
     getLocalAppDataCacheDir,
-    readGeneXusVersionFromInstall,
+    readGeneXusInstallationIdentity,
+    readGeneXusKbIdentity,
+    compareGeneXusKbAndInstallation,
+    getGeneXusVersionCatalog,
     discoverGeneXusInstallation,
     discoverKnowledgeBase,
     discoverKnowledgeBases,
@@ -27,8 +32,11 @@ const {
     switchActiveKb,
     isPathLikelyAppLockerBlocked,
     normalizeExePath,
-    readClientCommandEntry
+    readClientCommandEntry,
+    DEFAULT_MCP_SERVER_NAME
 } = require('../lib/config');
+const { getStdioErrorLogPath } = require('../lib/stdio-diagnostics');
+const { getPackageVersion } = require('../lib/update-check');
 
 function resolveClientIds(options) {
     if (!options || !options.clients) return null;
@@ -47,6 +55,13 @@ function validateClientIds(ids) {
         ok: false,
         message: `Unknown client id(s): ${invalid.join(', ')}. Supported: ${[...supported].join(', ')}.`
     };
+}
+
+function isSupportedCatalogMajor(catalog, major) {
+    if (!major) return true;
+    const inSupported = catalog.supportedMajors && catalog.supportedMajors.some((entry) => String(entry.major) === String(major));
+    if (inSupported) return true;
+    return Array.isArray(catalog.legacyMajors) && catalog.legacyMajors.some((entry) => String(entry.major) === String(major));
 }
 
 function parseFieldSelection(raw) {
@@ -125,9 +140,9 @@ function usageEnvelope(message, exitCode) {
     };
 }
 
-function operationalErrorEnvelope(message, exitCode, help = []) {
+function operationalErrorEnvelope(message, exitCode, help = [], code = 'operation_error') {
     return {
-        error: { code: 'operation_error', message: sanitizeOperationalMessage(message) },
+        error: { code, message: sanitizeOperationalMessage(message) },
         help,
         meta: { exitCode }
     };
@@ -137,30 +152,177 @@ function buildStatusData(cwd) {
     const configPath = resolveConfigPathNoMutate(cwd);
     const gatewayExePath = getGatewayExePath();
     const gatewayExeFound = fs.existsSync(gatewayExePath);
-    const configFound = !!configPath;
+    const configFound = !!(configPath && fs.existsSync(configPath));
 
     let kbLooksValid = false;
     let kbPath = null;
+    let kbCatalog = { kbs: {}, activeKb: null, kbPath: null };
     let gxPath = null;
     let configSource = null;
+    let configReadable = false;
+    let configError = null;
 
-    if (process.env.GX_CONFIG_PATH && fs.existsSync(process.env.GX_CONFIG_PATH)) {
+    if (process.env.GX_CONFIG_PATH) {
         configSource = 'env';
-    } else if (configPath) {
+    } else if (configFound) {
         configSource = 'cwd';
     }
 
-    if (configPath) {
+    if (configFound) {
         const cfg = readJsonFileSafe(configPath);
-        if (cfg) {
-            kbPath = cfg.Environment && cfg.Environment.KBPath ? cfg.Environment.KBPath : null;
-            gxPath = cfg.GeneXus && cfg.GeneXus.InstallationPath ? cfg.GeneXus.InstallationPath : null;
+        if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+            configReadable = true;
+            const environment = cfg.Environment && typeof cfg.Environment === 'object' ? cfg.Environment : {};
+            kbCatalog = readKbCatalog(configPath, cfg);
+            const declaredKbs = Object.entries(kbCatalog.kbs || {});
+            const catalogPath = kbCatalog.activeKb
+                ? kbCatalog.kbs[kbCatalog.activeKb] || null
+                : (declaredKbs.length === 1 ? declaredKbs[0][1] : null);
+            const legacyKbPath = typeof environment.KBPath === 'string' && environment.KBPath.trim()
+                ? environment.KBPath
+                : null;
+            kbPath = legacyKbPath || catalogPath || null;
+            gxPath = cfg.GeneXus && typeof cfg.GeneXus.InstallationPath === 'string'
+                ? cfg.GeneXus.InstallationPath
+                : null;
             if (kbPath) kbLooksValid = directoryLooksLikeKnowledgeBase(kbPath);
+        } else {
+            configError = 'Configuration file is not a readable JSON object.';
         }
+    } else if (configPath) {
+        configError = process.env.GX_CONFIG_PATH
+            ? 'GX_CONFIG_PATH points to a missing configuration file.'
+            : 'Configuration file does not exist.';
     }
 
     const ready = configFound && gatewayExeFound;
-    return { ready, configFound, gatewayExeFound, kbLooksValid, configPath, gatewayExePath, kbPath, gxPath, configSource };
+    return { ready, configFound, configReadable, configError, gatewayExeFound, kbLooksValid, kbCatalog, configPath, gatewayExePath, kbPath, gxPath, configSource };
+}
+
+const PROBE_EXIT_GRACE_MS = 2000;
+
+// Stop a probe child and wait for it to actually exit. On Windows child.kill()
+// only signals the direct process and returns before the OS releases the
+// executable image, so reporting success right after kill() left the exe file
+// handle open (Issue #211: the shared gateway stub in cli/run.test.js made the
+// suite teardown fail with EPERM while every assertion passed). Resolves true
+// once the child exited, false when it did not within the bounded grace.
+function stopProbeChild(child, graceMs = PROBE_EXIT_GRACE_MS) {
+    return new Promise((resolve) => {
+        if (!child || child.exitCode !== null || child.signalCode !== null) {
+            resolve(true);
+            return;
+        }
+        let settled = false;
+        const finish = (exited) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(exited);
+        };
+        const timer = setTimeout(() => finish(false), graceMs);
+        child.once('exit', () => finish(true));
+        try {
+            child.kill();
+        } catch {
+            finish(true);
+        }
+    });
+}
+
+async function runGatewaySelfTest({ env = process.env, timeoutMs = 5000 }) {
+    const gatewayExePath = getGatewayExePath();
+    const maxOutputChars = 32 * 1024;
+
+    const appendOutput = (current, chunk) => {
+        const next = current + chunk.toString();
+        return next.length > maxOutputChars ? next.slice(-maxOutputChars) : next;
+    };
+
+    const summarize = (code, stdout, stderr) => {
+        let payload = null;
+        const lines = stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i -= 1) {
+            try {
+                payload = JSON.parse(lines[i]);
+                break;
+            } catch {
+                // Keep looking: a diagnostic line may precede the JSON envelope.
+            }
+        }
+
+        if (payload && payload.schemaVersion === 'gateway-selftest/1' && Array.isArray(payload.checks)) {
+            const failed = payload.checks.find((check) => check.status === 'fail');
+            if (code === 0 && payload.ok !== false && !failed) {
+                return {
+                    status: 'pass',
+                    detail: `Gateway self-test passed (${payload.summary?.total || payload.checks.length} checks).`
+                };
+            }
+            const reason = failed && failed.detail
+                ? `: ${failed.id}: ${sanitizeOperationalMessage(failed.detail)}`
+                : ` (exit ${code === null ? 'unknown' : code})`;
+            return { status: 'fail', detail: `Gateway self-test failed${reason}.` };
+        }
+
+        const preview = sanitizeOperationalMessage((stderr || stdout).trim(), '');
+        return {
+            status: code === 0 ? 'warn' : 'fail',
+            detail: code === 0
+                ? (preview ? `Gateway self-test returned no recognized result: ${preview}` : 'Gateway self-test returned no recognized result.')
+                : (preview
+                    ? `Gateway self-test failed (exit ${code === null ? 'unknown' : code}): ${preview}`
+                    : `Gateway self-test failed (exit ${code === null ? 'unknown' : code}) with no diagnostic output.`)
+        };
+    };
+
+    return await new Promise((resolve) => {
+        let child;
+        let timer = null;
+        let settled = false;
+        let timedOut = false;
+        let stdout = '';
+        let stderr = '';
+        const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            resolve(result);
+        };
+
+        try {
+            child = spawn(gatewayExePath, ['--self-test'], {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                windowsHide: true,
+                env
+            });
+            child.stdout.on('data', (chunk) => { stdout = appendOutput(stdout, chunk); });
+            child.stderr.on('data', (chunk) => { stderr = appendOutput(stderr, chunk); });
+            child.once('error', (err) => {
+                finish({ status: 'fail', detail: `Gateway self-test could not start: ${sanitizeOperationalMessage(err.message)}` });
+            });
+            child.once('exit', (code) => {
+                if (timedOut) {
+                    finish({ status: 'warn', detail: `Gateway self-test timed out after ${timeoutMs}ms.` });
+                    return;
+                }
+                finish(summarize(code, stdout, stderr));
+            });
+            timer = setTimeout(async () => {
+                if (settled) return;
+                timedOut = true;
+                const exited = await stopProbeChild(child);
+                finish({
+                    status: 'warn',
+                    detail: exited
+                        ? `Gateway self-test timed out after ${timeoutMs}ms; process was stopped.`
+                        : `Gateway self-test timed out after ${timeoutMs}ms and did not exit after the stop signal.`
+                });
+            }, timeoutMs);
+        } catch (err) {
+            finish({ status: 'fail', detail: `Gateway self-test could not start: ${sanitizeOperationalMessage(err.message)}` });
+        }
+    });
 }
 
 async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, label, successDetail }) {
@@ -168,14 +330,16 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
 
     return await new Promise((resolve) => {
         let done = false;
+        let timer = null;
         const finish = (result) => {
             if (done) return;
             done = true;
+            if (timer) clearTimeout(timer);
             resolve(result);
         };
 
         try {
-            const child = spawn(gatewayExePath, ['--axi-spawn-probe'], {
+            const child = spawn(gatewayExePath, [], {
                 stdio: 'ignore',
                 windowsHide: true,
                 env
@@ -195,18 +359,36 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
                 }
             });
 
+            child.once('exit', (code, signal) => {
+                if (done) return;
+                finish({
+                    status: code === 0 ? 'warn' : 'fail',
+                    detail: code === 0
+                        ? `${label} exited before the observation window (signal: ${signal || 'none'}).`
+                        : `${label} exited with code ${code === null ? 'unknown' : code}${signal ? ` (signal: ${signal})` : ''}.`
+                });
+            });
+
             child.once('spawn', () => {
-                setTimeout(() => {
-                    try { child.kill(); } catch { }
-                    finish({ status: 'pass', detail: successDetail });
+                setTimeout(async () => {
+                    const exited = await stopProbeChild(child);
+                    if (exited) {
+                        finish({ status: 'pass', detail: successDetail });
+                    } else {
+                        finish({ status: 'warn', detail: `${label}: process did not exit after the stop signal; it may still hold the gateway exe.` });
+                    }
                 }, spawnHoldMs);
             });
 
-            setTimeout(() => {
-                if (!done) {
-                    try { child.kill(); } catch { }
-                    finish({ status: 'warn', detail: `${label} timed out; process was force-stopped.` });
-                }
+            timer = setTimeout(async () => {
+                if (done) return;
+                const exited = await stopProbeChild(child);
+                finish({
+                    status: 'warn',
+                    detail: exited
+                        ? `${label} timed out; process was force-stopped.`
+                        : `${label} timed out and did not exit after the stop signal; it may still hold the gateway exe.`
+                });
             }, timeoutMs);
         } catch (err) {
             finish({ status: 'fail', detail: `${label} threw: ${err.message}` });
@@ -214,30 +396,62 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
     });
 }
 
-async function probeGatewaySpawn() {
-    return spawnGatewayProbe({
-        spawnHoldMs: 180,
-        timeoutMs: 900,
-        label: 'Spawn probe',
-        successDetail: 'Gateway process can be spawned (probe launched and terminated).'
-    });
+async function probeGatewaySpawn({ configPath = null } = {}) {
+    const env = configPath
+        ? { ...process.env, GX_CONFIG_PATH: configPath }
+        : process.env;
+    return runGatewaySelfTest({ env });
 }
 
-function resolveMcpBaseUrl(cwd) {
+function resolveMcpSmokeTarget(cwd) {
     const configPath = resolveConfigPathNoMutate(cwd);
     const fallback = 'http://127.0.0.1:5000/mcp';
-    if (!configPath) return fallback;
+    if (!configPath) {
+        return { applicable: true, status: null, detail: null, baseUrl: fallback };
+    }
+
+    if (!fs.existsSync(configPath)) {
+        return {
+            applicable: false,
+            status: 'not_applicable',
+            detail: `MCP HTTP smoke skipped: resolved config file does not exist at ${configPath}.`,
+            baseUrl: null
+        };
+    }
 
     const cfg = readJsonFileSafe(configPath);
-    if (!cfg || typeof cfg !== 'object') return fallback;
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+        return {
+            applicable: false,
+            status: 'not_applicable',
+            detail: `MCP HTTP smoke skipped: resolved config file is not a readable JSON object at ${configPath}.`,
+            baseUrl: null
+        };
+    }
 
     const server = cfg.Server && typeof cfg.Server === 'object' ? cfg.Server : {};
+    const gatewayMode = typeof cfg.GatewayMode === 'string' ? cfg.GatewayMode.toLowerCase() : '';
+    const rawPort = server.HttpPort;
+    const parsedPort = typeof rawPort === 'number'
+        ? rawPort
+        : Number.parseInt(String(rawPort ?? ''), 10);
+    const stdioRuntime = gatewayMode === 'stdio-isolated'
+        || gatewayMode === 'stdio'
+        || (server.McpStdio === true && (!Number.isFinite(parsedPort) || parsedPort <= 0));
+    if (stdioRuntime) {
+        return {
+            applicable: false,
+            status: 'not_applicable',
+            detail: `MCP HTTP smoke skipped: ${gatewayMode || 'stdio'} runtime has no HTTP listener.`,
+            baseUrl: null
+        };
+    }
+
     const host = server.BindAddress && typeof server.BindAddress === 'string'
         ? server.BindAddress
         : '127.0.0.1';
-    const parsedPort = Number.parseInt(String(server.HttpPort || ''), 10);
     const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 5000;
-    return `http://${host}:${port}/mcp`;
+    return { applicable: true, status: null, detail: null, baseUrl: `http://${host}:${port}/mcp` };
 }
 
 async function runMcpSmokeProbe(cwd) {
@@ -246,7 +460,11 @@ async function runMcpSmokeProbe(cwd) {
         return { status: 'warn', detail: 'MCP smoke script is missing.' };
     }
 
-    const baseUrl = resolveMcpBaseUrl(cwd);
+    const target = resolveMcpSmokeTarget(cwd);
+    if (!target.applicable) {
+        return { status: target.status, detail: target.detail };
+    }
+    const baseUrl = target.baseUrl;
     const shell = process.platform === 'win32' ? 'powershell' : 'pwsh';
     const args = process.platform === 'win32'
         ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-BaseUrl', baseUrl]
@@ -359,9 +577,15 @@ async function handleStatus(options, ctx) {
     };
 }
 
-function buildClientExeCrossCheck(packageExePath) {
+function buildClientExeCrossCheck(packageExePath, clientRows = null) {
     const packageNorm = normalizeExePath(packageExePath);
-    const targets = filterClientTargets(getClientConfigTargets(), { platform: process.platform });
+    const gatewaySource = process.env.GENEXUS_MCP_GATEWAY_EXE
+        ? 'GENEXUS_MCP_GATEWAY_EXE'
+        : 'packaged gateway (default)';
+    const gatewayTarget = `Configured Gateway: ${packageExePath} (source: ${gatewaySource})`;
+    const targets = clientRows
+        ? clientRows.map((row) => ({ name: row.name, path: row.configPath, entry: row.command ? { command: row.command } : null }))
+        : filterClientTargets(getClientConfigTargets(), { platform: process.platform });
 
     const mismatches = [];
     const matches = [];
@@ -369,13 +593,17 @@ function buildClientExeCrossCheck(packageExePath) {
     let inspected = 0;
 
     for (const client of targets) {
-        if (!fs.existsSync(client.path)) continue;
         let entry;
-        try {
-            entry = readClientCommandEntry(client);
-        } catch (err) {
-            errors.push(`${client.name}: ${err.message || 'read failed'}`);
-            continue;
+        if (clientRows) {
+            entry = client.entry;
+        } else {
+            if (!fs.existsSync(client.path)) continue;
+            try {
+                entry = readClientCommandEntry(client);
+            } catch (err) {
+                errors.push(`${client.name}: ${err.message || 'read failed'}`);
+                continue;
+            }
         }
         if (!entry || !entry.command) continue;
         inspected += 1;
@@ -411,14 +639,14 @@ function buildClientExeCrossCheck(packageExePath) {
     if (mismatches.length === 0) {
         return {
             status: 'pass',
-            detail: `All inspected client configs (${matches.join(', ')}) point at the npm-package gateway exe.`
+            detail: `All inspected client configs (${matches.join(', ')}) match the configured gateway target. ${gatewayTarget}.`
         };
     }
 
     const detailParts = mismatches.map((m) => `${m.client} -> ${m.configured}${m.exists ? '' : ' (missing)'}`);
     return {
         status: 'warn',
-        detail: `Client(s) reference a gateway exe that is NOT this npm package's bundled exe. \`npm install -g genexus-mcp@latest\` will NOT update those instances. Bundled: ${packageExePath}. Mismatches: ${detailParts.join('; ')}. Re-run scripts/install.ps1 (or genexus-mcp init --write-clients) to resync.`
+        detail: `Client(s) reference a gateway exe that is not the configured target. ${gatewayTarget}. \`npm install -g genexus-mcp@latest\` will NOT update those instances. Mismatches: ${detailParts.join('; ')}. Re-run scripts/install.ps1 (or genexus-mcp init --write-clients) to resync.`
     };
 }
 
@@ -525,6 +753,62 @@ function buildInProcessBuildAssemblyLoadCheck(gxPath) {
     };
 }
 
+function buildGxPublicComCheck(gxMajor) {
+    if (gxMajor !== '8' && gxMajor !== '9') {
+        return { id: 'gxpublic_com_registration', status: 'not_applicable', detail: 'Not a GeneXus 8.0/9.0 installation.' };
+    }
+    const child_process = require('child_process');
+    const providers = ['GXPublic.GXPublic.4', 'GXPublic.GXPublic.5', 'GXPubGXX.GXPublic.5', 'GXPubGXX.GXPublic'];
+    const registered = [];
+    for (const provider of providers) {
+        try {
+            const res = child_process.spawnSync('reg', ['query', `HKCR\\${provider}`], { encoding: 'utf8', timeout: 2000 });
+            if (res.status === 0) registered.push(provider);
+        } catch { }
+    }
+
+    if (registered.length > 0) {
+        const matching = gxMajor === '8'
+            ? ['GXPublic.GXPublic.4', 'GXPubGXX.GXPublic.5', 'GXPubGXX.GXPublic']
+            : ['GXPublic.GXPublic.5', 'GXPubGXX.GXPublic.5', 'GXPubGXX.GXPublic'];
+        const hasMatchingProvider = registered.some((provider) => matching.includes(provider));
+        return {
+            id: 'gxpublic_com_registration',
+            status: hasMatchingProvider ? 'pass' : 'warn',
+            detail: hasMatchingProvider
+                ? `GXPublic OLE DB provider(s) registered for the 32-bit Worker: ${registered.join(', ')}.`
+                : `GXPublic provider(s) registered for the 32-bit Worker: ${registered.join(', ')}, but none is the documented GeneXus ${gxMajor}.0 provider (${matching.join(', ')}). Install the matching version before opening this KB.`
+        };
+    }
+    return {
+        id: 'gxpublic_com_registration',
+        status: 'warn',
+        detail: `No supported GXPublic OLE DB provider is registered for GeneXus ${gxMajor}.0. Install the versioned GXPublic provider matching the KB generation (GXPublic 8.0 for GX8 or GXPublic Yi for GX9).`
+    };
+}
+
+function buildLegacyIdeLockCheck(gxMajor) {
+    if (gxMajor !== '8' && gxMajor !== '9' && gxMajor !== '10.1' && gxMajor !== '10.2') {
+        return { id: 'legacy_ide_lock', status: 'not_applicable', detail: 'Lock check not applicable for modern GeneXus versions.' };
+    }
+    const child_process = require('child_process');
+    let ideRunning = false;
+    try {
+        const res = child_process.spawnSync('tasklist', ['/FI', 'IMAGENAME eq gx.exe', '/NH'], { encoding: 'utf8', timeout: 2000 });
+        if (res.stdout && res.stdout.toLowerCase().includes('gx.exe')) {
+            ideRunning = true;
+        }
+    } catch { }
+    if (ideRunning) {
+        return {
+            id: 'legacy_ide_lock',
+            status: 'warn',
+            detail: 'GeneXus IDE (gx.exe) process is currently running. Legacy engines hold exclusive file locks on the KB.'
+        };
+    }
+    return { id: 'legacy_ide_lock', status: 'pass', detail: 'No conflicting GeneXus IDE process (gx.exe) detected.' };
+}
+
 function redactConfig(cfg) {
     // Replace absolute paths with `<redacted:hash8>` so the structure is preserved
     // but filesystem layout, usernames, and KB names are not leaked. Hash is stable
@@ -547,7 +831,21 @@ function redactConfig(cfg) {
     return walk(cfg);
 }
 
-async function buildSupportDump({ checks, summary, data, gatewayExePath, ctx }) {
+function redactDiagnosticText(value, paths) {
+    let text = String(value ?? '');
+    const candidates = [...new Set((paths || []).filter((candidate) => typeof candidate === 'string' && candidate.length > 0))]
+        .sort((a, b) => b.length - a.length);
+    for (const candidate of candidates) {
+        const token = `<redacted:${require('crypto').createHash('sha256').update(candidate).digest('hex').slice(0, 8)}>`;
+        for (const variant of new Set([candidate, candidate.replace(/\\/g, '/')])) {
+            const escaped = variant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            text = text.replace(new RegExp(escaped, 'gi'), token);
+        }
+    }
+    return text;
+}
+
+async function buildSupportDump({ checks, summary, data, gatewayExePath, clientRows = [], toolDefPath, stdioErrorLogPath, ctx }) {
     const os = require('os');
     const crypto = require('crypto');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -563,15 +861,31 @@ async function buildSupportDump({ checks, summary, data, gatewayExePath, ctx }) 
         entries.push(relPath);
     };
 
-    writeEntry('doctor.json', { summary, checks, generatedAt: new Date().toISOString() });
+    const redactionPaths = [
+        gatewayExePath,
+        data.configPath,
+        data.kbPath,
+        data.gxPath,
+        toolDefPath,
+        stdioErrorLogPath,
+        ...Object.values(data.kbCatalog?.kbs || {}),
+        ...clientRows.flatMap((row) => [row.configPath, row.command])
+    ];
+    const redactedChecks = checks.map((check) => ({
+        ...check,
+        detail: redactDiagnosticText(check.detail, redactionPaths)
+    }));
+    const redactPath = (value) => redactDiagnosticText(value, redactionPaths);
+
+    writeEntry('doctor.json', { summary, checks: redactedChecks, generatedAt: new Date().toISOString() });
 
     if (data.configPath && fs.existsSync(data.configPath)) {
         const cfg = readJsonFileSafe(data.configPath);
         writeEntry('config.redacted.json', redactConfig(cfg));
     }
 
-    let gxVersion = null;
-    try { gxVersion = readGeneXusVersionFromInstall(data.gxPath); } catch { }
+    let gxIdentity = { version: null, major: null, source: 'unavailable' };
+    try { gxIdentity = readGeneXusInstallationIdentity(data.gxPath); } catch { }
 
     writeEntry('environment.json', {
         platform: process.platform,
@@ -579,12 +893,14 @@ async function buildSupportDump({ checks, summary, data, gatewayExePath, ctx }) 
         nodeVersion: process.version,
         osRelease: os.release(),
         cwdHash: crypto.createHash('sha256').update(ctx.cwd || '').digest('hex').slice(0, 8),
-        gatewayExePath,
+        gatewayExePath: redactPath(gatewayExePath),
         gatewayExeExists: fs.existsSync(gatewayExePath),
         configSource: data.configSource,
         kbConfigured: !!data.kbPath,
         gxConfigured: !!data.gxPath,
-        gxVersion,
+        gxVersion: gxIdentity.version,
+        gxMajor: gxIdentity.major,
+        gxDetectionSource: gxIdentity.source,
         envFlags: {
             GX_CONFIG_PATH: !!process.env.GX_CONFIG_PATH,
             GENEXUS_MCP_GATEWAY_EXE: !!process.env.GENEXUS_MCP_GATEWAY_EXE,
@@ -655,28 +971,117 @@ async function handleDoctor(options, ctx) {
     const toolDefPath = getToolDefinitionsPath();
     const toolDefsExists = fs.existsSync(toolDefPath);
     const gatewayExePath = getGatewayExePath();
+    const stdioErrorLogPath = getStdioErrorLogPath();
+    const stdioErrorLogExists = !!(stdioErrorLogPath && fs.existsSync(stdioErrorLogPath));
 
     let toolCount = 0;
+    let toolDefinitionsValid = false;
+    let toolDefinitionsError = null;
     if (toolDefsExists) {
         try {
             const parsed = JSON.parse(fs.readFileSync(toolDefPath, 'utf8'));
-            if (Array.isArray(parsed)) toolCount = parsed.length;
-        } catch {
-            toolCount = 0;
+            if (Array.isArray(parsed)) {
+                toolDefinitionsValid = true;
+                toolCount = parsed.length;
+            } else {
+                toolDefinitionsError = 'tool_definitions.json is not an array.';
+            }
+        } catch (err) {
+            toolDefinitionsError = sanitizeOperationalMessage(err && err.message ? err.message : 'invalid JSON');
         }
     }
 
     const kbPath = data.kbPath;
     const gxPath = data.gxPath;
     const kbExists = !!(kbPath && fs.existsSync(kbPath));
-    const gxExeExists = !!(gxPath && fs.existsSync(path.join(gxPath, 'genexus.exe')));
+    const gxExecutable = gxPath && ['genexus.exe', 'gx.exe', 'gxw32.exe']
+        .find((name) => fs.existsSync(path.join(gxPath, name)));
+    const gxExeExists = !!gxExecutable;
+    const kbSdkCompatibility = kbExists && gxExeExists
+        ? compareGeneXusKbAndInstallation(kbPath, gxPath)
+        : null;
+    const catalog = getGeneXusVersionCatalog();
+
+    let unsupportedCompatibilityMajor = null;
+    let compatibilityStatus = kbPath && gxPath ? 'warn' : 'not_applicable';
+    let compatibilityDetail = kbPath && gxPath
+        ? 'KB/SDK major compatibility check was skipped until both configured paths exist.'
+        : 'KB/SDK major compatibility check is not applicable until both paths are configured.';
+    if (kbSdkCompatibility) {
+        if (!isSupportedCatalogMajor(catalog, kbSdkCompatibility.kb.major)) {
+            unsupportedCompatibilityMajor = `KB major ${kbSdkCompatibility.kb.major}`;
+        } else if (!isSupportedCatalogMajor(catalog, kbSdkCompatibility.gx.major)) {
+            unsupportedCompatibilityMajor = `GeneXus SDK major ${kbSdkCompatibility.gx.major}`;
+        }
+
+        if (unsupportedCompatibilityMajor) {
+            compatibilityStatus = 'fail';
+            compatibilityDetail = `${unsupportedCompatibilityMajor} is not supported by this MCP distribution. Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}.`;
+        } else if (kbSdkCompatibility.status === 'mismatch') {
+            compatibilityStatus = 'fail';
+            compatibilityDetail = `KB major ${kbSdkCompatibility.kb.major} does not match GeneXus SDK major ${kbSdkCompatibility.gx.major}${kbSdkCompatibility.gx.version ? ` (${kbSdkCompatibility.gx.version})` : ''}. Re-run init with the matching --gx path.`;
+        } else if (kbSdkCompatibility.status === 'match') {
+            compatibilityStatus = 'pass';
+            compatibilityDetail = `KB major ${kbSdkCompatibility.kb.major} matches GeneXus SDK major ${kbSdkCompatibility.gx.major}${kbSdkCompatibility.gx.version ? ` (${kbSdkCompatibility.gx.version})` : ''}.`;
+        } else {
+            compatibilityDetail = `KB/SDK major compatibility could not be verified (KB: ${kbSdkCompatibility.kb.source}; SDK: ${kbSdkCompatibility.gx.source}).`;
+        }
+    }
+
+    const gxIdent = gxPath ? readGeneXusInstallationIdentity(gxPath) : null;
+    const gxVersionLabel = gxIdent && gxIdent.version ? ` (GeneXus ${gxIdent.major || ''} version ${gxIdent.version})` : (gxIdent && gxIdent.major ? ` (GeneXus ${gxIdent.major})` : '');
 
     const riskyZone = isPathLikelyAppLockerBlocked(gatewayExePath);
-    const clientCrossCheck = buildClientExeCrossCheck(gatewayExePath);
+    const clientRows = clientsStatus();
+    const clientCrossCheck = buildClientExeCrossCheck(gatewayExePath, clientRows);
+    const configCheck = data.configFound
+        ? (data.configReadable
+            ? { status: 'pass', detail: `GX config file was found at ${data.configPath} (source: ${data.configSource}).` }
+            : { status: 'fail', detail: `GX config file could not be parsed as a JSON object: ${data.configPath}.` })
+        : {
+            status: 'fail',
+            detail: data.configPath
+                ? `${data.configError || 'GX config file is missing.'} ${data.configPath}`
+                : 'GX config file is missing.'
+        };
+    const toolDefinitionsCheck = !toolDefsExists
+        ? {
+            status: 'warn',
+            detail: process.env.GENEXUS_MCP_TOOL_DEFINITIONS
+                ? `tool_definitions.json missing at GENEXUS_MCP_TOOL_DEFINITIONS=${toolDefPath}. Unset the env var or point it at a valid file.`
+                : `tool_definitions.json missing. Expected at ${toolDefPath} (next to the gateway exe). The csproj should copy it on publish — reinstall via scripts/install.ps1, or set GENEXUS_MCP_TOOL_DEFINITIONS to override.`
+        }
+        : toolDefinitionsValid
+            ? { status: 'pass', detail: `Tool definition file found (${toolCount} tools) at ${toolDefPath}.` }
+            : { status: 'fail', detail: `tool_definitions.json is invalid at ${toolDefPath}${toolDefinitionsError ? `: ${toolDefinitionsError}` : '.'}` };
+    const gxEnvCheck = process.env.GX_CONFIG_PATH
+        ? { status: 'pass', detail: 'GX_CONFIG_PATH env var is set.' }
+        : data.configFound
+            ? { status: 'not_applicable', detail: `GX_CONFIG_PATH is not set; using ${data.configPath} from the current directory.` }
+            : { status: 'warn', detail: 'GX_CONFIG_PATH env var is not set and no config file was found.' };
+    const kbCatalogEntries = Object.entries(data.kbCatalog?.kbs || {});
+    const missingCatalogKbs = kbCatalogEntries.filter(([, declaredPath]) => !fs.existsSync(declaredPath));
+    const selectedCatalogAlias = data.kbCatalog?.activeKb || (kbCatalogEntries.length === 1 ? kbCatalogEntries[0][0] : null);
+    const kbCatalogCheck = kbCatalogEntries.length === 0
+        ? { status: 'not_applicable', detail: 'No KB aliases are declared in Environment.KBs.' }
+        : missingCatalogKbs.length > 0
+            ? { status: 'fail', detail: `Declared KB path(s) missing: ${missingCatalogKbs.map(([alias, declaredPath]) => `${alias} -> ${declaredPath}`).join('; ')}.` }
+            : data.kbCatalog.activeKb && !data.kbCatalog.kbs[data.kbCatalog.activeKb]
+                ? { status: 'fail', detail: `Active/Default KB alias '${data.kbCatalog.activeKb}' is not declared in Environment.KBs.` }
+                : kbCatalogEntries.length > 1 && !data.kbCatalog.activeKb
+                    ? { status: 'warn', detail: `${kbCatalogEntries.length} KB aliases are declared but neither ActiveKb nor DefaultKb selects one. Strict sessions must use an explicit kb.` }
+                    : { status: 'pass', detail: `${kbCatalogEntries.length} declared KB alias(es) are present${selectedCatalogAlias ? `; diagnostic target: ${selectedCatalogAlias}` : ''}.` };
 
     const checks = [
-        { id: 'config_file', status: data.configFound ? 'pass' : 'fail', detail: data.configFound ? 'GX config file was found.' : 'GX config file is missing.' },
+        { id: 'config_file', status: configCheck.status, detail: configCheck.detail },
         { id: 'gateway_exe', status: data.gatewayExeFound ? 'pass' : 'fail', detail: data.gatewayExeFound ? 'Gateway executable is available.' : 'Gateway executable is missing.' },
+        {
+            id: 'stdio_error_log',
+            status: stdioErrorLogExists ? 'warn' : 'pass',
+            detail: stdioErrorLogExists
+                ? `Previous stdio launcher failure recorded at ${stdioErrorLogPath}. Read this file for the last exit code and stderr tail.`
+                : `Stdio launcher error log: ${stdioErrorLogPath || 'not available on this platform'}.`
+        },
         {
             id: 'gateway_exe_path_safety',
             status: riskyZone ? 'warn' : 'pass',
@@ -687,13 +1092,19 @@ async function handleDoctor(options, ctx) {
         // A KB path configured but absent on disk is fatal — the worker can't open a KB
         // that doesn't exist. Only when no KB is configured at all do we soften to warn.
         { id: 'kb_path_exists', status: kbExists ? 'pass' : (kbPath ? 'fail' : 'warn'), detail: kbExists ? 'Configured KB path exists.' : (kbPath ? `Configured KB path does not exist: ${kbPath}` : 'No KB path is configured.') },
+        { id: 'kb_catalog', status: kbCatalogCheck.status, detail: kbCatalogCheck.detail },
         { id: 'kb_shape', status: data.kbLooksValid ? 'pass' : 'warn', detail: data.kbLooksValid ? 'KB folder shape looks valid.' : 'KB markers were not found in configured KB path.' },
-        // Same logic for the GeneXus install: missing genexus.exe at a configured path
+        // Same logic for the GeneXus install: missing the configured executable at a path
         // guarantees a worker crash on first MCP call. Promote from warn to fail so init
         // exits non-zero and the caller (install.ps1, AI client) actually sees the problem.
-        { id: 'gx_installation', status: gxExeExists ? 'pass' : (gxPath ? 'fail' : 'warn'), detail: gxExeExists ? 'GeneXus installation has genexus.exe.' : (gxPath ? `Configured GeneXus installation is missing genexus.exe at: ${gxPath}` : 'No GeneXus installation path is configured.') },
-        { id: 'tool_definitions', status: toolDefsExists ? 'pass' : 'warn', detail: toolDefsExists ? `Tool definition file found (${toolCount} tools) at ${toolDefPath}.` : (process.env.GENEXUS_MCP_TOOL_DEFINITIONS ? `tool_definitions.json missing at GENEXUS_MCP_TOOL_DEFINITIONS=${toolDefPath}. Unset the env var or point it at a valid file.` : `tool_definitions.json missing. Expected at ${toolDefPath} (next to the gateway exe). The csproj should copy it on publish — reinstall via scripts/install.ps1, or set GENEXUS_MCP_TOOL_DEFINITIONS to override.`) },
-        { id: 'gx_env', status: process.env.GX_CONFIG_PATH ? 'pass' : 'warn', detail: process.env.GX_CONFIG_PATH ? 'GX_CONFIG_PATH env var is set.' : 'GX_CONFIG_PATH env var is not set for this process.' },
+        { id: 'gx_installation', status: gxExeExists ? 'pass' : (gxPath ? 'fail' : 'warn'), detail: gxExeExists ? `GeneXus installation has ${gxExecutable}${gxVersionLabel}.` : (gxPath ? `Configured GeneXus installation is missing executable at: ${gxPath}` : 'No GeneXus installation path is configured.') },
+        {
+            id: 'kb_sdk_compatibility',
+            status: compatibilityStatus,
+            detail: compatibilityDetail
+        },
+        { id: 'tool_definitions', status: toolDefinitionsCheck.status, detail: toolDefinitionsCheck.detail },
+        { id: 'gx_env', status: gxEnvCheck.status, detail: gxEnvCheck.detail },
         { id: 'client_config_sync', status: clientCrossCheck.status, detail: clientCrossCheck.detail }
     ];
 
@@ -703,8 +1114,14 @@ async function handleDoctor(options, ctx) {
     const inProcessLoad = buildInProcessBuildAssemblyLoadCheck(gxPath);
     checks.push({ id: 'in_process_build_assembly_load', status: inProcessLoad.status, detail: inProcessLoad.detail });
 
+    // Legacy GeneXus checks (GX 8.0, 9.0, Ev1, Ev2)
+    const gxMajor = (gxIdent && gxIdent.major) || (kbSdkCompatibility && kbSdkCompatibility.gx && kbSdkCompatibility.gx.major) || null;
+    const comCheck = buildGxPublicComCheck(gxMajor, gxPath);
+    checks.push({ id: 'gxpublic_com_registration', status: comCheck.status, detail: comCheck.detail });
+    const ideLockCheck = buildLegacyIdeLockCheck(gxMajor);
+    checks.push({ id: 'legacy_ide_lock', status: ideLockCheck.status, detail: ideLockCheck.detail });
+
     // Client registration summary — one line answering "are my AI agents wired up?".
-    const clientRows = clientsStatus();
     const installedRows = clientRows.filter((r) => r.installed);
     const staleRows = clientRows.filter((r) => r.commandStale);
     const installedUnregistered = installedRows.filter((r) => !r.registered && r.writeSupported);
@@ -722,11 +1139,13 @@ async function handleDoctor(options, ctx) {
     }
     checks.push({ id: 'clients_registered', status: clientsStatusLevel, detail: clientsDetail });
 
-    if (data.gatewayExeFound) {
-        const probe = await probeGatewaySpawn();
+    if (data.gatewayExeFound && data.configFound && data.configReadable) {
+        const probe = await probeGatewaySpawn({ configPath: data.configPath });
         checks.push({ id: 'gateway_spawn_probe', status: probe.status, detail: probe.detail });
-    } else {
+    } else if (!data.gatewayExeFound) {
         checks.push({ id: 'gateway_spawn_probe', status: 'warn', detail: 'Spawn probe skipped: gateway exe not found.' });
+    } else {
+        checks.push({ id: 'gateway_spawn_probe', status: 'not_applicable', detail: 'Gateway self-test skipped: no usable configuration was resolved.' });
     }
 
     if (options.mcpSmoke) {
@@ -737,7 +1156,7 @@ async function handleDoctor(options, ctx) {
     const summary = checks.reduce((acc, row) => {
         acc[row.status] = (acc[row.status] || 0) + 1;
         return acc;
-    }, { pass: 0, warn: 0, fail: 0 });
+    }, { pass: 0, warn: 0, fail: 0, not_applicable: 0 });
 
     // Support bundle for handing off to support: doctor output + config (with paths
     // anonymized by hash so we don't leak filesystem layout) + recent worker logs +
@@ -745,7 +1164,7 @@ async function handleDoctor(options, ctx) {
     // to send 5 separate things over chat.
     if (options.dump) {
         try {
-            const dumpResult = await buildSupportDump({ checks, summary, data, gatewayExePath, ctx });
+            const dumpResult = await buildSupportDump({ checks, summary, data, gatewayExePath, clientRows, toolDefPath, stdioErrorLogPath, ctx });
             return {
                 exitCode: ctx.EXIT_CODES.OK,
                 envelope: {
@@ -756,7 +1175,7 @@ async function handleDoctor(options, ctx) {
                         entries: dumpResult.entries,
                         summary
                     },
-                    help: ['Attach the zip to your support ticket. Paths inside config.json have been redacted; sensitive values may still appear in worker logs — review before sharing if needed.']
+                    help: ['Attach the zip to your support ticket. Paths in config.json and doctor metadata have been redacted; sensitive values may still appear in worker logs — review before sharing if needed.']
                 }
             };
         } catch (err) {
@@ -892,6 +1311,109 @@ async function handleToolsList(options, ctx) {
     };
 }
 
+async function handleConfigCreate(options, ctx) {
+    if (options.kb) {
+        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('--kb is not allowed when creating a neutral runtime config.', ctx.EXIT_CODES.USAGE) };
+    }
+
+    const required = [
+        ['--config-scope', options.configScope],
+        ['--output', options.output],
+        ['--gx', options.gx],
+        ['--worker', options.worker],
+        ['--gateway-mode', options.gatewayMode],
+        ['--resolution-policy', options.resolutionPolicy]
+    ];
+    const missing = required.filter(([, value]) => !value).map(([flag]) => flag);
+    if (missing.length > 0) {
+        return {
+            exitCode: ctx.EXIT_CODES.USAGE,
+            envelope: usageEnvelope(`config create requires: ${missing.join(', ')}.`, ctx.EXIT_CODES.USAGE)
+        };
+    }
+    if (options.configScope !== 'neutral') {
+        return {
+            exitCode: ctx.EXIT_CODES.USAGE,
+            envelope: usageEnvelope('--config-scope must be `neutral` for config create.', ctx.EXIT_CODES.USAGE)
+        };
+    }
+
+    const outputPath = path.resolve(options.output);
+    try {
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        const config = generateNeutralConfig(options.gx, {
+            workerPath: options.worker,
+            gatewayMode: options.gatewayMode,
+            resolutionPolicy: options.resolutionPolicy
+        });
+        fs.writeFileSync(outputPath, JSON.stringify(config, null, 2));
+        return {
+            exitCode: ctx.EXIT_CODES.OK,
+            envelope: {
+                ok: {
+                    action: 'config.create',
+                    configScope: 'neutral',
+                    configPath: outputPath,
+                    clientsPatchedCount: 0,
+                    config
+                },
+                help: [],
+                meta: { clientRegistration: 'not_attempted', kbCatalog: 'not_created' }
+            }
+        };
+    } catch (err) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(`Could not write neutral config: ${err.message}`, ctx.EXIT_CODES.ERROR)
+        };
+    }
+}
+
+async function handleConfigMigrate(options, ctx) {
+    const sourcePath = options.fromPath || resolveConfigPathNoMutate(ctx.cwd);
+    if (!sourcePath) {
+        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('config migrate requires --from <legacy-config> (or a config.json in the current directory).', ctx.EXIT_CODES.USAGE) };
+    }
+    const targetPath = options.output || `${sourcePath}.neutral.json`;
+    if (path.resolve(sourcePath) === path.resolve(targetPath)) {
+        return { exitCode: ctx.EXIT_CODES.USAGE, envelope: usageEnvelope('config migrate requires --output to differ from --from; the legacy source is never overwritten.', ctx.EXIT_CODES.USAGE) };
+    }
+    try {
+        const receipt = migrateLegacyConfig(sourcePath, targetPath, { rejectNonMigratable: Boolean(options.rejectNonMigratable) });
+        return {
+            exitCode: ctx.EXIT_CODES.OK,
+            envelope: {
+                ok: { action: 'config.migrate', ...receipt },
+                help: receipt.notMigrated.length > 0
+                    ? ['KB fields were not migrated. Keep using `kb add`, `kb remove`, and `kb switch` against the legacy config, or select a KB explicitly through MCP.']
+                    : []
+            }
+        };
+    } catch (err) {
+        if (err.code === 'NON_MIGRATABLE_FIELDS') {
+            return {
+                exitCode: ctx.EXIT_CODES.USAGE,
+                envelope: {
+                    ...usageEnvelope(err.message, ctx.EXIT_CODES.USAGE),
+                    meta: { exitCode: ctx.EXIT_CODES.USAGE, notMigrated: err.notMigrated || [] }
+                }
+            };
+        }
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: {
+                error: {
+                    code: 'operation_error',
+                    message: sanitizeOperationalMessage(`Configuration migration failed: ${err.message}`),
+                    rollback: err.rollback || { rolledBack: false }
+                },
+                help: err.backupPath ? [`The source backup was written to ${err.backupPath}.`] : [],
+                meta: { exitCode: ctx.EXIT_CODES.ERROR, notMigrated: err.notMigrated || [] }
+            }
+        };
+    }
+}
+
 async function handleConfigShow(options, ctx) {
     const configPath = resolveConfigPathNoMutate(ctx.cwd);
     if (!configPath) {
@@ -1010,7 +1532,7 @@ async function runLayoutAutomation(payload, cwd) {
             timer = setTimeout(() => {
                 try {
                     child.kill();
-                } catch (e) {}
+                } catch {}
                 finish({ ok: false, error: `Layout automation timed out after ${timeoutMs}ms` });
             }, timeoutMs);
 
@@ -1152,49 +1674,45 @@ async function handleLayout(subcommand, options, ctx) {
     };
 }
 
-function buildInteractiveInitHelp(patchResult) {
+function buildClientLauncherHelp(patchResult) {
     const help = [];
-    if (patchResult.patched.length === 0) {
-        help.push('Set `GX_CONFIG_PATH` in your MCP client env to the generated config path.');
-    } else if (process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
-        help.push('Windows + corporate AppLocker: the npx launcher resolves the gateway from %LOCALAPPDATA%\\npm-cache, which is commonly blocked. If clients fail with "Failed to connect" / Access denied, reinstall to a whitelisted path via scripts/install.ps1.');
+    const patched = patchResult && Array.isArray(patchResult.patched) ? patchResult.patched : [];
+    if (patched.includes('Antigravity') && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
+        help.push('Antigravity uses the gateway executable bundled with this npm package when available; re-run `npx genexus-mcp@latest clients add --clients antigravity` after an upgrade if its package path is stale.');
+    }
+    if (patched.length > 0 && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
+        help.push('Windows launcher paths may resolve under the npm cache and be blocked by AppLocker/SRP. Use scripts/install.ps1 for a stable whitelisted path.');
+        help.push('Working from a local checkout? Register the clients with the checkout gateway from the repo root instead: `$env:GENEXUS_MCP_GATEWAY_EXE="<repoRoot>\\publish\\GxMcp.Gateway.exe"; node cli\\run.js clients add --clients <ids>` (or re-run `.\\install.ps1`). Avoid `npx @latest clients add` there, because it rewrites the registration to this npm package\'s launcher; validate with the same checkout CLI (`node cli\\run.js clients` / `doctor`).');
     }
     return help;
 }
 
+function buildInteractiveInitHelp(patchResult) {
+    const help = [];
+    if (patchResult.failed && patchResult.failed.some((f) => f.reason && f.reason.includes('third-party or HTTP MCP server'))) {
+        help.push('A collision with an existing MCP server (e.g. official GeneXus MCP) was detected. Re-run init with --server-name=<customName> (e.g. --server-name Gx18byLennix) or pass --force.');
+    }
+    if (patchResult.patched.length === 0) {
+        help.push('Set `GX_CONFIG_PATH` in your MCP client env to the generated config path.');
+    }
+    help.push(...buildClientLauncherHelp(patchResult));
+    return help;
+}
+
 async function runInteractiveInit(ctx) {
-    const defaultGx = discoverGeneXusInstallation() || 'C:\\Program Files (x86)\\GeneXus\\GeneXus18';
+    const catalog = getGeneXusVersionCatalog();
+    const primary = catalog.supportedMajors.find((entry) => String(entry.major) === String(catalog.primaryMajor));
 
     if (!ctx.options.quiet) {
         ctx.stderr.write('GeneXus MCP setup wizard\n\n');
     }
 
-    const rl = readline.createInterface({ input: process.stdin, output: ctx.stderr });
+    const rl = readline.createInterface({ input: ctx.input || process.stdin, output: ctx.stderr });
     const question = (text) => new Promise((resolve) => rl.question(text, (answer) => resolve(answer)));
 
     try {
         const kbAnswer = await question(`1) Knowledge Base folder path (default: ${ctx.cwd}):\n> `);
         const finalKb = String(kbAnswer || '').trim() || ctx.cwd;
-
-        const gxAnswer = await question(`\n2) GeneXus installation path (default: ${defaultGx}):\n> `);
-        const finalGx = String(gxAnswer || '').trim() || defaultGx;
-
-        if (!fs.existsSync(path.join(finalGx, 'genexus.exe'))) {
-            const suggested = discoverGeneXusInstallation();
-            const help = [`Path checked: ${finalGx}`];
-            if (suggested && suggested.toLowerCase() !== finalGx.toLowerCase()) {
-                help.push(`Detected a working GeneXus install at: ${suggested}`);
-                help.push('Re-run `genexus-mcp init --interactive` and accept the detected path, or pass --gx explicitly.');
-            }
-            return {
-                exitCode: ctx.EXIT_CODES.ERROR,
-                envelope: operationalErrorEnvelope(
-                    `GeneXus path does not contain genexus.exe. Aborted before writing config to avoid silent worker crashes.`,
-                    ctx.EXIT_CODES.ERROR,
-                    help
-                )
-            };
-        }
 
         if (!fs.existsSync(finalKb)) {
             return {
@@ -1203,6 +1721,104 @@ async function runInteractiveInit(ctx) {
                     `KB path does not exist on disk. Aborted before writing config.`,
                     ctx.EXIT_CODES.ERROR,
                     [`Path checked: ${finalKb}`, 'Create the KB in GeneXus first, then re-run init.']
+                )
+            };
+        }
+
+        const kbIdentity = readGeneXusKbIdentity(finalKb);
+        const defaultGx = discoverGeneXusInstallation(kbIdentity.major)
+            || primary?.defaultInstallPath
+            || catalog.supportedMajors[0]?.defaultInstallPath
+            || '';
+        const gxAnswer = await question(`\n2) GeneXus installation path (default: ${defaultGx}):\n> `);
+        const explicitGx = String(gxAnswer || '').trim();
+        const finalGx = explicitGx || defaultGx;
+
+        if (!kbIdentity.major && !explicitGx) {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    'Cannot safely use the default GeneXus SDK because the KB major could not be determined.',
+                    ctx.EXIT_CODES.ERROR,
+                    [
+                        `KB detection reason: ${kbIdentity.reason || 'unknown'}`,
+                        'Enter the installation path explicitly, or open the KB once in GeneXus so its .gxw metadata is initialized.'
+                    ],
+                    'sdk_selection_required'
+                )
+            };
+        }
+
+        const gxExecutable = finalGx && ['genexus.exe', 'gx.exe', 'gxw32.exe']
+            .find((name) => fs.existsSync(path.join(finalGx, name)));
+        if (!gxExecutable) {
+            const suggested = discoverGeneXusInstallation(kbIdentity.major);
+            const help = [`Path checked: ${finalGx}`];
+            if (suggested && suggested.toLowerCase() !== finalGx.toLowerCase()) {
+                help.push(`Detected a matching GeneXus${kbIdentity.major ? ` ${kbIdentity.major}` : ''} install at: ${suggested}`);
+                help.push('Re-run `genexus-mcp init --interactive` and accept the detected path, or pass --gx explicitly.');
+            }
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    `GeneXus path does not contain a supported executable (genexus.exe, gx.exe, or gxw32.exe). Aborted before writing config to avoid silent worker crashes.`,
+                    ctx.EXIT_CODES.ERROR,
+                    help
+                )
+            };
+        }
+
+        const compatibility = compareGeneXusKbAndInstallation(finalKb, finalGx);
+        const supportedGxMajor = isSupportedCatalogMajor(catalog, compatibility.gx.major);
+        if (!supportedGxMajor) {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    `GeneXus SDK major ${compatibility.gx.major} is not supported by this MCP distribution.`,
+                    ctx.EXIT_CODES.ERROR,
+                    [`Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}`],
+                    'sdk_unsupported'
+                )
+            };
+        }
+        const supportedKbMajor = isSupportedCatalogMajor(catalog, compatibility.kb.major);
+        if (!supportedKbMajor) {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    `KB major ${compatibility.kb.major} is not supported by this MCP distribution.`,
+                    ctx.EXIT_CODES.ERROR,
+                    [`Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}`],
+                    'sdk_kb_unsupported'
+                )
+            };
+        }
+        if (compatibility.status === 'mismatch') {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    `GeneXus SDK major ${compatibility.gx.major} does not match KB major ${compatibility.kb.major}. Aborted before writing config.`,
+                    ctx.EXIT_CODES.ERROR,
+                    [
+                        `KB version: ${compatibility.kb.version || 'unknown'}`,
+                        `SDK version: ${compatibility.gx.version || 'unknown'}`,
+                        'Choose the GeneXus installation that matches the KB major, or pass --gx explicitly.',
+                    ],
+                    'sdk_kb_mismatch'
+                )
+            };
+        }
+        if (compatibility.kb.major && !compatibility.gx.major) {
+            return {
+                exitCode: ctx.EXIT_CODES.ERROR,
+                envelope: operationalErrorEnvelope(
+                    `The selected GeneXus installation version could not be verified against KB major ${compatibility.kb.major}.`,
+                    ctx.EXIT_CODES.ERROR,
+                    [
+                        `Path checked: ${finalGx}`,
+                        'Use a standard GeneXus installation containing GeneXus.exe metadata, or provide a verified matching SDK path.'
+                    ],
+                    'sdk_identity_unresolved'
                 )
             };
         }
@@ -1228,8 +1844,10 @@ async function runInteractiveInit(ctx) {
         }
 
         const created = createConfigFile(finalKb, finalGx);
+        const serverName = ctx.options && ctx.options.serverName ? ctx.options.serverName : DEFAULT_MCP_SERVER_NAME;
+        const force = Boolean(ctx.options && ctx.options.force);
         const patchResult = selectedIds.length
-            ? patchClientConfig(created.targetConfigPath, { ids: selectedIds, onlyExisting: false })
+            ? patchClientConfig(created.targetConfigPath, { ids: selectedIds, onlyExisting: false, serverName, force })
             : { patched: [], failed: [], skipped: [] };
 
         return {
@@ -1246,7 +1864,8 @@ async function runInteractiveInit(ctx) {
                 meta: {
                     patchedClients: patchResult.patched,
                     failedClients: patchResult.failed,
-                    skippedClients: patchResult.skipped || []
+                    skippedClients: patchResult.skipped || [],
+                    verifiedClients: patchResult.verified || []
                 }
             }
         };
@@ -1306,8 +1925,12 @@ async function handleInit(options, ctx) {
         }
     }
 
+    const discoveredKbIdentity = resolution.kb.value
+        ? readGeneXusKbIdentity(resolution.kb.value)
+        : { version: null, major: null, source: 'unavailable', reason: 'missing-kb-path' };
+
     if (!resolution.gx.value) {
-        const fromDisco = discoverGeneXusInstallation();
+        const fromDisco = discoverGeneXusInstallation(discoveredKbIdentity.major);
         if (fromDisco) {
             resolution.gx.value = fromDisco;
             resolution.gx.source = 'auto-discovery';
@@ -1347,22 +1970,26 @@ async function handleInit(options, ctx) {
     // install (e.g. C:\...\GeneXus18u7 vs the GeneXus18 default) used to slip through
     // — init wrote the config, then the worker crashed on first MCP call with no
     // useful signal back to the operator.
-    if (!fs.existsSync(path.join(resolution.gx.value, 'genexus.exe'))) {
+    const gxExecutable = resolution.gx.value && ['genexus.exe', 'gx.exe', 'gxw32.exe']
+        .find((name) => fs.existsSync(path.join(resolution.gx.value, name)));
+    if (!gxExecutable) {
         const help = [
             `Path checked: ${resolution.gx.value}`,
             `Source: --${resolution.gx.source === 'flag' ? 'gx flag' : resolution.gx.source}`
         ];
-        const suggested = resolution.gx.source === 'flag' ? discoverGeneXusInstallation() : null;
+        const suggested = resolution.gx.source === 'flag'
+            ? discoverGeneXusInstallation(discoveredKbIdentity.major)
+            : null;
         if (suggested && suggested.toLowerCase() !== resolution.gx.value.toLowerCase()) {
             help.push(`Detected a working GeneXus install at: ${suggested}`);
             help.push(`Re-run: genexus-mcp init --kb "${resolution.kb.value}" --gx "${suggested}"`);
         } else {
-            help.push('Omit --gx to let init auto-discover via registry / Program Files (matches GeneXus18, GeneXus18u7, etc.).');
+            help.push('Omit --gx to let init auto-discover a catalog-listed installation via registry / Program Files.');
         }
         return {
             exitCode: ctx.EXIT_CODES.ERROR,
             envelope: operationalErrorEnvelope(
-                `Configured GeneXus path does not contain genexus.exe. Init aborted before writing config to avoid silent worker crashes.`,
+                `Configured GeneXus path does not contain a supported executable (genexus.exe, gx.exe, or gxw32.exe). Init aborted before writing config to avoid silent worker crashes.`,
                 ctx.EXIT_CODES.ERROR,
                 help
             )
@@ -1379,6 +2006,77 @@ async function handleInit(options, ctx) {
                     `Path checked: ${resolution.kb.value}`,
                     'Create the KB in GeneXus first, then re-run init pointing at its folder.'
                 ]
+            )
+        };
+    }
+
+    const compatibility = compareGeneXusKbAndInstallation(resolution.kb.value, resolution.gx.value);
+    const catalog = getGeneXusVersionCatalog();
+    const supportedGxMajor = isSupportedCatalogMajor(catalog, compatibility.gx.major);
+    const supportedKbMajor = isSupportedCatalogMajor(catalog, compatibility.kb.major);
+    if (!supportedGxMajor) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                `GeneXus SDK major ${compatibility.gx.major} is not supported by this MCP distribution.`,
+                ctx.EXIT_CODES.ERROR,
+                [`Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}`],
+                'sdk_unsupported'
+            )
+        };
+    }
+    if (!supportedKbMajor) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                `KB major ${compatibility.kb.major} is not supported by this MCP distribution.`,
+                ctx.EXIT_CODES.ERROR,
+                [`Supported majors: ${catalog.supportedMajors.map((entry) => entry.major).join(', ')}`],
+                'sdk_kb_unsupported'
+            )
+        };
+    }
+    if (compatibility.status === 'mismatch') {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                `GeneXus SDK major ${compatibility.gx.major} does not match KB major ${compatibility.kb.major}. Init aborted before writing config.`,
+                ctx.EXIT_CODES.ERROR,
+                [
+                    `KB version: ${compatibility.kb.version || 'unknown'}`,
+                    `SDK version: ${compatibility.gx.version || 'unknown'}`,
+                    `Path checked: ${resolution.gx.value}`,
+                    'Choose the GeneXus installation that matches the KB major, or pass --gx explicitly.'
+                ],
+                'sdk_kb_mismatch'
+            )
+        };
+    }
+    if (resolution.gx.source === 'auto-discovery' && !compatibility.kb.major) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                'Cannot safely auto-select a GeneXus SDK because the KB major could not be determined.',
+                ctx.EXIT_CODES.ERROR,
+                [
+                    `KB detection reason: ${compatibility.kb.reason || 'unknown'}`,
+                    'Pass --gx explicitly with the installation that created this KB.'
+                ],
+                'sdk_selection_required'
+            )
+        };
+    }
+    if (compatibility.kb.major && !compatibility.gx.major) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                `The selected GeneXus installation version could not be verified against KB major ${compatibility.kb.major}.`,
+                ctx.EXIT_CODES.ERROR,
+                [
+                    `Path checked: ${resolution.gx.value}`,
+                    'Use a standard GeneXus installation containing GeneXus.exe metadata, or provide a verified matching SDK path.'
+                ],
+                'sdk_identity_unresolved'
             )
         };
     }
@@ -1405,7 +2103,10 @@ async function handleInit(options, ctx) {
             }
             patchResult = patchClientConfig(created.targetConfigPath, {
                 ids,
-                onlyExisting: !options.allClients
+                onlyExisting: !options.allClients,
+                serverName: options.serverName || DEFAULT_MCP_SERVER_NAME,
+                force: options.force,
+                globalConfig: Boolean(options.globalConfig)
             });
         }
 
@@ -1422,15 +2123,17 @@ async function handleInit(options, ctx) {
         }
 
         const help = [];
+        if (patchResult.failed.some((f) => f.reason && f.reason.includes('third-party or HTTP MCP server'))) {
+            help.push('A collision with an existing MCP server (e.g. official GeneXus MCP) was detected on one or more clients.');
+            help.push('Re-run init with --server-name=<customName> (e.g. --server-name Gx18byLennix), pass --force, or pass --no-write-clients.');
+        }
         if (patchResult.patched.length === 0 && shouldWriteClients) {
             help.push('No installed AI client config was found to patch. Pass --all-clients to write configs for all known clients, or register manually.');
             help.push(`For a GLOBAL (all-projects) registration that does not depend on the current directory, point your client at this config via the GX_CONFIG_PATH env var, e.g.: claude mcp add genexus -e GX_CONFIG_PATH="${created.targetConfigPath}" -- <launcher>`);
         } else if (patchResult.patched.length === 0 && !shouldWriteClients) {
             help.push('Client patching was skipped (--no-write-clients). Register manually, or set GX_CONFIG_PATH to this config for global use.');
         }
-        if (patchResult.patched.length > 0 && process.platform === 'win32' && !process.env.GENEXUS_MCP_GATEWAY_EXE) {
-            help.push('Windows + corporate AppLocker: the npx launcher resolves the gateway from %LOCALAPPDATA%\\npm-cache, which is commonly blocked. If clients fail with "Failed to connect" / Access denied, reinstall to a whitelisted path via scripts/install.ps1.');
-        }
+        help.push(...buildClientLauncherHelp(patchResult));
         if (verification.summary.fail > 0) {
             const failedIds = verification.checks
                 .filter((c) => c.status === 'fail')
@@ -1461,8 +2164,19 @@ async function handleInit(options, ctx) {
                     noOp: !created.changed,
                     clientsPatchedCount: patchResult.patched.length,
                     resolved: {
-                        kb: { path: resolution.kb.value, source: resolution.kb.source },
-                        gx: { path: resolution.gx.value, source: resolution.gx.source }
+                        kb: {
+                            path: resolution.kb.value,
+                            source: resolution.kb.source,
+                            major: compatibility.kb.major,
+                            version: compatibility.kb.version
+                        },
+                        gx: {
+                            path: resolution.gx.value,
+                            source: resolution.gx.source,
+                            major: compatibility.gx.major,
+                            version: compatibility.gx.version,
+                            detectionSource: compatibility.gx.source
+                        }
                     },
                     verification: {
                         summary: verification.summary,
@@ -1475,6 +2189,7 @@ async function handleInit(options, ctx) {
                     patchedClients: patchResult.patched,
                     failedClients: patchResult.failed,
                     skippedClients: patchResult.skipped || [],
+                    verifiedClients: patchResult.verified || [],
                     smokeSkipped: !!options.noSmoke,
                     warmed: !!warm && warm.status === 'pass'
                 }
@@ -1567,6 +2282,7 @@ async function probeWorkerStartup({ configPath, observeMs = 2500 }) {
         };
 
         let child;
+        let stopping = false;
         try {
             child = spawn(gatewayExePath, [], {
                 stdio: ['ignore', 'pipe', 'pipe'],
@@ -1585,6 +2301,9 @@ async function probeWorkerStartup({ configPath, observeMs = 2500 }) {
         });
 
         child.once('exit', (code) => {
+            // The observation timeout stops the gateway itself; that deliberate
+            // signal is reported by the timeout branch, not as a crash.
+            if (stopping) return;
             if (code === 0) {
                 finish({ status: 'pass', detail: 'Worker smoke: gateway exited cleanly during observation window.' });
             } else {
@@ -1598,10 +2317,15 @@ async function probeWorkerStartup({ configPath, observeMs = 2500 }) {
             }
         });
 
-        setTimeout(() => {
-            try { child.kill(); } catch { }
-            // Still alive after observeMs → worker bootstrapped without crashing.
-            finish({ status: 'pass', detail: `Worker smoke: gateway stayed alive for ${observeMs}ms with KB and GX configured.` });
+        setTimeout(async () => {
+            stopping = true;
+            const exited = await stopProbeChild(child);
+            if (exited) {
+                // Still alive after observeMs → worker bootstrapped without crashing.
+                finish({ status: 'pass', detail: `Worker smoke: gateway stayed alive for ${observeMs}ms with KB and GX configured.` });
+            } else {
+                finish({ status: 'warn', detail: 'Worker smoke: gateway did not exit after the stop signal; it may still hold the gateway exe.' });
+            }
         }, observeMs);
     });
 }
@@ -1630,7 +2354,7 @@ async function handleWhoami(options, ctx) {
     const kbName = kbPath ? path.basename(kbPath) : null;
     const kbExists = !!(kbPath && fs.existsSync(kbPath));
     const kbValid = data.kbLooksValid;
-    const gxVersion = readGeneXusVersionFromInstall(gxPath);
+    const gxIdentity = readGeneXusInstallationIdentity(gxPath);
 
     const ok = {
         connected: true,
@@ -1642,7 +2366,9 @@ async function handleWhoami(options, ctx) {
         },
         geneXus: {
             installationPath: gxPath,
-            version: gxVersion
+            version: gxIdentity.version,
+            major: gxIdentity.major,
+            detectionSource: gxIdentity.source
         },
         config: {
             path: data.configPath,
@@ -1653,7 +2379,9 @@ async function handleWhoami(options, ctx) {
     const help = [];
     if (!kbExists) help.push('Configured KB path does not exist on disk.');
     if (kbExists && !kbValid) help.push('KB path exists but does not look like a GeneXus KB (no `.gxw` or `KnowledgeBase.Connection`).');
-    if (!gxVersion) help.push('Could not read GeneXus version from installation folder (no version.txt detected).');
+    if (!gxIdentity.version && !gxIdentity.major) {
+        help.push('Could not determine the GeneXus major from version metadata or the installation path.');
+    }
 
     return { exitCode: ctx.EXIT_CODES.OK, envelope: { ok, help } };
 }
@@ -1752,20 +2480,38 @@ async function handleUninstall(options, ctx) {
 
 async function handleClients(subcommand, options, ctx) {
     const sub = subcommand || 'list';
+    const serverName = options.serverName || DEFAULT_MCP_SERVER_NAME;
 
     if (sub === 'list') {
-        const rows = clientsStatus();
+        const rows = clientsStatus({ serverName });
         const installedCount = rows.filter((r) => r.installed).length;
         const registeredCount = rows.filter((r) => r.registered).length;
         const help = [];
         const installedUnregistered = rows.filter((r) => r.installed && !r.registered && r.writeSupported);
         if (installedUnregistered.length > 0) {
-            help.push(`Register installed-but-unregistered agents: genexus-mcp clients add --clients ${installedUnregistered.map((r) => r.id).join(',')}`);
+            help.push(`Register installed-but-unregistered agents: genexus-mcp clients add --clients ${installedUnregistered.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
         }
         const stale = rows.filter((r) => r.commandStale);
-        if (stale.length > 0) {
-            help.push(`These clients point at a missing gateway exe (will fail to connect) — re-register: genexus-mcp clients add --clients ${stale.map((r) => r.id).join(',')}`);
+        const missingLaunchers = stale.filter((r) => r.launcherStructuralState === 'missing');
+        const invalidLaunchers = stale.filter((r) =>
+            r.launcherSemanticState === 'invalid' && r.launcherStructuralState !== 'missing'
+        );
+        if (missingLaunchers.length > 0) {
+            help.push(`These clients point at a missing gateway exe (will fail to connect) — re-register: genexus-mcp clients add --clients ${missingLaunchers.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
         }
+        if (invalidLaunchers.length > 0) {
+            help.push(`These clients have a known-invalid MCP launcher (check command and args) — re-register: genexus-mcp clients add --clients ${invalidLaunchers.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
+        }
+        // A launcher that exists but is not this CLI's gateway is a different working
+        // install (checkout, fixed-path, other package cache), so it is reported as
+        // informational drift instead of a stale registration that needs repair.
+        const driftedLaunchers = rows.filter((r) => r.launcherPathDrift && !r.commandStale);
+        if (driftedLaunchers.length > 0) {
+            help.push(`Note: ${driftedLaunchers.map((r) => r.name).join(', ')} point at a gateway that is not this CLI's (informational — the launcher exists and is valid). Re-register with this CLI only if you want them to track it: genexus-mcp clients add --clients ${driftedLaunchers.map((r) => r.id).join(',')}${serverName !== DEFAULT_MCP_SERVER_NAME ? ` --server-name ${serverName}` : ''}`);
+        }
+        const semanticValidCount = rows.filter((r) => r.launcherSemanticState === 'valid').length;
+        const semanticInvalidCount = rows.filter((r) => r.launcherSemanticState === 'invalid').length;
+        const semanticUnknownCount = rows.filter((r) => r.launcherSemanticState === 'unknown').length;
         for (const r of rows) {
             if (r.installed && !r.writeSupported && r.note) help.push(`${r.name}: ${r.note}`);
         }
@@ -1774,7 +2520,15 @@ async function handleClients(subcommand, options, ctx) {
             envelope: {
                 ok: {
                     clients: rows,
-                    summary: { total: rows.length, installed: installedCount, registered: registeredCount }
+                    summary: {
+                        total: rows.length,
+                        installed: installedCount,
+                        registered: registeredCount,
+                        semanticValid: semanticValidCount,
+                        semanticInvalid: semanticInvalidCount,
+                        semanticUnknown: semanticUnknownCount,
+                        serverName
+                    }
                 },
                 help
             }
@@ -1782,11 +2536,11 @@ async function handleClients(subcommand, options, ctx) {
     }
 
     if (sub === 'add' || sub === 'remove') {
-        const ids = resolveClientIds(options);
+        const ids = options.allClients ? listSupportedClientIds() : resolveClientIds(options);
         if (sub === 'add' && (!ids || ids.length === 0)) {
             return {
                 exitCode: ctx.EXIT_CODES.USAGE,
-                envelope: usageEnvelope('`clients add` requires --clients <csv> (e.g. --clients antigravity,vscode).', ctx.EXIT_CODES.USAGE)
+                envelope: usageEnvelope('`clients add` requires --clients <csv> or --all-clients.', ctx.EXIT_CODES.USAGE)
             };
         }
         const validation = validateClientIds(ids);
@@ -1808,7 +2562,13 @@ async function handleClients(subcommand, options, ctx) {
             let patch;
             try {
                 // Explicit add: write even if install markers are absent (the user asked for it).
-                patch = patchClientConfig(configPath, { ids, onlyExisting: false });
+                patch = patchClientConfig(configPath, {
+                    ids,
+                    onlyExisting: false,
+                    serverName,
+                    force: options.force,
+                    globalConfig: Boolean(options.globalConfig)
+                });
             } catch (err) {
                 return {
                     exitCode: ctx.EXIT_CODES.ERROR,
@@ -1820,25 +2580,40 @@ async function handleClients(subcommand, options, ctx) {
             }
             const help = [];
             if (patch.patched.length > 0) help.push('Restart the affected AI client(s) to load the new MCP config.');
-            if (patch.failed.length > 0) help.push('Some clients failed (see meta.failedClients).');
+            if (patch.skipped.some((entry) => entry.registrationMode === 'manual')) {
+                help.push('Some selected clients require manual setup; use meta.skippedClients[].manualSetup for the exact command and environment.');
+            }
+            if (patch.failed.some((f) => f.reason && f.reason.includes('third-party or HTTP MCP server'))) {
+                help.push('A collision with an existing MCP server (e.g. official GeneXus MCP) was detected.');
+                help.push('Use --server-name=<customName> (e.g. --server-name Gx18byLennix) or pass --force.');
+            } else if (patch.failed.length > 0) {
+                help.push('Some clients failed (see meta.failedClients).');
+            }
             return {
                 exitCode: ctx.EXIT_CODES.OK,
                 envelope: {
-                    ok: { action: 'clients.add', configPath, patchedClients: patch.patched, patchedCount: patch.patched.length },
+                    ok: { action: 'clients.add', configPath, serverName, patchedClients: patch.patched, patchedCount: patch.patched.length },
                     help,
-                    meta: { failedClients: patch.failed, skippedClients: patch.skipped }
+                    meta: {
+                        failedClients: patch.failed,
+                        skippedClients: patch.skipped,
+                        verifiedClients: patch.verified || []
+                    }
                 }
             };
         }
 
         // remove
-        const unpatch = unpatchClientConfig(ids ? { ids } : {});
+        const unpatch = unpatchClientConfig({
+            ...(ids ? { ids } : {}),
+            serverName
+        });
         const help = [];
         if (unpatch.removed.length > 0) help.push('Restart the affected AI client(s) to drop the stale MCP connection.');
         return {
             exitCode: ctx.EXIT_CODES.OK,
             envelope: {
-                ok: { action: 'clients.remove', removedClients: unpatch.removed, removedCount: unpatch.removed.length },
+                ok: { action: 'clients.remove', serverName, removedClients: unpatch.removed, removedCount: unpatch.removed.length },
                 help,
                 meta: { skippedClients: unpatch.skipped, failedClients: unpatch.failed }
             }
@@ -1967,7 +2742,7 @@ async function handleKb(subcommand, options, ctx) {
                     kbPath: result.switchedTo.path
                 },
                 help: [
-                    'Restart your AI client (or run `genexus_lifecycle action=stop-worker` via MCP) so the worker reloads with the new KB.'
+                    'Restart your AI client (or call `genexus_worker_reload mode=soft` via MCP) so the worker reloads with the new KB.'
                 ]
             }
         };
@@ -2005,14 +2780,15 @@ function commandHelpMap() {
             examples: ['genexus-mcp tools list', 'genexus-mcp tools list --query read --fields name,category --format json']
         },
         config: {
-            usage: 'genexus-mcp config show [--full] [--fields f1,f2] [--format ...]',
-            examples: ['genexus-mcp config show', 'genexus-mcp config show --full --format json']
+            usage: 'genexus-mcp config show [--full] [--fields f1,f2] [--format ...] OR genexus-mcp config create --config-scope neutral --output <path> --gx <path> --worker <path> --gateway-mode <mode> --resolution-policy <policy> OR genexus-mcp config migrate --from <legacy.json> --output <neutral.json> [--reject-non-migratable]',
+            examples: ['genexus-mcp config show', 'genexus-mcp config create --config-scope neutral --output ./config.json --gx <path> --worker <path> --gateway-mode stdio-isolated --resolution-policy strict', 'genexus-mcp config migrate --from ./config.json --output ./.genexus-mcp/config.json']
         },
         init: {
-            usage: 'genexus-mcp init [--kb <path>] [--gx <path>] [--no-write-clients] [--clients <csv>] [--all-clients] [--no-smoke] [--warm] [--format ...] OR genexus-mcp init --interactive',
+            usage: 'genexus-mcp init [--kb <path>] [--gx <path>] [--server-name <name>] [--force] [--no-write-clients] [--clients <csv>] [--all-clients] [--no-smoke] [--warm] [--format ...] OR genexus-mcp init --interactive',
             examples: [
                 'genexus-mcp init   # zero-config: auto-discovers GX + KB, and registers detected AI clients',
                 'genexus-mcp init --kb "C:\\KBs\\MyKB" --gx "C:\\Program Files (x86)\\GeneXus\\GeneXus18"',
+                'genexus-mcp init --server-name Gx18byLennix   # register with custom MCP server key (coexists with official GeneXus MCP)',
                 'genexus-mcp init --interactive   # prompts per detected agent (Claude Desktop/Code, Gemini CLI, Cursor, Codex CLI, OpenCode, ...)',
                 'genexus-mcp init --kb <path> --gx <path> --clients claude-code,gemini-cli,cursor   # register only these',
                 'genexus-mcp init --kb <path> --gx <path> --no-write-clients   # write config.json only; register clients yourself',
@@ -2038,12 +2814,14 @@ function commandHelpMap() {
             ]
         },
         clients: {
-            usage: 'genexus-mcp clients [list] [--format ...] OR genexus-mcp clients add --clients <csv> OR genexus-mcp clients remove [--clients <csv>]',
+            usage: 'genexus-mcp clients [list] [--server-name <name>] [--format ...] OR genexus-mcp clients add --clients <csv> [--server-name <name>] [--force] OR genexus-mcp clients remove [--clients <csv>] [--server-name <name>]',
             examples: [
                 'genexus-mcp clients              # show every AI agent: installed? registered? where?',
                 'genexus-mcp clients --format json',
                 'genexus-mcp clients add --clients antigravity,vscode',
-                'genexus-mcp clients remove --clients cursor'
+                'genexus-mcp clients add --clients cursor --server-name Gx18byLennix',
+                'genexus-mcp clients remove --clients cursor',
+                'genexus-mcp clients remove --clients cursor --server-name Gx18byLennix'
             ]
         },
         llm: {
@@ -2057,6 +2835,13 @@ function commandHelpMap() {
                 'genexus-mcp update --apply          # perform the upgrade for your install method (confirms first)',
                 'genexus-mcp update --apply --yes    # unattended (CI/automation)',
                 'genexus-mcp update --channel next   # check the @next dist-tag'
+            ]
+        },
+        version: {
+            usage: 'genexus-mcp --version | -v | version [--format toon|json|text]',
+            examples: [
+                'genexus-mcp --version          # prints the bare version (scripts/CI)',
+                'genexus-mcp -v --format json   # axi-cli/1 envelope with ok.version'
             ]
         },
         layout: {
@@ -2094,6 +2879,34 @@ async function handleHome(_options, ctx) {
     };
 }
 
+// Issue #207: `genexus-mcp --version` / `-v` / `version` used to fall through to the
+// gateway passthrough (which never answers that token) and exit 0 with no output — a
+// silent false positive for install checks. The package version is read from the same
+// helper the update flow uses.
+// `deps` is an injection seam so the unreadable-package.json path is testable.
+async function handleVersion(_options, ctx, deps = {}) {
+    const readVersion = deps.getPackageVersion || getPackageVersion;
+    const version = readVersion();
+    if (!version) {
+        return {
+            exitCode: ctx.EXIT_CODES.ERROR,
+            envelope: operationalErrorEnvelope(
+                'Could not read the genexus-mcp package version (package.json missing or unreadable).',
+                ctx.EXIT_CODES.ERROR,
+                ['Reinstall the CLI (`genexus-mcp update`) so package.json can be read.'],
+                'version_unavailable'
+            )
+        };
+    }
+    return {
+        exitCode: ctx.EXIT_CODES.OK,
+        envelope: {
+            ok: { version },
+            help: []
+        }
+    };
+}
+
 async function handleHelp(targetCommand, ctx) {
     const binPath = collapseHome(process.argv[1] || process.execPath);
     const map = commandHelpMap();
@@ -2123,7 +2936,7 @@ async function handleHelp(targetCommand, ctx) {
                 bin: binPath,
                 command: 'genexus-mcp',
                 description: 'GeneXus MCP launcher and AXI-oriented utility CLI',
-                commands: ['home', 'axi home', 'status', 'doctor', 'tools list', 'config show', 'layout status', 'layout run', 'layout inspect', 'init', 'whoami', 'uninstall', 'kb list', 'kb add', 'kb remove', 'kb switch', 'llm help', 'update', 'help'],
+                commands: ['home', 'axi home', 'status', 'doctor', 'tools list', 'config show', 'config create', 'layout status', 'layout run', 'layout inspect', 'init', 'whoami', 'uninstall', 'kb list', 'kb add', 'kb remove', 'kb switch', 'llm help', 'update', 'version', 'help'],
                 defaults: { format: 'toon', limit: 100 }
             },
             help: [
@@ -2225,6 +3038,8 @@ module.exports = {
     handleDoctor,
     handleToolsList,
     handleConfigShow,
+    handleConfigCreate,
+    handleConfigMigrate,
     handleInit,
     handleWhoami,
     handleUninstall,
@@ -2234,7 +3049,9 @@ module.exports = {
     handleLlmHelp,
     handleLayout,
     handleHelp,
+    handleVersion,
     usageEnvelope,
     operationalErrorEnvelope,
+    resolveMcpSmokeTarget,
     commandHelpMap
 };

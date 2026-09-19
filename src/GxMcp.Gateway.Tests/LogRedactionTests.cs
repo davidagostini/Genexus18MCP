@@ -1,3 +1,4 @@
+using System;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -82,6 +83,31 @@ namespace GxMcp.Gateway.Tests
 
             Assert.Contains(keyName + "=***", result);
             Assert.DoesNotContain("super-secret-value", result);
+        }
+
+        [Fact]
+        public void LogValue_RedactsQuotedStructuredCredentialValues()
+        {
+            const string input = "Exception: {\"password\":\"password-value\", \"token\": 'token-value', \"authorization\": \"Bearer auth-value\"}";
+
+            string result = Program.LogValue(input);
+
+            Assert.DoesNotContain("password-value", result);
+            Assert.DoesNotContain("token-value", result);
+            Assert.DoesNotContain("auth-value", result);
+            Assert.Equal(3, CountOccurrences(result, "<redacted>"));
+        }
+
+        private static int CountOccurrences(string value, string fragment)
+        {
+            int count = 0;
+            int offset = 0;
+            while ((offset = value.IndexOf(fragment, offset, StringComparison.Ordinal)) >= 0)
+            {
+                count++;
+                offset += fragment.Length;
+            }
+            return count;
         }
     }
 }

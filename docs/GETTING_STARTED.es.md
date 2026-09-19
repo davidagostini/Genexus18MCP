@@ -8,7 +8,7 @@ Esta guía te lleva de cero a "el asistente de IA está editando mi KB de GeneXu
 
 ## ¿Qué es esto, en una frase?
 
-Es un puente entre tu **IA asistente** (Claude, Cursor, Antigravity, etc.) y tu **Knowledge Base de GeneXus 18**. Una vez instalado, podés pedirle a la IA cosas como *"agregale una regla a la transacción Pedido que valide el total"* y la IA usa el SDK nativo de GeneXus para hacerlo de verdad en tu KB.
+Es un puente entre tu **IA asistente** (Claude, Cursor, Antigravity, etc.) y una **Knowledge Base de un major soportado de GeneXus**. Una vez instalado, podés pedirle a la IA cosas como *"agregale una regla a la transacción Pedido que valide el total"* y la IA usa el SDK nativo de GeneXus para hacerlo de verdad en tu KB.
 
 ---
 
@@ -17,9 +17,9 @@ Es un puente entre tu **IA asistente** (Claude, Cursor, Antigravity, etc.) y tu 
 Antes de empezar, asegurate de tener:
 
 - ✅ **Windows** (GeneXus es solo Windows)
-- ✅ **GeneXus 18** instalado (normalmente en `C:\Program Files (x86)\GeneXus\GeneXus18`)
-- ✅ **Una KB de GeneXus 18** que ya hayas abierto al menos una vez en el IDE (para que esté inicializada)
-- ✅ **Node.js 18 o superior** — verificalo con `node --version` en una terminal; instalalo desde [nodejs.org](https://nodejs.org/) si te falta
+- ✅ **Un SDK soportado de GeneXus** instalado (consultá los caminos en [`docs/generated/supported-versions.md`](generated/supported-versions.md))
+- ✅ **Una KB creada con un major soportado de GeneXus** que ya hayas abierto al menos una vez en el IDE (para que esté inicializada)
+- ✅ **Node.js 22 o superior** — verificalo con `node --version` en una terminal; instalalo desde [nodejs.org](https://nodejs.org/) si te falta
 - ✅ **Un cliente de IA compatible con MCP** — [Claude Desktop](https://claude.ai/download), [Claude Code](https://claude.com/claude-code), Cursor, Antigravity, etc.
 
 **No** necesitás clonar el repositorio. **No** necesitás instalar nada globalmente con `npm`. Todo se maneja con `npx`.
@@ -38,6 +38,11 @@ Antes de correr el instalador, anotá:
 2. **Ruta de tu KB** — la carpeta raíz de tu Knowledge Base (la que contiene el archivo `.gx` y carpetas como `Model/`, `WebSpa/`).
    Ejemplo: `C:\KBs\MiKnowledgeBase`
 
+El major del SDK debe ser el mismo major con el que se creó la KB. Para una KB
+de GeneXus 17, usá la instalación `GeneXus17Trial`; para una KB de GeneXus 18,
+usá `GeneXus18`. El instalador valida esta combinación antes de guardar la
+configuración.
+
 Si no estás seguro de la ruta de tu KB, abrila en GeneXus y mirá la barra de título o el menú File → Recent.
 
 ---
@@ -48,6 +53,12 @@ Abrí una **terminal nueva** (PowerShell o CMD) y pegá este comando, **reemplaz
 
 ```bash
 npx genexus-mcp@latest init --kb "C:\KBs\MiKnowledgeBase" --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
+```
+
+Ejemplo para una KB de GeneXus 17:
+
+```bash
+npx genexus-mcp@latest init --kb "C:\KBs\KBTeste17" --gx "C:\Program Files (x86)\GeneXus\GeneXus17Trial"
 ```
 
 Lo que vas a ver:
@@ -169,10 +180,10 @@ Detalles completos del workflow, la matriz de capacidades verificadas y orientac
 
 **3. La primera petición después de un rato es lenta.** El "worker" (la parte que habla con GeneXus) se apaga después de 5 minutos sin uso para no bloquear archivos. La primera llamada después de eso tarda 3-8 segundos en arrancar. Es por diseño, no es un bug.
 
-**4. Si vas a buildear la KB desde el IDE de GeneXus, pará el worker primero:**
+**4. Si vas a buildear la KB desde el IDE de GeneXus, pará el worker primero usando la tool MCP:**
 
 ```bash
-npx genexus-mcp lifecycle --action stop-worker
+genexus_worker_reload mode=soft
 ```
 
 Si no, podés tener conflictos de archivos bloqueados.

@@ -1,4 +1,8 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using Artech.Architecture.Common.Helpers;
 using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Models;
@@ -12,11 +16,13 @@ namespace GxMcp.Worker.Services
     /// <see cref="KBVersionHelper"/>. This is the version-tree surface, distinct
     /// from <c>genexus_versioning</c> (object-level history/undo/time-travel).
     ///
-    /// action=list is read-only: enumerates
+    /// action=list and action=changed_objects are read-only: list enumerates
     /// <see cref="KBVersion.GetAll(KnowledgeBase)"/> against the open KB and
     /// reports which one <see cref="KBVersion.GetActive(KnowledgeBase)"/> says is
     /// active. freeze/branch/set_active/revert mutate the KB's version tree via
-    /// the SDK — the same code path the IDE's Version menu uses.
+    /// the same code path the IDE's Version menu uses.
+    /// changed_objects compares the active Design model with a frozen model snapshot
+    /// through the SDK's KBModelVersionObjects surface; it never queries internal tables.
     ///
     /// See docs/sdk-probe/INDEX.md (KBVersionHelper / KBVersion) for the
     /// reflected surface this was built against.
@@ -57,6 +63,7 @@ namespace GxMcp.Worker.Services
             switch (action)
             {
                 case "list": return ListVersions(kbase);
+                case "changed_objects": return ChangedObjects(kbase, args);
                 case "freeze": return Freeze(kbase, args);
                 case "branch": return Branch(kbase, args);
                 case "set_active": return SetActive(kbase, args);
@@ -64,7 +71,7 @@ namespace GxMcp.Worker.Services
                 default:
                     return McpResponse.Err(
                         code: "BadAction",
-                        message: "Unknown action '" + action + "'. Expected one of: list, freeze, branch, set_active, revert.",
+                        message: "Unknown action '" + action + "'. Expected one of: list, changed_objects, freeze, branch, set_active, revert.",
                         hint: "Pass action=list to enumerate versions first.");
             }
         }
@@ -92,6 +99,131 @@ namespace GxMcp.Worker.Services
             {
                 return McpResponse.Err(code: "KbVersionFailed", message: ex.Message, hint: "Check the worker log for details.");
             }
+        }
+
+        private string ChangedObjects(KnowledgeBase kbase, JObject args)
+        {
+            string requestedVersion = args?["fromVersion"]?.ToString();
+            KBVersion frozen;
+            string resolveError = ResolveFrozenVersion(kbase, requestedVersion, out frozen);
+            if (resolveError != null) return resolveError;
+
+            int offset = args?["offset"]?.ToObject<int?>() ?? 0;
+            int limit = args?["limit"]?.ToObject<int?>() ?? 50;
+            if (offset < 0 || limit <= 0)
+            {
+                return McpResponse.Err(
+                    code: "BadArgs",
+                    message: "offset must be >= 0 and limit must be > 0.",
+                    hint: "Use offset=0 and a limit between 1 and 200.");
+            }
+            limit = Math.Min(limit, 200);
+
+            try
+            {
+                KBModel design = kbase.DesignModel;
+                if (design == null || design.Objects == null)
+                    return ChangedObjectsNotSupported();
+
+                IEnumerable<KBObject> frozenObjects = TryGetFrozenObjects(design, frozen);
+                if (frozenObjects == null)
+                    return ChangedObjectsNotSupported();
+
+                var baselineByIdentity = BuildObjectMap(frozenObjects, out int baselineMetadataExcluded);
+                var changes = new List<JObject>();
+                int designMetadataExcluded = 0;
+                var seenDesign = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (KBObject current in design.Objects.GetAll() ?? Enumerable.Empty<KBObject>())
+                {
+                    string identity = StableObjectIdentity(current);
+                    if (string.IsNullOrWhiteSpace(identity) || string.IsNullOrWhiteSpace(current?.Name))
+                    {
+                        designMetadataExcluded++;
+                        continue;
+                    }
+                    if (!seenDesign.Add(identity)) continue;
+
+                    string changeType;
+                    if (!baselineByIdentity.TryGetValue(identity, out var previous))
+                        changeType = "NEW";
+                    else if (!string.Equals(ObjectRevision(previous), ObjectRevision(current), StringComparison.Ordinal))
+                        changeType = "CHANGED";
+                    else
+                        continue;
+
+                    changes.Add(DescribeChangedObject(current, changeType, identity));
+                }
+
+                changes = changes
+                    .OrderBy(item => item["name"]?.ToString() ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item["type"]?.ToString() ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item["guid"]?.ToString() ?? item["entityKey"]?.ToString() ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                int total = changes.Count;
+                var page = changes.Skip(offset).Take(limit).ToArray();
+                int nextOffset = offset + page.Length;
+                var result = new JObject
+                {
+                    ["fromVersion"] = frozen.Name,
+                    ["fromVersionFrozen"] = true,
+                    ["activeModel"] = "Design",
+                    ["changeDetection"] = "sdk:KBModelVersionObjects+KBObject.LastUpdate",
+                    ["items"] = new JArray(page),
+                    ["offset"] = offset,
+                    ["limit"] = limit,
+                    ["returned"] = page.Length,
+                    ["total"] = total,
+                    ["hasMore"] = nextOffset < total,
+                    ["nextOffset"] = nextOffset < total ? nextOffset : (JToken)null,
+                    ["metadataExcluded"] = baselineMetadataExcluded + designMetadataExcluded,
+                    ["source"] = "sdk:KBModelVersionObjects"
+                };
+                return McpResponse.Ok(code: "ChangedObjectsListed", result: result);
+            }
+            catch (Exception ex)
+            {
+                GxMcp.Worker.Helpers.Logger.Debug("[KB-VERSION-DELTA] SDK comparison unavailable: " + ex.Message);
+                return ChangedObjectsNotSupported();
+            }
+        }
+
+        private static string ResolveFrozenVersion(KnowledgeBase kbase, string requestedName, out KBVersion frozen)
+        {
+            frozen = null;
+            if (!string.IsNullOrWhiteSpace(requestedName))
+            {
+                string error = ResolveVersion(kbase, requestedName, out frozen);
+                if (error != null) return error;
+                if (!IsFrozen(frozen))
+                {
+                    return McpResponse.Err(
+                        code: "VersionNotFrozen",
+                        message: "Version '" + requestedName + "' is not frozen; changed_objects requires a frozen version.",
+                        hint: "Pass fromVersion with a frozen version returned by action=list.");
+                }
+                return null;
+            }
+
+            try
+            {
+                frozen = KBVersion.GetAll(kbase)
+                    .Where(IsFrozen)
+                    .OrderByDescending(v => SafeDate(() => v.LastUpdate))
+                    .ThenBy(v => v.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .FirstOrDefault();
+            }
+            catch (Exception ex)
+            {
+                GxMcp.Worker.Helpers.Logger.Debug("[KB-VERSION-DELTA] Could not resolve latest frozen version: " + ex.Message);
+            }
+
+            return frozen != null
+                ? null
+                : McpResponse.Err(
+                    code: "NoFrozenVersion",
+                    message: "No frozen KB version is available for comparison.",
+                    hint: "Create a frozen version with genexus_kb_version action=freeze, then retry changed_objects.");
         }
 
         private string Freeze(KnowledgeBase kbase, JObject args)
@@ -139,7 +271,7 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                KBVersion created = KBVersionHelper.BranchModel(name, description, parent, includeEnvironments);
+                KBVersion created = BranchModelCompatible(name, description, parent, includeEnvironments);
                 KBVersion active = SafeGetActive(kbase);
                 return McpResponse.Ok(code: "KbVersionBranched", result: DescribeVersion(created, active));
             }
@@ -163,6 +295,9 @@ namespace GxMcp.Worker.Services
             KBVersion target;
             string err = ResolveVersion(kbase, targetName, out target);
             if (err != null) return err;
+
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(WriteDestinationGuard.VersionVariable)) && target.IsFrozen)
+                return McpResponse.Err(code: "WriteDestinationVersionNotWritable", message: "The pinned target version is frozen; activation was not performed.", hint: "Choose a writable version explicitly in the profile.");
 
             try
             {
@@ -219,6 +354,137 @@ namespace GxMcp.Worker.Services
             {
                 return McpResponse.Err(code: "KbVersionFailed", message: ex.Message, hint: "Check the worker log for details.");
             }
+        }
+
+        private static IEnumerable<KBObject> TryGetFrozenObjects(KBModel design, KBVersion version)
+        {
+            try
+            {
+                KBModel versionModel = version?.Model;
+                if (versionModel?.Objects != null)
+                    return versionModel.Objects.GetAll();
+            }
+            catch (Exception ex)
+            {
+                GxMcp.Worker.Helpers.Logger.Debug("[KB-VERSION-DELTA] Frozen KBVersion.Model unavailable: " + ex.Message);
+            }
+
+            try
+            {
+                Type type = typeof(KBModel).Assembly.GetType(
+                    "Artech.Architecture.Common.Objects.KBModelVersionObjects", false);
+                ConstructorInfo ctor = type?.GetConstructor(new[] { typeof(KBModel), typeof(DateTime) });
+                MethodInfo getAll = type?.GetMethod("GetAll", BindingFlags.Public | BindingFlags.Instance);
+                if (ctor == null || getAll == null) return null;
+                object view = ctor.Invoke(new object[] { design, version.LastUpdate });
+                return (getAll.Invoke(view, null) as IEnumerable)?.Cast<object>().OfType<KBObject>().ToArray();
+            }
+            catch (Exception ex)
+            {
+                GxMcp.Worker.Helpers.Logger.Debug("[KB-VERSION-DELTA] KBModelVersionObjects unavailable: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static Dictionary<string, KBObject> BuildObjectMap(IEnumerable<KBObject> objects, out int metadataExcluded)
+        {
+            metadataExcluded = 0;
+            var result = new Dictionary<string, KBObject>(StringComparer.OrdinalIgnoreCase);
+            foreach (KBObject obj in objects ?? Enumerable.Empty<KBObject>())
+            {
+                string identity = StableObjectIdentity(obj);
+                if (string.IsNullOrWhiteSpace(identity) || string.IsNullOrWhiteSpace(obj?.Name))
+                {
+                    metadataExcluded++;
+                    continue;
+                }
+                if (!result.ContainsKey(identity)) result[identity] = obj;
+            }
+            return result;
+        }
+
+        private static JObject DescribeChangedObject(KBObject obj, string changeType, string identity)
+        {
+            var result = new JObject
+            {
+                ["changeType"] = changeType,
+                ["name"] = obj.Name,
+                ["type"] = SafeString(() => obj.TypeDescriptor?.Name),
+                ["lastUpdate"] = SafeDate(() => obj.LastUpdate).ToUniversalTime().ToString("o"),
+                ["identitySource"] = identity.StartsWith("guid:", StringComparison.OrdinalIgnoreCase) ? "guid" : "entityKey"
+            };
+            if (identity.StartsWith("guid:", StringComparison.OrdinalIgnoreCase))
+                result["guid"] = identity.Substring("guid:".Length);
+            else
+                result["entityKey"] = identity.Substring("entityKey:".Length);
+            string parentPath = ParentPath(obj);
+            if (!string.IsNullOrWhiteSpace(parentPath)) result["parentPath"] = parentPath;
+            return result;
+        }
+
+        private static string StableObjectIdentity(KBObject obj)
+        {
+            if (obj == null) return null;
+            try
+            {
+                if (obj.Guid != Guid.Empty) return "guid:" + obj.Guid.ToString("D");
+            }
+            catch { }
+            try
+            {
+                string key = obj.Key?.ToString();
+                if (!string.IsNullOrWhiteSpace(key)) return "entityKey:" + key;
+            }
+            catch { }
+            return null;
+        }
+
+        private static string ObjectRevision(KBObject obj)
+        {
+            try { return WriteService.ComputeVersionToken(obj) ?? string.Empty; }
+            catch { return string.Empty; }
+        }
+
+        private static string ParentPath(KBObject obj)
+        {
+            var names = new List<string>();
+            var seen = new HashSet<Guid>();
+            try
+            {
+                object parent = obj?.Parent;
+                while (parent is KBObject parentObject)
+                {
+                    if (parentObject.Guid != Guid.Empty && !seen.Add(parentObject.Guid)) break;
+                    if (!string.IsNullOrWhiteSpace(parentObject.Name)) names.Add(parentObject.Name);
+                    parent = parentObject.Parent;
+                }
+            }
+            catch { }
+            names.Reverse();
+            return string.Join("/", names);
+        }
+
+        private static string ChangedObjectsNotSupported()
+        {
+            return McpResponse.Err(
+                code: "ChangedObjectsNotSupported",
+                message: "This GeneXus SDK worker cannot expose a read-only Design-versus-frozen object inventory.",
+                hint: "Use genexus_kb_version action=list to inspect versions; SQL/internal model tables are not part of the MCP contract.");
+        }
+
+        private static bool IsFrozen(KBVersion version)
+        {
+            try { return version != null && version.IsFrozen; } catch { return false; }
+        }
+
+        private static DateTime SafeDate(Func<DateTime> getter)
+        {
+            try { return getter(); } catch { return DateTime.MinValue; }
+        }
+
+        private static string SafeString(Func<string> getter)
+        {
+            try { return getter(); } catch { return null; }
         }
 
         // ----- shared helpers -----
@@ -283,7 +549,7 @@ namespace GxMcp.Worker.Services
         private static JObject DescribeVersion(KBVersion v, KBVersion active)
         {
             if (v == null) return null;
-            return new JObject
+            var result = new JObject
             {
                 ["name"] = v.Name,
                 ["description"] = SafeStr(() => v.Description),
@@ -293,8 +559,21 @@ namespace GxMcp.Worker.Services
                 ["isActive"] = SafeSameVersion(v, active),
                 ["parent"] = SafeStr(() => v.Parent?.Name),
                 ["lastUpdate"] = SafeStr(() => v.LastUpdate.ToUniversalTime().ToString("o")),
+                ["lastUpdateSource"] = "sdk:KBVersion.LastUpdate",
                 ["userName"] = SafeStr(() => v.UserName)
             };
+            AddCreationTimestampMetadata(result);
+            return result;
+        }
+
+        internal static void AddCreationTimestampMetadata(JObject result)
+        {
+            // KBVersion exposes LastUpdate but no creation timestamp. Do not
+            // infer creation from it: a later edit can change LastUpdate.
+            result["createdAt"] = JValue.CreateNull();
+            result["createdAtAvailable"] = false;
+            result["createdAtSource"] = "unavailable:sdk-KBVersion";
+            result["createdAtNote"] = "The GeneXus SDK does not expose a reliable creation timestamp for KB versions.";
         }
 
         private static string SafeStr(Func<string> f)
@@ -305,6 +584,23 @@ namespace GxMcp.Worker.Services
         private static bool SafeBool(Func<bool> f)
         {
             try { return f(); } catch { return false; }
+        }
+
+        private static KBVersion BranchModelCompatible(string name, string description, KBVersion parent, bool includeEnvironments)
+        {
+            var method = typeof(KBVersionHelper).GetMethod("BranchModel");
+            if (method == null) throw new InvalidOperationException("KBVersionHelper.BranchModel method not found");
+            var pars = method.GetParameters();
+            if (pars.Length >= 4 && pars[3].ParameterType == typeof(bool))
+            {
+                return (KBVersion)method.Invoke(null, new object[] { name, description, parent, includeEnvironments });
+            }
+            else
+            {
+                // GX16: Func<string, Guid> environmentGuidProvider
+                Func<string, Guid> provider = includeEnvironments ? (Func<string, Guid>)(_ => Guid.NewGuid()) : null;
+                return (KBVersion)method.Invoke(null, new object[] { name, description, parent, provider });
+            }
         }
     }
 }

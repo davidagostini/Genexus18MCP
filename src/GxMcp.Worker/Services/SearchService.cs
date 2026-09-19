@@ -18,6 +18,21 @@ namespace GxMcp.Worker.Services
         private static readonly BoundedStringCache _queryCache = new BoundedStringCache(512);
         private static DateTime _lastIndexTime = DateTime.MinValue;
 
+        // PERFORMANCE (perf-review): these hot-path patterns only vary by a fixed
+        // filter name, so precompile once instead of compiling a fresh Regex per
+        // query — ParseQuery runs 7 ExtractFilter calls per search and each used
+        // to build a new Regex (plus the @quick strip and the bare-quoted name
+        // match). RegexOptions.Compiled pays a one-time JIT and then runs native.
+        private static readonly Regex QuickSuffixRegex = new Regex(@"\s*@quick\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex BareQuotedNameRegex = new Regex("^\"(?<v>[^\"]+)\"$", RegexOptions.Compiled);
+
+        // PERFORMANCE (perf-review): hoisted separator arrays. TryDirectLookup's
+        // IndexOfAny and ParseQuery's Split used to allocate a fresh char[] on every
+        // search query (these run before the query-cache lookup, so even cached
+        // queries paid them).
+        private static readonly char[] DirectLookupStopChars = { ' ', ':', '*', '@', '"', '?', '/' };
+        private static readonly char[] SpaceSeparator = { ' ' };
+
         public SearchService(IndexCacheService indexCacheService, ObjectService objectService = null)
         {
             _indexCacheService = indexCacheService;
@@ -50,15 +65,30 @@ namespace GxMcp.Worker.Services
                 var index = _indexCacheService.GetIndex();
                 bool indexEmpty = index == null || index.Objects.Count == 0;
 
-                // If we genuinely have nothing yet, return progress info — but DON'T pretend
-                // it's a "zero results" search. _meta.indexStatus = "warming" tells the agent
-                // to retry once indexing progresses, while still reporting the (zero) snapshot.
-                if (indexEmpty && scanning)
-                {
-                    return BuildPartialResponse(query, new object[0], 0, scanning: true);
-                }
                 if (indexEmpty)
                 {
+                    // Distinguish a genuinely-empty KB (index built — the walk completed and
+                    // found no model objects, e.g. a KB whose LocalDB model is missing) from a
+                    // build still in progress. The former must return a plain zero-result
+                    // response; the latter keeps the "warming" partial + BulkIndex kick below
+                    // (which would otherwise loop forever on an empty KB).
+                    var st = _indexCacheService.GetState();
+                    bool indexBuilt = st != null
+                        && (string.Equals(st.Status, "Ready", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(st.Status, "LiteReady", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(st.Status, "Enriching", StringComparison.OrdinalIgnoreCase));
+                    if (indexBuilt)
+                    {
+                        return BuildEmptyKbResponse(limit);
+                    }
+
+                    // If we genuinely have nothing yet, return progress info — but DON'T pretend
+                    // it's a "zero results" search. _meta.indexStatus = "warming" tells the agent
+                    // to retry once indexing progresses, while still reporting the (zero) snapshot.
+                    if (scanning)
+                    {
+                        return BuildPartialResponse(query, new object[0], 0, scanning: true);
+                    }
                     try { _indexCacheService.KbService?.BulkIndex(); } catch { }
                     return BuildPartialResponse(query, new object[0], 0, scanning: true);
                 }
@@ -68,16 +98,17 @@ namespace GxMcp.Worker.Services
                 bool isQuick = !string.IsNullOrEmpty(query) && query.IndexOf("@quick", StringComparison.OrdinalIgnoreCase) >= 0;
                 if (isQuick)
                 {
-                    query = Regex.Replace(query, @"\s*@quick\b", "", RegexOptions.IgnoreCase).Trim();
+                    query = QuickSuffixRegex.Replace(query, "").Trim();
                 }
 
                 // v2.6.8: temporal/sort/cursor controls participate in the cache key
                 // so callers paging by cursor or filtering by date don't collide with
                 // the cached relevance-sorted page.
-                string cacheKey = string.Format("{0}|{1}|{2}|{3}|{4}|{5}|s={6}|sn={7}|mb={8}|cu={9}",
-                    query ?? "", typeFilter ?? "", domainFilter ?? "", limit,
-                    isQuick ? "quick" : "full", exactMatch ? "exact" : "fuzzy",
-                    sort ?? "", since.Ticks, modifiedBefore.Ticks, cursor ?? "");
+                string cacheKey = string.Concat(
+                    query ?? "", "|", typeFilter ?? "", "|", domainFilter ?? "", "|",
+                    limit.ToString(), "|", isQuick ? "quick" : "full", "|", exactMatch ? "exact" : "fuzzy",
+                    "|s=", sort ?? "", "|sn=", since.Ticks.ToString(), "|mb=", modifiedBefore.Ticks.ToString(),
+                    "|cu=", cursor ?? "");
                 if (_queryCache.TryGetValue(cacheKey, out var cached)) return cached;
 
                 var criteria = ParseQuery(query);
@@ -86,21 +117,53 @@ namespace GxMcp.Worker.Services
 
                 if (exactMatch && criteria.Terms.Count > 0)
                 {
-                    var exactCandidates = index.Objects.Values
-                        .Where(e => criteria.Terms.Any(t => string.Equals(e.Name, t, StringComparison.OrdinalIgnoreCase)));
-                    if (!string.IsNullOrEmpty(criteria.TypeFilter))
-                        exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
-                    var exactList = exactCandidates.ToList();
-                    var exactObj = JObject.FromObject(new {
-                        count = exactList.Count,
-                        total = exactList.Count,
-                        hasMore = false,
-                        results = exactList.Select(e => new {
-                            guid = e.Guid, name = e.Name, type = e.Type, description = e.Description,
-                            parent = e.Parent, module = e.Module, path = e.Path, parentPath = e.ParentPath,
-                            dataType = e.DataType, table = e.RootTable
-                        })
-                    });
+                    List<SearchIndex.IndexEntry> exactList = null;
+                    if (!string.IsNullOrEmpty(criteria.TypeFilter) && index.Objects != null)
+                    {
+                        exactList = new List<SearchIndex.IndexEntry>();
+                        foreach (var t in criteria.Terms)
+                        {
+                            string key = criteria.TypeFilter + ":" + t;
+                            if (index.Objects.TryGetValue(key, out var directEntry) && directEntry != null)
+                            {
+                                exactList.Add(directEntry);
+                            }
+                        }
+                    }
+
+                    if (exactList == null || exactList.Count == 0)
+                    {
+                        var exactCandidates = criteria.Terms
+                            .SelectMany(t => index.FindByName(t))
+                            .Distinct();
+                        if (!string.IsNullOrEmpty(criteria.TypeFilter))
+                            exactCandidates = exactCandidates.Where(e => IsTypeMatch(e.Type, criteria.TypeFilter));
+                        exactList = exactCandidates.ToList();
+                    }
+                    var exactResultsArr = new JArray();
+                    foreach (var e in exactList)
+                    {
+                        exactResultsArr.Add(new JObject
+                        {
+                            ["guid"] = e.Guid,
+                            ["name"] = e.Name,
+                            ["type"] = e.Type,
+                            ["description"] = e.Description,
+                            ["parent"] = e.Parent,
+                            ["module"] = e.Module,
+                            ["path"] = e.Path,
+                            ["parentPath"] = e.ParentPath,
+                            ["dataType"] = e.DataType,
+                            ["table"] = e.RootTable
+                        });
+                    }
+                    var exactObj = new JObject
+                    {
+                        ["count"] = exactList.Count,
+                        ["total"] = exactList.Count,
+                        ["hasMore"] = false,
+                        ["results"] = exactResultsArr
+                    };
                     // v2.8.0: canonical pagination block
                     exactObj["pagination"] = new JObject
                     {
@@ -161,6 +224,14 @@ namespace GxMcp.Worker.Services
                     sourceIsFullScan = true;
                 }
 
+                // PERFORMANCE: When no parent/path filter narrowed sourceSet and criteria.NameFilter is specified,
+                // resolve candidate entries directly through index.FindByName instead of scanning all objects.
+                if (sourceIsFullScan && !string.IsNullOrEmpty(criteria.NameFilter))
+                {
+                    sourceSet = index.FindByName(criteria.NameFilter);
+                    sourceIsFullScan = false;
+                }
+
                 // Plan 002: when no parent/parentPath filter already narrowed sourceSet,
                 // intersect the derived TypeIndex/DomainIndex buckets instead of scanning
                 // every object. IsTypeMatch is alias-aware ("prc" contains-matches
@@ -217,7 +288,22 @@ namespace GxMcp.Worker.Services
                 // PERFORMANCE (W-M4): cap PLINQ parallelism so large KBs (50k+ objects) on
                 // 16+ core machines don't spawn one task per core and pressure the GC.
                 int dop = Math.Min(4, Math.Max(1, Environment.ProcessorCount));
-                var queryResults = sourceSet.AsParallel().WithDegreeOfParallelism(dop);
+                // PERFORMANCE (perf-review): PLINQ's partition/merge overhead dominates for
+                // small candidate sets — a TypeIndex/DomainIndex-filtered query often lands
+                // well under a few thousand candidates. Stay on sequential LINQ below the
+                // threshold and only parallelize genuinely large scans.
+                //
+                // Calibrated by SearchRankParallelismBenchmark (DOP=4, faithful ranker work
+                // incl. 128-dim cosine, dev hardware): PLINQ is 1.17-1.46x SLOWER for
+                // 64..2048 candidates (allocating up to 2.2x more), breaking even only
+                // around 4096. Threshold 2048 keeps the common filtered range sequential
+                // and only engages PLINQ where it is at worst neutral.
+                const int ParallelScanThreshold = 2048;
+                bool parallelize = sourceSet is not ICollection<SearchIndex.IndexEntry> sourceCol
+                                   || sourceCol.Count >= ParallelScanThreshold;
+                IEnumerable<SearchIndex.IndexEntry> queryResults = parallelize
+                    ? sourceSet.AsParallel().WithDegreeOfParallelism(dop)
+                    : sourceSet;
 
                 // name:"X" demands exact-name match. Hard filter so the ranker never
                 // sees substring / vector candidates — those were poisoning results
@@ -260,10 +346,10 @@ namespace GxMcp.Worker.Services
                     // Build the set of objects that reference the target via the inverted CalledBy index.
                     // Multiple entries can share a name across types (e.g. Attribute:X and Domain:X), so collect all.
                     var consumerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var t in index.Objects.Values)
+                    var candidates = index.FindByName(criteria.UsedByFilter);
+                    foreach (var t in candidates)
                     {
-                        if (!string.Equals(t.Name, criteria.UsedByFilter, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (t.CalledBy == null) continue;
+                        if (t?.CalledBy == null) continue;
                         lock (t.CalledBy)
                         {
                             foreach (var c in t.CalledBy)
@@ -305,16 +391,16 @@ namespace GxMcp.Worker.Services
                             bool noiseExplicitlyRequested = !string.IsNullOrEmpty(criteria.TypeFilter)
                                 && IsTypeMatch(entry.Type, criteria.TypeFilter);
                             if (score <= 0 && isNoiseType && !noiseExplicitlyRequested)
-                                return new RankedResult { Score = -1 };
+                                return new RankedResult(null, -1, 0);
                             if (isNoiseType && !noiseExplicitlyRequested)
-                                return new RankedResult { Score = -1 };
+                                return new RankedResult(null, -1, 0);
 
                             if (!isQuick && entry.Embedding != null && queryEmbedding != null)
                             {
                                 vectorScore = _vectorService.CosineSimilarity(queryEmbedding, entry.Embedding);
                             }
                             if (!isQuick && score <= 0 && vectorScore < 0.45f)
-                                return new RankedResult { Score = -1 };
+                                return new RankedResult(null, -1, 0);
                         }
                         else
                         {
@@ -322,9 +408,8 @@ namespace GxMcp.Worker.Services
                         }
 
                         int finalScore = score + (int)(vectorScore * 1000);
-                        return new RankedResult { Entry = entry, Score = finalScore, VectorSimilarity = vectorScore };
+                        return new RankedResult(entry, finalScore, vectorScore);
                     })
-                    .Where(r => r != null) // Safety check
                     .Where(r => r.Score > 0)
                     .ToList();
 
@@ -335,18 +420,11 @@ namespace GxMcp.Worker.Services
                     string.Equals(sort, "lastUpdate", StringComparison.OrdinalIgnoreCase);
                 if (sortByLastUpdate)
                 {
-                    rankedAll = rankedAll
-                        .OrderByDescending(r => r.Entry.LastUpdate)
-                        .ThenBy(r => r.Entry.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                        .ThenBy(r => r.Entry.Guid ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                        .ToList();
+                    rankedAll.Sort(CompareRankedResultsByLastUpdate);
                 }
                 else
                 {
-                    rankedAll = rankedAll
-                        .OrderByDescending(r => r.Score)
-                        .ThenBy(r => r.Entry.Name)
-                        .ToList();
+                    rankedAll.Sort(CompareRankedResults);
                 }
 
                 int total = rankedAll.Count;
@@ -377,8 +455,9 @@ namespace GxMcp.Worker.Services
                 }
 
                 var effectiveLimit = limit <= 0 ? total : limit;
-                var scoredResults = rankedAll.Skip(startIndex).Take(effectiveLimit).ToList();
-                bool hasMore = (startIndex + scoredResults.Count) < total;
+                int endIndex = Math.Min(total, (int)Math.Min((long)total, (long)startIndex + effectiveLimit));
+                int returnedCount = Math.Max(0, endIndex - startIndex);
+                bool hasMore = (startIndex + returnedCount) < total;
 
                 JObject responseObj;
                 // v2.6.8: stringify lastUpdate once per row; null when unknown so the
@@ -386,57 +465,70 @@ namespace GxMcp.Worker.Services
                 string FormatLu(SearchIndex.IndexEntry e) =>
                     e.LastUpdate > DateTime.MinValue ? e.LastUpdate.ToUniversalTime().ToString("o") : null;
 
+                var resultsArr = new JArray();
                 if (isQuick)
                 {
-                    responseObj = JObject.FromObject(new {
-                        count = scoredResults.Count,
-                        total,
-                        hasMore,
-                        results = scoredResults.Select(r => new {
-                            guid = r.Entry.Guid,
-                            name = r.Entry.Name,
-                            type = r.Entry.Type,
-                            parent = r.Entry.Parent,
-                            module = r.Entry.Module,
-                            path = r.Entry.Path,
-                            parentPath = r.Entry.ParentPath,
-                            lastUpdate = FormatLu(r.Entry)
-                        })
-                    });
+                    for (int i = startIndex; i < endIndex; i++)
+                    {
+                        var e = rankedAll[i].Entry;
+                        resultsArr.Add(new JObject
+                        {
+                            ["guid"] = e.Guid,
+                            ["name"] = e.Name,
+                            ["type"] = e.Type,
+                            ["parent"] = e.Parent,
+                            ["module"] = e.Module,
+                            ["path"] = e.Path,
+                            ["parentPath"] = e.ParentPath,
+                            ["lastUpdate"] = FormatLu(e)
+                        });
+                    }
                 }
                 else
                 {
-                    responseObj = JObject.FromObject(new {
-                        count = scoredResults.Count,
-                        total,
-                        hasMore,
-                        results = scoredResults.Select(r => new {
-                            guid = r.Entry.Guid,
-                            name = r.Entry.Name,
-                            type = r.Entry.Type,
-                            description = r.Entry.Description,
-                            parm = r.Entry.ParmRule,
-                            snippet = r.Entry.SourceSnippet,
-                            parent = r.Entry.Parent,
-                            module = r.Entry.Module,
-                            path = r.Entry.Path,
-                            parentPath = r.Entry.ParentPath,
-                            dataType = r.Entry.DataType,
-                            length = r.Entry.Length,
-                            decimals = r.Entry.Decimals,
-                            table = r.Entry.RootTable,
-                            similarity = r.VectorSimilarity,
-                            lastUpdate = FormatLu(r.Entry)
-                        })
-                    });
+                    for (int i = startIndex; i < endIndex; i++)
+                    {
+                        var r = rankedAll[i];
+                        var e = r.Entry;
+                        resultsArr.Add(new JObject
+                        {
+                            ["guid"] = e.Guid,
+                            ["name"] = e.Name,
+                            ["type"] = e.Type,
+                            ["description"] = e.Description,
+                            ["parm"] = e.ParmRule,
+                            ["snippet"] = e.SourceSnippet,
+                            ["parent"] = e.Parent,
+                            ["module"] = e.Module,
+                            ["path"] = e.Path,
+                            ["parentPath"] = e.ParentPath,
+                            ["dataType"] = e.DataType,
+                            ["length"] = e.Length,
+                            ["decimals"] = e.Decimals,
+                            ["table"] = e.RootTable,
+                            ["similarity"] = r.VectorSimilarity,
+                            ["lastUpdate"] = FormatLu(e)
+                        });
+                    }
                 }
 
-                // v2.6.8: nextCursor for stable temporal paging. Mirrors list_objects.
-                if (sortByLastUpdate && hasMore && scoredResults.Count > 0)
+                responseObj = new JObject
                 {
-                    var last = scoredResults[scoredResults.Count - 1].Entry;
-                    var token = ListService.EncodeCursor(last.LastUpdate, last.Name, last.Guid);
-                    if (!string.IsNullOrEmpty(token)) responseObj["nextCursor"] = token;
+                    ["count"] = returnedCount,
+                    ["total"] = total,
+                    ["hasMore"] = hasMore,
+                    ["results"] = resultsArr
+                };
+
+                // v2.6.8: nextCursor for stable temporal paging. Mirrors list_objects.
+                if (sortByLastUpdate && hasMore && returnedCount > 0 && endIndex > 0)
+                {
+                    var last = rankedAll[endIndex - 1].Entry;
+                    if (last != null)
+                    {
+                        var token = ListService.EncodeCursor(last.LastUpdate, last.Name, last.Guid);
+                        if (!string.IsNullOrEmpty(token)) responseObj["nextCursor"] = token;
+                    }
                 }
 
                 // v2.8.0: canonical pagination block
@@ -444,10 +536,10 @@ namespace GxMcp.Worker.Services
                 {
                     ["offset"]     = startIndex,
                     ["limit"]      = effectiveLimit,
-                    ["returned"]   = scoredResults.Count,
+                    ["returned"]   = returnedCount,
                     ["total"]      = total,
                     ["hasMore"]    = hasMore,
-                    ["nextOffset"] = hasMore ? (JToken)(int)(startIndex + scoredResults.Count) : JValue.CreateNull()
+                    ["nextOffset"] = hasMore ? (JToken)(int)(startIndex + returnedCount) : JValue.CreateNull()
                 };
 
                 // Only surface a "suggested_next" when the top result is a confident
@@ -457,22 +549,28 @@ namespace GxMcp.Worker.Services
                 // match_quality so the caller can decide.
                 var meta = (responseObj["_meta"] as JObject) ?? new JObject();
                 string matchQuality = "none";
-                if (scoredResults.Count > 0)
+                if (returnedCount > 0 && startIndex < total)
                 {
-                    int topScore = scoredResults[0].Score;
-                    string topName = scoredResults[0].Entry?.Name ?? "";
+                    var topResult = rankedAll[startIndex];
+                    int topScore = topResult.Score;
+                    string topName = topResult.Entry?.Name ?? "";
                     bool topIsExact = criteria.Terms.Any(t => string.Equals(topName, t, StringComparison.OrdinalIgnoreCase));
                     bool topIsPrefix = !topIsExact && criteria.Terms.Any(t => topName.StartsWith(t, StringComparison.OrdinalIgnoreCase));
                     if (topIsExact) matchQuality = "exact";
                     else if (topIsPrefix) matchQuality = "prefix";
                     else if (topScore >= 500) matchQuality = "substring";
                     else matchQuality = "vector";
+
+                    meta["match_quality"] = matchQuality;
+                    if (matchQuality == "exact" || matchQuality == "prefix")
+                    {
+                        var suggestion = BuildSuggestedNext(topResult.Entry);
+                        if (suggestion != null) meta["suggested_next"] = suggestion;
+                    }
                 }
-                meta["match_quality"] = matchQuality;
-                if (matchQuality == "exact" || matchQuality == "prefix")
+                else
                 {
-                    var suggestion = BuildSuggestedNext(scoredResults);
-                    if (suggestion != null) meta["suggested_next"] = suggestion;
+                    meta["match_quality"] = matchQuality;
                 }
                 responseObj["_meta"] = meta;
 
@@ -498,25 +596,6 @@ namespace GxMcp.Worker.Services
                 string json = responseObj.ToString(Newtonsoft.Json.Formatting.None);
                 if (!_indexCacheService.IsScanning) _queryCache.TryAdd(cacheKey, json);
 
-                if (!isQuick && criteria.Terms.Count > 0 && scoredResults.Count > 0)
-                {
-                    var topGuids = scoredResults.Take(5)
-                        .Where(r => !string.IsNullOrEmpty(r.Entry.Guid))
-                        .Select(r => new Guid(r.Entry.Guid))
-                        .ToList();
-
-                    Program.EnqueueBackground(() => {
-                        try {
-                            var kb = _indexCacheService.KbService?.GetKB();
-                            if (kb == null) return;
-                            foreach (var guid in topGuids) {
-                                var obj = kb.DesignModel.Objects.Get(guid);
-                                if (obj != null) Logger.Debug($"[Warm-up] Loaded {obj.Name} into SDK cache.");
-                            }
-                        } catch { }
-                    });
-                }
-
                 return json;
             }
             catch (Exception ex) { return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}"; }
@@ -536,11 +615,17 @@ namespace GxMcp.Worker.Services
         private string TryDirectLookup(string query, string typeFilter, bool exactMatch)
         {
             if (_objectService == null) return null;
+            // STA guard: search runs on the thread-pool (MTA) because it's marked
+            // thread-safe in CommandDispatcher.IsThreadSafe, but FindObject touches
+            // the COM-flavoured SDK — same class of native AV documented for
+            // SearchSource. Losing the exact-match boost off-STA is acceptable;
+            // crashing the worker is not. Fall through to the in-memory index path.
+            if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA) return null;
             if (string.IsNullOrWhiteSpace(query)) return null;
 
             string trimmed = query.Trim();
             // Skip if the query carries filter syntax, wildcards, or multi-term semantics.
-            if (trimmed.IndexOfAny(new[] { ' ', ':', '*', '@', '"', '?', '/' }) >= 0) return null;
+            if (trimmed.IndexOfAny(DirectLookupStopChars) >= 0) return null;
             // Object names are typically reasonable identifiers.
             if (trimmed.Length > 80) return null;
 
@@ -605,6 +690,36 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // Build a plain zero-result payload for a built-and-empty index (the KB genuinely
+        // has no model objects). Mirrors the canonical search response shape so callers can
+        // branch uniformly; _meta.empty_reason = "kb_has_no_objects" makes it unambiguous
+        // versus the "warming" partial responses (and stops the redundant BulkIndex kick).
+        private string BuildEmptyKbResponse(int limit)
+        {
+            var resp = new JObject
+            {
+                ["count"] = 0,
+                ["total"] = 0,
+                ["hasMore"] = false,
+                ["results"] = new JArray(),
+                ["pagination"] = new JObject
+                {
+                    ["offset"]     = 0,
+                    ["limit"]      = limit,
+                    ["returned"]   = 0,
+                    ["total"]      = 0,
+                    ["hasMore"]    = false,
+                    ["nextOffset"] = JValue.CreateNull()
+                },
+                ["_meta"] = new JObject
+                {
+                    ["empty_reason"] = "kb_has_no_objects",
+                    ["emptyHint"] = "This KB's model reports no objects (empty KB — e.g. a missing LocalDB model). Create objects with genexus_create or open a different KB; re-running lifecycle action=index cannot populate it."
+                }
+            };
+            return resp.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
         // Build a zero/partial-result payload that signals indexing is still running,
         // so agents know to retry and clients can render a progress hint.
         private string BuildPartialResponse(string query, object[] results, int total, bool scanning)
@@ -649,12 +764,16 @@ namespace GxMcp.Worker.Services
             responseObj["_meta"] = meta;
         }
 
+        private static JObject BuildSuggestedNext(SearchIndex.IndexEntry top)
+        {
+            if (top == null) return null;
+            return BuildSuggestedReadFor(top.Name, top.Type);
+        }
+
         private static JObject BuildSuggestedNext(List<RankedResult> results)
         {
             if (results == null || results.Count == 0) return null;
-            var top = results[0].Entry;
-            if (top == null) return null;
-            return BuildSuggestedReadFor(top.Name, top.Type);
+            return BuildSuggestedNext(results[0].Entry);
         }
 
         public static JObject BuildSuggestedReadFor(string name, string type)
@@ -667,30 +786,50 @@ namespace GxMcp.Worker.Services
             };
         }
 
+        private static bool ContainsIgnoreCase(List<string> list, string term)
+        {
+            if (list == null || list.Count == 0) return false;
+            int termLen = term.Length;
+            for (int i = 0; i < list.Count; i++)
+            {
+                var s = list[i];
+                if (s != null && s.Length == termLen && string.Equals(s, term, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
         private int CalculateSemanticScore(SearchIndex.IndexEntry entry, HashSet<string> terms, string typeFilter)
         {
             int score = 0;
             string name = entry.Name ?? "";
             string desc = entry.Description ?? "";
+            int nameLen = name.Length;
+            int descLen = desc.Length;
+            bool isTableType = string.Equals(entry.Type, "Table", StringComparison.OrdinalIgnoreCase);
+            bool isTableFilter = string.Equals(typeFilter, "Table", StringComparison.OrdinalIgnoreCase);
 
             foreach (var term in terms) {
-                if (name.Equals(term, StringComparison.OrdinalIgnoreCase)) score += 10000;
-                else if (name.StartsWith(term, StringComparison.OrdinalIgnoreCase)) score += 1000;
-                else if (name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 500;
-
-                if (desc.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 300;
-
-                if (entry.Keywords != null && entry.Keywords.Contains(term, StringComparer.OrdinalIgnoreCase)) score += 800;
-                if (entry.Tags != null && entry.Tags.Contains(term, StringComparer.OrdinalIgnoreCase)) score += 800;
-
-                if (entry.Tables != null && entry.Tables.Contains(term, StringComparer.OrdinalIgnoreCase))
+                int termLen = term.Length;
+                if (nameLen >= termLen)
                 {
-                    bool boostForAttributeMember = string.Equals(typeFilter, "Table", StringComparison.OrdinalIgnoreCase)
-                                                   && string.Equals(entry.Type, "Table", StringComparison.OrdinalIgnoreCase)
+                    if (nameLen == termLen && name.Equals(term, StringComparison.OrdinalIgnoreCase)) score += 10000;
+                    else if (name.StartsWith(term, StringComparison.OrdinalIgnoreCase)) score += 1000;
+                    else if (name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 500;
+                }
+
+                if (descLen >= termLen && desc.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) score += 300;
+
+                if (ContainsIgnoreCase(entry.Keywords, term)) score += 800;
+                if (ContainsIgnoreCase(entry.Tags, term)) score += 800;
+
+                if (entry.Tables != null && ContainsIgnoreCase(entry.Tables, term))
+                {
+                    bool boostForAttributeMember = isTableFilter
+                                                   && isTableType
                                                    && _indexCacheService.LooksLikeAttributeName(term);
                     score += boostForAttributeMember ? 5000 : 400;
                 }
-                if (entry.Calls != null && entry.Calls.Contains(term, StringComparer.OrdinalIgnoreCase)) score += 400;
+                if (ContainsIgnoreCase(entry.Calls, term)) score += 400;
             }
             return score;
         }
@@ -705,57 +844,70 @@ namespace GxMcp.Worker.Services
             var c = new SearchCriteria();
             if (string.IsNullOrEmpty(query)) return c;
 
-            query = ExtractFilter(query, "description", value => c.DescriptionFilter = value);
-            query = ExtractFilter(query, "metadata", value => c.MetadataFilter = value);
-            query = ExtractFilter(query, "usedby", value => c.UsedByFilter = value);
-            query = ExtractFilter(query, "parentPath", value => c.ParentPathFilter = value);
-            query = ExtractFilter(query, "parent", value => c.ParentFilter = value);
-            query = ExtractFilter(query, "type", value => c.TypeFilter = value);
-            // name:"X" or name:X — exact-name lookup. Without this, a quoted long token
-            // like "WorkWithPlusComissaoParecerCadastro" leaked into vector similarity
-            // and surfaced 50 unrelated attributes whose embeddings happened to be
-            // semantically close. Exact-name short-circuits the ranker.
-            query = ExtractFilter(query, "name", value => c.NameFilter = value);
+            var parsed = QueryGrammar.Parse(query);
+            c.DescriptionFilter = parsed.DescriptionFilter;
+            c.MetadataFilter = parsed.MetadataFilter;
+            c.UsedByFilter = parsed.UsedByFilter;
+            c.ParentPathFilter = parsed.ParentPathFilter;
+            c.ParentFilter = parsed.ParentFilter;
+            c.TypeFilter = parsed.TypeFilter;
+            c.NameFilter = parsed.NameFilter;
 
-            // Bare-quoted "X" with no other terms also signals "user wants this exact
-            // name" — same intent as name:"X". Common shape from agents typing a unique
-            // identifier verbatim. Only triggers when the whole residual query is a
-            // single quoted token, so multi-word semantic queries still vector-rank.
             if (string.IsNullOrEmpty(c.NameFilter))
             {
-                var bareQuoted = Regex.Match(query.Trim(), "^\"(?<v>[^\"]+)\"$");
+                var bareQuoted = BareQuotedNameRegex.Match(query.Trim());
                 if (bareQuoted.Success)
                 {
                     c.NameFilter = bareQuoted.Groups["v"].Value;
-                    query = string.Empty;
                 }
             }
 
-            foreach (var part in query.Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries)) {
+            foreach (var part in parsed.FreeTerms)
+            {
+                if (part == "*") continue;
                 c.Terms.Add(part.ToLowerInvariant());
             }
             return c;
         }
 
-        private string ExtractFilter(string query, string filterName, Action<string> assign)
+        internal readonly struct RankedResult
         {
-            var pattern = string.Format(@"(?:^|\s){0}:(?:""(?<quoted>[^""]+)""|(?<plain>\S+))", Regex.Escape(filterName));
-            var match = Regex.Match(query, pattern, RegexOptions.IgnoreCase);
-            if (!match.Success) return query;
+            public SearchIndex.IndexEntry Entry { get; }
+            public int Score { get; }
+            public float VectorSimilarity { get; }
 
-            var value = match.Groups["quoted"].Success
-                ? match.Groups["quoted"].Value
-                : match.Groups["plain"].Value;
-
-            if (!string.IsNullOrWhiteSpace(value))
+            public RankedResult(SearchIndex.IndexEntry entry, int score, float vectorSimilarity)
             {
-                assign(value);
+                Entry = entry;
+                Score = score;
+                VectorSimilarity = vectorSimilarity;
             }
-
-            return query.Remove(match.Index, match.Length).Trim();
         }
 
-        private class RankedResult { public SearchIndex.IndexEntry Entry { get; set; } public int Score { get; set; } public float VectorSimilarity { get; set; } }
+        internal static int CompareRankedResults(RankedResult a, RankedResult b)
+        {
+            int scoreComp = b.Score.CompareTo(a.Score);
+            if (scoreComp != 0) return scoreComp;
+
+            string nameA = a.Entry != null ? a.Entry.Name : string.Empty;
+            string nameB = b.Entry != null ? b.Entry.Name : string.Empty;
+            return string.Compare(nameA ?? string.Empty, nameB ?? string.Empty, StringComparison.Ordinal);
+        }
+
+        internal static int CompareRankedResultsByLastUpdate(RankedResult a, RankedResult b)
+        {
+            if (a.Entry == null && b.Entry == null) return 0;
+            if (a.Entry == null) return 1;
+            if (b.Entry == null) return -1;
+
+            int dateComp = b.Entry.LastUpdate.CompareTo(a.Entry.LastUpdate);
+            if (dateComp != 0) return dateComp;
+
+            int nameComp = string.Compare(a.Entry.Name ?? string.Empty, b.Entry.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            if (nameComp != 0) return nameComp;
+
+            return string.Compare(a.Entry.Guid ?? string.Empty, b.Entry.Guid ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
         private class SearchCriteria {
             public string TypeFilter { get; set; } public string ParentFilter { get; set; } public string ParentPathFilter { get; set; }
             public string UsedByFilter { get; set; } public string DomainFilter { get; set; }

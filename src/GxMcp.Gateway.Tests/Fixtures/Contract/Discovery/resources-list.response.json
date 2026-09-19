@@ -1,4 +1,5 @@
 {
+  "cacheScope": "public",
   "resources": [
     {
       "description": "Browsable list of all attributes.",
@@ -9,6 +10,11 @@
       "description": "Recommended MCP workflow to operate this GeneXus server in an agent-native, Git-friendly way.",
       "name": "GeneXus Agent Playbook",
       "uri": "genexus://kb/agent-playbook"
+    },
+    {
+      "description": "Capability evidence for the active KB and installed GeneXus SDK; availability is queried explicitly and is not hidden in tools/list.",
+      "name": "GeneXus SDK Capabilities",
+      "uri": "genexus://kb/capabilities"
     },
     {
       "description": "Health report for the GeneXus MCP worker and gateway.",
@@ -38,6 +44,12 @@
       "uri": "genexus://kb/skills/navigation"
     },
     {
+      "description": "Official Nexa skill for Knowledge Base management, object modeling, properties, commands, artifact generation, build workflows, and gxnext guidance.",
+      "mimeType": "text/markdown",
+      "name": "Nexa — official GeneXus modeling and KB reference",
+      "uri": "genexus://kb/skills/nexa"
+    },
+    {
       "description": "What makes a Smart Device panel the application entry point, what the **Main program property** does, what objects can be Main.",
       "mimeType": "text/markdown",
       "name": "Smart Device (SD) panel basics — Main property + navigation",
@@ -54,5 +66,7 @@
       "name": "GeneXus Objects Index",
       "uri": "genexus://objects"
     }
-  ]
+  ],
+  "resultType": "complete",
+  "ttlMs": 3600000
 }

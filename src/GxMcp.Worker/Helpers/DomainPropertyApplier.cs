@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
+using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Helpers
 {
@@ -47,9 +48,9 @@ namespace GxMcp.Worker.Helpers
             try { typeProp.SetValue(domain, enumValue, null); }
             catch { return false; }
 
-            TrySetProperty(domain, "Length", length);
-            TrySetProperty(domain, "Decimals", decimals);
-            TrySetProperty(domain, "Signed", signed);
+            if (length.HasValue && !TrySetProperty(domain, "Length", length)) return false;
+            if (decimals.HasValue && !TrySetProperty(domain, "Decimals", decimals)) return false;
+            if (signed.HasValue && !TrySetProperty(domain, "Signed", signed)) return false;
             return true;
         }
 
@@ -58,8 +59,94 @@ namespace GxMcp.Worker.Helpers
             if (domain == null || basedOnDomain == null) return false;
             var p = AttributeTypeApplier.GetPropertyUnambiguous(domain.GetType(), "DomainBasedOn");
             if (p == null) return false;
-            try { p.SetValue(domain, basedOnDomain, null); return true; }
+            try
+            {
+                p.SetValue(domain, basedOnDomain, null);
+                return true;
+            }
             catch { return false; }
+        }
+
+        public static bool ApplyAttributeBasedOn(object target, object basedOnAttribute)
+        {
+            if (target == null || basedOnAttribute == null) return false;
+            var p = AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "AttributeBasedOn");
+            if (p == null) return false;
+            try
+            {
+                p.SetValue(target, basedOnAttribute, null);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public static bool ClearDomainBasedOn(object target)
+        {
+            if (target == null) return false;
+            var p = AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "DomainBasedOn");
+            if (p == null) return false;
+            try { p.SetValue(target, null, null); return true; }
+            catch { return false; }
+        }
+
+        public static bool ClearAttributeBasedOn(object target)
+        {
+            if (target == null) return false;
+            var p = AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "AttributeBasedOn");
+            if (p == null) return false;
+            try { p.SetValue(target, null, null); return true; }
+            catch { return false; }
+        }
+
+        public static string GetAttributeBasedOnName(object target)
+        {
+            if (target == null) return null;
+            try
+            {
+                dynamic d = target;
+                object abo = d.AttributeBasedOn;
+                if (abo != null)
+                {
+                    dynamic attr = abo;
+                    string name = (string)attr.Name;
+                    if (!string.IsNullOrEmpty(name)) return name;
+                }
+            }
+            catch { }
+            try
+            {
+                dynamic d = target;
+                object bo = d.BasedOn;
+                if (bo != null)
+                {
+                    dynamic r = bo;
+                    string typeName = r.BasedOn?.ToString();
+                    if (string.Equals(typeName, "Attribute", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string n = r.Name?.ToString();
+                        if (!string.IsNullOrEmpty(n)) return n;
+                    }
+                }
+            }
+            catch { }
+            try
+            {
+                var p = AttributeTypeApplier.GetPropertyUnambiguous(target.GetType(), "AttributeBasedOn");
+                if (p != null)
+                {
+                    var val = p.GetValue(target, null);
+                    if (val != null)
+                    {
+                        var nameProp = val.GetType().GetProperty("Name");
+                        if (nameProp != null)
+                        {
+                            return (string)nameProp.GetValue(val, null);
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
         }
 
         public static string GetDomainBasedOnName(object target)
@@ -74,6 +161,22 @@ namespace GxMcp.Worker.Helpers
                     dynamic dom = dbo;
                     string name = (string)dom.Name;
                     if (!string.IsNullOrEmpty(name)) return name;
+                }
+            }
+            catch { }
+            try
+            {
+                dynamic d = target;
+                object bo = d.BasedOn;
+                if (bo != null)
+                {
+                    dynamic r = bo;
+                    string typeName = r.BasedOn?.ToString();
+                    if (string.Equals(typeName, "Domain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string n = r.Name?.ToString();
+                        if (!string.IsNullOrEmpty(n)) return n;
+                    }
                 }
             }
             catch { }
@@ -135,6 +238,39 @@ namespace GxMcp.Worker.Helpers
             return -1;
         }
 
+        /// <summary>Return the values currently exposed by the SDK in a stable JSON shape.</summary>
+        public static JArray ReadEnumValues(object domain)
+        {
+            var result = new JArray();
+            if (domain == null) return result;
+            try
+            {
+                object enumValues = AttributeTypeApplier.GetPropertyUnambiguous(domain.GetType(), "EnumValues")
+                    ?.GetValue(domain, null);
+                if (enumValues == null) enumValues = InvokePropertyBagGetEnumValues(domain);
+                object values = enumValues is IEnumerable
+                    ? enumValues
+                    : enumValues == null ? null
+                    : AttributeTypeApplier.GetPropertyUnambiguous(enumValues.GetType(), "Values")?.GetValue(enumValues, null);
+                if (!(values is IEnumerable enumerable)) return result;
+                foreach (object item in enumerable)
+                {
+                    if (item == null) continue;
+                    var jo = new JObject();
+                    foreach (string propertyName in new[] { "Name", "Value", "Description" })
+                    {
+                        object value = null;
+                        try { value = AttributeTypeApplier.GetPropertyUnambiguous(item.GetType(), propertyName)?.GetValue(item, null); }
+                        catch { }
+                        if (value != null) jo[char.ToLowerInvariant(propertyName[0]) + propertyName.Substring(1)] = value.ToString();
+                    }
+                    result.Add(jo);
+                }
+            }
+            catch { }
+            return result;
+        }
+
         private static bool InvokePropertyBagSetEnumValues(object domain, object evsInstance)
         {
             var mi = _setEnumValuesMethod;
@@ -148,10 +284,29 @@ namespace GxMcp.Worker.Helpers
             catch { return false; }
         }
 
+        private static object InvokePropertyBagGetEnumValues(object domain)
+        {
+            var mi = _getEnumValuesMethod;
+            if (mi == null)
+            {
+                mi = ResolveGetEnumValuesMethod();
+                _getEnumValuesMethod = mi;
+            }
+            if (mi == null) return null;
+            try { return mi.Invoke(null, new[] { domain }); }
+            catch { return null; }
+        }
+
         private static MethodInfo ResolveSetEnumValuesMethod()
         {
             var attType = ResolveType("Artech.Genexus.Common.Properties+ATT");
             return attType?.GetMethod("SetEnumValues", BindingFlags.Public | BindingFlags.Static);
+        }
+
+        private static MethodInfo ResolveGetEnumValuesMethod()
+        {
+            var attType = ResolveType("Artech.Genexus.Common.Properties+ATT");
+            return attType?.GetMethod("GetEnumValues", BindingFlags.Public | BindingFlags.Static);
         }
 
         private static Type ResolveType(string fullName)
@@ -199,5 +354,6 @@ namespace GxMcp.Worker.Helpers
             new ConcurrentDictionary<string, Type>(StringComparer.Ordinal);
 
         private static MethodInfo _setEnumValuesMethod;
+        private static MethodInfo _getEnumValuesMethod;
     }
 }

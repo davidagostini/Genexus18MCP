@@ -10,6 +10,15 @@ namespace GxMcp.Worker.Services
 {
     public class ListService
     {
+        private static readonly BoundedStringCache _listCache = new BoundedStringCache(512);
+        private static DateTime _lastIndexTime;
+        private static long _lastGraphRevision;
+
+        public static void InvalidateCache()
+        {
+            _listCache.Clear();
+        }
+
         private readonly KbService _kbService;
         private readonly IndexCacheService _indexCacheService;
 
@@ -52,6 +61,15 @@ namespace GxMcp.Worker.Services
                 since: c.Since,
                 modifiedBefore: c.ModifiedBefore,
                 cursor: c.Cursor);
+        }
+
+        internal static bool PathPrefixMatches(string candidatePath, string requestedPrefix)
+        {
+            if (string.IsNullOrWhiteSpace(candidatePath) || string.IsNullOrWhiteSpace(requestedPrefix)) return false;
+            string candidate = candidatePath.Trim().Replace('\\', '/').TrimEnd('/');
+            string prefix = requestedPrefix.Trim().Replace('\\', '/').TrimEnd('/');
+            return string.Equals(candidate, prefix, StringComparison.OrdinalIgnoreCase)
+                || candidate.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase);
         }
 
         public string ListObjects(string filter, int limit, int offset, string parentFilter = null, string typeFilter = null, string parentPathFilter = null, bool verbose = false, string invokerNameFilter = null, string invokerDescriptionFilter = null, string invokerPathPrefix = null, string sort = null, DateTime since = default(DateTime), DateTime modifiedBefore = default(DateTime), string cursor = null)
@@ -113,6 +131,7 @@ namespace GxMcp.Worker.Services
                 // walk is still in progress and the index is growing; we surface
                 // `partial:true` so the agent knows to retry for the full set.
                 string indexStatusUpper = indexState?.Status ?? string.Empty;
+                bool indexFresh = string.Equals(indexState?.Freshness, "current", StringComparison.OrdinalIgnoreCase);
                 // issue #26 P9: `indexPartial` is the single source of truth for
                 // "the catalogue walk is demonstrably incomplete". Ready/LiteReady/
                 // Enriching all mean the full object catalogue HAS been walked
@@ -121,12 +140,16 @@ namespace GxMcp.Worker.Services
                 // (total/hasMore/pagination/empty-page hints) must key off this
                 // flag rather than assuming non-UltraLite == complete.
                 bool indexPartial = string.Equals(indexStatusUpper, "UltraLiteReady", StringComparison.OrdinalIgnoreCase);
-                bool indexNotReady = index == null
-                    || index.Objects.Count == 0
+                // Built-and-empty is a LEGITIMATELY empty KB (the lite walk completed and
+                // found no model objects — e.g. a KB whose LocalDB model is missing), NOT
+                // a build in progress. Only a null index or a not-yet-built status is
+                // "not ready"; count==0 with Ready/LiteReady/Enriching falls through to
+                // the honest empty-listing branch below instead of looping IndexNotReady.
+                bool indexNotReady = index == null || ((!indexFresh && !indexPartial)
                     || !(string.Equals(indexStatusUpper, "Ready", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(indexStatusUpper, "LiteReady", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(indexStatusUpper, "Enriching", StringComparison.OrdinalIgnoreCase)
-                        || indexPartial);
+                        || indexPartial));
                 if (indexNotReady)
                 {
                     _indexCacheService.EnsureLoadStarted();
@@ -135,14 +158,51 @@ namespace GxMcp.Worker.Services
                         ["status"] = "Indexing",
                         ["code"] = "IndexNotReady",
                         ["indexStatus"] = indexState?.Status ?? "Cold",
+                        ["freshness"] = indexState?.Freshness ?? "stale",
                         ["totalObjects"] = indexState?.TotalObjects ?? 0,
                         ["message"] = BuildIndexingMessage(indexState),
-                        ["hint"] = "Call genexus_whoami to observe progress, then re-issue list_objects."
+                        // Issue #209 (policy A): the gate is fail-closed, so the envelope must be
+                        // awaitable + retryable rather than a dead end. Mirrors the retryAfterMs
+                        // precedent in SourceSearchService.
+                        ["hint"] = "Wait for the index with genexus_lifecycle action=status wait=30 freshness=current, then re-issue list_objects (genexus_whoami observes progress).",
+                        ["retryAfterMs"] = indexState?.EtaMs ?? 5000
                     };
                     if (indexState?.Progress != null) envelope["progress"] = indexState.Progress.Value;
                     if (indexState?.EtaMs != null) envelope["etaMs"] = indexState.EtaMs.Value;
                     return Finalize(envelope.ToString(Newtonsoft.Json.Formatting.None));
                 }
+                if (index.Objects.Count == 0 && !indexPartial)
+                {
+                    // Built-and-empty (Ready / LiteReady / Enriching with 0 entries): the
+                    // walk completed and the KB has no model objects. Return an honest
+                    // empty listing tagged kb_has_no_objects instead of an eternal
+                    // IndexNotReady (which left agents looping `lifecycle action=index
+                    // force=true` on empty KBs forever — there is nothing to index).
+                    // UltraLiteReady/0 is excluded: the walk is still streaming and
+                    // nothing has landed yet, so it must not claim the KB is empty.
+                    var empty = BuildPagedResponseInternal(new JArray(), 0, 0, limit <= 0 ? int.MaxValue : limit);
+                    var meta = empty["_meta"] as JObject ?? new JObject();
+                    meta["empty_reason"] = "kb_has_no_objects";
+                    meta["emptyHint"] = "This KB's model reports no objects (empty KB — e.g. a missing LocalDB model). Create objects with genexus_create or open a different KB; re-running lifecycle action=index cannot populate it.";
+                    empty["_meta"] = meta;
+                    return Finalize(empty.ToString(Newtonsoft.Json.Formatting.None));
+                }
+
+                string cacheKey = $"{filter}|{limit}|{offset}|{parentFilter}|{typeFilter}|{parentPathFilter}|{verbose}|{invokerNameFilter}|{invokerDescriptionFilter}|{invokerPathPrefix}|{sort}|{since:yyyyMMddHHmmss}|{modifiedBefore:yyyyMMddHHmmss}|{cursor}";
+
+                if (index.LastUpdated > _lastIndexTime || index.GraphRevision != _lastGraphRevision)
+                {
+                    _listCache.Clear();
+                    _lastIndexTime = index.LastUpdated;
+                    _lastGraphRevision = index.GraphRevision;
+                }
+
+                if (!indexPartial && !_indexCacheService.IsScanning && _listCache.TryGetValue(cacheKey, out var cached))
+                {
+                    source = "cache";
+                    return Finalize(cached);
+                }
+
                 if (index.Objects.Count > 0)
                 {
                     IEnumerable<SearchIndex.IndexEntry> entries;
@@ -250,7 +310,7 @@ namespace GxMcp.Worker.Services
                     if (!string.IsNullOrEmpty(invokerPathPrefix))
                     {
                         entries = entries.Where(e =>
-                            (e.ParentFolderPath ?? string.Empty).StartsWith(invokerPathPrefix, StringComparison.OrdinalIgnoreCase));
+                            PathPrefixMatches(e.ParentFolderPath, invokerPathPrefix));
                     }
 
                     // v2.6.8: temporal filters (Since inclusive, ModifiedBefore exclusive).
@@ -272,26 +332,30 @@ namespace GxMcp.Worker.Services
                     bool sortByLastUpdate = !string.IsNullOrEmpty(sort) &&
                         string.Equals(sort, "lastUpdate", StringComparison.OrdinalIgnoreCase);
 
+                    IComparer<SearchIndex.IndexEntry> comparer = sortByLastUpdate
+                        ? (IComparer<SearchIndex.IndexEntry>)LastUpdateIndexEntryComparer.Instance
+                        : DefaultIndexEntryComparer.Instance;
+
+                    int startIndex = Math.Max(0, offset);
+                    int pageSize = limit <= 0 ? int.MaxValue : limit;
+                    int needed = (startIndex <= int.MaxValue - pageSize) ? startIndex + pageSize : int.MaxValue;
+
                     List<SearchIndex.IndexEntry> orderedIndexEntries;
-                    if (sortByLastUpdate)
+                    int totalIndex;
+
+                    // PERFORMANCE: If we only need top-K items (common MCP list paging, e.g. limit=50, offset=0)
+                    // and no cursor is specified, use a single-pass bounded heap (O(N log K)) instead of sorting all N items.
+                    if (string.IsNullOrEmpty(cursor) && needed > 0 && needed <= 200)
                     {
-                        orderedIndexEntries = entries
-                            .OrderByDescending(e => e.LastUpdate)
-                            .ThenBy(e => e.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                            .ThenBy(e => e.Guid ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                            .ToList();
+                        orderedIndexEntries = TopKHelper.SelectTopK(entries, needed, comparer, out totalIndex);
                     }
                     else
                     {
-                        orderedIndexEntries = entries
-                            .OrderBy(e => GetTypeSortBucket(e.Type))
-                            .ThenBy(e => e.Name ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                            .ThenBy(e => e.Type ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                            .ToList();
+                        var candidateList = entries.ToList();
+                        totalIndex = candidateList.Count;
+                        candidateList.Sort(comparer);
+                        orderedIndexEntries = candidateList;
                     }
-
-                    int totalIndex = orderedIndexEntries.Count;
-                    int startIndex = Math.Max(0, offset);
 
                     // v2.6.8: stable cursor wins over offset when both arrive. Decode
                     // pulls (lastUpdate, guid); we scan the ordered list to the first
@@ -321,12 +385,12 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
-                    int pageSize = limit <= 0 ? int.MaxValue : limit;
-                    foreach (var entry in orderedIndexEntries
-                        .Skip(startIndex)
-                        .Take(pageSize))
+                    bool legacyMode = IsLegacyPerfProfile();
+                    int endIndex = Math.Min(totalIndex, (int)Math.Min((long)totalIndex, (long)startIndex + pageSize));
+                    for (int i = startIndex; i < endIndex; i++)
                     {
-                        array.Add(BuildItem(
+                        var entry = orderedIndexEntries[i];
+                        array.Add(BuildItemInternal(
                             entry.Name,
                             entry.Type ?? "Unknown",
                             entry.Description,
@@ -338,7 +402,12 @@ namespace GxMcp.Worker.Services
                             verbose,
                             entry.LastUpdate,
                             entry.CreatedAt,
-                            entry.LastModifiedBy
+                            entry.LastModifiedBy,
+                            legacyMode,
+                            entry.Guid,
+                            entry.EntityKey,
+                            entry.EntityTypeGuid,
+                            entry.EntityId
                         ));
                     }
 
@@ -346,9 +415,9 @@ namespace GxMcp.Worker.Services
                     // from the last item of this page so callers can continue without
                     // an offset that drifts as the KB mutates.
                     SearchIndex.IndexEntry lastEmitted = null;
-                    if (sortByLastUpdate && array.Count > 0)
+                    if (sortByLastUpdate && array.Count > 0 && endIndex > startIndex)
                     {
-                        lastEmitted = orderedIndexEntries.Skip(startIndex).Take(pageSize).LastOrDefault();
+                        lastEmitted = orderedIndexEntries[endIndex - 1];
                     }
 
                     var paged = BuildPagedResponseInternal(array, totalIndex, startIndex, pageSize);
@@ -401,13 +470,25 @@ namespace GxMcp.Worker.Services
                     // Empty typeFilter result: hand back the distinct types present so the agent finds the canonical name.
                     if (array.Count == 0 && filterTypes.Count > 0 && index.Objects.Count > 0)
                     {
-                        var distinctTypes = index.Objects.Values
-                            .Select(e => e.Type ?? string.Empty)
-                            .Where(t => !string.IsNullOrEmpty(t))
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
-                            .Take(60)
-                            .ToArray();
+                        string[] distinctTypes;
+                        if (index.TypeIndex != null && index.TypeIndex.Count > 0)
+                        {
+                            distinctTypes = index.TypeIndex.Keys
+                                .Where(t => !string.IsNullOrEmpty(t))
+                                .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+                                .Take(60)
+                                .ToArray();
+                        }
+                        else
+                        {
+                            distinctTypes = index.Objects.Values
+                                .Select(e => e.Type ?? string.Empty)
+                                .Where(t => !string.IsNullOrEmpty(t))
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+                                .Take(60)
+                                .ToArray();
+                        }
                         var meta = paged["_meta"] as JObject ?? new JObject();
                         meta["typesAvailable"] = new JArray(distinctTypes);
                         // issue #25 #4: while the walk is partial, typesAvailable only
@@ -418,9 +499,27 @@ namespace GxMcp.Worker.Services
                             : "typeFilter='" + string.Join(",", filterTypes) + "' matched nothing. See typesAvailable for canonical type names actually present in this KB.";
                         paged["_meta"] = meta;
                     }
-                    return Finalize(paged.ToString());
+                    string json = paged.ToString(Newtonsoft.Json.Formatting.None);
+                    if (!indexPartial && !_indexCacheService.IsScanning)
+                    {
+                        _listCache.TryAdd(cacheKey, json);
+                    }
+                    return Finalize(json);
                 }
 
+                // Defensive fallback for exotic states only (e.g. UltraLiteReady with 0
+                // entries — the walk is streaming but nothing has landed yet): the built-
+                // empty branch above already owns Ready/LiteReady/Enriching with 0 entries,
+                // and a null/cold index fast-fails at the gate, so this path is effectively
+                // unreachable today. Kept as ground-truth SDK enumeration for future index-
+                // loading changes rather than deleted.
+                // STA guard: this fallback enumerates via the COM-flavoured SDK
+                // (kb.DesignModel), which must not be touched off the STA thread —
+                // list runs on the thread-pool (MTA) since it's marked thread-safe
+                // in CommandDispatcher.IsThreadSafe. Surface a typed, retriable
+                // error instead of risking a native AV.
+                if (System.Threading.Thread.CurrentThread.GetApartmentState() != System.Threading.ApartmentState.STA)
+                    return Finalize("{\"status\":\"Error\",\"code\":\"StaRequired\",\"message\":\"Runtime-SDK enumeration requires the STA thread; the in-memory index is unavailable in this state.\",\"retriable\":true}");
                 source = "runtime-sdk";
                 var kb = _kbService.GetKB();
                 if (kb == null) return Finalize("{\"status\":\"Error\",\"message\":\"KB not open\"}");
@@ -474,7 +573,7 @@ namespace GxMcp.Worker.Services
                         string folderPath = string.IsNullOrEmpty(pp)
                             ? "Root Module"
                             : "Root Module/" + pp;
-                        return folderPath.StartsWith(invokerPathPrefix, StringComparison.OrdinalIgnoreCase);
+                        return PathPrefixMatches(folderPath, invokerPathPrefix);
                     });
                 }
 
@@ -526,21 +625,22 @@ namespace GxMcp.Worker.Services
                 int totalRuntime = orderedRuntime.Count;
                 int startRuntime = Math.Max(0, offset);
                 int pageSizeRuntime = limit <= 0 ? int.MaxValue : limit;
-                foreach (var item in orderedRuntime
-                    .Skip(startRuntime)
-                    .Take(pageSizeRuntime))
+                int endRuntime = Math.Min(totalRuntime, (int)Math.Min((long)totalRuntime, (long)startRuntime + pageSizeRuntime));
+                bool runtimeLegacyMode = IsLegacyPerfProfile();
+                for (int i = startRuntime; i < endRuntime; i++)
                 {
+                    var item = orderedRuntime[i];
                     var runtimeParentFolderPath = string.IsNullOrEmpty(item.Hierarchy.ParentPath)
                         ? "Root Module"
                         : "Root Module/" + item.Hierarchy.ParentPath;
                     DateTime rtLastUpdate = default(DateTime);
                     DateTime rtCreatedAt = default(DateTime);
                     string rtLastModifiedBy = null;
-                    try { rtLastUpdate = item.Object.LastUpdate; } catch { }
-                    try { rtCreatedAt = item.Object.VersionDate; } catch { }
+                    try { rtLastUpdate = SdkTimestampNormalizer.NormalizeUtc(item.Object.LastUpdate); } catch { }
+                    try { rtCreatedAt = SdkTimestampNormalizer.NormalizeUtc(item.Object.VersionDate); } catch { }
                     try { rtLastModifiedBy = item.Object.UserName; } catch { }
 
-                    array.Add(BuildItem(
+                    array.Add(BuildItemInternal(
                         item.Object.Name,
                         item.TypeName,
                         item.Object.Description,
@@ -552,11 +652,16 @@ namespace GxMcp.Worker.Services
                         verbose,
                         rtLastUpdate,
                         rtCreatedAt,
-                        rtLastModifiedBy
+                        rtLastModifiedBy,
+                        runtimeLegacyMode,
+                        item.Object.Guid.ToString(),
+                        SafeEntityKey(item.Object),
+                        SafeEntityTypeGuid(item.Object),
+                        SafeEntityId(item.Object)
                     ));
                 }
 
-                return Finalize(BuildPagedResponseInternal(array, totalRuntime, startRuntime, pageSizeRuntime).ToString());
+                return Finalize(BuildPagedResponseInternal(array, totalRuntime, startRuntime, pageSizeRuntime).ToString(Newtonsoft.Json.Formatting.None));
             }
             catch (Exception ex)
             {
@@ -682,18 +787,33 @@ namespace GxMcp.Worker.Services
             // total: count of items in the current page result
             aggregates["total"] = items.Count;
 
-            // by_type: group items by type and count each type
+            // Single-pass computation of by_type, lastUpdate window, and by_author
             var typeGrouping = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var item in items.Cast<JObject>())
+            var byAuthor = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            DateTime? minLu = null, maxLu = null;
+            int last7 = 0;
+            DateTime cutoff = DateTime.UtcNow.AddDays(-7);
+
+            foreach (var token in items)
             {
-                var type = item["type"]?.ToString() ?? "Unknown";
-                if (typeGrouping.ContainsKey(type))
+                if (!(token is JObject item)) continue;
+
+                var type = (string)item["type"] ?? "Unknown";
+                typeGrouping[type] = typeGrouping.TryGetValue(type, out int c) ? c + 1 : 1;
+
+                var luTok = (string)item["lastUpdate"];
+                if (!string.IsNullOrEmpty(luTok) &&
+                    DateTime.TryParse(luTok, null, System.Globalization.DateTimeStyles.RoundtripKind, out var lu))
                 {
-                    typeGrouping[type]++;
+                    if (minLu == null || lu < minLu) minLu = lu;
+                    if (maxLu == null || lu > maxLu) maxLu = lu;
+                    if (lu >= cutoff) last7++;
                 }
-                else
+
+                var who = (string)item["lastModifiedBy"];
+                if (!string.IsNullOrEmpty(who))
                 {
-                    typeGrouping[type] = 1;
+                    byAuthor[who] = byAuthor.TryGetValue(who, out var ac) ? ac + 1 : 1;
                 }
             }
 
@@ -704,24 +824,6 @@ namespace GxMcp.Worker.Services
             }
             aggregates["by_type"] = byTypeObj;
 
-            // v2.6.8: lifecycle aggregates — page-window min/max of lastUpdate and a
-            // count of items modified in the last 7 days. Pulled from the projected
-            // ISO-8601 string on each item so this works for both index and runtime
-            // paths without needing the original IndexEntry.
-            DateTime? minLu = null, maxLu = null;
-            int last7 = 0;
-            DateTime cutoff = DateTime.UtcNow.AddDays(-7);
-            foreach (var item in items.Cast<JObject>())
-            {
-                var luTok = item["lastUpdate"]?.ToString();
-                if (string.IsNullOrEmpty(luTok)) continue;
-                if (!DateTime.TryParse(luTok, null,
-                        System.Globalization.DateTimeStyles.RoundtripKind, out var lu))
-                    continue;
-                if (minLu == null || lu < minLu) minLu = lu;
-                if (maxLu == null || lu > maxLu) maxLu = lu;
-                if (lu >= cutoff) last7++;
-            }
             if (minLu.HasValue && maxLu.HasValue)
             {
                 aggregates["lastUpdate"] = new JObject
@@ -732,15 +834,6 @@ namespace GxMcp.Worker.Services
                 aggregates["modified_last_7d"] = last7;
             }
 
-            // v2.6.8: per-page authorship counts. Answers "who's been touching this
-            // area" in one round-trip when items carry lastModifiedBy (verbose=true).
-            var byAuthor = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var item in items.Cast<JObject>())
-            {
-                var who = item["lastModifiedBy"]?.ToString();
-                if (string.IsNullOrEmpty(who)) continue;
-                byAuthor[who] = byAuthor.TryGetValue(who, out var c) ? c + 1 : 1;
-            }
             if (byAuthor.Count > 0)
             {
                 var byAuthorObj = new JObject();
@@ -774,7 +867,7 @@ namespace GxMcp.Worker.Services
 
         public static JObject BuildItemForTest(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose = false)
         {
-            return BuildItemInternal(name, type, description, parent, module, path, parentPath, null, verbose, default(DateTime), default(DateTime), null);
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, null, verbose, default(DateTime), default(DateTime), null, IsLegacyPerfProfile());
         }
 
         // v2.6.8: lifecycle metadata projection helper. Returns null when both date
@@ -782,7 +875,7 @@ namespace GxMcp.Worker.Services
         // to skip the field entirely vs. emit a sentinel.
         public static JObject BuildItemForTest(string name, string type, string description, string parent, string module, string path, string parentPath, bool verbose, DateTime lastUpdate, DateTime createdAt, string lastModifiedBy)
         {
-            return BuildItemInternal(name, type, description, parent, module, path, parentPath, null, verbose, lastUpdate, createdAt, lastModifiedBy);
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, null, verbose, lastUpdate, createdAt, lastModifiedBy, IsLegacyPerfProfile());
         }
 
         // Test helper: allows tests to call BuildPagedResponse with mocked data
@@ -793,21 +886,30 @@ namespace GxMcp.Worker.Services
             return svc.BuildPagedResponseInternal(items, total, offset, pageSize);
         }
 
-        private JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose = false, DateTime lastUpdate = default(DateTime), DateTime createdAt = default(DateTime), string lastModifiedBy = null)
+        private static JObject BuildItem(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose = false, DateTime lastUpdate = default(DateTime), DateTime createdAt = default(DateTime), string lastModifiedBy = null)
         {
-            return BuildItemInternal(name, type, description, parent, module, path, parentPath, parentFolderPath, verbose, lastUpdate, createdAt, lastModifiedBy);
+            // PERFORMANCE (perf-review): resolve the legacy-profile flag once per page
+            // instead of once per item — BuildItemInternal runs for every row of every
+            // list_objects response, and each Environment.GetEnvironmentVariable call
+            // plus string compare per row was pure waste (200 rows = 200 env lookups).
+            bool legacyMode = IsLegacyPerfProfile();
+            return BuildItemInternal(name, type, description, parent, module, path, parentPath, parentFolderPath, verbose, lastUpdate, createdAt, lastModifiedBy, legacyMode);
         }
 
-        private static JObject BuildItemInternal(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose, DateTime lastUpdate, DateTime createdAt, string lastModifiedBy)
+        internal static bool IsLegacyPerfProfile()
+        {
+            string perfProfile = Environment.GetEnvironmentVariable("MCP_PERF_PROFILE");
+            return !string.IsNullOrWhiteSpace(perfProfile) &&
+                   string.Equals(perfProfile, "legacy", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static JObject BuildItemInternal(string name, string type, string description, string parent, string module, string path, string parentPath, string parentFolderPath, bool verbose, DateTime lastUpdate, DateTime createdAt, string lastModifiedBy, bool isLegacyMode = false,
+            string guid = null, string entityKey = null, string entityTypeGuid = null, int? entityId = null)
         {
             var item = new JObject();
             item["name"] = name;
             item["type"] = type;
-
-            // Check if we're in legacy mode (MCP_PERF_PROFILE=legacy means V1Enabled=false)
-            string perfProfile = Environment.GetEnvironmentVariable("MCP_PERF_PROFILE");
-            bool isLegacyMode = !string.IsNullOrWhiteSpace(perfProfile) &&
-                               string.Equals(perfProfile, "legacy", StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(guid)) item["guid"] = guid;
 
             // In legacy mode, always return full shape for backward compatibility
             if (isLegacyMode || verbose)
@@ -817,6 +919,9 @@ namespace GxMcp.Worker.Services
                 item["module"] = module;
                 item["path"] = path;
                 item["parentPath"] = parentPath;
+                if (!string.IsNullOrWhiteSpace(entityKey)) item["entityKey"] = entityKey;
+                if (!string.IsNullOrWhiteSpace(entityTypeGuid)) item["entityTypeGuid"] = entityTypeGuid;
+                if (entityId.HasValue) item["entityId"] = entityId.Value;
             }
             else
             {
@@ -857,6 +962,21 @@ namespace GxMcp.Worker.Services
             }
 
             return item;
+        }
+
+        private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.ToString(); } catch { return null; }
+        }
+
+        private static string SafeEntityTypeGuid(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Type.ToString(); } catch { return null; }
+        }
+
+        private static int? SafeEntityId(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Id; } catch { return null; }
         }
 
         private HierarchyInfo ResolveHierarchy(dynamic obj)
@@ -951,6 +1071,7 @@ namespace GxMcp.Worker.Services
         private static string BuildIndexingMessage(GxMcp.Worker.Models.IndexState state)
         {
             string status = state?.Status ?? "Cold";
+            string freshness = state?.Freshness ?? "stale";
             int? etaMs = state?.EtaMs;
             double? progress = state?.Progress;
 
@@ -967,7 +1088,8 @@ namespace GxMcp.Worker.Services
                 progressSegment = $"{(int)Math.Round(progress.Value * 100)}% complete";
             }
 
-            string phase = string.Equals(status, "Reindexing", StringComparison.OrdinalIgnoreCase) ? "Rebuilding index"
+            string phase = !string.Equals(freshness, "current", StringComparison.OrdinalIgnoreCase) && string.Equals(status, "Ready", StringComparison.OrdinalIgnoreCase) ? "Refreshing restored index"
+                : string.Equals(status, "Reindexing", StringComparison.OrdinalIgnoreCase) ? "Rebuilding index"
                 : string.Equals(status, "UltraLiteReady", StringComparison.OrdinalIgnoreCase) ? "Walking KB (ultra-lite pass)"
                 : string.Equals(status, "Cold", StringComparison.OrdinalIgnoreCase) ? "Building index from cold start"
                 : "Building index";
@@ -978,13 +1100,17 @@ namespace GxMcp.Worker.Services
             return string.Join(", ", parts) + ".";
         }
 
+        private static readonly HashSet<string> _likelyTypes = new HashSet<string>(
+            new[] { "Folder", "Module", "Procedure", "Transaction", "WebPanel", "Attribute", "Table", "DataView", "Domain", "WorkPanel", "ExternalObject", "Menu", "SDPanel", "DataProvider", "SDT", "StructuredDataType", "Image" },
+            StringComparer.OrdinalIgnoreCase);
+
         private bool IsLikelyType(string s)
         {
-            var types = new[] { "Folder", "Module", "Procedure", "Transaction", "WebPanel", "Attribute", "Table", "DataView", "Domain", "WorkPanel", "ExternalObject", "Menu", "SDPanel", "DataProvider", "SDT", "StructuredDataType", "Image" };
-            return types.Any(t => string.Equals(t, s, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(s)) return false;
+            return _likelyTypes.Contains(s);
         }
 
-        private int GetTypeSortBucket(string type)
+        internal static int GetTypeSortBucket(string type)
         {
             if (string.Equals(type, "Folder", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(type, "Module", StringComparison.OrdinalIgnoreCase))
@@ -1058,6 +1184,51 @@ namespace GxMcp.Worker.Services
                 return (ts, parts[1], parts[2]);
             }
             catch { return null; }
+        }
+    }
+
+    internal sealed class DefaultIndexEntryComparer : IComparer<SearchIndex.IndexEntry>
+    {
+        public static readonly DefaultIndexEntryComparer Instance = new DefaultIndexEntryComparer();
+
+        public int Compare(SearchIndex.IndexEntry x, SearchIndex.IndexEntry y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x == null) return -1;
+            if (y == null) return 1;
+
+            int bucketX = ListService.GetTypeSortBucket(x.Type);
+            int bucketY = ListService.GetTypeSortBucket(y.Type);
+            int c = bucketX.CompareTo(bucketY);
+            if (c != 0) return c;
+
+            c = string.Compare(x.Name ?? string.Empty, y.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            if (c != 0) return c;
+
+            c = string.Compare(x.Type ?? string.Empty, y.Type ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            if (c != 0) return c;
+
+            return string.Compare(x.Guid ?? string.Empty, y.Guid ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    internal sealed class LastUpdateIndexEntryComparer : IComparer<SearchIndex.IndexEntry>
+    {
+        public static readonly LastUpdateIndexEntryComparer Instance = new LastUpdateIndexEntryComparer();
+
+        public int Compare(SearchIndex.IndexEntry x, SearchIndex.IndexEntry y)
+        {
+            if (ReferenceEquals(x, y)) return 0;
+            if (x == null) return -1;
+            if (y == null) return 1;
+
+            int c = y.LastUpdate.CompareTo(x.LastUpdate);
+            if (c != 0) return c;
+
+            c = string.Compare(x.Name ?? string.Empty, y.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            if (c != 0) return c;
+
+            return string.Compare(x.Guid ?? string.Empty, y.Guid ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         }
     }
 

@@ -31,7 +31,7 @@ namespace GxMcp.Worker.Tests
             var (tryEnable, invocationCount) = LoadHelper();
             long before = (long)invocationCount.GetValue(null)!;
 
-            bool result = (bool)tryEnable.Invoke(null, new object?[] { null })!;
+            bool result = (bool)tryEnable.Invoke(null, new object[] { null })!;
 
             Assert.False(result);
             long after = (long)invocationCount.GetValue(null)!;

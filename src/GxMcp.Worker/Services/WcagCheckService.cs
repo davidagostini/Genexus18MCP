@@ -166,17 +166,26 @@ namespace GxMcp.Worker.Services
             return t;
         }
 
+        private static readonly Regex HtmlTagRegex = new Regex(
+            @"<\s*[a-zA-Z][a-zA-Z0-9]*(\s[^>]*)?>",
+            RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        private static readonly Regex ElemMatchRegex = new Regex(
+            @"<\s*(?<tag>[a-zA-Z][\w:-]*)\b(?<attrs>[^/>]*)/?>",
+            RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Regex> AttrRegexCache =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, Regex>(StringComparer.OrdinalIgnoreCase);
+
         private static bool LooksLikeHtml(string s)
         {
             if (string.IsNullOrEmpty(s)) return false;
-            // Naive — flag if it contains an opening tag like <b>, <span ...>, <img ...>.
-            return Regex.IsMatch(s, @"<\s*[a-zA-Z][a-zA-Z0-9]*(\s[^>]*)?>", RegexOptions.CultureInvariant);
+            return HtmlTagRegex.IsMatch(s);
         }
 
         private static void ScanWithRegex(string xml, JArray violations)
         {
-            // Fallback path. Find element tokens and grab Caption / Tooltip / Name.
-            var elemMatches = Regex.Matches(xml, @"<\s*(?<tag>[a-zA-Z][\w:-]*)\b(?<attrs>[^/>]*)/?>", RegexOptions.CultureInvariant);
+            var elemMatches = ElemMatchRegex.Matches(xml);
             foreach (Match m in elemMatches)
             {
                 string attrs = m.Groups["attrs"].Value;
@@ -218,7 +227,8 @@ namespace GxMcp.Worker.Services
         {
             foreach (var n in names)
             {
-                var m = Regex.Match(attrs, n + @"\s*=\s*""(?<v>[^""]*)""", RegexOptions.CultureInvariant);
+                var rx = AttrRegexCache.GetOrAdd(n, name => new Regex(name + @"\s*=\s*""(?<v>[^""]*)""", RegexOptions.CultureInvariant | RegexOptions.Compiled));
+                var m = rx.Match(attrs);
                 if (m.Success && !string.IsNullOrEmpty(m.Groups["v"].Value)) return m.Groups["v"].Value;
             }
             return null;

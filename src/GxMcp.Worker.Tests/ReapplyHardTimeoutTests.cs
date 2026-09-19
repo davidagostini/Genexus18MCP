@@ -14,8 +14,7 @@ namespace GxMcp.Worker.Tests
         {
             string svcSrc = System.IO.File.ReadAllText(
                 System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services",
+                    TestFixtures.FindRepoRoot(), "src", "GxMcp.Worker", "Services",
                     "PatternApplyService.cs"));
 
             Assert.Contains("GENEXUS_MCP_REAPPLY_TIMEOUT_MS", svcSrc);

@@ -88,15 +88,26 @@ namespace GxMcp.Worker.Services
             string metaJson = JsonConvert.SerializeObject(metadata);
             byte[] metaBytes = Encoding.UTF8.GetBytes(metaJson);
 
-            using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
-            using (var bw = new BinaryWriter(fs))
+            string tempPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
+            try
             {
-                bw.Write(Magic);
-                bw.Write(Version);
-                bw.Write(metaBytes.Length);
-                bw.Write(metaBytes);
-                bw.Write(payload.Length);
-                bw.Write(payload);
+                using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+                using (var bw = new BinaryWriter(fs))
+                {
+                    bw.Write(Magic);
+                    bw.Write(Version);
+                    bw.Write(metaBytes.Length);
+                    bw.Write(metaBytes);
+                    bw.Write(payload.Length);
+                    bw.Write(payload);
+                    fs.Flush(true);
+                }
+                if (File.Exists(path)) File.Replace(tempPath, path, null);
+                else File.Move(tempPath, path);
+            }
+            finally
+            {
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
             }
         }
 
@@ -145,6 +156,8 @@ namespace GxMcp.Worker.Services
 
     public static class WarmIndexSnapshot
     {
+        public const int DefaultSchemaVersion = 1;
+
         // Injectable for tests; production uses DiskWarmSnapshotStore.
         private static IWarmSnapshotStore _store = new DiskWarmSnapshotStore();
         public static void SetStoreForTests(IWarmSnapshotStore store)
@@ -155,8 +168,36 @@ namespace GxMcp.Worker.Services
         /// <summary>Default snapshot path under the KB's .gx folder.</summary>
         public static string DefaultPath(string kbPath)
         {
-            if (string.IsNullOrEmpty(kbPath)) return null;
-            return Path.Combine(kbPath, ".gx", "index-snapshot.bin");
+            string directory = NormalizeKbPath(kbPath);
+            return string.IsNullOrEmpty(directory)
+                ? null
+                : Path.Combine(directory, ".gx", "index-snapshot.bin");
+        }
+
+        /// <summary>
+        /// Normalizes the KB identity used by the warm snapshot. OpenKB accepts both
+        /// a KB directory and a .gxw/.gx file, while the snapshot always lives under
+        /// the directory; using one representation avoids false path-mismatch fallbacks.
+        /// </summary>
+        public static string NormalizeKbPath(string kbPath)
+        {
+            if (string.IsNullOrWhiteSpace(kbPath)) return null;
+            string value = kbPath.Trim();
+            try
+            {
+                string extension = Path.GetExtension(value);
+                if (string.Equals(extension, ".gxw", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(extension, ".gx", StringComparison.OrdinalIgnoreCase))
+                {
+                    value = Path.GetDirectoryName(value);
+                }
+                if (string.IsNullOrWhiteSpace(value)) return null;
+                return Path.GetFullPath(value).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            }
+            catch
+            {
+                return value.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            }
         }
 
         /// <summary>
@@ -194,14 +235,23 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public static void Save(string path, byte[] payload, string kbPath, int objectCount, string workerDllPath = null)
+        public static void Save(
+            string path,
+            byte[] payload,
+            string kbPath,
+            int objectCount,
+            string workerDllPath = null,
+            int schemaVersion = DefaultSchemaVersion,
+            string highWaterMarkUtc = null)
         {
             var meta = new WarmIndexSnapshotMetadata
             {
                 WorkerDllSha256 = ComputeWorkerDllSha256(workerDllPath),
-                KbPath = kbPath ?? string.Empty,
+                KbPath = NormalizeKbPath(kbPath) ?? string.Empty,
                 CapturedAtUtc = DateTime.UtcNow.ToString("o"),
-                ObjectCount = objectCount
+                ObjectCount = objectCount,
+                SchemaVersion = schemaVersion <= 0 ? DefaultSchemaVersion : schemaVersion,
+                HighWaterMarkUtc = highWaterMarkUtc
             };
             _store.Save(path, meta, payload);
         }

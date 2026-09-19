@@ -33,14 +33,19 @@ namespace GxMcp.Worker.Services
                             "Open the target KB before calling db_info.")));
                 }
 
-                dynamic environment = kb.DesignModel.Environment;
-                string environmentName = TryGet(() => (string)environment.Name) ?? "";
+                dynamic environment = TryGet(() => (object)kb.DesignModel.Environment);
+                string environmentName = _kbService?.GetActiveEnvironment();
+                if (string.IsNullOrWhiteSpace(environmentName))
+                    environmentName = TryGet(() => (string)environment.TargetModel.Name);
+                if (string.IsNullOrWhiteSpace(environmentName))
+                    environmentName = TryGet(() => (string)environment.Name);
                 env["environment"] = environmentName;
+                env["environmentState"] = string.IsNullOrWhiteSpace(environmentName) ? "unresolved" : "resolved";
 
                 var stores = new JArray();
                 JObject defaultStore = null;
 
-                foreach (dynamic ds in EnumerateDataStores(kb))
+                foreach (dynamic ds in EnumerateActiveEnvironmentDataStores(kb))
                 {
                     if (ds == null) continue;
                     // Cast the dynamic BuildEntry(ds) result to JObject so the generic
@@ -60,6 +65,7 @@ namespace GxMcp.Worker.Services
                 }
 
                 env["datastores"] = stores;
+                env["datastoreState"] = defaultStore == null ? "unresolved" : "resolved";
                 if (defaultStore != null)
                 {
                     env["default"] = new JObject
@@ -79,8 +85,13 @@ namespace GxMcp.Worker.Services
             {
                 return McpResponse.Err(
                     code: "DatabaseInfoFailed",
-                    message: ex.Message,
-                    hint: "Check that the KB environment exposes DataStores via the SDK.");
+                    message: "The active environment datastore metadata could not be read.",
+                    hint: "Check that the KB environment exposes DataStores via the SDK.",
+                    errorExtra: new JObject
+                    {
+                        ["exceptionType"] = ex.GetType().Name,
+                        ["state"] = "unresolved"
+                    });
             }
         }
 
@@ -92,7 +103,7 @@ namespace GxMcp.Worker.Services
         {
             if (kb == null) return null;
             JObject first = null;
-            foreach (dynamic ds in EnumerateDataStores(kb))
+            foreach (dynamic ds in EnumerateActiveEnvironmentDataStores(kb))
             {
                 if (ds == null) continue;
                 // ds is dynamic, so BuildEntry(ds) is a dynamic call — cast to JObject so
@@ -106,81 +117,39 @@ namespace GxMcp.Worker.Services
         }
 
 
-        private static IEnumerable<dynamic> EnumerateDataStores(dynamic kb)
-        {
-            var collected = new List<dynamic>();
-
-            // v2.8.2 — primary path: the DataStoresPart KBModelPart. The legacy paths below
-            // miss it on many KBs because KBModelPartCollection is keyed by Guid (so
-            // Parts.Get("DataStores") with a string finds nothing) and Environment.DataStores /
-            // TargetModel.DataStore come back null. DataStoresPart.DataStores is the real,
-            // documented accessor for the GxDataStore collection.
-            try
-            {
-                var viaPart = EnumerateViaDataStoresPart(kb);
-                if (viaPart.Count > 0) return viaPart;
-            }
-            catch { }
-
-            try
-            {
-                dynamic part = TryGet(() => kb.DesignModel.Parts.Get("DataStores"));
-                if (part != null)
-                {
-                    foreach (dynamic ds in (System.Collections.IEnumerable)part)
-                    {
-                        collected.Add(ds);
-                    }
-                    if (collected.Count > 0) return collected;
-                }
-            }
-            catch { }
-
-            try
-            {
-                dynamic envDs = TryGet(() => kb.DesignModel.Environment.DataStores);
-                if (envDs != null)
-                {
-                    foreach (dynamic ds in (System.Collections.IEnumerable)envDs)
-                    {
-                        collected.Add(ds);
-                    }
-                    if (collected.Count > 0) return collected;
-                }
-            }
-            catch { }
-
-            try
-            {
-                dynamic targetDs = TryGet(() => kb.DesignModel.Environment.TargetModel.DataStore);
-                if (targetDs != null) collected.Add(targetDs);
-            }
-            catch { }
-
-            return collected;
-        }
 
         // v2.8.2 — enumerate GxDataStores via the DataStoresPart model part. The part lives in
         // model.Parts (a Guid-keyed KBModelPartCollection), so we iterate and match by type name
         // rather than guessing the part's Guid. Tries the design model first, then the
         // environment's target model. Shared with KbService's [KB-OPEN-DATASTORE] diagnostic.
-        internal static List<dynamic> EnumerateViaDataStoresPart(dynamic kb)
+        internal static List<dynamic> EnumerateViaDataStoresPart(dynamic kb, bool activeEnvironmentOnly = false)
         {
             var found = new List<dynamic>();
             if (kb == null) return found;
 
             var models = new List<dynamic>();
-            try { var m = kb.DesignModel; if (m != null) models.Add(m); } catch { }
-            try { var tm = kb.DesignModel.Environment.TargetModel; if (tm != null) models.Add(tm); } catch { }
+            if (activeEnvironmentOnly)
+            {
+                try { var tm = kb.DesignModel.Environment.TargetModel; if (tm != null) models.Add(tm); } catch { }
+                try { var tm = kb.Environment.TargetModel; if (tm != null) models.Add(tm); } catch { }
+            }
+            else
+            {
+                try { var m = kb.DesignModel; if (m != null) models.Add(m); } catch { }
+                try { var tm = kb.DesignModel.Environment.TargetModel; if (tm != null) models.Add(tm); } catch { }
+            }
             // The DataStoresPart often lives on an environment model that is neither the design
             // model nor the target model. KBEnvironment.Models exposes them all — try each.
-            try
+            if (!activeEnvironmentOnly)
             {
-                var all = kb.DesignModel.Environment.Models;
-                if (all is System.Collections.IEnumerable me)
-                    foreach (var m in me) { if (m != null) models.Add(m); }
+                try
+                {
+                    var all = kb.DesignModel.Environment.Models;
+                    if (all is System.Collections.IEnumerable me)
+                        foreach (var m in me) { if (m != null) models.Add(m); }
+                }
+                catch { }
             }
-            catch { }
 
             foreach (var model in models)
             {
@@ -219,6 +188,40 @@ namespace GxMcp.Worker.Services
             return found;
         }
 
+        // Records operations must never silently use the design model's datastore
+        // after an environment switch. Keep this resolver target-model-only and
+        // fall back only to datastore properties exposed by that same model.
+        internal static List<dynamic> EnumerateActiveEnvironmentDataStores(dynamic kb)
+        {
+            var found = EnumerateViaDataStoresPart(kb, activeEnvironmentOnly: true);
+            if (found.Count > 0) return found;
+
+            var targetModels = new List<dynamic>();
+            try { var tm = kb?.DesignModel?.Environment?.TargetModel; if (tm != null) targetModels.Add(tm); } catch { }
+            try { var tm = kb?.Environment?.TargetModel; if (tm != null) targetModels.Add(tm); } catch { }
+
+            foreach (var model in targetModels)
+            {
+                try
+                {
+                    dynamic stores = model.DataStores;
+                    if (stores is System.Collections.IEnumerable sequence)
+                        foreach (var ds in sequence) if (ds != null) found.Add(ds);
+                }
+                catch { }
+                if (found.Count > 0) return found;
+
+                try
+                {
+                    dynamic store = model.DataStore;
+                    if (store != null) found.Add(store);
+                }
+                catch { }
+                if (found.Count > 0) return found;
+            }
+            return found;
+        }
+
         private static JObject BuildEntry(dynamic ds)
         {
             // GxDataStore has no direct Name property — fall back to its Category name / Type.
@@ -226,9 +229,11 @@ namespace GxMcp.Worker.Services
                           ?? TryGet(() => (string)ds.Category.Name)
                           ?? TryGet(() => (string)ds.Type)
                           ?? "";
-            int dbmsInt = TryGetInt(() => (int)ds.Dbms);
-            string family = ExecutionPlanFetcher.ResolveDbmsFamily(dbmsInt);
+            int dbmsInt = DatabaseProviderResolver.GetDbmsCode(ds);
+            string family = DatabaseProviderResolver.ResolveFamily(ds);
             string typeLabel = DbmsTypeLabel(dbmsInt);
+            if (string.Equals(typeLabel, "Unknown", StringComparison.OrdinalIgnoreCase))
+                typeLabel = FamilyTypeLabel(family);
             bool isDefault = false;
             try { isDefault = (bool)ds.IsDefault; }
             catch
@@ -242,11 +247,7 @@ namespace GxMcp.Worker.Services
             // confirmed by descriptor dump against a live Oracle KB. The friendly names
             // (ServerName/Schema/UserId) return empty. Try the real names first, keep the
             // friendly ones as cross-version fallbacks.
-            string provider = TryProperty(ds, "ADONET_DRIVER")
-                              ?? TryProperty(ds, "JDBC_DRIVER")
-                              ?? TryProperty(ds, "AdoNetProvider")
-                              ?? TryProperty(ds, "Provider")
-                              ?? "";
+            string provider = DatabaseProviderResolver.GetProvider(ds) ?? "";
             string serverName = TryProperty(ds, "CS_SERVER")
                               ?? TryProperty(ds, "ServerName")
                               ?? "";
@@ -350,14 +351,22 @@ namespace GxMcp.Worker.Services
 
         private static string TryProperty(dynamic ds, string propertyName)
         {
-            try
+            return DatabaseProviderResolver.TryProperty(ds, propertyName);
+        }
+
+        private static string FamilyTypeLabel(string family)
+        {
+            switch (family)
             {
-                var raw = ds.Properties.GetPropertyValue(propertyName);
-                if (raw == null) return null;
-                string s = raw.ToString();
-                return string.IsNullOrEmpty(s) ? null : s;
+                case "sqlserver": return "SqlServer";
+                case "oracle": return "Oracle";
+                case "postgres": return "PostgreSQL";
+                case "mysql": return "MySQL";
+                case "db2": return "Db2";
+                case "informix": return "Informix";
+                case "saphana": return "SAPHana";
+                default: return "Unknown";
             }
-            catch { return null; }
         }
 
         private static T TryGet<T>(Func<T> f)

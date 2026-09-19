@@ -96,5 +96,50 @@ namespace GxMcp.Worker.Tests
                 try { Directory.Delete(tmpKb, recursive: true); } catch { }
             }
         }
+
+        [Fact]
+        public void RotateFrictionLog_KeepsNewestLinesOnly()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "gxmcp_fric_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                string path = Path.Combine(dir, "friction.jsonl");
+                File.WriteAllLines(path, new[] { "l0", "l1", "l2", "l3", "l4" });
+
+                Assert.Equal(0, FrictionLogService.RotateFrictionLog(path, 10));
+                Assert.Equal(5, File.ReadAllLines(path).Length);
+
+                Assert.Equal(2, FrictionLogService.RotateFrictionLog(path, 2));
+                Assert.Equal(new[] { "l3", "l4" }, File.ReadAllLines(path));
+
+                Assert.Equal(0, FrictionLogService.RotateFrictionLog(
+                    Path.Combine(dir, "missing.jsonl"), 2));
+            }
+            finally
+            {
+                try { Directory.Delete(dir, recursive: true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void ResolveFrictionLogMaxLines_DefaultsAndDisables()
+        {
+            try
+            {
+                Environment.SetEnvironmentVariable("GXMCP_FRICTION_LOG_MAX_LINES", null);
+                Assert.Equal(5000, FrictionLogService.ResolveFrictionLogMaxLines());
+
+                Environment.SetEnvironmentVariable("GXMCP_FRICTION_LOG_MAX_LINES", "100");
+                Assert.Equal(100, FrictionLogService.ResolveFrictionLogMaxLines());
+
+                Environment.SetEnvironmentVariable("GXMCP_FRICTION_LOG_MAX_LINES", "0");
+                Assert.Equal(int.MaxValue, FrictionLogService.ResolveFrictionLogMaxLines());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_FRICTION_LOG_MAX_LINES", null);
+            }
+        }
     }
 }

@@ -20,10 +20,12 @@ namespace GxMcp.Worker.Services
     public class MemoryService
     {
         private readonly KbService _kbService;
+        private readonly VectorService _vectorService;
 
-        public MemoryService(KbService kbService)
+        public MemoryService(KbService kbService, VectorService vectorService = null)
         {
             _kbService = kbService;
+            _vectorService = vectorService;
         }
 
         public string Save(string fact, string objectName, string objectType, string[] tags, string kbPathOverride = null)

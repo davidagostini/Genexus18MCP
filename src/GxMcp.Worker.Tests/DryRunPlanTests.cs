@@ -102,5 +102,58 @@ namespace GxMcp.Worker.Tests
                 item["code"]?.ToString() == "impactAnalysisUnavailable" &&
                 item["path"]?.ToString() == "/plan/brokenRefs");
         }
+
+        [Fact]
+        public void ImpactAnalysis_ReportsExplicitMissingCallFromLoadedIndex()
+        {
+            var index = new IndexCacheService();
+            index.LoadFromEntries(new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Caller", Type = "Procedure" },
+                new SearchIndex.IndexEntry { Name = "Existing", Type = "Procedure" }
+            });
+            var validator = new KbValidationService(index, null, null);
+
+            var refs = validator.AnalyzeImpact("Caller", "<Procedure><Source><![CDATA[call(MissingProc)\ncall(Existing)]]></Source></Procedure>");
+
+            var missing = Assert.Single(refs);
+            Assert.Equal("Caller", missing.From);
+            Assert.Equal("Procedure", missing.FromType);
+            Assert.Equal("MissingProc", missing.To);
+            Assert.Contains("not found", missing.Reason);
+        }
+
+        [Fact]
+        public void ImpactAnalysis_AcceptsModuleQualifiedKnownObject()
+        {
+            var index = new IndexCacheService();
+            index.LoadFromEntries(new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Existing", Type = "Procedure" }
+            });
+            var validator = new KbValidationService(index, null, null);
+
+            var refs = validator.AnalyzeImpact("Caller", "<Procedure><Source><![CDATA[udp(MyModule.Existing)]]></Source></Procedure>");
+
+            Assert.Empty(refs);
+        }
+
+        [Fact]
+        public void BuildEnvelope_WithValidatorButNoLoadedIndexAddsWarning()
+        {
+            var validator = new KbValidationService(new IndexCacheService(), null, null);
+
+            var env = DryRunPlanBuilder.BuildEnvelope(
+                "MyObj",
+                "<Procedure><Source>old</Source></Procedure>",
+                "<Procedure><Source>call(Missing)</Source></Procedure>",
+                "patch",
+                validator);
+
+            var warnings = (JArray)env["plan"]["warnings"];
+            Assert.Contains(warnings, item =>
+                item["code"]?.ToString() == "impactAnalysisUnavailable");
+            Assert.Empty((JArray)env["plan"]["brokenRefs"]);
+        }
     }
 }

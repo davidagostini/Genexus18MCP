@@ -125,6 +125,123 @@ namespace GxMcp.Gateway.Tests
             Assert.True(dupes.Count == 0, "Duplicate tool names: " + string.Join(", ", dupes));
         }
 
+        [Fact]
+        public void GeneratorReferenceToolHasExactTypedActionsAndSelection()
+        {
+            using var doc = LoadTools();
+            var tool = doc.RootElement.EnumerateArray()
+                .Single(t => t.GetProperty("name").GetString() == "genexus_generator_reference");
+            var schema = tool.GetProperty("inputSchema");
+            var actions = schema.GetProperty("properties").GetProperty("action").GetProperty("enum")
+                .EnumerateArray().Select(x => x.GetString()).ToArray();
+            var required = schema.GetProperty("required").EnumerateArray()
+                .Select(x => x.GetString()).ToArray();
+
+            Assert.Equal(new[] { "list", "dry_run_add", "add", "dry_run_remove", "remove" }, actions);
+            Assert.Equal(new[] { "action", "environment", "generator" }, required);
+        }
+
+        /// <summary>
+        /// No schema reachable from tools/list may contain a $ref cycle. Providers like
+        /// xAI/Grok reject the entire tools/list request with
+        /// "[invalid_request_error] Recursive JSON schemas are not currently supported"
+        /// when any tool's schema is self-referential, so one cyclic tool breaks every
+        /// session. Inline bounded-depth object schemas instead.
+        /// </summary>
+        [Fact]
+        public void NoSchemaContainsRecursiveRefs()
+        {
+            using var doc = LoadTools();
+            var violations = new List<string>();
+
+            foreach (var tool in doc.RootElement.EnumerateArray())
+            {
+                var toolName = tool.GetProperty("name").GetString() ?? "<unnamed>";
+                if (tool.TryGetProperty("inputSchema", out var schema))
+                    WalkForRefCycles(schema, "", toolName + ".inputSchema", new HashSet<string>(StringComparer.Ordinal), violations);
+                if (tool.TryGetProperty("outputSchema", out var output))
+                    WalkForRefCycles(output, "", toolName + ".outputSchema", new HashSet<string>(StringComparer.Ordinal), violations);
+            }
+
+            Assert.True(violations.Count == 0,
+                "tool_definitions.json has self-referential schemas (upstream invalid_request_error: Recursive JSON schemas are not currently supported):\n  - " +
+                string.Join("\n  - ", violations));
+        }
+
+        /// <summary>
+        /// Depth-first walk tracking ancestor schema pointers. <paramref name="schemaPointer"/>
+        /// is the JSON pointer of the current node relative to the tool's inputSchema
+        /// (empty string at the root); a "$ref": "#/..." whose target pointer is an
+        /// ancestor of the ref site (or the ref site itself) is a cycle.
+        /// </summary>
+        private static void WalkForRefCycles(
+            JsonElement node,
+            string schemaPointer,
+            string displayPointer,
+            HashSet<string> ancestorPointers,
+            List<string> violations)
+        {
+            if (node.ValueKind != JsonValueKind.Object) return;
+
+            if (node.TryGetProperty("$ref", out var refNode) && refNode.ValueKind == JsonValueKind.String)
+            {
+                var target = refNode.GetString() ?? "";
+                // "#/a/b" → schema pointer "a/b"; compare against the ancestor chain.
+                var targetPointer = target.StartsWith("#/", StringComparison.Ordinal) ? target[2..] : null;
+                if (targetPointer != null &&
+                    (ancestorPointers.Contains(targetPointer) || targetPointer == schemaPointer))
+                {
+                    violations.Add(displayPointer + " -> " + target);
+                    return;
+                }
+                // Non-cyclic or external refs are tolerated: resolution is out of
+                // scope, and the catalog currently publishes no remaining $defs.
+            }
+
+            ancestorPointers.Add(schemaPointer);
+            try
+            {
+                if (node.TryGetProperty("properties", out var props) && props.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var p in props.EnumerateObject())
+                        WalkForRefCycles(p.Value, JoinPointer(schemaPointer, "properties", p.Name),
+                            displayPointer + ".properties." + p.Name, ancestorPointers, violations);
+                }
+                if (node.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Object)
+                    WalkForRefCycles(items, JoinPointer(schemaPointer, "items", null),
+                        displayPointer + ".items", ancestorPointers, violations);
+                foreach (var key in new[] { "anyOf", "oneOf", "allOf" })
+                {
+                    if (node.TryGetProperty(key, out var combo) && combo.ValueKind == JsonValueKind.Array)
+                    {
+                        int i = 0;
+                        foreach (var sub in combo.EnumerateArray())
+                        {
+                            WalkForRefCycles(sub, JoinPointer(schemaPointer, key, i.ToString()),
+                                displayPointer + "." + key + "[" + i + "]", ancestorPointers, violations);
+                            i++;
+                        }
+                    }
+                }
+                if (node.TryGetProperty("$defs", out var defs) && defs.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var d in defs.EnumerateObject())
+                        WalkForRefCycles(d.Value, JoinPointer(schemaPointer, "$defs", d.Name),
+                            displayPointer + "." + d.Name, ancestorPointers, violations);
+                }
+            }
+            finally
+            {
+                ancestorPointers.Remove(schemaPointer);
+            }
+        }
+
+        private static string JoinPointer(string parent, string segment, string? leaf)
+        {
+            var pointer = parent.Length == 0 ? segment : parent + "/" + segment;
+            return leaf == null ? pointer : pointer + "/" + leaf;
+        }
+
         // ---- recursive walkers --------------------------------------------------------
 
         private static void WalkForArrayMissingItems(JsonElement node, string pointer, List<string> violations)

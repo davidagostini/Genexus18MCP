@@ -27,6 +27,8 @@ namespace GxMcp.Worker.Tests
             yield return new object[] { GotchaCodes.GotchaHtmlFormatScriptStripped };
             yield return new object[] { GotchaCodes.GotchaCellOutsideTable };
             yield return new object[] { GotchaCodes.GotchaDuplicateControlName };
+            yield return new object[] { GotchaCodes.GotchaIdeObjectOpenInEditor };
+            yield return new object[] { GotchaCodes.GotchaIdeActiveOnKb };
         }
 
         [Theory]

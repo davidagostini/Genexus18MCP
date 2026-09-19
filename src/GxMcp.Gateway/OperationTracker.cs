@@ -129,7 +129,7 @@ namespace GxMcp.Gateway
             metric.RegisterCompletion(elapsedMs, string.Equals(record.Status, "Failed", StringComparison.OrdinalIgnoreCase), record.WorkerPayload, reqBytes, respBytes);
         }
 
-        private static long SafeJsonLength(JToken token)
+        private static long SafeJsonLength(JToken? token)
         {
             if (token == null) return 0;
             try { return token.ToString(Newtonsoft.Json.Formatting.None).Length; }
@@ -169,12 +169,51 @@ namespace GxMcp.Gateway
             return true;
         }
 
+        // SDK calls execute on a non-preemptible STA thread. For those calls, receiving a
+        // cancel request is not the same as cancellation completing. Keep the operation live
+        // and let CompleteFromWorker publish the truthful terminal state when the SDK returns.
+        public bool MarkCancellationRequested(string operationId, string reason)
+        {
+            if (string.IsNullOrWhiteSpace(operationId)) return false;
+            if (!_operations.TryGetValue(operationId, out var record)) return false;
+
+            lock (record.SyncRoot)
+            {
+                if (string.Equals(record.Status, "Completed", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(record.Status, "Failed", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(record.Status, "Cancelled", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                record.Status = "CancellationRequested";
+                record.UpdatedAtUtc = DateTime.UtcNow;
+                record.LastError = reason ?? "Cancellation requested by client; waiting for the SDK call to return.";
+            }
+            return true;
+        }
+
+        internal bool TryGetContext(string operationId, out string? toolName, out JObject? toolArguments)
+        {
+            toolName = null;
+            toolArguments = null;
+            if (string.IsNullOrWhiteSpace(operationId)
+                || !_operations.TryGetValue(operationId, out var record))
+                return false;
+            lock (record.SyncRoot)
+            {
+                toolName = record.ToolName;
+                toolArguments = record.ToolArguments != null
+                    ? (JObject)record.ToolArguments.DeepClone()
+                    : null;
+                return true;
+            }
+        }
+
         // A4: a worker progress frame carries progressToken == operationId (see
         // SendWorkerCommandAsync). Bump the record's UpdatedAtUtc so a status poll
         // (genexus_lifecycle action=status target=op:<id>) shows real liveness
         // instead of a frozen timestamp for the whole run. Optional phase/message
         // are surfaced for the poller. No-op once terminal.
-        public void TouchProgress(string operationId, string phase = null, string message = null)
+        public void TouchProgress(string operationId, string? phase = null, string? message = null)
         {
             if (string.IsNullOrWhiteSpace(operationId)) return;
             if (!_operations.TryGetValue(operationId, out var record)) return;
@@ -439,7 +478,7 @@ namespace GxMcp.Gateway
             {
                 if (!string.IsNullOrWhiteSpace(targetName))
                 {
-                    string recTarget = rec.ToolArguments?["target"]?.ToString()
+                    string? recTarget = rec.ToolArguments?["target"]?.ToString()
                                    ?? rec.ToolArguments?["name"]?.ToString();
                     if (string.IsNullOrEmpty(recTarget)) continue;
                     if (!string.Equals(recTarget, targetName, StringComparison.OrdinalIgnoreCase)) continue;
@@ -494,7 +533,7 @@ namespace GxMcp.Gateway
                 if (!watchTools.Contains(rec.ToolName)) continue;
                 if (!string.IsNullOrWhiteSpace(targetName))
                 {
-                    string recTarget = rec.ToolArguments?["target"]?.ToString()
+                    string? recTarget = rec.ToolArguments?["target"]?.ToString()
                                    ?? rec.ToolArguments?["name"]?.ToString();
                     if (string.IsNullOrEmpty(recTarget)) continue;
                     if (!string.Equals(recTarget, targetName, StringComparison.OrdinalIgnoreCase)) continue;
@@ -585,7 +624,7 @@ namespace GxMcp.Gateway
 
         // Test seam: record a tool invocation synthetically (no worker round-trip required).
         // Used by HeatmapBlockTests and ExecutionHistoryTests to keep them hermetic.
-        internal void RecordSyntheticCompletion(string toolName, long elapsedMs, bool isError, JObject toolArguments = null)
+        internal void RecordSyntheticCompletion(string toolName, long elapsedMs, bool isError, JObject? toolArguments = null)
         {
             string requestId = Guid.NewGuid().ToString("N");
             string opId = StartOperation(requestId, toolName, toolArguments, Guid.NewGuid().ToString("N"));
@@ -598,6 +637,13 @@ namespace GxMcp.Gateway
             if (isError) payload["error"] = new JObject { ["message"] = "synthetic" };
             else payload["result"] = new JObject { ["status"] = "Success" };
             CompleteFromWorker(requestId, payload);
+        }
+
+        internal void RecordCacheHit(string toolName)
+        {
+            if (string.IsNullOrWhiteSpace(toolName)) return;
+            var metric = _toolMetrics.GetOrAdd(toolName, _ => new ToolMetricState(toolName));
+            metric.RegisterCacheHit();
         }
 
         // Item 73: per-tool latency stats for whoami.stats.tools.
@@ -623,14 +669,17 @@ namespace GxMcp.Gateway
                     ["p50Ms"] = j["p50Ms"],
                     ["p95Ms"] = j["p95Ms"],
                     ["count"] = count,
-                    ["errorCount"] = errors
+                    ["errorCount"] = errors,
+                    ["cacheHits"] = j["cacheHits"]
                 };
                 // Item 75: tokensIn / tokensOut percentiles, omitted when no
                 // payload was ever observed (cancellation-only history).
-                JToken tIn = j["tokensIn"];
-                JToken tOut = j["tokensOut"];
+                JToken? tIn = j["tokensIn"];
+                JToken? tOut = j["tokensOut"];
                 if (tIn is JObject) entry["tokensIn"] = tIn;
                 if (tOut is JObject) entry["tokensOut"] = tOut;
+                if (j["errorsByCode"] is JObject errorsByCode)
+                    entry["errorsByCode"] = errorsByCode.DeepClone();
                 toolsObj[kvp.Key] = entry;
                 if (errors > 0) failureRanking.Add((kvp.Key, errors, count));
             }
@@ -662,7 +711,16 @@ namespace GxMcp.Gateway
                 bool remove;
                 lock (record.SyncRoot)
                 {
-                    remove = record.UpdatedAtUtc < cutoff;
+                    // Only COMPLETED operations expire by age. A running operation must
+                    // never be swept by a time-based cleanup: under a tiny retention (or
+                    // a descheduled thread) an in-flight record can age past the cutoff
+                    // between StartOperation and the sweep, dropping the request->operation
+                    // mapping and turning every later CompleteFromWorker/status poll into
+                    // NotFound (CI-flaky CleanupExpired_DoesNotDropMappingForReusedRequestId;
+                    // also the exact 'stuck running disappears' trap for long SDK calls).
+                    // Completed records have UpdatedAtUtc pinned to CompletedAtUtc, so the
+                    // age check below is exactly the retention window for terminal ops.
+                    remove = record.CompletedAtUtc.HasValue && record.UpdatedAtUtc < cutoff;
                 }
 
                 if (!remove) continue;
@@ -783,6 +841,7 @@ namespace GxMcp.Gateway
             // footprint stays bounded.
             private readonly List<long> _reqBytes = new List<long>();
             private readonly List<long> _respBytes = new List<long>();
+            private readonly Dictionary<string, long> _errorsByCode = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             private const int MaxLatencySamples = 256;
 
             public ToolMetricState(string toolName)
@@ -797,6 +856,7 @@ namespace GxMcp.Gateway
             public long NoChangeCount { get; private set; }
             public long PatchFailCount { get; private set; }
             public long FallbackSaveCount { get; private set; }
+            public long CacheHitCount { get; private set; }
             // Item 94: cumulative elapsed ms across all observed completions and the
             // most recent timestamp any call landed.
             private long _totalMs;
@@ -813,6 +873,11 @@ namespace GxMcp.Gateway
                 {
                     TimeoutCount++;
                 }
+            }
+
+            public void RegisterCacheHit()
+            {
+                lock (_lock) CacheHitCount++;
             }
 
             public void RegisterCompletion(long elapsedMs, bool isError, JToken? workerPayload, long reqBytes, long respBytes)
@@ -866,11 +931,14 @@ namespace GxMcp.Gateway
                         ["noChange"] = NoChangeCount,
                         ["patchFail"] = PatchFailCount,
                         ["fallbackSave"] = FallbackSaveCount,
+                        ["cacheHits"] = CacheHitCount,
                         ["p50Ms"] = p50,
                         ["p95Ms"] = p95
                     };
                     payload["tokensIn"] = BuildSizeBlock(_reqBytes);
                     payload["tokensOut"] = BuildSizeBlock(_respBytes);
+                    if (_errorsByCode.Count > 0)
+                        payload["errorsByCode"] = JObject.FromObject(_errorsByCode);
                     return payload;
                 }
             }
@@ -904,6 +972,13 @@ namespace GxMcp.Gateway
                     string? details = obj["details"]?.ToString();
                     string? patchStatus = obj["patchStatus"]?.ToString();
                     string? retryStrategy = obj["retryStrategy"]?.ToString();
+                    string? errorCode = (obj["error"] as JObject)?["code"]?.ToString()
+                        ?? obj["errorCode"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(errorCode))
+                    {
+                        _errorsByCode.TryGetValue(errorCode, out long count);
+                        _errorsByCode[errorCode] = count + 1;
+                    }
 
                     if (string.Equals(status, "NoChange", StringComparison.OrdinalIgnoreCase) ||
                         string.Equals(patchStatus, "NoChange", StringComparison.OrdinalIgnoreCase) ||

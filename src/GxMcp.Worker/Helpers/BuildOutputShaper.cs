@@ -90,12 +90,51 @@ namespace GxMcp.Worker.Helpers
                 Directory.CreateDirectory(logsDir);
                 path = Path.Combine(logsDir, "build-" + taskId + ".log");
                 File.WriteAllText(path, fullOutput ?? string.Empty);
+                // Retention sweep (never breaks the write — SweepOldBuildLogs is total).
+                SweepOldBuildLogs(logsDir, ResolveBuildLogRetainCount());
                 return true;
             }
             catch
             {
                 return false;
             }
+        }
+
+        // Log retention (worker disk weight). Every build pins its full output to
+        // build-<taskId>.log; without a sweep a long session litters logs/ forever.
+        // Keeps the newest retainCount build-*.log files, deletes the rest. Only
+        // build-*.log is ever touched; <=0 disables the sweep.
+        internal static int ResolveBuildLogRetainCount()
+        {
+            int def = 50;
+            var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_LOG_RETAIN_COUNT");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v))
+            {
+                if (v <= 0) return int.MaxValue; // explicit disable
+                def = v;
+            }
+            return def;
+        }
+
+        internal static int SweepOldBuildLogs(string logsDir, int retainCount)
+        {
+            int deleted = 0;
+            try
+            {
+                if (string.IsNullOrEmpty(logsDir) || !Directory.Exists(logsDir)) return 0;
+                if (retainCount <= 0) return 0;
+                if (retainCount == int.MaxValue) return 0;
+                var files = new DirectoryInfo(logsDir).GetFiles("build-*.log")
+                    .OrderByDescending(f => f.LastWriteTimeUtc)
+                    .ThenBy(f => f.Name, StringComparer.Ordinal)
+                    .ToList();
+                for (int i = retainCount; i < files.Count; i++)
+                {
+                    try { files[i].Delete(); deleted++; } catch { }
+                }
+            }
+            catch { }
+            return deleted;
         }
 
         // Match codes like spc0022, gen0010, CS0246, MSB4131. Capture group 1 = code.

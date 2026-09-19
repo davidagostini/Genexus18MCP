@@ -20,7 +20,7 @@ namespace GxMcp.Worker.Tests
     /// PhaseFailureExtractionTests, EdgeCaseRegressionTests, ReorgPreviewTests).
     /// These pin CURRENT behavior (bugs and all) — see report for suspected issues.
     /// </summary>
-    public class BuildServiceTests
+    public class BuildServiceTests : BuildServiceTestBase
     {
         // ── ParseTargets (private static) ───────────────────────────────────
 
@@ -120,6 +120,23 @@ namespace GxMcp.Worker.Tests
             Assert.True(status.SpecifyOnly);
             Assert.Equal("Build", status.Action);
             Assert.Equal("MyObj", status.Target);
+        }
+
+        [Fact]
+        public void Specify_RejectsUnresolvedTargetBeforeQueuing()
+        {
+            var idx = new IndexCacheService();
+            idx.ReplaceAll(new[]
+            {
+                new SearchIndex.IndexEntry { Guid = Guid.NewGuid().ToString(), Name = "Existing", Type = "Procedure", IsEnriched = true }
+            });
+            var svc = new BuildService();
+            svc.SetIndexCacheService(idx);
+
+            var response = JObject.Parse(svc.Specify("Missing"));
+
+            Assert.Equal("error", response["status"]?.ToString());
+            Assert.Equal("SpecifyTargetUnresolved", response["error"]?["code"]?.ToString());
         }
 
         // ── BuildDryRun() ────────────────────────────────────────────────────
@@ -516,6 +533,30 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void HandleLine_SpecifyExistingTarget_DemotesNotFoundDiagnostic()
+        {
+            var idx = new IndexCacheService();
+            idx.ReplaceAll(new[]
+            {
+                new SearchIndex.IndexEntry { Guid = Guid.NewGuid().ToString(), Name = "ExistingProc", Type = "Procedure", IsEnriched = true }
+            });
+            var svc = new BuildService();
+            svc.SetIndexCacheService(idx);
+            var status = new BuildService.BuildTaskStatus
+            {
+                TaskId = "nf-specify",
+                Target = "ExistingProc",
+                SpecifyOnly = true
+            };
+
+            InvokeHandleLine(svc, status, "error: Object 'ExistingProc' was not found in the Knowledge Base", isError: true);
+
+            Assert.Equal(0, status.ErrorCount);
+            Assert.Equal(0, status.WarningCount);
+            Assert.Contains("ExistingProc", status.NotFoundTargets);
+        }
+
+        [Fact]
         public void HandleLine_ObjectNotFoundWarning_ForUnrelatedObject_IsKept()
         {
             // Only the build target's spurious warning is dropped; a genuine "not found"
@@ -542,6 +583,45 @@ namespace GxMcp.Worker.Tests
             Assert.True(BuildService.IsBuildTarget("Proc3", status));
             Assert.False(BuildService.IsBuildTarget("Nope", status));
             Assert.False(BuildService.IsBuildTarget("", status));
+        }
+
+        [Fact]
+        public void BuildTaskStatus_LivenessBaselineIncludesObjectAndLineProgress()
+        {
+            var first = new BuildService.BuildTaskStatus
+            {
+                Status = "Running", Phase = "Specifying", TargetsDone = 0,
+                CurrentObject = "ProcA", LineCount = 10
+            };
+            var nextObject = new BuildService.BuildTaskStatus
+            {
+                Status = "Running", Phase = "Specifying", TargetsDone = 0,
+                CurrentObject = "ProcB", LineCount = 10
+            };
+            var nextLine = new BuildService.BuildTaskStatus
+            {
+                Status = "Running", Phase = "Specifying", TargetsDone = 0,
+                CurrentObject = "ProcA", LineCount = 11
+            };
+
+            Assert.Equal(first.ComputeBaseline(), nextObject.ComputeBaseline());
+            Assert.NotEqual(first.ComputeLivenessBaseline(), nextObject.ComputeLivenessBaseline());
+            Assert.NotEqual(first.ComputeLivenessBaseline(), nextLine.ComputeLivenessBaseline());
+        }
+
+        [Fact]
+        public void WatchdogFailure_PreservesPhaseInEnvelopeAndMessage()
+        {
+            var status = new BuildService.BuildTaskStatus
+            {
+                Status = "Running", Phase = "Generating", StartedAt = DateTime.UtcNow.AddSeconds(-3)
+            };
+
+            Assert.True(BuildService.TrySetWatchdogFailure(status,
+                phase => "watchdog failure at phase '" + phase + "'"));
+            Assert.Equal("Failed", status.Status);
+            Assert.Equal("Generating", status.Phase);
+            Assert.Equal("watchdog failure at phase 'Generating'", status.Error);
         }
 
         // ── issue #42: no-progress watchdog env parsing ─────────────────────
@@ -851,6 +931,164 @@ namespace GxMcp.Worker.Tests
             finally
             {
                 Environment.SetEnvironmentVariable("GX_KB_PATH", prevKb);
+                try { Directory.Delete(tempKb, true); } catch { }
+            }
+        }
+
+        // issue #103 item 4 — the generator emits setProp("Gx Control Type",...) only
+        // sporadically (1 of 32 User Control objects in the reference KB carried it, IDE
+        // builds included). Its absence is the norm, not a degradation, and must not raise
+        // a warning: a detector that fires on every healthy build buries the real signal.
+        [Fact]
+        public void GenerateEvidence_IgnoresMissingGxControlTypeBinding()
+        {
+            string objectName = "Dashboard";
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            File.WriteAllText(Path.Combine(web, objectName + ".cs"), "class Dashboard {}");
+
+            // Healthy JS as the IDE emits it: real control name, full property list,
+            // no "Gx Control Type" binding anywhere.
+            string js = "n=gx.uc.getNew(this,6,0,\"DashboardViewer\",\"DV1Container\",\"Dashboardviewer1\",\"DV1\");"
+                      + "n.setProp(\"Class\",\"Class\",\"DashboardViewer\",\"str\");"
+                      + "n.setProp(\"Visible\",\"Visible\",!0,\"bool\");";
+            File.WriteAllText(Path.Combine(web, objectName.ToLowerInvariant() + ".js"), js);
+
+            var previousKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
+            try
+            {
+                Assert.Null(BuildService.DetectUserControlBindingDegradation(
+                    objectName,
+                    Path.Combine(web, objectName.ToLowerInvariant() + ".js"),
+                    js));
+
+                var svc = new BuildService();
+                var status = new BuildService.BuildTaskStatus
+                {
+                    TaskId = Guid.NewGuid().ToString("N").Substring(0, 8),
+                    Action = "Build",
+                    Target = objectName,
+                    Status = "Succeeded",
+                    Phase = "Done",
+                    StartedAt = DateTime.UtcNow.AddSeconds(-1),
+                    DirtyAtStart = new List<string> { objectName }
+                };
+
+                var method = typeof(BuildService).GetMethod("AttachGenerateEvidence", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(method);
+                method!.Invoke(svc, new object[] { status, "Build", new List<string> { objectName } });
+
+                var evidence = (JObject)status.GenerateEvidence!;
+                Assert.Null(evidence["degradedUserControls"]);
+                Assert.DoesNotContain(status.Warnings, w => w.Contains("user-control-degraded"));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_KB_PATH", previousKb);
+                try { Directory.Delete(tempKb, true); } catch { }
+            }
+        }
+
+        // The real degradation, as measured against IDE baselines: the control name comes
+        // out as the literal string "this" and every setProp binding is gone.
+        [Fact]
+        public void GenerateEvidence_DetectsDegradedUserControlSignature()
+        {
+            string objectName = "GrafComercial";
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+            File.WriteAllText(Path.Combine(web, objectName + ".cs"), "class GrafComercial {}");
+
+            string js = "gx.uc.getNew(this,10,5,\"QueryViewer\",this.CmpContext+\"QV1Container\",\"this\",\"QV1\");"
+                      + "i=this.QV1Container;i.setC2ShowFunction(function(n){n.show()});this.setUserControl(i);";
+            string jsPath = Path.Combine(web, objectName.ToLowerInvariant() + ".js");
+            File.WriteAllText(jsPath, js);
+
+            var previousKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
+            try
+            {
+                var direct = BuildService.DetectUserControlBindingDegradation(objectName, jsPath, js);
+                Assert.NotNull(direct);
+                Assert.Equal(1, direct!["userControlInstances"]!.Value<int>());
+                Assert.Equal(0, direct["propertyBindings"]!.Value<int>());
+                Assert.Contains((JArray)direct["placeholderControlNames"]!,
+                    t => string.Equals((string)t, "QueryViewer", StringComparison.OrdinalIgnoreCase));
+
+                var svc = new BuildService();
+                var status = new BuildService.BuildTaskStatus
+                {
+                    TaskId = Guid.NewGuid().ToString("N").Substring(0, 8),
+                    Action = "Build",
+                    Target = objectName,
+                    Status = "Succeeded",
+                    Phase = "Done",
+                    StartedAt = DateTime.UtcNow.AddSeconds(-1),
+                    DirtyAtStart = new List<string> { objectName }
+                };
+
+                var method = typeof(BuildService).GetMethod("AttachGenerateEvidence", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(method);
+                method!.Invoke(svc, new object[] { status, "Build", new List<string> { objectName } });
+
+                var evidence = (JObject)status.GenerateEvidence!;
+                Assert.False(evidence["ok"]!.Value<bool>(), evidence.ToString());
+                var degraded = (JArray)evidence["degradedUserControls"]!;
+                Assert.Single(degraded);
+                Assert.Equal(0, degraded[0]["propertyBindings"]!.Value<int>());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_KB_PATH", previousKb);
+                try { Directory.Delete(tempKb, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void GenerateEvidence_DetectsDegradedUserControlInUpToDateJavaScript()
+        {
+            const string objectName = "SamplePanel";
+            string tempKb = Path.Combine(Path.GetTempPath(), "gxmcp-test-" + Guid.NewGuid().ToString("N"));
+            string web = Path.Combine(tempKb, "NETCoreMySQL", "web");
+            Directory.CreateDirectory(web);
+
+            string js = "gx.uc.getNew(this,3,0,'SampleViewer','SV1Container','this','SV1');\n"
+                      + "i=this.SV1Container;this.setUserControl(i);";
+            File.WriteAllText(Path.Combine(web, objectName.ToLowerInvariant() + ".js"), js);
+
+            string previousKb = Environment.GetEnvironmentVariable("GX_KB_PATH");
+            Environment.SetEnvironmentVariable("GX_KB_PATH", tempKb);
+            try
+            {
+                var svc = new BuildService();
+                var status = new BuildService.BuildTaskStatus
+                {
+                    TaskId = Guid.NewGuid().ToString("N").Substring(0, 8),
+                    Action = "Build",
+                    Target = objectName,
+                    Status = "Succeeded",
+                    Phase = "Done",
+                    StartedAt = DateTime.UtcNow.AddMinutes(-1),
+                    DirtyAtStart = new List<string>()
+                };
+
+                var method = typeof(BuildService).GetMethod("AttachGenerateEvidence", BindingFlags.Instance | BindingFlags.NonPublic);
+                Assert.NotNull(method);
+                method!.Invoke(svc, new object[] { status, "Build", new List<string> { objectName } });
+
+                var evidence = (JObject)status.GenerateEvidence!;
+                Assert.False(evidence["ok"]!.Value<bool>(), evidence.ToString());
+                var degraded = (JArray)evidence["degradedUserControls"]!;
+                Assert.Single(degraded);
+                Assert.Equal(1, degraded[0]["userControlInstances"]!.Value<int>());
+                Assert.Equal(0, degraded[0]["propertyBindings"]!.Value<int>());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GX_KB_PATH", previousKb);
                 try { Directory.Delete(tempKb, true); } catch { }
             }
         }

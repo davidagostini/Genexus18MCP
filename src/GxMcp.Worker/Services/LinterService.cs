@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Xml;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
 using Artech.Architecture.Common.Objects;
+using Artech.Genexus.Common;
 using Artech.Genexus.Common.Objects;
 using Artech.Genexus.Common.Parts;
 
@@ -16,6 +18,22 @@ namespace GxMcp.Worker.Services
         private readonly NavigationService _navigationService;
         private WriteService _writeService;
 
+        private static readonly Regex ForEachBlockRegex = new Regex(@"(?is)\bfor\s+each\b\s*.*?\s*\bendfor\b", RegexOptions.Compiled);
+        private static readonly Regex CommitRegex = new Regex(@"(?i)\bcommit\b", RegexOptions.Compiled);
+        private static readonly Regex WhereDefinedByRegex = new Regex(@"(?i)\bwhere\b|\bdefined\s+by\b", RegexOptions.Compiled);
+        private static readonly Regex SleepWaitRegex = new Regex(@"(?i)\b(?:sleep|wait)\s*\(\s*\d+\s*\)", RegexOptions.Compiled);
+        private static readonly Regex DynamicCallRegex = new Regex(@"(?i)\b(?:call|udp)\s*\(\s*&\w+\s*.*?\)", RegexOptions.Compiled);
+        private static readonly Regex NestedForEachRegex = new Regex(@"(?is)\bfor\s+each\b\s*.*?\bfor\s+each\b\s*.*?\bendfor\b\s*.*?\bendfor\b", RegexOptions.Compiled);
+        private static readonly Regex WhenNoneRegex = new Regex(@"(?i)\bwhen\s+none\b", RegexOptions.Compiled);
+        private static readonly Regex NewBlockRegex = new Regex(@"(?is)\bnew\b\s*.*?\s*\bendnew\b", RegexOptions.Compiled);
+        private static readonly Regex WhenDuplicateRegex = new Regex(@"(?i)\bwhen\s+duplicate\b", RegexOptions.Compiled);
+        private static readonly Regex StripCommentsRegex = new Regex(@"/\*.*?\*/|//.*?\n", RegexOptions.Compiled | RegexOptions.Singleline);
+        private static readonly Regex SubDefinitionsRegex = new Regex(@"(?is)\bsub\s+'([^']+)'(.*?)\bendsub\b", RegexOptions.Compiled);
+        private static readonly Regex SubCallsRegex = new Regex(@"(?i)\bdo\s+'([^']+)'", RegexOptions.Compiled);
+        private static readonly Regex ParmRuleExistsRegex = new Regex(@"(?i)\bparm\s*\(", RegexOptions.Compiled);
+        private static readonly Regex ParmRuleRegex = new Regex(@"(?is)\bparm\s*\(([^)]*)\)", RegexOptions.Compiled);
+        private static readonly Regex OutVarRegex = new Regex(@"(?i)\bout\s*:\s*&(\w+)", RegexOptions.Compiled);
+
         public LinterService(ObjectService objectService, NavigationService navigationService)
         {
             _objectService = objectService;
@@ -26,8 +44,18 @@ namespace GxMcp.Worker.Services
 
         /// Run Lint, then auto-fix the safe issues (GX008 unused vars that aren't framework-managed)
         /// via the existing DeleteVariable path. Returns the lint report plus a fixed[] array.
-        public string LintAndFix(string target)
+        /// The ambiguous fix=true + dryRun=true combination is rejected before any SDK read.
+        public string LintAndFix(string target, bool dryRun = false)
         {
+            if (dryRun)
+            {
+                return Models.McpResponse.Err(
+                    code: "LinterFixDryRunUnsupported",
+                    message: "mode=linter fix=true does not support dryRun=true; omit dryRun or set fix=false.",
+                    hint: "Use fix=false for a read-only lint report, or omit dryRun to apply GX008 fixes.",
+                    target: target);
+            }
+
             var raw = Lint(target);
             JObject report;
             try { report = JObject.Parse(raw); } catch { return raw; }
@@ -39,7 +67,7 @@ namespace GxMcp.Worker.Services
             foreach (var issue in issues)
             {
                 string code = issue["code"]?.ToString();
-                string symbol = issue["symbol"]?.ToString();
+                string symbol = ResolveFixSymbol(issue);
                 if (code == "GX008" && !string.IsNullOrEmpty(symbol) && symbol.StartsWith("&"))
                     toRemove.Add(symbol.TrimStart('&'));
                 else
@@ -50,6 +78,81 @@ namespace GxMcp.Worker.Services
             report["fixed"] = JsonUtil.SafeParse(batchResult);
             report["skipped"] = skipped;
             return report.ToString();
+        }
+
+        internal static string ResolveFixSymbol(JToken issue)
+        {
+            if (issue == null || !string.Equals(issue["code"]?.ToString(), "GX008", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            // Older linter reports expose the variable as the issue snippet;
+            // newer reports may provide the explicit symbol field.
+            return issue["symbol"]?.ToString() ?? issue["snippet"]?.ToString();
+        }
+
+        // WebFormPart exposes its visual references through the SDK's read-only
+        // IHasVariableReferences surface. Keep the SDK enumeration behind this
+        // delegate so a failed/unsupported visual projection cannot turn a lint
+        // read into a write or produce an unsafe GX008 finding.
+        internal static IEnumerable<string> ReadVisualVariableNames(Func<IEnumerable<string>> readReferences)
+        {
+            if (readReferences == null) return null;
+
+            var names = new List<string>();
+            try
+            {
+                IEnumerable<string> references = readReferences();
+                if (references == null) return names;
+                foreach (var rawName in references)
+                {
+                    string name = rawName?.Trim();
+                    if (!string.IsNullOrEmpty(name))
+                        names.Add(name.TrimStart('&'));
+                }
+            }
+            catch
+            {
+                // The caller treats a missing projection as an incomplete
+                // visual read and suppresses unsafe GX008 findings.
+                return null;
+            }
+            return names;
+        }
+
+        internal static IReadOnlyCollection<string> FindUnusedVariableNames(
+            IEnumerable<string> declaredNames,
+            IEnumerable<string> sourceTexts,
+            IEnumerable<IEnumerable<string>> visualVariableNames)
+        {
+            var usedVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string allCode = string.Join("\n", sourceTexts ?? Enumerable.Empty<string>());
+            string cleanAllCode = StripComments(allCode);
+            foreach (Match match in Regex.Matches(cleanAllCode, @"&(\w+)\b", RegexOptions.IgnoreCase))
+                usedVariables.Add(match.Groups[1].Value);
+
+            if (visualVariableNames != null)
+            {
+                bool visualReadIncomplete = false;
+                foreach (var references in visualVariableNames)
+                {
+                    if (references == null)
+                    {
+                        visualReadIncomplete = true;
+                        continue;
+                    }
+                    foreach (var name in references)
+                    {
+                        if (!string.IsNullOrWhiteSpace(name))
+                            usedVariables.Add(name.Trim().TrimStart('&'));
+                    }
+                }
+                if (visualReadIncomplete) return Array.Empty<string>();
+            }
+
+            return (declaredNames ?? Enumerable.Empty<string>())
+                .Where(name => !string.IsNullOrWhiteSpace(name) && !usedVariables.Contains(name.Trim()))
+                .Select(name => name.Trim())
+                .ToList();
         }
 
         public string Lint(string target, string specificPart = null)
@@ -123,7 +226,10 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return "{\"status\":\"Error\",\"message\": \"" + CommandDispatcher.EscapeJsonString(ex.Message) + "\"}";
+                return Models.McpResponse.Err(
+                    code: "LintFailed",
+                    message: ex.Message,
+                    target: target);
             }
         }
 
@@ -191,7 +297,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckNestedForEach(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var nestedMatch = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\bfor\s+each\b\s*.*?\bendfor\b\s*.*?\bendfor\b", RegexOptions.Compiled);
+            var nestedMatch = NestedForEachRegex.Matches(cleanCode);
             foreach (Match m in nestedMatch)
             {
                 int line = GetLineNumber(originalCode, m.Index);
@@ -201,10 +307,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckMissingWhenNone(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var forEachBlocks = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\bendfor\b", RegexOptions.Compiled);
+            var forEachBlocks = ForEachBlockRegex.Matches(cleanCode);
             foreach (Match m in forEachBlocks)
             {
-                if (!Regex.IsMatch(m.Value, @"(?i)\bwhen\s+none\b", RegexOptions.Compiled))
+                if (!WhenNoneRegex.IsMatch(m.Value))
                 {
                     if (m.Value.Length > 200) {
                         int line = GetLineNumber(originalCode, m.Index);
@@ -220,10 +326,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckCommitInsideLoop(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var forEachBlocks = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\s*\bendfor\b", RegexOptions.Compiled);
+            var forEachBlocks = ForEachBlockRegex.Matches(cleanCode);
             foreach (Match m in forEachBlocks)
             {
-                if (Regex.IsMatch(m.Value, @"(?i)\bcommit\b", RegexOptions.Compiled))
+                if (CommitRegex.IsMatch(m.Value))
                 {
                     int line = GetLineNumber(originalCode, m.Index);
                     issues.Add(CreateIssue("GX001", "Commit inside loop", "Critical", "Avoid Commit inside For Each.", "Commit", line, partName));
@@ -233,10 +339,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckUnfilteredLoop(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var forEachBlocks = Regex.Matches(cleanCode, @"(?is)\bfor\s+each\b\s*.*?\s*\bendfor\b", RegexOptions.Compiled);
+            var forEachBlocks = ForEachBlockRegex.Matches(cleanCode);
             foreach (Match m in forEachBlocks)
             {
-                if (!Regex.IsMatch(m.Value, @"(?i)\bwhere\b|\bdefined\s+by\b", RegexOptions.Compiled))
+                if (!WhereDefinedByRegex.IsMatch(m.Value))
                 {
                     int line = GetLineNumber(originalCode, m.Index);
                     issues.Add(CreateIssue("GX002", "Unfiltered loop", "Critical", "Full table scan detected.", "For Each", line, partName));
@@ -246,7 +352,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckSleepWait(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var matches = Regex.Matches(cleanCode, @"(?i)\b(?:sleep|wait)\s*\(\s*\d+\s*\)", RegexOptions.Compiled);
+            var matches = SleepWaitRegex.Matches(cleanCode);
             foreach (Match m in matches)
             {
                 int line = GetLineNumber(originalCode, m.Index);
@@ -256,7 +362,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckDynamicCall(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var matches = Regex.Matches(cleanCode, @"(?i)\b(?:call|udp)\s*\(\s*&\w+\s*.*?\)", RegexOptions.Compiled);
+            var matches = DynamicCallRegex.Matches(cleanCode);
             foreach (Match m in matches)
             {
                 int line = GetLineNumber(originalCode, m.Index);
@@ -268,21 +374,24 @@ namespace GxMcp.Worker.Services
         {
             var varPart = obj.Parts.Get<VariablesPart>();
             if (varPart == null) return;
-            
-            string allCode = "";
-            foreach (var p in obj.Parts)
-                if (p is ISource s) allCode += (s.Source ?? "") + "\n";
-            
-            string cleanAllCode = StripComments(allCode);
-            var usedVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var matches = Regex.Matches(cleanAllCode, @"&(\w+)\b", RegexOptions.IgnoreCase);
-            foreach (Match m in matches) usedVariables.Add(m.Groups[1].Value);
+
+            var parts = obj.Parts.Cast<KBObjectPart>().ToList();
+            var sourceTexts = parts.OfType<ISource>().Select(source => source.Source ?? "");
+            var visualReferences = parts
+                .OfType<WebFormPart>()
+                .OfType<IHasVariableReferences>()
+                .Select(webFormPart => ReadVisualVariableNames(
+                    () => webFormPart.GetReferencedVariables().Select(reference => reference?.Name)));
+            var unusedNames = new HashSet<string>(FindUnusedVariableNames(
+                varPart.Variables.Select(variable => variable.Name),
+                sourceTexts,
+                visualReferences), StringComparer.OrdinalIgnoreCase);
             string variablesText = VariableInjector.GetVariablesAsText(varPart);
             foreach (var v in varPart.Variables)
             {
                 if (GxMcp.Worker.Helpers.FrameworkManagedVariables.ShouldSkipUnusedCheck(v.Name)) continue;
                 int declarationLine = FindVariableDeclarationLine(variablesText, v.Name);
-                if (!usedVariables.Contains(v.Name))
+                if (unusedNames.Contains(v.Name))
                     issues.Add(CreateIssue("GX008", "Unused variable", "Warning", $"Variable '&{v.Name}' is never used.", "&" + v.Name, declarationLine, "Variables"));
             }
         }
@@ -295,12 +404,15 @@ namespace GxMcp.Worker.Services
             var lines = variablesText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
             for (int i = 0; i < lines.Length; i++)
             {
-                if (Regex.IsMatch(
-                    lines[i],
-                    @"^\s*&" + Regex.Escape(variableName) + @"\s*:",
-                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+                string line = lines[i].TrimStart();
+                if (line.StartsWith("&" + variableName, StringComparison.OrdinalIgnoreCase))
                 {
-                    return i + 1;
+                    int idx = 1 + variableName.Length;
+                    while (idx < line.Length && char.IsWhiteSpace(line[idx])) idx++;
+                    if (idx < line.Length && line[idx] == ':')
+                    {
+                        return i + 1;
+                    }
                 }
             }
 
@@ -309,8 +421,8 @@ namespace GxMcp.Worker.Services
 
         private void CheckSubroutines(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var subDefinitions = Regex.Matches(cleanCode, @"(?is)\bsub\s+'([^']+)'(.*?)\bendsub\b", RegexOptions.Compiled);
-            var subCalls = Regex.Matches(cleanCode, @"(?i)\bdo\s+'([^']+)'", RegexOptions.Compiled);
+            var subDefinitions = SubDefinitionsRegex.Matches(cleanCode);
+            var subCalls = SubCallsRegex.Matches(cleanCode);
             var calledSubs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (Match m in subCalls) calledSubs.Add(m.Groups[1].Value);
 
@@ -326,7 +438,7 @@ namespace GxMcp.Worker.Services
 
         private void CheckParmRule(string cleanCode, string objName, JArray issues, string partName)
         {
-            if (string.IsNullOrWhiteSpace(cleanCode) || !Regex.IsMatch(cleanCode, @"(?i)\bparm\s*\(", RegexOptions.Compiled))
+            if (string.IsNullOrWhiteSpace(cleanCode) || !ParmRuleExistsRegex.IsMatch(cleanCode))
                 issues.Add(CreateIssue("GX006", "Parm rule missing", "Warning", "No parameters defined.", "parm(...)", 1, partName));
         }
 
@@ -340,14 +452,15 @@ namespace GxMcp.Worker.Services
             {
                 if (!(obj is WebPanel || obj is Transaction)) return;
                 var webFormPart = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is WebFormPart) as WebFormPart;
-                if (webFormPart?.Document?.DocumentElement == null) return;
+                var document = CloneReadOnlyWebFormDocument(webFormPart);
+                if (document?.DocumentElement == null) return;
 
                 var eventsPart = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p =>
                     p.TypeDescriptor?.Name?.Equals("Events", StringComparison.OrdinalIgnoreCase) == true);
                 string eventsSrc = (eventsPart as ISource)?.Source ?? string.Empty;
                 bool hasEventEnter = Regex.IsMatch(eventsSrc, @"(?i)\bEvent\s+Enter\b");
 
-                var buttons = webFormPart.Document.DocumentElement.SelectNodes("//*[local-name()='gxButton']");
+                var buttons = document.DocumentElement.SelectNodes("//*[local-name()='gxButton']");
                 if (buttons == null || buttons.Count == 0) return;
                 foreach (System.Xml.XmlNode btn in buttons)
                 {
@@ -388,10 +501,11 @@ namespace GxMcp.Worker.Services
             {
                 if (!(obj is WebPanel || obj is Transaction)) return;
                 var webFormPart = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is WebFormPart) as WebFormPart;
-                if (webFormPart?.Document?.DocumentElement == null) return;
+                var document = CloneReadOnlyWebFormDocument(webFormPart);
+                if (document?.DocumentElement == null) return;
 
                 // Use SelectNodes with XPath that matches any element whose local-name has no gx prefix.
-                var nodes = webFormPart.Document.DocumentElement.SelectNodes("//*");
+                var nodes = document.DocumentElement.SelectNodes("//*");
                 if (nodes == null) return;
                 foreach (System.Xml.XmlNode node in nodes)
                 {
@@ -414,6 +528,18 @@ namespace GxMcp.Worker.Services
             catch (Exception ex) { Logger.Debug("CheckLayoutNonPrefixedElements: " + ex.Message); }
         }
 
+        private static XmlDocument CloneReadOnlyWebFormDocument(WebFormPart webFormPart)
+        {
+            try
+            {
+                return webFormPart?.Document?.Clone() as XmlDocument;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private void CheckOutParmEnabled(KBObject obj, JArray issues)
         {
             try
@@ -423,12 +549,12 @@ namespace GxMcp.Worker.Services
                 string rulesSrc = (rulesPart as ISource)?.Source ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(rulesSrc)) return;
 
-                var parmMatch = Regex.Match(rulesSrc, @"(?is)\bparm\s*\(([^)]*)\)", RegexOptions.Compiled);
+                var parmMatch = ParmRuleRegex.Match(rulesSrc);
                 if (!parmMatch.Success) return;
                 string parmBody = parmMatch.Groups[1].Value;
 
                 var outVars = new List<string>();
-                foreach (Match m in Regex.Matches(parmBody, @"(?i)\bout\s*:\s*&(\w+)"))
+                foreach (Match m in OutVarRegex.Matches(parmBody))
                 {
                     outVars.Add(m.Groups[1].Value);
                 }
@@ -440,19 +566,21 @@ namespace GxMcp.Worker.Services
 
                 foreach (var v in outVars)
                 {
-                    var rx = new Regex(@"(?i)&" + Regex.Escape(v) + @"\s*\.\s*Enabled\s*=\s*1");
-                    if (!rx.IsMatch(eventsSrc))
+                    if (eventsSrc.IndexOf(v, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        issues.Add(CreateIssue(
-                            "GX021",
-                            "out: parm may render disabled",
-                            "Info",
-                            $"&{v} is declared `out:` in parm rule — GeneXus may render its control as disabled. " +
-                            $"If editable, add `&{v}.Enabled = 1` in Event Start.",
-                            $"out: &{v}",
-                            1,
-                            "Rules"));
+                        var rx = new Regex(@"(?i)&" + Regex.Escape(v) + @"\s*\.\s*Enabled\s*=\s*1");
+                        if (rx.IsMatch(eventsSrc)) continue;
                     }
+
+                    issues.Add(CreateIssue(
+                        "GX021",
+                        "out: parm may render disabled",
+                        "Info",
+                        $"&{v} is declared `out:` in parm rule — GeneXus may render its control as disabled. " +
+                        $"If editable, add `&{v}.Enabled = 1` in Event Start.",
+                        $"out: &{v}",
+                        1,
+                        "Rules"));
                 }
             }
             catch (Exception ex) { Logger.Debug("CheckOutParmEnabled: " + ex.Message); }
@@ -460,10 +588,10 @@ namespace GxMcp.Worker.Services
 
         private void CheckNewWhenDuplicate(string cleanCode, JArray issues, string originalCode, string partName)
         {
-            var newBlocks = Regex.Matches(cleanCode, @"(?is)\bnew\b\s*.*?\s*\bendnew\b", RegexOptions.Compiled);
+            var newBlocks = NewBlockRegex.Matches(cleanCode);
             foreach (Match m in newBlocks)
             {
-                if (!Regex.IsMatch(m.Value, @"(?i)\bwhen\s+duplicate\b", RegexOptions.Compiled))
+                if (!WhenDuplicateRegex.IsMatch(m.Value))
                 {
                     int line = GetLineNumber(originalCode, m.Index);
                     issues.Add(CreateIssue("GX005", "New without When Duplicate", "Info", "Consider adding 'when duplicate'.", "New", line, partName));
@@ -471,9 +599,9 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string StripComments(string code)
+        private static string StripComments(string code)
         {
-            return Regex.Replace(code, @"/\*.*?\*/|//.*?\n", " ", RegexOptions.Singleline);
+            return StripCommentsRegex.Replace(code, " ");
         }
 
         private int GetLineNumber(string text, int index)

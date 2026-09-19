@@ -12,13 +12,14 @@ Use this file as the common entry point for property definitions and type semant
 - `string`: Text value
 - `integer`: Numeric value without decimals
 - `number`: Numeric value with optional decimals
-- `enum{...}`: Closed list of literal values
+- `enum{…}`: Closed list of literal values
 
 ---
 
 # PROPERTY REFERENCES
 
 ## Object Properties
+- [Agent](./properties-object-agent.md)
 - [API](./properties-object-api.md)
 - [Attribute](./properties-object-attribute.md)
 - [Data Provider](./properties-object-data-provider.md)
@@ -32,8 +33,8 @@ Use this file as the common entry point for property definitions and type semant
 - [External Object](./properties-object-external-object.md)
 - [File](./properties-object-file.md)
 - [Image](./properties-object-image.md)
-- [Index](./properties-object-index.md)
 - [Language](./properties-object-language.md)
+- [MiniApp](./properties-object-mini-app.md)
 - [Module](./properties-object-module.md)
 - [Panel](./properties-object-panel.md)
 - [Procedure](./properties-object-procedure.md)
@@ -41,9 +42,13 @@ Use this file as the common entry point for property definitions and type semant
 - [Report](./properties-object-report.md)
 - [Structured Data Type](./properties-object-structured-data-type.md)
 - [SubType Group](./properties-object-subtype-group.md)
+- [SuperApp](./properties-object-super-app.md)
 - [Table](./properties-object-table.md)
+- [Table Index](./properties-object-table-index.md)
 - [Transaction](./properties-object-transaction.md)
 - [URL Rewrite](./properties-object-url-rewrite.md)
+- [WorkWithDevices](./properties-object-work-with-devices.md)
+- [WorkWithWeb](./properties-object-work-with-web.md)
 
 ## Model Properties
 - [Knowledge Base](./properties-knowledge-base.md)
@@ -52,6 +57,8 @@ Use this file as the common entry point for property definitions and type semant
 - [Backend Generator](./properties-environment-backend.md)
 - [Frontend Generator](./properties-environment-frontend.md)
 - [Data Store](./properties-environment-datastore.md)
+- [WorkWithDevices Settings](./properties-model-work-with-devices.md)
+- [WorkWithWeb Settings](./properties-model-work-with-web.md)
 
 ## Shared Properties
 - [General](./properties-common.md)

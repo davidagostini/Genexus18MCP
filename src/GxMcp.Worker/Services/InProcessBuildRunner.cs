@@ -25,7 +25,7 @@ namespace GxMcp.Worker.Services
 
     // v2.6.6 Stream D — orchestrates in-process invocation of the two GeneXus
     // MSBuild tasks the IDE pipeline relies on:
-    //   - Genexus.MsBuild.Tasks.SpecifyOneOnly   (when action=Build with targets)
+    //   - Genexus.MsBuild.Tasks.SpecifyOneOnly   (when Build/RebuildAll has targets)
     //   - Genexus.MsBuild.Tasks.IdeWebBuildAndDeploy
     //
     // The worker already holds the KB open through KbService._kb; this runner
@@ -38,6 +38,7 @@ namespace GxMcp.Worker.Services
         private static Type _typeSpecifyOneOnly;
         private static Type _typeIdeWebBuildAndDeploy;
         private static Type _typeBuildOne;
+        private static Type _typeBuildAll;
         private static bool _assemblyLoadAttempted;
 
         // Compile-only fast-fast path (env: GXMCP_BUILD_COMPILE_ONLY=1).
@@ -51,8 +52,8 @@ namespace GxMcp.Worker.Services
         private static Type _typeDevelopmentWorkingSet;
         private static Type _typeBuildOptions;
         private static Type _typeGenexusBLServices;
-        private static Type _typeIBuildServiceBL;
         private static System.Reflection.MethodInfo _miBuildBuild; // Build(workingSet, BuildOptions, IEnumerable<EntityKey>, CancellationToken)
+        private static System.Reflection.MethodInfo _miBuildWithTheseOnly; // BuildWithTheseOnly(workingSet, IEnumerable<EntityKey>, CancellationToken)
         // 2026-05-22: Build.Build(...) is a dead-end because the internal BuildProcess does
         // `options = 0x3800 | options` — Spec+Gen+Compile are forced regardless of caller flags.
         // The IDE's true "Compile only" path is IRunService.Compile(KBModel, EntityKey), which
@@ -76,7 +77,9 @@ namespace GxMcp.Worker.Services
             bool skipFullDeploy = false,
             string kbPath = null,
             bool specifyOnly = false,
-            bool fullDeploy = false)
+            bool fullDeploy = false,
+            bool forceFullBuild = false,
+            IReadOnlyList<string> skipSpecifyTargets = null)
         {
             if (status == null) return InProcessBuildOutcome.CouldNotRun;
             if (kbHandle == null)
@@ -90,15 +93,17 @@ namespace GxMcp.Worker.Services
                 return InProcessBuildOutcome.CouldNotRun;
             }
 
-            // Stream D follow-up: only Build/RebuildAll are wired through the
-            // in-process task pair (SpecifyOneOnly + IdeWebBuildAndDeploy). Other
+            // Stream D follow-up: Build/RebuildAll are wired through the
+            // in-process task pair (SpecifyOneOnly + IdeWebBuildAndDeploy), while
+            // BuildAll uses the SDK's dedicated BuildAll task. Other
             // actions need distinct tasks the external-msbuild template owns
             // (Reorg → CheckAndInstallDatabase, Validate/Check → CheckKnowledgeBase,
             // Sync → full IdeWebBuildAndDeploy). Refuse here so RunBuild's
             // unchanged fallback runs them through MSBuild.exe.
             if (!string.IsNullOrEmpty(action)
                 && !action.Equals("Build", StringComparison.OrdinalIgnoreCase)
-                && !action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase))
+                && !action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase)
+                && !action.Equals("BuildAll", StringComparison.OrdinalIgnoreCase))
             {
                 Logger.Info("[BUILD-INPROCESS] action='" + action + "' not supported in-process — falling back to MSBuild.exe");
                 return InProcessBuildOutcome.CouldNotRun;
@@ -127,10 +132,29 @@ namespace GxMcp.Worker.Services
                 try
                 {
                     bool isBuildWithTargets = action != null
-                        && action.Equals("Build", StringComparison.OrdinalIgnoreCase)
+                        && (action.Equals("Build", StringComparison.OrdinalIgnoreCase)
+                            || action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase))
                         && targets != null
                         && targets.Count > 0;
                     bool forceRebuild = action != null && action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase);
+
+                    if (action != null && action.Equals("BuildAll", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (_typeBuildAll == null)
+                        {
+                            Logger.Warn("[BUILD-INPROCESS] BuildAll task type is unavailable — falling back to MSBuild.exe");
+                            return InProcessBuildOutcome.CouldNotRun;
+                        }
+
+                        lineSink("[GXMCP-BUILD-ALL] KB opened", false);
+                        lineSink("[GXMCP-BUILD-ALL] BuildAll started", false);
+                        bool buildAllOk = ExecuteBuildAll(kbHandle, engine, lineSink);
+                        if (buildAllOk)
+                            lineSink("[GXMCP-BUILD-ALL] BuildAll completed", false);
+                        return buildAllOk
+                            ? InProcessBuildOutcome.Succeeded
+                            : InProcessBuildOutcome.FailedWithDiagnostics;
+                    }
 
                     // issue #28 item 12: spec-check only. Run SpecifyOneOnly (Spec+Gen) for the
                     // target(s) and stop — no Compile, no IdeWebBuildAndDeploy. Surfaces spc*/gen*
@@ -158,18 +182,21 @@ namespace GxMcp.Worker.Services
                     // module + runs WebAppConfig and is the ~6.5min bottleneck).
                     //
                     // Path enabled by default for action=Build with explicit targets.
-                    // RebuildAll (force-rebuild whole KB) still goes through
-                    // IdeWebBuildAndDeploy because BuildOne is per-object. Opt-out
-                    // with GXMCP_INPROCESS_BUILD_FASTPATH=0.
+                    // RebuildAll with explicit targets stays on the legacy task pair
+                    // below so SpecifyOneOnly scopes the force rebuild; targetless
+                    // RebuildAll still runs against the whole KB. Opt-out with
+                    // GXMCP_INPROCESS_BUILD_FASTPATH=0.
                     // A2: fullDeploy=true forces the legacy IdeWebBuildAndDeploy path
                     // (module/theme copy → web/bin + WebAppConfig) so a targeted build
                     // produces runnable output, instead of BuildOne's compile-only fast path.
                     bool useBuildOne =
                         isBuildWithTargets
                         && !forceRebuild
+                        && !forceFullBuild
                         && !fullDeploy
                         && _typeBuildOne != null
                         && !string.Equals(Environment.GetEnvironmentVariable("GXMCP_INPROCESS_BUILD_FASTPATH"), "0", StringComparison.OrdinalIgnoreCase);
+                    bool hasExplicitTargetIdentity = targets != null && targets.Any(HasExplicitTargetIdentity);
 
                     // Compile-only fast-fast path (experimental).
                     // GXMCP_BUILD_COMPILE_ONLY=1 → call GenexusBLServices.Build.Build with only
@@ -196,6 +223,35 @@ namespace GxMcp.Worker.Services
                         // Reset engine flags before the BuildOne fallback so leftover state
                         // from this attempt doesn't contaminate the BuildOne partial-success check.
                         engine.ResetSectionFlags();
+                    }
+
+                    // BuildOne accepts only the bare ObjectName string and resolves it
+                    // through ObjectNameHelper. Use the EntityKey-based BL path for
+                    // Type:Name and GUID targets so homonyms cannot silently redirect
+                    // the build. If that compatibility member is unavailable, return
+                    // CouldNotRun and let RunBuild use its external fallback.
+                    if (useBuildOne && hasExplicitTargetIdentity)
+                    {
+                        if (_miBuildWithTheseOnly == null)
+                        {
+                            lineSink("[BUILD-INPROCESS] explicit Type:Name/GUID target requires BuildWithTheseOnly; falling back without running ambiguous BuildOne.", false);
+                            return InProcessBuildOutcome.CouldNotRun;
+                        }
+
+                        engine.ResetSectionFlags();
+                        var explicitIdentityResult = ExecuteBuildWithTheseOnly(kbHandle, targets, lineSink);
+                        if (explicitIdentityResult == BatchOutcome.Success)
+                        {
+                            foreach (var t in targets) EditDirtyTracker.MarkClean(kbPath, t);
+                            return status.ErrorCount == 0
+                                ? InProcessBuildOutcome.Succeeded
+                                : InProcessBuildOutcome.FailedWithDiagnostics;
+                        }
+                        if (explicitIdentityResult == BatchOutcome.Failure)
+                            return InProcessBuildOutcome.FailedWithDiagnostics;
+
+                        lineSink("[BUILD-INPROCESS] BuildWithTheseOnly could not resolve explicit target identity; falling back to MSBuild.exe.", false);
+                        return InProcessBuildOutcome.CouldNotRun;
                     }
 
                     if (useBuildOne)
@@ -246,6 +302,35 @@ namespace GxMcp.Worker.Services
                         // Per-target BuildOne (with engine.CompileSucceeded markers) remains
                         // the safe default. Re-enable per-call for KBs where WebAppConfig
                         // works cleanly.
+                        // Issue #96: Multi-target batched BuildWithTheseOnly when includeCallees=none.
+                        // When includeCallees=none and there are >1 targets, instead of running N sequential
+                        // BuildOne builds, issue a single IBuildServiceBL.BuildWithTheseOnly call with
+                        // all EntityKeys. This amortizes module copying and DeveloperMenu regeneration, running
+                        // a single shared specification & MSBuild compilation step.
+                        bool isIncludeCalleesNone = string.Equals(status.BuildPlan?.IncludeCallees, "none", StringComparison.OrdinalIgnoreCase);
+                        if (targets.Count > 1 && isIncludeCalleesNone && _miBuildWithTheseOnly != null)
+                        {
+                            engine.ResetSectionFlags();
+                            var withTheseOnlyResult = ExecuteBuildWithTheseOnly(kbHandle, targets, lineSink);
+                            if (withTheseOnlyResult == BatchOutcome.Success)
+                            {
+                                lineSink("[BUILD-INPROCESS] batch BuildWithTheseOnly x" + targets.Count + " — OK (shared spec/gen/compile pipeline).", false);
+                                foreach (var t in targets) EditDirtyTracker.MarkClean(kbPath, t);
+                                return status.ErrorCount == 0
+                                    ? InProcessBuildOutcome.Succeeded
+                                    : InProcessBuildOutcome.FailedWithDiagnostics;
+                            }
+                            if (withTheseOnlyResult == BatchOutcome.NotApplicable)
+                            {
+                                lineSink("[BUILD-INPROCESS] batch BuildWithTheseOnly unavailable — falling through to per-target BuildOne.", false);
+                            }
+                            else
+                            {
+                                lineSink("[BUILD-INPROCESS] batch BuildWithTheseOnly failed — falling back to per-target BuildOne loop.", false);
+                                engine.ResetSectionFlags();
+                            }
+                        }
+
                         bool tryBatch = targets.Count > 1
                             && _miBuildBuild != null
                             && _typeDevelopmentWorkingSet != null
@@ -317,7 +402,12 @@ namespace GxMcp.Worker.Services
                             // last MCP edit), skip Specify+Generate and call Run.Compile
                             // directly. On any compile-only failure, fall back to BuildOne
                             // for this target (which regenerates the .cs).
-                            if (_miRunCompile != null && !EditDirtyTracker.IsDirty(kbPath, t))
+                            bool targetMaySkipSpecify;
+                            if (skipSpecifyTargets != null)
+                                targetMaySkipSpecify = skipSpecifyTargets.Contains(t, StringComparer.OrdinalIgnoreCase);
+                            else
+                                targetMaySkipSpecify = !EditDirtyTracker.IsDirty(kbPath, t);
+                            if (_miRunCompile != null && targetMaySkipSpecify)
                             {
                                 lineSink("[BUILD-INPROCESS] '" + t + "' is clean — compile-only fast-fast path.", false);
                                 if (ExecuteCompileOnly(kbHandle, t, lineSink))
@@ -370,7 +460,8 @@ namespace GxMcp.Worker.Services
                         return InProcessBuildOutcome.Succeeded;
                     }
 
-                    // Legacy path (RebuildAll, opt-out, or empty targets): SpecifyOneOnly + IdeWebBuildAndDeploy.
+                    // Legacy path (targeted RebuildAll, opt-out, or empty targets):
+                    // SpecifyOneOnly + IdeWebBuildAndDeploy.
                     if (isBuildWithTargets)
                     {
                         if (!ExecuteSpecifyOneOnly(kbHandle, targets, engine))
@@ -455,15 +546,11 @@ namespace GxMcp.Worker.Services
                     targetModel = designModel;
                 }
 
-                var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                    .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
-                if (getMi == null) { Logger.Warn("[BUILD-INPROCESS] ExecuteCompileOnly: ObjectNameHelper.Get not found"); return false; }
-
-                // ObjectNameHelper.Get(targetModel, name) — same as the MSBuild Compile task does.
-                object kbObject = getMi.Invoke(null, new object[] { targetModel, objectName });
+                // Object resolution via ResolveTargetKBObject (supports homonym disambiguation and Type:Name qualification).
+                object kbObject = ResolveTargetKBObject(targetModel, objectName) ?? ResolveTargetKBObject(designModel, objectName);
                 if (kbObject == null)
                 {
-                    Logger.Warn("[BUILD-INPROCESS] ExecuteCompileOnly: object '" + objectName + "' not found in target model");
+                    Logger.Warn("[BUILD-INPROCESS] ExecuteCompileOnly: object '" + objectName + "' not found in target model or design model");
                     return false;
                 }
                 var keyProp = kbObject.GetType().GetProperty("Key", BindingFlags.Public | BindingFlags.Instance);
@@ -554,7 +641,7 @@ namespace GxMcp.Worker.Services
 
                 foreach (var name in objectNames)
                 {
-                    object kbObject = getMi.Invoke(null, new object[] { designModel, name });
+                    object kbObject = ResolveTargetKBObject(designModel, name);
                     if (kbObject == null)
                     {
                         // BuildOne treats an unresolved name as `return true` (no-op). To preserve
@@ -591,10 +678,8 @@ namespace GxMcp.Worker.Services
                 }
                 object workingSet = workingSetCtor.Invoke(new object[] { designModel });
 
-                // BuildOptions = ContinueOnError | BuildProcess | BuildCalled (matches BuildOne).
-                // Composed as the enum's underlying int and cast back to the enum type.
-                int rawOpts = 0xE0 /*ContinueOnError*/ | 0x3800 /*BuildProcess*/ | 0x1 /*BuildCalled*/;
-                object buildOptions = Enum.ToObject(_typeBuildOptions, rawOpts);
+                // BuildOptions(ContinueOnError | BuildProcess | BuildCalled)
+                object buildOptions = Enum.ToObject(_typeBuildOptions, 0x01 | 0x04 | 0x08);
 
                 using (var cts = new CancellationTokenSource())
                 {
@@ -623,8 +708,111 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // Issue #96: Batch build without callees using IBuildServiceBL.BuildWithTheseOnly.
+        // Runs a single shared Specify + Generate + MSBuild compilation pipeline for all
+        // supplied targets, amortizing fixed overhead across the batch.
+        private static BatchOutcome ExecuteBuildWithTheseOnly(object kbHandle, List<string> objectNames, Action<string, bool> lineSink)
+        {
+            try
+            {
+                if (_miBuildWithTheseOnly == null || _typeDevelopmentWorkingSet == null
+                    || _typeGenexusBLServices == null)
+                {
+                    Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: required types not resolved");
+                    return BatchOutcome.NotApplicable;
+                }
+
+                var designModelProp = kbHandle.GetType().GetProperty("DesignModel", BindingFlags.Public | BindingFlags.Instance);
+                object designModel = designModelProp?.GetValue(kbHandle);
+                if (designModel == null)
+                {
+                    Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: KB.DesignModel not found");
+                    return BatchOutcome.NotApplicable;
+                }
+
+                var keysList = new List<string>();
+                Type entityKeyType = _miBuildWithTheseOnly.GetParameters()[1].ParameterType.IsGenericType
+                    ? _miBuildWithTheseOnly.GetParameters()[1].ParameterType.GetGenericArguments()[0]
+                    : null;
+                if (entityKeyType == null)
+                {
+                    Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: cannot infer EntityKey generic argument");
+                    return BatchOutcome.NotApplicable;
+                }
+                var listType = typeof(List<>).MakeGenericType(entityKeyType);
+                var typedList = (System.Collections.IList)Activator.CreateInstance(listType);
+
+                foreach (var name in objectNames)
+                {
+                    object kbObject = ResolveTargetKBObject(designModel, name);
+                    if (kbObject == null)
+                    {
+                        lineSink("[BUILD-INPROCESS] batch: object '" + name + "' not found in DesignModel — skipping.", false);
+                        continue;
+                    }
+                    var keyProp = kbObject.GetType().GetProperty("Key", BindingFlags.Public | BindingFlags.Instance);
+                    object entityKey = keyProp?.GetValue(kbObject);
+                    if (entityKey == null)
+                    {
+                        Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: KBObject.Key null for '" + name + "'");
+                        continue;
+                    }
+                    typedList.Add(entityKey);
+                    keysList.Add(name);
+                }
+
+                if (typedList.Count == 0)
+                {
+                    Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: no resolvable objects in target list");
+                    return BatchOutcome.NotApplicable;
+                }
+
+                var workingSetCtor = _typeDevelopmentWorkingSet.GetConstructors()
+                    .FirstOrDefault(c => c.GetParameters().Length == 1
+                        && string.Equals(c.GetParameters()[0].ParameterType.Name, "KBModel", StringComparison.Ordinal));
+                if (workingSetCtor == null)
+                {
+                    Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: DevelopmentWorkingSet(KBModel) ctor not found");
+                    return BatchOutcome.NotApplicable;
+                }
+                object workingSet = workingSetCtor.Invoke(new object[] { designModel });
+
+                using (var cts = new CancellationTokenSource())
+                {
+                    var buildProp = _typeGenexusBLServices.GetProperty("Build", BindingFlags.Public | BindingFlags.Static);
+                    object buildService = buildProp?.GetValue(null);
+                    if (buildService == null)
+                    {
+                        Logger.Warn("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly: GenexusBLServices.Build returned null");
+                        return BatchOutcome.NotApplicable;
+                    }
+
+                    lineSink("[BUILD-INPROCESS] batch BuildWithTheseOnly: " + typedList.Count + " keys → BL.BuildWithTheseOnly (shared spec/gen/compile).", false);
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    _miBuildWithTheseOnly.Invoke(buildService, new object[] { workingSet, typedList, cts.Token });
+                    sw.Stop();
+                    Logger.Info("[BUILD-INPROCESS] ExecuteBuildWithTheseOnly(" + string.Join(",", keysList) + ") completed in " + sw.ElapsedMilliseconds + "ms");
+                    return BatchOutcome.Success;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogExceptionChain("ExecuteBuildWithTheseOnly(" + string.Join(",", objectNames) + ")", ex);
+                return BatchOutcome.Failure;
+            }
+        }
+
         // Fast per-object build (IDE F5 parity). Returns true on Execute returning
         // true; engine sink already captured any spec/gen/compile diagnostics.
+        internal static bool HasExplicitTargetIdentity(string target)
+        {
+            if (string.IsNullOrWhiteSpace(target)) return false;
+            string trimmed = target.Trim();
+            if (Guid.TryParse(trimmed, out _)) return true;
+            int colon = trimmed.IndexOf(':');
+            return colon > 0 && colon < trimmed.Length - 1;
+        }
+
         private static bool ExecuteBuildOne(object kbHandle, string objectName, IBuildEngine engine, bool buildCalled)
         {
             try
@@ -637,6 +825,9 @@ namespace GxMcp.Worker.Services
                 }
                 object task = Activator.CreateInstance(typeBuildOne);
                 SetProp(task, "KB", kbHandle);
+                // Preserve Type:Name and GUID identities. ResolveTargetKBObject already
+                // proves these forms are valid; stripping the type here would let a
+                // same-name Table/Procedure homonym receive the build.
                 SetProp(task, "ObjectName", objectName);
                 SetProp(task, "ForceRebuild", false);
                 SetProp(task, "BuildCalled", buildCalled);
@@ -664,10 +855,10 @@ namespace GxMcp.Worker.Services
 
         /// <summary>
         /// Bug #3: count how many requested target names resolve to a KBObject via
-        /// ObjectNameHelper.Get(DesignModel, name) — the exact lookup BuildOne/BuildBatch
-        /// use. Returns -1 when resolution can't be determined (missing type / DesignModel /
-        /// Get method) so the caller does NOT gate and preserves legacy behavior. Otherwise
-        /// returns the resolved count and reports unresolved names via <paramref name="unresolved"/>.
+        /// ResolveTargetKBObject (homonym-safe and Type:Name capable). Returns -1 when resolution
+        /// can't be determined (missing type / DesignModel) so the caller does NOT gate and
+        /// preserves legacy behavior. Otherwise returns the resolved count and reports
+        /// unresolved names via <paramref name="unresolved"/>.
         /// </summary>
         private static int CountResolvableTargets(object kbHandle, List<string> names, out List<string> unresolved)
         {
@@ -675,19 +866,15 @@ namespace GxMcp.Worker.Services
             try
             {
                 if (names == null || names.Count == 0) return -1;
-                if (_typeObjectNameHelper == null) return -1;
                 var designModelProp = kbHandle?.GetType().GetProperty("DesignModel", BindingFlags.Public | BindingFlags.Instance);
                 object designModel = designModelProp?.GetValue(kbHandle);
                 if (designModel == null) return -1;
-                var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                    .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
-                if (getMi == null) return -1;
 
                 int resolved = 0;
                 foreach (var name in names)
                 {
                     object kbObject = null;
-                    try { kbObject = getMi.Invoke(null, new object[] { designModel, name }); }
+                    try { kbObject = ResolveTargetKBObject(designModel, name); }
                     catch { return -1; } // resolution itself threw — don't gate on a partial answer
                     if (kbObject == null) unresolved.Add(name);
                     else resolved++;
@@ -699,6 +886,187 @@ namespace GxMcp.Worker.Services
                 unresolved = new List<string>();
                 return -1;
             }
+        }
+
+        /// <summary>
+        /// Issue #115: Resolves a build target to a KBObject in the specified model.
+        /// Supports:
+        /// 1. Type:Name qualification (e.g. "Transaction:SampleEntity", "Table:SampleEntity")
+        /// 2. Guid string ("{...}" or raw Guid)
+        /// 3. ObjectNameHelper.Get(model, name)
+        /// 4. Disambiguation of Table homonyms: when ObjectNameHelper.Get returns a Table or null,
+        ///    probes primary logic objects (Transaction, Procedure, WebPanel, SDPanel, SDT, DataProvider, DataSelector)
+        ///    before falling back to Table.
+        /// </summary>
+        internal static object ResolveTargetKBObject(object model, string target)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(target)) return null;
+
+            string simpleName = target.Trim();
+            string typeName = null;
+            int colon = simpleName.IndexOf(':');
+            if (colon > 0)
+            {
+                typeName = simpleName.Substring(0, colon).Trim();
+                simpleName = simpleName.Substring(colon + 1).Trim();
+            }
+
+            // 1. Guid resolution
+            if (Guid.TryParse(simpleName, out Guid guid))
+            {
+                try
+                {
+                    var objectsProp = model.GetType().GetProperty("Objects", BindingFlags.Public | BindingFlags.Instance);
+                    object objects = objectsProp?.GetValue(model);
+                    if (objects != null)
+                    {
+                        var getGuidMi = objects.GetType().GetMethod("Get", new[] { typeof(Guid) });
+                        if (getGuidMi != null)
+                        {
+                            object hit = getGuidMi.Invoke(objects, new object[] { guid });
+                            if (hit != null) return hit;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 2. Explicit Type qualification
+            if (!string.IsNullOrEmpty(typeName))
+            {
+                object typedHit = TryResolveTypedKBObject(model, typeName, simpleName);
+                if (typedHit != null) return typedHit;
+            }
+
+            // 3. ObjectNameHelper.Get(model, simpleName)
+            if (_typeObjectNameHelper != null)
+            {
+                try
+                {
+                    var getMi = _typeObjectNameHelper.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                        .FirstOrDefault(m => m.Name == "Get" && m.GetParameters().Length == 2 && m.GetParameters()[1].ParameterType == typeof(string));
+                    if (getMi != null)
+                    {
+                        object hit = getMi.Invoke(null, new object[] { model, simpleName });
+                        if (hit != null)
+                        {
+                            string desc = null;
+                            try
+                            {
+                                var tdProp = hit.GetType().GetProperty("TypeDescriptor", BindingFlags.Public | BindingFlags.Instance);
+                                object td = tdProp?.GetValue(hit);
+                                var nameProp = td?.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance);
+                                desc = nameProp?.GetValue(td) as string;
+                            }
+                            catch { }
+
+                            // If not a Table, return it directly
+                            if (!string.Equals(desc, "Table", StringComparison.OrdinalIgnoreCase))
+                            {
+                                return hit;
+                            }
+
+                            // If it is a Table, check if a Transaction shares this name (homonym)
+                            object trnHit = TryResolveTypedKBObject(model, "Transaction", simpleName);
+                            if (trnHit != null) return trnHit;
+                            return hit;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 4. Probe candidates in priority order (primary logic types first)
+            string[] candidateTypes = { "Transaction", "Procedure", "WebPanel", "SDPanel", "SDT", "DataProvider", "DataSelector", "Domain", "Table" };
+            foreach (var cand in candidateTypes)
+            {
+                object candHit = TryResolveTypedKBObject(model, cand, simpleName);
+                if (candHit != null) return candHit;
+            }
+
+            return null;
+        }
+
+        private static object TryResolveTypedKBObject(object model, string typeName, string name)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(name)) return null;
+            try
+            {
+                var modelObj = model as Artech.Architecture.Common.Objects.KBModel;
+                if (modelObj == null)
+                {
+                    var designProp = model.GetType().GetProperty("DesignModel", BindingFlags.Public | BindingFlags.Instance);
+                    modelObj = (designProp?.GetValue(model) as Artech.Architecture.Common.Objects.KBModel);
+                }
+
+                if (modelObj != null)
+                {
+                    var qName = new Artech.Architecture.Common.Objects.QualifiedName(name);
+                    string norm = (typeName ?? "").Trim();
+
+                    // 1. Direct typed lookups for primary logic types
+                    if (norm.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.Transaction.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("Procedure", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.Procedure.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("WebPanel", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.WebPanel.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("DataProvider", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.DataProvider.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("DataSelector", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.DataSelector.Get(modelObj, qName); } catch { }
+                    }
+                    if (norm.Equals("Domain", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { return Artech.Genexus.Common.Objects.Domain.Get(modelObj, qName); } catch { }
+                    }
+
+                    // 2. Lookup across all objects via modelObj.Objects.GetByName
+                    try
+                    {
+                        var matches = modelObj.Objects.GetByName(null, null, name);
+                        if (matches != null)
+                        {
+                            object tableFallback = null;
+                            foreach (Artech.Architecture.Common.Objects.KBObject o in matches)
+                            {
+                                if (o == null) continue;
+                                string oType = o.TypeDescriptor?.Name ?? o.GetType().Name;
+                                if (!string.IsNullOrEmpty(norm))
+                                {
+                                    if (string.Equals(oType, norm, StringComparison.OrdinalIgnoreCase))
+                                        return o;
+                                }
+                                else
+                                {
+                                    // If untyped, prefer non-Table objects over Table
+                                    if (string.Equals(oType, "Table", StringComparison.OrdinalIgnoreCase) || o is Artech.Genexus.Common.Objects.Table)
+                                    {
+                                        if (tableFallback == null) tableFallback = o;
+                                    }
+                                    else
+                                    {
+                                        return o;
+                                    }
+                                }
+                            }
+                            if (tableFallback != null) return tableFallback;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return null;
         }
 
         private static bool EnsureTypesLoaded()
@@ -742,18 +1110,21 @@ namespace GxMcp.Worker.Services
                 _typeSpecifyOneOnly = asm.GetType("Genexus.MsBuild.Tasks.SpecifyOneOnly", throwOnError: false);
                 _typeIdeWebBuildAndDeploy = asm.GetType("Genexus.MsBuild.Tasks.IdeWebBuildAndDeploy", throwOnError: false);
                 _typeBuildOne = asm.GetType("Genexus.MsBuild.Tasks.BuildOne", throwOnError: false);
+                _typeBuildAll = asm.GetType("Genexus.MsBuild.Tasks.BuildAll", throwOnError: false);
 
                 if (_typeSpecifyOneOnly == null || _typeIdeWebBuildAndDeploy == null)
                 {
                     Logger.Error("[BUILD-INPROCESS] Required task types missing in Genexus.MsBuild.Tasks.dll "
                                  + "(SpecifyOneOnly=" + (_typeSpecifyOneOnly != null) + ", "
                                  + "IdeWebBuildAndDeploy=" + (_typeIdeWebBuildAndDeploy != null) + ", "
-                                 + "BuildOne=" + (_typeBuildOne != null) + ")");
+                                 + "BuildOne=" + (_typeBuildOne != null) + ", "
+                                 + "BuildAll=" + (_typeBuildAll != null) + ")");
                     return false;
                 }
 
                 Logger.Info("[BUILD-INPROCESS] Task types loaded from " + asmPath
-                            + " (BuildOne fast path: " + (_typeBuildOne != null ? "available" : "missing") + ")");
+                            + " (BuildOne fast path: " + (_typeBuildOne != null ? "available" : "missing")
+                            + ", BuildAll: " + (_typeBuildAll != null ? "available" : "missing") + ")");
 
                 // Compile-only fast-fast path: load the GeneXus BL types via the
                 // referenced assemblies of Genexus.MsBuild.Tasks (already loaded above).
@@ -779,8 +1150,9 @@ namespace GxMcp.Worker.Services
                         _typeDevelopmentWorkingSet = asmArchCommon.GetType("Artech.Architecture.Common.Objects.DevelopmentWorkingSet", false);
                         _typeObjectNameHelper = asmArchCommon.GetType("Artech.Architecture.Common.Helpers.ObjectNameHelper", false);
                     }
-                    // Resolve IBuildServiceBL.Build(workingSet, BuildOptions, IEnumerable<EntityKey>, CancellationToken).
-                    if (_typeGenexusBLServices != null && _typeBuildOptions != null && _typeDevelopmentWorkingSet != null)
+                    // Resolve IBuildServiceBL.Build(workingSet, BuildOptions, IEnumerable<EntityKey>, CancellationToken)
+                    // and IBuildServiceBL.BuildWithTheseOnly(workingSet, IEnumerable<EntityKey>, CancellationToken).
+                    if (_typeGenexusBLServices != null && _typeDevelopmentWorkingSet != null)
                     {
                         var buildProp = _typeGenexusBLServices.GetProperty("Build", BindingFlags.Public | BindingFlags.Static);
                         var serviceType = buildProp?.PropertyType;
@@ -788,14 +1160,27 @@ namespace GxMcp.Worker.Services
                         {
                             foreach (var mi in serviceType.GetMethods())
                             {
-                                if (!string.Equals(mi.Name, "Build", StringComparison.Ordinal)) continue;
-                                var ps = mi.GetParameters();
-                                if (ps.Length != 4) continue;
-                                if (ps[0].ParameterType != _typeDevelopmentWorkingSet) continue;
-                                if (ps[1].ParameterType != _typeBuildOptions) continue;
-                                // ps[2] is IEnumerable<EntityKey>, ps[3] is CancellationToken
-                                _miBuildBuild = mi;
-                                break;
+                                if (_typeBuildOptions != null && string.Equals(mi.Name, "Build", StringComparison.Ordinal))
+                                {
+                                    var ps = mi.GetParameters();
+                                    if (ps.Length == 4
+                                        && ps[0].ParameterType == _typeDevelopmentWorkingSet
+                                        && ps[1].ParameterType == _typeBuildOptions
+                                        && ps[3].ParameterType == typeof(CancellationToken))
+                                    {
+                                        _miBuildBuild = mi;
+                                    }
+                                }
+                                else if (string.Equals(mi.Name, "BuildWithTheseOnly", StringComparison.Ordinal))
+                                {
+                                    var ps = mi.GetParameters();
+                                    if (ps.Length == 3
+                                        && ps[0].ParameterType == _typeDevelopmentWorkingSet
+                                        && ps[2].ParameterType == typeof(CancellationToken))
+                                    {
+                                        _miBuildWithTheseOnly = mi;
+                                    }
+                                }
                             }
                         }
                     }
@@ -820,13 +1205,20 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
+                    string compileOnlyPath = "missing";
+                    if (_miRunCompile != null)
+                        compileOnlyPath = "available (Run.Compile)";
+                    else if (_miBuildBuild != null)
+                        compileOnlyPath = "available (Build.Build — slow, forces spec)";
+
                     Logger.Info("[BUILD-INPROCESS] Compile-only path: "
-                                + (_miRunCompile != null ? "available (Run.Compile)" : (_miBuildBuild != null ? "available (Build.Build — slow, forces spec)" : "missing"))
+                                + compileOnlyPath
                                 + " (BL=" + (_typeGenexusBLServices != null)
                                 + ", BuildOptions=" + (_typeBuildOptions != null)
                                 + ", DevSet=" + (_typeDevelopmentWorkingSet != null)
                                 + ", ObjNameHelper=" + (_typeObjectNameHelper != null)
-                                + ", RunCompile=" + (_miRunCompile != null) + ")");
+                                + ", RunCompile=" + (_miRunCompile != null)
+                                + ", BuildWithTheseOnly=" + (_miBuildWithTheseOnly != null) + ")");
                 }
                 catch (Exception coEx)
                 {
@@ -998,6 +1390,40 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 LogExceptionChain("IdeWebBuildAndDeploy", ex);
+                return false;
+            }
+        }
+
+        private static bool ExecuteBuildAll(object kbHandle, IBuildEngine engine, Action<string, bool> lineSink)
+        {
+            try
+            {
+                object task = Activator.CreateInstance(_typeBuildAll);
+                SetProp(task, "KB", kbHandle);
+                SetProp(task, "ForceRebuild", false);
+                SetProp(task, "CompileMains", true);
+                SetProp(task, "FailIfReorg", true);
+                SetProp(task, "DoNotExecuteReorg", true);
+                SetProp(task, "DetailedNavigation", false);
+                SetProp(task, "Output", "IDE");
+                SetProp(task, "EventsSuspended", true);
+                SetProp(task, "BuildEngine", engine);
+
+                var execute = _typeBuildAll.GetMethod("Execute", BindingFlags.Public | BindingFlags.Instance);
+                if (execute == null)
+                {
+                    Logger.Error("[BUILD-INPROCESS] BuildAll.Execute method not found");
+                    return false;
+                }
+                object result = execute.Invoke(task, null);
+                bool ok = result is bool b && b;
+                if (!ok) Logger.Warn("[BUILD-INPROCESS] BuildAll.Execute returned false");
+                return ok;
+            }
+            catch (Exception ex)
+            {
+                LogExceptionChain("BuildAll", ex);
+                lineSink("[GXMCP-BUILD-ALL] BuildAll task failed: " + ex.Message, true);
                 return false;
             }
         }

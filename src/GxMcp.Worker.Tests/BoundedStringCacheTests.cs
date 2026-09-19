@@ -20,5 +20,16 @@ namespace GxMcp.Worker.Tests
             Assert.False(cache.TryGetValue("two", out _));
             Assert.True(cache.TryGetValue("three", out _));
         }
+
+        [Fact]
+        public void TryRemove_RemovesItemAndSupportsOutValue()
+        {
+            var cache = new BoundedStringCache(4);
+            cache.TryAdd("k1", "v1");
+            Assert.True(cache.TryRemove("k1", out var removedVal));
+            Assert.Equal("v1", removedVal);
+            Assert.False(cache.TryGetValue("k1", out _));
+            Assert.False(cache.TryRemove("nonexistent", out _));
+        }
     }
 }

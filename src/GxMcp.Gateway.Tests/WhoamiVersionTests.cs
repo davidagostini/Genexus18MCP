@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using Xunit;
 using GxMcp.Gateway;
+using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway.Tests
 {
@@ -83,6 +84,111 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(payload["mcp"]?["protocolVersion"]);
             Assert.NotNull(payload["geneXus"]?["supportedMajor"]);
             Assert.Equal("18", payload["geneXus"]?["supportedMajor"]?.ToString());
+
+            var supportedMajors = Assert.IsType<JArray>(payload["geneXus"]?["supportedMajors"]);
+            var supportedMajorValues = supportedMajors.ToObject<string[]>() ?? Array.Empty<string>();
+            Assert.Contains("16", supportedMajorValues);
+            Assert.Contains("17", supportedMajorValues);
+            Assert.Contains("18", supportedMajorValues);
+            Assert.Equal("18", payload["geneXus"]?["catalog"]?["primaryMajor"]?.ToString());
+            var legacyMajors = Assert.IsType<JArray>(payload["geneXus"]?["catalog"]?["legacyMajors"]);
+            Assert.Contains("8", legacyMajors.ToObject<string[]>() ?? Array.Empty<string>());
+            Assert.NotNull(payload["geneXus"]?["catalog"]?["source"]);
+        }
+
+        [Theory]
+        [InlineData("16.0.11.144151", "16", true)]
+        [InlineData("17.0.11.163677", "17", true)]
+        [InlineData("18.0.6", "18", true)]
+        [InlineData("19.0.0", "19", false)]
+        [InlineData("170.0.0", "170", false)]
+        public void GeneXusVersionCatalog_MatchesOnlyExplicitlySupportedMajors(
+            string version, string expectedMajor, bool expectedSupported)
+        {
+            Assert.Equal(expectedMajor, GeneXusVersionCatalog.GetMajor(version));
+            Assert.Equal(expectedSupported, GeneXusVersionCatalog.IsSupported(version));
+        }
+
+        [Fact]
+        public void GeneXusVersionCatalog_RecognizesLegacyMajorsAndDrivers()
+        {
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("10.3"));
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("10.2"));
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("10.1"));
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("9"));
+            Assert.True(GeneXusVersionCatalog.IsLegacyMajor("8"));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor("18"));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor("unknown"));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor(null));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor(""));
+            Assert.False(GeneXusVersionCatalog.IsLegacyMajor("   "));
+
+            Assert.Equal("dotnet-reflection", GeneXusVersionCatalog.GetDriverProfile("10.3"));
+            Assert.Equal("dotnet-reflection", GeneXusVersionCatalog.GetDriverProfile("10.3.0.86550"));
+            Assert.Equal("dotnet-reflection", GeneXusVersionCatalog.GetDriverProfile("15"));
+            Assert.Equal("com-gxpublic", GeneXusVersionCatalog.GetDriverProfile("9"));
+            Assert.Equal("com-gxpublic", GeneXusVersionCatalog.GetDriverProfile("9.0.123"));
+            Assert.Equal("com-gxpublic", GeneXusVersionCatalog.GetDriverProfile("8"));
+            Assert.Equal("com-gxpublic", GeneXusVersionCatalog.GetDriverProfile("8.0.456"));
+            Assert.Equal("native-sdk", GeneXusVersionCatalog.GetDriverProfile("18"));
+            Assert.Equal("native-sdk", GeneXusVersionCatalog.GetDriverProfile("18.0.4.180000"));
+            Assert.Equal("native-sdk", GeneXusVersionCatalog.GetDriverProfile("17"));
+            Assert.Equal("native-sdk", GeneXusVersionCatalog.GetDriverProfile("16"));
+            Assert.Null(GeneXusVersionCatalog.GetDriverProfile("unknown"));
+            Assert.Null(GeneXusVersionCatalog.GetDriverProfile(null));
+            Assert.Null(GeneXusVersionCatalog.GetDriverProfile(""));
+
+            Assert.True(GeneXusVersionCatalog.IsSupportedOrLegacy("10.3.0"));
+            Assert.True(GeneXusVersionCatalog.IsSupportedOrLegacy("18.0.4"));
+            Assert.True(GeneXusVersionCatalog.IsSupportedOrLegacy("8.0.0"));
+            Assert.False(GeneXusVersionCatalog.IsSupportedOrLegacy("19.0.0"));
+            Assert.False(GeneXusVersionCatalog.IsSupportedOrLegacy(null));
+            Assert.False(GeneXusVersionCatalog.IsSupportedOrLegacy(""));
+
+            Assert.Contains("10.3", GeneXusVersionCatalog.LegacyMajors);
+            Assert.Contains("10.2", GeneXusVersionCatalog.LegacyMajors);
+            Assert.Contains("10.1", GeneXusVersionCatalog.LegacyMajors);
+            Assert.Contains("9", GeneXusVersionCatalog.LegacyMajors);
+            Assert.Contains("8", GeneXusVersionCatalog.LegacyMajors);
+        }
+
+        [Fact]
+        public void Whoami_ExposesMultiKbSelectionContext()
+        {
+            var payload = Program.BuildWhoamiPayload();
+            var kb = Assert.IsType<Newtonsoft.Json.Linq.JObject>(payload["kb"]);
+
+            Assert.NotNull(kb["active"]);
+            Assert.NotNull(kb["openKbs"]);
+            Assert.NotNull(kb["knownKbs"]);
+            Assert.NotNull(kb["declaredKbs"]);
+            Assert.Equal(Newtonsoft.Json.Linq.JTokenType.Array, kb["openKbs"]!.Type);
+            Assert.Equal(Newtonsoft.Json.Linq.JTokenType.Array, kb["knownKbs"]!.Type);
+            Assert.Equal(Newtonsoft.Json.Linq.JTokenType.Array, kb["declaredKbs"]!.Type);
+        }
+
+        [Fact]
+        public void Whoami_Exposes_the_session_selected_alias_separately()
+        {
+            const string sessionId = "whoami-session-test";
+            Program.SetSessionSelectedKb(sessionId, "orders");
+            try
+            {
+                var payload = Program.BuildWhoamiPayload(false, sessionId);
+                var kb = Assert.IsType<Newtonsoft.Json.Linq.JObject>(payload["kb"]);
+
+                Assert.Equal("orders", kb["selected"]?.ToString());
+                Assert.Equal("orders", kb["active"]?.ToString());
+                Assert.Equal("session-select", kb["selectionSource"]?.ToString());
+                Assert.Equal("orders", kb["sessionSelection"]?.ToString());
+                Assert.Equal("invalid", kb["selectionState"]?.ToString());
+                Assert.True(kb["contextRequired"]?.ToObject<bool>());
+                Assert.True(kb.ContainsKey("persistedFallback"));
+            }
+            finally
+            {
+                Program.ClearSessionSelectedKb(sessionId);
+            }
         }
 
         // v2.3.8 Task 1.2: whoami surfaces index readiness so the agent can know

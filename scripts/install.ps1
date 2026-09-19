@@ -8,12 +8,12 @@
 #   - Admin           -> C:\Tools\GenexusMCP
 #   - Non-admin       -> %LOCALAPPDATA%\Programs\GenexusMCP
 #
-# One-liner (latest release, runs init too):
+# One-liner (latest release, creates a neutral runtime and registers clients):
 #   iex (irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1)
 #
 # With params:
 #   $script = irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1
-#   & ([scriptblock]::Create($script)) -Kb "C:\KBs\MyKB" -Gx "C:\Program Files (x86)\GeneXus\GeneXus18"
+#   & ([scriptblock]::Create($script)) -Gx "C:\Program Files (x86)\GeneXus\GeneXus18"
 #
 # Re-run with the same args to upgrade. Use -Force to reinstall the same version.
 # Use -Repair to wipe + reinstall the same currently-installed version.
@@ -25,8 +25,6 @@ param(
 
     [string]$Version,
 
-    [ValidateScript({ -not $_ -or (Test-Path -LiteralPath $_) })]
-    [string]$Kb,
 
     [ValidateScript({ -not $_ -or (Test-Path -LiteralPath $_) })]
     [string]$Gx,
@@ -63,6 +61,7 @@ $script:initFailed = $false
 $Repo = 'lennix1337/Genexus18MCP'
 $ApiBase = 'https://api.github.com'
 $skipExtract = $false
+$installResult = $null
 
 function Test-IsAdmin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -74,6 +73,260 @@ function Write-Step($msg) { Write-Host "[i] $msg" -ForegroundColor Cyan }
 function Write-Warn($msg) { Write-Host "[!] $msg" -ForegroundColor Yellow }
 function Write-Ok($msg)   { Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-Err($msg)  { Write-Host "[X] $msg" -ForegroundColor Red }
+
+# Pure, filesystem-scoped helpers used by scripts/install.ps1.
+#
+# This file intentionally has no top-level installation side effects. It can be
+# dot-sourced by contract tests with synthetic ZIPs and a temporary install root.
+
+Set-StrictMode -Version Latest
+
+function Assert-SafeZipEntryPath {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $normalized = $Name.Replace('\', '/').TrimStart('/')
+    if ([string]::IsNullOrWhiteSpace($normalized) -or
+        [System.IO.Path]::IsPathRooted($Name) -or
+        $normalized -match '(^|/)\.\.(/|$)' -or
+        $normalized -match '^[A-Za-z]:' -or
+        $normalized.Contains("`0")) {
+        throw "Unsafe ZIP entry path: $Name"
+    }
+
+    return $normalized
+}
+
+function Test-InstallArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$ZipPath,
+        [Parameter(Mandatory = $true)][string]$StagingDirectory,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion,
+        [switch]$RequireManifest
+    )
+
+    if (-not (Test-Path -LiteralPath $ZipPath -PathType Leaf)) {
+        throw "Archive not found: $ZipPath"
+    }
+
+    if (Test-Path -LiteralPath $StagingDirectory) {
+        Remove-Item -LiteralPath $StagingDirectory -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $StagingDirectory -Force | Out-Null
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = $null
+    try {
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+        foreach ($entry in $archive.Entries) {
+            [void](Assert-SafeZipEntryPath -Name $entry.FullName)
+        }
+    } catch {
+        if (Test-Path -LiteralPath $StagingDirectory) {
+            Remove-Item -LiteralPath $StagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    } finally {
+        if ($archive) { $archive.Dispose() }
+    }
+
+    try {
+        Expand-Archive -LiteralPath $ZipPath -DestinationPath $StagingDirectory -Force
+
+        $required = @(
+            'GxMcp.Gateway.exe',
+            'worker\GxMcp.Worker.exe',
+            'tool_definitions.json'
+        )
+        foreach ($relative in $required) {
+            $path = Join-Path $StagingDirectory $relative
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "Required release artefact missing from archive: $relative"
+            }
+        }
+
+        $manifest = $null
+        if ($RequireManifest) {
+            $manifestPath = Join-Path $StagingDirectory 'gxmcp-manifest.json'
+            if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+                throw 'gxmcp-manifest.json is required for v3 releases.'
+            }
+
+            try {
+                $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            } catch {
+                throw "Invalid gxmcp-manifest.json: $($_.Exception.Message)"
+            }
+
+            if ($manifest.schemaVersion -ne 'gxmcp-release-manifest/1') {
+                throw "Unsupported release manifest schema: $($manifest.schemaVersion)"
+            }
+
+            $expected = $ExpectedVersion.TrimStart('v')
+            if ([string]$manifest.version -ne $expected) {
+                throw "Release manifest version $($manifest.version) does not match requested $expected."
+            }
+
+            if (-not $manifest.artifacts) {
+                throw 'Release manifest has no artifacts.'
+            }
+
+            if ([string]$manifest.schema -ne 'tool_definitions.json' -or
+                -not $manifest.protocolVersions -or
+                -not (@($manifest.protocolVersions) -contains '2025-11-25') -or
+                -not (@($manifest.protocolVersions) -contains '2026-07-28')) {
+                throw 'Release manifest is missing the schema or supported MCP protocol revisions.'
+            }
+            if ([string]$manifest.provenance -ne 'gxmcp-sbom.json') {
+                throw 'Release manifest must bind the staged provenance document.'
+            }
+
+            if ([string]::IsNullOrWhiteSpace([string]$manifest.sourceCommit) -or
+                [string]::IsNullOrWhiteSpace([string]$manifest.schemaSha256) -or
+                [string]$manifest.schemaSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+                throw 'Release manifest must bind a source commit and SHA-256 schema hash.'
+            }
+            if ([string]$manifest.runtime.gateway -ne 'net10.0-windows' -or
+                [string]$manifest.runtime.worker -ne 'net48-x86' -or
+                [string]$manifest.runtime.node -notmatch '^>=22\.0\.0$') {
+                throw 'Release manifest runtime contract is unsupported.'
+            }
+
+            $manifestPaths = @()
+            foreach ($artifact in $manifest.artifacts) {
+                if ([string]::IsNullOrWhiteSpace([string]$artifact.path) -or
+                    [string]::IsNullOrWhiteSpace([string]$artifact.sha256) -or
+                    $null -eq $artifact.size) {
+                    throw 'Release manifest contains an incomplete artifact entry.'
+                }
+                $relative = Assert-SafeZipEntryPath -Name ([string]$artifact.path)
+                $artifactPath = Join-Path $StagingDirectory $relative
+                if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+                    throw "Manifest artifact missing from archive: $relative"
+                }
+                $item = Get-Item -LiteralPath $artifactPath
+                if ([int64]$artifact.size -ne [int64]$item.Length) {
+                    throw "Manifest size mismatch for $relative."
+                }
+                $actual = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($actual -ne ([string]$artifact.sha256).ToLowerInvariant()) {
+                    throw "Manifest SHA-256 mismatch for $relative."
+                }
+                $manifestPaths += $relative
+            }
+            if (($manifestPaths | Sort-Object -Unique).Count -ne $manifestPaths.Count) {
+                throw 'Release manifest contains duplicate artifact paths.'
+            }
+            $schemaActual = (Get-FileHash -LiteralPath (Join-Path $StagingDirectory 'tool_definitions.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($schemaActual -ne ([string]$manifest.schemaSha256).ToLowerInvariant()) {
+                throw 'Release manifest schemaSha256 does not match tool_definitions.json.'
+            }
+            foreach ($requiredRelative in @('GxMcp.Gateway.exe', 'worker/GxMcp.Worker.exe', 'tool_definitions.json', 'gxmcp-sbom.json')) {
+                if ($manifestPaths -notcontains $requiredRelative) {
+                    throw "Release manifest does not cover required artifact: $requiredRelative"
+                }
+            }
+        }
+
+        return [pscustomobject]@{
+            StagingDirectory = $StagingDirectory
+            GatewayPath = Join-Path $StagingDirectory 'GxMcp.Gateway.exe'
+            WorkerPath = Join-Path $StagingDirectory 'worker\GxMcp.Worker.exe'
+            Manifest = $manifest
+        }
+    } catch {
+        if (Test-Path -LiteralPath $StagingDirectory) {
+            Remove-Item -LiteralPath $StagingDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+}
+
+function Invoke-InstallProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$GatewayPath,
+        [int]$TimeoutMs = 5000
+    )
+
+    $proc = Start-Process -FilePath $GatewayPath -ArgumentList '--self-test' -PassThru -WindowStyle Hidden -ErrorAction Stop
+    try {
+        if (-not $proc.WaitForExit($TimeoutMs)) {
+            try { $proc.Kill() } catch { }
+            throw "Gateway self-test timed out after ${TimeoutMs}ms."
+        }
+        if ($proc.ExitCode -ne 0) {
+            throw "Gateway self-test exited with code $($proc.ExitCode)."
+        }
+    } finally {
+        $proc.Dispose()
+    }
+}
+
+function Invoke-ValidatedInstall {
+    param(
+        [Parameter(Mandatory = $true)][string]$ZipPath,
+        [Parameter(Mandatory = $true)][string]$InstallDirectory,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [switch]$RequireManifest,
+        [int]$ProbeTimeoutMs = 5000,
+        [scriptblock]$Probe = $null
+    )
+
+    $parent = Split-Path -Parent $InstallDirectory
+    $leaf = Split-Path -Leaf $InstallDirectory
+    if ([string]::IsNullOrWhiteSpace($parent) -or [string]::IsNullOrWhiteSpace($leaf)) {
+        throw "Install directory must be a concrete path: $InstallDirectory"
+    }
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+
+    $stage = Join-Path $parent (".$leaf.staging-" + [guid]::NewGuid().ToString('N'))
+    $backup = $null
+    $targetExisted = Test-Path -LiteralPath $InstallDirectory
+    try {
+        $validated = Test-InstallArchive -ZipPath $ZipPath -StagingDirectory $stage -ExpectedVersion $Version -RequireManifest:$RequireManifest
+
+        # Preserve operator-owned configuration and credentials across upgrades.
+        if ($targetExisted) {
+            foreach ($name in @('config.json', 'config.local.json', 'auth.json', 'credentials.json')) {
+                $oldPath = Join-Path $InstallDirectory $name
+                $newPath = Join-Path $stage $name
+                if (Test-Path -LiteralPath $oldPath -PathType Leaf) {
+                    Copy-Item -LiteralPath $oldPath -Destination $newPath -Force
+                }
+            }
+        }
+
+        $Version | Out-File -FilePath (Join-Path $stage 'version.txt') -Encoding ascii -NoNewline
+        if ($Probe) {
+            $probeResult = & $Probe $validated.GatewayPath
+            if ($probeResult -eq $false) { throw 'Gateway self-test probe rejected the staged release.' }
+        } else {
+            Invoke-InstallProbe -GatewayPath $validated.GatewayPath -TimeoutMs $ProbeTimeoutMs
+        }
+
+        if ($targetExisted) {
+            $backup = Join-Path $parent (".$leaf.previous-" + (Get-Date -Format 'yyyyMMddHHmmssfff') + '-' + ([guid]::NewGuid().ToString('N').Substring(0, 8)))
+            Move-Item -LiteralPath $InstallDirectory -Destination $backup -Force
+        }
+        try {
+            Move-Item -LiteralPath $stage -Destination $InstallDirectory -Force
+        } catch {
+            if ($backup -and (Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $InstallDirectory)) {
+                Move-Item -LiteralPath $backup -Destination $InstallDirectory -Force
+            }
+            throw
+        }
+
+        return [pscustomobject]@{
+            InstallDirectory = $InstallDirectory
+            BackupDirectory = $backup
+            Manifest = $validated.Manifest
+        }
+    } finally {
+        if (Test-Path -LiteralPath $stage) {
+            Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 function Confirm-Action {
     param([string]$Prompt, [bool]$DefaultYes = $false)
@@ -118,6 +371,29 @@ function Invoke-WithRetry {
         }
     }
     throw $lastErr
+}
+
+function Test-StrictSemVer([string]$Value) {
+    return $Value -match '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+}
+
+function Get-SemVerCore([string]$Value) {
+    $parts = $Value.TrimStart('v').Split('-', 2)[0].Split('+', 2)[0].Split('.')
+    return @([int64]$parts[0], [int64]$parts[1], [int64]$parts[2])
+}
+
+function Compare-StrictSemVer([string]$Left, [string]$Right) {
+    $a = Get-SemVerCore $Left; $b = Get-SemVerCore $Right
+    for ($i = 0; $i -lt 3; $i++) {
+        if ($a[$i] -gt $b[$i]) { return 1 }
+        if ($a[$i] -lt $b[$i]) { return -1 }
+    }
+    $aPre = if ($Left.Contains('-')) { $Left.Split('-', 2)[1].Split('+', 2)[0] } else { $null }
+    $bPre = if ($Right.Contains('-')) { $Right.Split('-', 2)[1].Split('+', 2)[0] } else { $null }
+    if ($null -eq $aPre -and $null -ne $bPre) { return 1 }
+    if ($null -ne $aPre -and $null -eq $bPre) { return -1 }
+    if ($aPre -eq $bPre) { return 0 }
+    return [string]::CompareOrdinal([string]$aPre, [string]$bPre)
 }
 
 # Scan likely GeneXus install roots and return all candidates. We don't just take
@@ -254,6 +530,11 @@ function Invoke-CliUninstall {
     Write-Step 'Removing AI client entries via genexus-mcp uninstall (uses npx @latest; needs network)...'
     try {
         & $npx.Source -y 'genexus-mcp@latest' uninstall --yes --format json 2>&1 | Out-Null
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            Write-Warn "genexus-mcp uninstall exited with code $exitCode. Falling back to inline cleanup."
+            return $false
+        }
         return $true
     } catch {
         Write-Warn "genexus-mcp uninstall failed: $($_.Exception.Message). Falling back to inline cleanup."
@@ -406,6 +687,12 @@ if (-not $Version) {
 }
 if ($Version -notmatch '^v') { $Version = "v$Version" }
 $VersionNoV = $Version.TrimStart('v')
+if (-not (Test-StrictSemVer $VersionNoV)) {
+    throw "Version '$Version' is not strict semver (X.Y.Z[-prerelease][+build])."
+}
+$versionMajor = 0
+[void][int]::TryParse(($VersionNoV -split '\.')[0], [ref]$versionMajor)
+$isV3Release = $versionMajor -ge 3
 Write-Step "Target version: $Version"
 
 $versionFile = Join-Path $InstallDir 'version.txt'
@@ -417,12 +704,18 @@ if ($Repair) { $Force = $true }
 
 if ((Test-Path $versionFile) -and -not $Force) {
     $current = (Get-Content $versionFile -Raw).Trim()
+    $currentNoV = $current.TrimStart('v')
+    if (-not (Test-StrictSemVer $currentNoV)) {
+        throw "Installed version '$current' is invalid; refusing to compare or replace it. Pass -Force after checking the installation."
+    }
+    if ((Compare-StrictSemVer $VersionNoV $currentNoV) -lt 0) {
+        throw "Refusing downgrade from $current to $Version. Pass -Force or -Repair to override."
+    }
     if ($current -eq $Version) {
         Write-Ok "Already at $Version. Pass -Force (or -Repair) to reinstall."
-        # Even if we don't re-extract, still run init if -Kb/-Gx were given,
-        # so the user can fix a broken config without nuking the install dir.
-        if (-not $Kb -and -not $Gx) { exit 0 }
-        Write-Step 'Skipping extract; re-running init with provided KB/GX.'
+        # Even if we don't re-extract, still register the neutral runtime if -Gx was given.
+        if (-not $Gx) { exit 0 }
+        Write-Step 'Skipping extract; re-running neutral registration with provided GX.'
         $skipExtract = $true
     }
     if (-not $skipExtract) { Write-Step "Upgrading $current -> $Version" }
@@ -443,8 +736,9 @@ if (-not $skipExtract) {
     }
 
     # ── Integrity check: verify SHA-256 against the sidecar committed at the tag ──
-    # publish.zip.sha256 is written by release.ps1 and committed before tagging
-    # (introduced in v2.9.2). Older releases won't have the file; we warn but continue.
+    # v3 releases fail closed when the sidecar is missing or invalid. Older
+    # releases retain an explicit compatibility path because pre-v2.9.2 tags
+    # never shipped a checksum sidecar.
     $shaUrl = "https://github.com/$Repo/releases/download/$Version/publish.zip.sha256"
     $tmpSha = Join-Path ([IO.Path]::GetTempPath()) "genexus-mcp-$Version.zip.sha256"
     try {
@@ -458,35 +752,46 @@ if (-not $skipExtract) {
         }
         Write-Step "Integrity check passed ($($actualHash.Substring(0,16))...)"
     } catch [System.Net.WebException] {
-        Write-Warning "Could not download $shaUrl — skipping integrity check (pre-v2.9.2 release or network issue)."
+        if ($isV3Release) {
+            Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
+            throw "Checksum is required for v3 releases, but $shaUrl could not be downloaded. Aborting before changing '$InstallDir'."
+        }
+        Write-Warning "Could not download $shaUrl — using the explicitly versioned legacy installer path for $Version."
+    } catch {
+        Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
+        throw
     } finally {
         if (Test-Path $tmpSha) { Remove-Item $tmpSha -Force -ErrorAction SilentlyContinue }
     }
 
-    # Refuse to clean an unrelated directory - only wipe if it already looks like
-    # an install (version.txt or the gateway exe present), or is brand new.
+    # Refuse to replace an unrelated directory. The validated installer below
+    # stages, probes, and swaps atomically; the previous directory is retained.
     if (Test-Path $InstallDir) {
         $looksOurs = (Test-Path $versionFile) -or (Test-Path $gatewayExe)
         $isEmpty = -not (Get-ChildItem -Path $InstallDir -Force | Select-Object -First 1)
         if (-not $looksOurs -and -not $isEmpty) {
             Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
-            throw "Refusing to clean '$InstallDir' - it exists but doesn't look like a previous GenexusMCP install. Pass -InstallDir to a dedicated directory."
+            throw "Refusing to replace '$InstallDir' - it exists but doesn't look like a previous GenexusMCP install. Pass -InstallDir to a dedicated directory."
         }
-        Write-Step "Cleaning existing $InstallDir"
-        Remove-Item -Path (Join-Path $InstallDir '*') -Recurse -Force
-    } else {
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
 
-    Write-Step "Extracting to $InstallDir"
+    Write-Step "Validating and staging release before replacing $InstallDir"
     try {
-        Expand-Archive -Path $tmpZip -DestinationPath $InstallDir -Force
+        $installResult = Invoke-ValidatedInstall `
+            -ZipPath $tmpZip `
+            -InstallDirectory $InstallDir `
+            -Version $Version `
+            -RequireManifest:$isV3Release `
+            -ProbeTimeoutMs 5000
+        if ($installResult.BackupDirectory) {
+            Write-Step "Previous installation retained at $($installResult.BackupDirectory)"
+        }
     } finally {
         Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
     }
 
-    if (-not (Test-Path $gatewayExe)) { throw "Extraction failed: $gatewayExe not found." }
-    if (-not (Test-Path $workerExe))  { throw "Extraction failed: $workerExe not found." }
+    if (-not (Test-Path $gatewayExe)) { throw "Validated installation failed: $gatewayExe not found." }
+    if (-not (Test-Path $workerExe))  { throw "Validated installation failed: $workerExe not found." }
 }
 
 # -------------------------------------------------------------------------
@@ -510,6 +815,10 @@ try {
     # Self-test exits on its own; give it up to 5s for a slow disk + JIT warmup.
     if (-not $proc.WaitForExit(5000)) {
         try { $proc.Kill() } catch { }
+        throw 'Gateway self-test timed out after 5000ms.'
+    }
+    if ($proc.ExitCode -ne 0) {
+        throw "Gateway self-test exited with code $($proc.ExitCode)."
     }
     Write-Ok 'Gateway exe is launchable from the install path.'
 } catch {
@@ -517,6 +826,22 @@ try {
 }
 
 if ($probeError) {
+    if ($installResult -and $installResult.BackupDirectory -and
+        (Test-Path -LiteralPath $installResult.BackupDirectory)) {
+        # A path-specific probe can fail after the staged probe succeeds (for
+        # example, an AppLocker rule targets the final directory). Put the
+        # previous installation back before surfacing the failure.
+        $failedInstall = "$InstallDir.failed-" + [guid]::NewGuid().ToString('N')
+        try {
+            if (Test-Path -LiteralPath $InstallDir) {
+                Move-Item -LiteralPath $InstallDir -Destination $failedInstall -Force
+            }
+            Move-Item -LiteralPath $installResult.BackupDirectory -Destination $InstallDir -Force
+            Write-Warn "Probe failed; previous installation restored. Failed candidate retained at $failedInstall"
+        } catch {
+            Write-Warn "Probe failed and automatic rollback could not complete: $($_.Exception.Message)"
+        }
+    }
     $msg = $probeError
     $accessDenied = $msg -match 'Access is denied|Access denied|Acesso negado|0x80070005|UnauthorizedAccess'
     Write-Host ''
@@ -550,81 +875,47 @@ if (-not $NoClient) {
 
     if (-not $npx) {
         Write-Warn 'npx not found - skipping AI client registration.'
-        Write-Warn '  Install Node.js 18+ (https://nodejs.org/) and re-run, or pass -NoClient and configure clients manually.'
+        Write-Warn '  Install Node.js 22+ (https://nodejs.org/) and re-run, or pass -NoClient and configure clients manually.'
     } else {
         # Pin npx to the same version we just extracted so the CLI shape (flags,
         # checks, error envelopes) matches the gateway exe. Otherwise `@latest`
         # may pull a newer or older CLI that doesn't agree with this gateway.
         $npxPkg = "genexus-mcp@$VersionNoV"
-        $initArgs = @('-y', $npxPkg, 'init', '--write-clients', '--no-smoke', '--format', 'json')
-        if ($Kb) { $initArgs += @('--kb', $Kb) }
-        if ($Gx) { $initArgs += @('--gx', $Gx) }
+        $configPath = Join-Path $InstallDir 'config.json'
+        $workerPath = Join-Path $InstallDir 'worker\GxMcp.Worker.exe'
+        $configArgs = @('-y', $npxPkg, 'config', 'create', '--config-scope', 'neutral', '--output', $configPath, '--gx', $Gx, '--worker', $workerPath, '--gateway-mode', 'stdio-isolated', '--resolution-policy', 'strict', '--format', 'json')
+        $clientArgs = if ($Clients) {
+            @('-y', $npxPkg, 'clients', 'add', '--clients', $Clients, '--format', 'json')
+        } else {
+            @('-y', $npxPkg, 'clients', 'add', '--all-clients', '--format', 'json')
+        }
+        if ([string]::IsNullOrWhiteSpace($Gx)) {
+            Write-Warn 'Gx was not supplied; neutral config creation requires -Gx. Skipping AI client registration.'
+            $script:initFailed = $true
+        }
         if ($InteractiveClients) {
-            # Interactive flow can't run with --format json (it expects a TTY for prompts).
-            $initArgs = @('-y', $npxPkg, 'init', '--interactive')
-            if ($Kb) { $initArgs += @('--kb', $Kb) }
-            if ($Gx) { $initArgs += @('--gx', $Gx) }
-        } elseif ($Clients) {
-            $initArgs += @('--clients', $Clients)
+            Write-Warn 'Interactive client selection is not supported for neutral registration; use -Clients with the CLI after installation.'
         }
 
-        Write-Step "Registering with AI clients via $npxPkg (gateway = $gatewayExe)"
+        Write-Step "Registering neutral runtime with AI clients via $npxPkg (gateway = $gatewayExe)"
         $prev = $env:GENEXUS_MCP_GATEWAY_EXE
         $env:GENEXUS_MCP_GATEWAY_EXE = $gatewayExe
         try {
-            if ($InteractiveClients) {
-                & $npx.Source @initArgs
-                if ($LASTEXITCODE -ne 0) { $script:initFailed = $true }
-            } else {
-                # Capture stdout/stderr, parse the JSON envelope, surface only the
-                # human-readable bits. Wall-of-YAML output was the #2 friction point
-                # in the v2.6.7 field install: operators couldn't tell pass from fail.
-                $output = & $npx.Source @initArgs 2>&1
-                $exitCode = $LASTEXITCODE
-                $jsonText = ($output | Out-String).Trim()
-                $envelope = $null
-                try { $envelope = $jsonText | ConvertFrom-Json -ErrorAction Stop } catch { }
-
-                if ($envelope) {
-                    if ($exitCode -ne 0) {
-                        $script:initFailed = $true
-                        Write-Host ''
-                        Write-Err 'Init reported a failure:'
-                        $errMsg = if ($envelope.PSObject.Properties.Name -contains 'error') { $envelope.error.message } else { 'unknown error (envelope missing error.message)' }
-                        Write-Host "    $errMsg" -ForegroundColor Red
-                        if ($envelope.PSObject.Properties.Name -contains 'help' -and $envelope.help.Count -gt 0) {
-                            Write-Host ''
-                            Write-Host 'Suggested fix:' -ForegroundColor Yellow
-                            foreach ($h in $envelope.help) { Write-Host "    $h" -ForegroundColor Yellow }
-                        }
-                        # If verification has failed checks, list them - this is the
-                        # gx_installation / kb_path_exists / worker_startup_smoke output.
-                        if ($envelope.PSObject.Properties.Name -contains 'ok' -and
-                            $envelope.ok.PSObject.Properties.Name -contains 'verification' -and
-                            $envelope.ok.verification.PSObject.Properties.Name -contains 'checks') {
-                            $failed = $envelope.ok.verification.checks | Where-Object { $_.status -eq 'fail' }
-                            if ($failed) {
-                                Write-Host ''
-                                Write-Host 'Failed verification checks:' -ForegroundColor Yellow
-                                foreach ($f in $failed) {
-                                    Write-Host ("    [X] {0,-30} {1}" -f $f.id, $f.detail) -ForegroundColor Red
-                                }
-                            }
-                        }
-                    } else {
-                        # Success - print a one-line confirmation, surface any warnings.
-                        $cfgPath = if ($envelope.ok.PSObject.Properties.Name -contains 'configPath') { $envelope.ok.configPath } else { '<unknown>' }
-                        $patched = if ($envelope.meta.PSObject.Properties.Name -contains 'patchedClients') { ($envelope.meta.patchedClients -join ', ') } else { '' }
-                        Write-Ok "Config written: $cfgPath"
-                        if ($patched) { Write-Ok "Patched AI clients: $patched" }
-                        if ($envelope.PSObject.Properties.Name -contains 'help' -and $envelope.help.Count -gt 0) {
-                            foreach ($h in $envelope.help) { Write-Host "    [i] $h" -ForegroundColor Cyan }
-                        }
-                    }
+            if (-not [string]::IsNullOrWhiteSpace($Gx)) {
+                $configOutput = & $npx.Source @configArgs 2>&1
+                $configExit = $LASTEXITCODE
+                if ($configExit -ne 0) {
+                    $script:initFailed = $true
+                    Write-Host (($configOutput | Out-String).Trim())
                 } else {
-                    # Couldn't parse - fall back to raw output so the operator still sees something.
-                    if ($exitCode -ne 0) { $script:initFailed = $true }
-                    Write-Host $jsonText
+                    $clientOutput = & $npx.Source @clientArgs 2>&1
+                    $clientExit = $LASTEXITCODE
+                    if ($clientExit -ne 0) {
+                        $script:initFailed = $true
+                        Write-Host (($clientOutput | Out-String).Trim())
+                    } else {
+                        Write-Ok "Neutral config written and selected AI clients registered."
+                    }
                 }
             }
         } finally {
@@ -642,8 +933,8 @@ if ($script:initFailed) {
     Write-Warn "genexus-mcp $Version files installed to:"
     Write-Host "     $InstallDir"
     Write-Host ''
-    Write-Warn 'Client registration (init) FAILED - see error output above.'
-    Write-Warn 'Files are extracted, but no AI client config was written and no config.json was created.'
+    Write-Warn 'Client registration (neutral config create / clients add) FAILED - see error output above.'
+    Write-Warn 'Files are extracted, but no neutral config or AI client registration was completed.'
     Write-Host ''
     Write-Host 'Common causes:' -ForegroundColor Yellow
     Write-Host '  - GeneXus installed in a non-standard path (e.g. GeneXus18u7 vs GeneXus18)'
@@ -651,7 +942,7 @@ if ($script:initFailed) {
     Write-Host ''
     Write-Host 'Fix by re-running with explicit paths:' -ForegroundColor Cyan
     Write-Host '  $s = irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1'
-    Write-Host '  & ([scriptblock]::Create($s)) -Kb "C:\KBs\YourKB" -Gx "C:\Path\To\GeneXus18" -Force'
+    Write-Host '  & ([scriptblock]::Create($s)) -Gx "C:\Path\To\GeneXus18" -Force'
     Write-Host ''
     exit 1
 }

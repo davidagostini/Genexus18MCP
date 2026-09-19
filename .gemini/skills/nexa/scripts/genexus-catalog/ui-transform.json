@@ -1,0 +1,73 @@
+{
+	"gxAnchorPointX": {
+		"Description": "Horizontal transform origin along the X axis; affects where resize, scale, and rotation begin",
+		"Syntax": "gxAnchorPointX(left|center|right|<measure>)",
+		"Options": {
+			"left": "Origin at left edge (0%)",
+			"center": "Origin at horizontal center (50%)",
+			"right": "Origin at right edge (100%)"
+		},
+		"Default": "center"
+	},
+	"gxAnchorPointY": {
+		"Description": "Vertical transform origin along the Y axis; affects where resize, scale, and rotation begin",
+		"Syntax": "gxAnchorPointY(top|middle|bottom|<measure>)",
+		"Options": {
+			"top": "Origin at top edge (0%)",
+			"middle": "Origin at vertical center (50%)",
+			"bottom": "Origin at bottom edge (100%)"
+		},
+		"Default": "middle"
+	},
+	"gxResize": {
+		"Description": "Shorthand for gxResizeX and gxResizeY at once",
+		"Syntax": "gxResize(<measure>,<measure>)"
+	},
+	"gxResizeX": {
+		"Description": "Horizontal resizing relative to the selected reference frame",
+		"Syntax": "gxResizeX(<measure>)"
+	},
+	"gxResizeY": {
+		"Description": "Vertical resizing relative to the selected reference frame",
+		"Syntax": "gxResizeY(<measure>)"
+	},
+	"gxResizeRelativoTo": {
+		"Description": "Reference element used to calculate resize distances and proportions",
+		"Syntax": "gxResizeRelativoTo(current|parent|form)",
+		"Options": {
+			"current": "Uses current control size as reference",
+			"parent": "Uses parent control size as reference",
+			"form": "Uses form size as reference"
+		},
+		"Default": "current"
+	},
+	"gxScaleRelativeTo": {
+		"Description": "Reference element used to calculate scale factors and resulting dimensions",
+		"Syntax": "gxScaleRelativeTo(current|parent|form)",
+		"Options": {
+			"current": "Uses current control size as reference",
+			"parent": "Uses parent control size as reference",
+			"form": "Uses form size as reference"
+		},
+		"Default": "current"
+	},
+	"gxTranslateRelativeTo": {
+		"Description": "Reference element used to calculate translation coordinates and offsets",
+		"Syntax": "gxTranslateRelativeTo(current|parent|form)",
+		"Options": {
+			"current": "Uses current control as translation reference",
+			"parent": "Uses parent control as translation reference",
+			"form": "Uses form as translation reference"
+		},
+		"Default": "current"
+	},
+	"gxTranslateType": {
+		"Description": "Translation behavior as target coordinates or relative displacement",
+		"Syntax": "gxTranslateType(to|by)",
+		"Options": {
+			"to": "Translates to target coordinates",
+			"by": "Translates by offset from current coordinates"
+		},
+		"Default": "to"
+	}
+}

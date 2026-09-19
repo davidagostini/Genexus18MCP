@@ -108,7 +108,7 @@ namespace GxMcp.Worker.Services
                 string purpose = BuildPurpose(objectType, objectName, description, parms);
 
                 DateTime lastModified = DateTime.MinValue;
-                try { lastModified = obj.LastUpdate; } catch { }
+                try { lastModified = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate); } catch { }
 
                 var payload = new JObject
                 {

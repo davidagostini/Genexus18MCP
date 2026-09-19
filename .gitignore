@@ -11,8 +11,10 @@
 *.bak
 !LICENSE.txt
 *.zip
+publish.zip.sha256
 *.xpz
 /artifacts/
+BenchmarkDotNet.Artifacts/
 .history/
 batch_buffer/
 cache/
@@ -50,6 +52,8 @@ out/
 
 # --- Scratch / debug artifacts ---
 scripts/_*
+scratchpad/
+worktrees/
 
 # --- Claude Code session state (per-user, not source) ---
 .claude/
@@ -74,3 +78,11 @@ docs/sdk-probe/raw.json
 # improve skill (shadcn) — local tooling, not part of the package
 .agents/
 skills-lock.json
+.freebuff/
+
+/.commandcode/
+
+# --- Python cache ---
+__pycache__/
+*.py[cod]
+*$py.class

@@ -1,9 +1,12 @@
 param(
     [string]$CoverageRoot = "",
-    [double]$MinLineRatePercent = 50
+    [double]$MinLineRatePercent = 60,
+    [double]$MinWorkerLineRatePercent = 45
 )
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $repoRoot 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $repoRoot
 if ([string]::IsNullOrWhiteSpace($CoverageRoot)) {
     if ($env:RUNNER_TEMP) {
         $CoverageRoot = Join-Path $env:RUNNER_TEMP "gx-coverage-artifacts"
@@ -27,7 +30,7 @@ $workerPath = Join-Path $CoverageRoot "worker.cobertura.xml"
 $workerSkippedMarker = Join-Path $CoverageRoot "worker.skipped.txt"
 $workerFailedMarker = Join-Path $CoverageRoot "worker.failed.txt"
 
-Write-Host "Required minimum: $MinLineRatePercent%"
+Write-Host "Required minimum (Gateway): $MinLineRatePercent%"
 
 $gatewayRate = Get-LineRatePercent -Path $gatewayPath
 Write-Host "Gateway line-rate: $gatewayRate%"
@@ -43,11 +46,11 @@ if ($gatewayRate -lt $MinLineRatePercent) { $failed += "gateway=$gatewayRate%" }
 if (Test-Path -LiteralPath $workerFailedMarker) {
     throw "Worker coverage collection failed (worker.failed.txt present). See the 'Gateway and Worker coverage' step log above for the dotnet test error."
 } elseif (Test-Path -LiteralPath $workerSkippedMarker) {
-    Write-Host "Worker line-rate: skipped (no local GeneXus 18 SDK; gateway threshold enforced only)." -ForegroundColor Yellow
+    Write-Host "Worker line-rate: skipped (no local GeneXus $(Get-GxPrimaryMajor -Catalog $gxCatalog) SDK; gateway threshold enforced only)." -ForegroundColor Yellow
 } elseif (Test-Path -LiteralPath $workerPath) {
     $workerRate = Get-LineRatePercent -Path $workerPath
-    Write-Host "Worker line-rate: $workerRate%"
-    if ($workerRate -lt $MinLineRatePercent) { $failed += "worker=$workerRate%" }
+    Write-Host "Worker line-rate: $workerRate% (required: $MinWorkerLineRatePercent%)"
+    if ($workerRate -lt $MinWorkerLineRatePercent) { $failed += "worker=$workerRate%" }
 } else {
     throw "Worker coverage missing and no skip/failed marker present at $CoverageRoot. Expected worker.cobertura.xml, worker.skipped.txt, or worker.failed.txt from collect.ps1."
 }

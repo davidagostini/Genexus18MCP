@@ -221,6 +221,7 @@ Call(&ProcedureName, &Param1, &Param2)
 
 Note:
 - See [common-agent-invocation](./common-agent-invocation.md) for `Agent` object invocation
+- See [common-call-options](./common-call-options.md) for runtime navigation settings
 
 ## Exit
 Exits current iteration in loop
@@ -249,6 +250,9 @@ Return
 
 Constraint:
 - Never associate values in `Return`; all out parameters are returned automatically
+- Only use `Return` command in `Panel` events for exiting current screen
+	* Check `CallOptions` properties in caller object if used
+	* Never interpret as event termination
 
 Example:
 ~~~
@@ -258,6 +262,61 @@ If &i < 0
 EndIf
 msg(!"Positive index", status)
 ~~~
+
+---
+
+# GRID COMMANDS
+Commands specific to `Grid` control in `Panel` events
+
+## Load
+Loads a new line into the grid
+
+Syntax:
+~~~
+Load
+~~~
+
+Constraints:
+- Use `Load` command only in Grid without base table; target `Load` event runs once
+- Ban `Load` command in Grid with base table; target `Load` event runs per line
+
+Example:
+```
+Event Load
+	For each User
+		&Name = UserName
+		Load
+	EndFor
+EndEvent
+```
+
+## Refresh
+Refreshes the current form and executes `Refresh` event flow afterwards
+
+Syntax:
+~~~
+Refresh [Keep]
+~~~
+
+Where:
+- `Keep`: Preserves current grid scroll position
+
+Constraints:
+- Use `Keep` only for preserving grid scroll position after refresh
+- Use `Refresh` command only for current form refresh; both `Refresh` and `Load` events run afterward
+
+Example:
+~~~
+Event 'FilterItems'
+	&FilterCount = 4
+	Refresh Keep
+EndEvent
+~~~
+
+Notes:
+- For `WebPanel` objects with `WebUserExperience` property set to `Compatible` value, refresh also execute `Start` event
+- For `WebComponent` objects, refresh current layout and descendants only, not parents
+- For `Panel` objects, refresh current layout and active sections only
 
 ---
 
@@ -299,7 +358,7 @@ Where:
 
 Constraints:
 - Each `Do` must reference local subroutines only
-- `Do` calls must not include arguments; use global variables to share data
+- Never include arguments in `Do` calls; use global variables to share data
 - Never use inside a `For Each` code block; place target code directly
 
 Example:
@@ -466,11 +525,11 @@ Iterates matching records from a `Data View` index
 Syntax:
 ~~~
 XFor Each <dataview>
-    [Index <index>]
-    [Where <condition>]
-    <code-main>
+	[Index <index>]
+	[Where <condition>]
+	<code-main>
 [When none
-    <code-none>]
+	<code-none>]
 XEndFor
 ~~~
 
@@ -487,9 +546,9 @@ Constraints:
 Example:
 ~~~
 XFor Each CustomerExternal
-    Index ICustomerExternal
-    Where CustomerStatus = !'A'
-    &CustomerName = CustomerName
+	Index ICustomerExternal
+	Where CustomerStatus = !'A'
+	&CustomerName = CustomerName
 XEndFor
 ~~~
 
@@ -499,11 +558,11 @@ Reads first matching record from a `Data View` index
 Syntax:
 ~~~
 XFor First <dataview>
-    [Index <index>]
-    [Where <condition>]
-    <code-main>
+	[Index <index>]
+	[Where <condition>]
+	<code-main>
 [When none
-    <code-none>]
+	<code-none>]
 XEndFor
 ~~~
 
@@ -521,11 +580,11 @@ Constraints:
 Example:
 ~~~
 XFor First CustomerExternal 
-    Index ICustomerExternal
-    Where CustomerId = &CustomerId
-    &CustomerName = CustomerName
+	Index ICustomerExternal
+	Where CustomerId = &CustomerId
+	&CustomerName = CustomerName
 When none
-    msg("Customer not found", status)
+	msg("Customer not found", status)
 XEndFor
 ~~~
 

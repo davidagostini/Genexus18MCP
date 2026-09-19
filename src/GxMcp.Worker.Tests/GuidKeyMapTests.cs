@@ -79,5 +79,81 @@ namespace GxMcp.Worker.Tests
             }
             finally { cache.DeleteOnDiskSnapshot(); }
         }
+
+        [Fact]
+        public void RemoveEntryByGuid_does_not_remove_recreated_entry_at_same_storage_key()
+        {
+            var cache = new IndexCacheService();
+            cache.Initialize(UniqueKbPath());
+            try
+            {
+                var oldGuid = Guid.NewGuid().ToString();
+                var newGuid = Guid.NewGuid().ToString();
+                cache.ReplaceAll(new[]
+                {
+                    new SearchIndex.IndexEntry { Name = "Recreated", Type = "File", Guid = oldGuid }
+                });
+
+                var index = cache.GetIndex();
+                const string key = "File:Recreated";
+                index.Objects[key] = new SearchIndex.IndexEntry
+                {
+                    Name = "Recreated",
+                    Type = "File",
+                    Guid = newGuid,
+                    StorageKey = key
+                };
+                index.GuidToKey[oldGuid] = key;
+                index.GuidToKey[newGuid] = key;
+
+                cache.RemoveEntryByGuid(oldGuid);
+
+                Assert.True(index.Objects.ContainsKey(key));
+                Assert.Equal(newGuid, index.Objects[key].Guid);
+                Assert.False(index.GuidToKey.ContainsKey(oldGuid));
+                Assert.Equal(key, index.GuidToKey[newGuid]);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void Parent_index_replaces_entry_when_same_storage_key_gets_new_guid()
+        {
+            var cache = new IndexCacheService();
+            cache.Initialize(UniqueKbPath());
+            try
+            {
+                var oldGuid = Guid.NewGuid().ToString();
+                var newGuid = Guid.NewGuid().ToString();
+                cache.ReplaceAll(new[]
+                {
+                    new SearchIndex.IndexEntry
+                    {
+                        Name = "Recreated",
+                        Type = "File",
+                        Guid = oldGuid,
+                        ParentPath = "Module"
+                    }
+                });
+
+                var replacement = new SearchIndex.IndexEntry
+                {
+                    Name = "Recreated",
+                    Type = "File",
+                    Guid = newGuid,
+                    ParentPath = "Module",
+                    StorageKey = "File:Recreated"
+                };
+                var method = typeof(IndexCacheService).GetMethod(
+                    "AddOrUpdateEntryInParentIndex",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                method.Invoke(cache, new object[] { cache.GetIndex(), replacement });
+
+                var children = cache.GetIndex().ChildrenByParent["Module"];
+                Assert.Single(children);
+                Assert.Equal(newGuid, children[0].Guid);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
     }
 }

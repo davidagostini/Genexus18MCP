@@ -88,5 +88,21 @@ namespace GxMcp.Worker.Tests
 
         private static CommandDispatcher CreateDispatcherWithoutCtor()
             => (CommandDispatcher)FormatterServices.GetUninitializedObject(typeof(CommandDispatcher));
+
+        [Fact]
+        public void HandleKbNameTypeMap_WithoutKb_ReturnsEmptyMap()
+        {
+            // Extracted verbatim from Handle_Kb: with no index service both
+            // best-effort scans yield an empty map instead of throwing.
+            var dispatcher = CreateDispatcherWithoutCtor();
+
+            string json = dispatcher.HandleKbNameTypeMap(
+                new JObject(), "kb", "GetNameTypeMap", null, null, new JObject());
+
+            var parsed = JObject.Parse(json);
+            Assert.Equal("NameTypeMap", parsed["code"]?.ToString());
+            Assert.Equal(0, parsed["result"]?["totalNames"]?.ToObject<int?>() ?? -1);
+            Assert.Equal(0, ((JObject)parsed["result"]?["nameTypeMap"])?.Count ?? -1);
+        }
     }
 }

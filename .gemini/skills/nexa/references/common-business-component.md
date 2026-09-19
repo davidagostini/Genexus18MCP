@@ -13,16 +13,13 @@ A Business Component (or `BC`) enables programmatic access to Transaction data b
 ---
 
 # ENABLE BUSINESS COMPONENT
-The target Transaction must define:
-
-Properties
-[
-	'Business Component': 'True'
-]
+Must enable `BusinessComponent` property on the target `Transaction` object
 
 Once enabled:
-- The Transaction can be used as a DataType
-- It exposes properties and methods for CRUD and validation
+- The Transaction can be used as a DataType value
+	* Syntax:  `DataType = '<trn-name>[, <module>]'`
+	* Example: `DataType = 'Customer, BL.Entities'`
+- Exposes properties and methods for CRUD and validation
 - All Transaction rules and validations are preserved
 
 ---
@@ -190,27 +187,40 @@ Transaction Attraction
 	#Rules
 		Error(!"Name cannot be empty") IF AttractionName.IsEmpty();
 	#End
+
+	#Properties
+		BusinessComponent = true
+	#End
 }
-Properties
-[
-	'Business Component': 'True'
-]
 ~~~
 
-Create a new record:
+A Procedure that creates a new record using the BC:
 ~~~
-&Attraction = new()
-&Attraction.AttractionType = AttractionType.Museum
-&Attraction.AttractionName = "Louvre Museum"
-&Attraction.CountryId = 2
+Procedure AddMuseum
+{
+	&Attraction = new()
+	&Attraction.AttractionType = AttractionType.Museum
+	&Attraction.AttractionName = &MuseumName
+	&Attraction.CountryId = &CountryId
 
-&Attraction.Save()
-If &Attraction.Success()
-	Commit
-	msg(!"Success: Data added", status)
-Else
-	Rollback
-	msg(Format(!"Error: %1", &Attraction.GetMessages().ToJson()), status)
-EndIf
+	&Attraction.Save()
+	If &Attraction.Success()
+		Commit
+		msg(!"Success: Data added", status)
+	Else
+		Rollback
+		msg(Format(!"Error: %1", &Attraction.GetMessages().ToJson()), status)
+	EndIf
+
+	#Rules
+		parm(in:&MuseumName, in:&CountryId);
+	#End
+
+	#Variables
+		Attraction [ DataType = 'Attraction, Entities' ]
+		MuseumName [ DataType = 'VarChar(64)' ]
+		CountryId [ DataType = 'CountryId' ]
+	#End
+}
 ~~~
 

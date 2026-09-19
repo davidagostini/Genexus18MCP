@@ -7,13 +7,14 @@ namespace GxMcp.Gateway.Routers
 
         public object? ConvertToolCall(string toolName, JObject? args)
         {
-            string? target = args?["name"]?.ToString();
+            string? target = args?["name"]?.ToString() ?? args?["target"]?.ToString()
+                ?? args?["path"]?.ToString() ?? args?["entityKey"]?.ToString() ?? args?["guid"]?.ToString();
             string? type = args?["type"]?.ToString();
 
             switch (toolName)
             {
                 case "genexus_inspect":
-                    return new { module = "Analyze", action = "GetConversionContext", target = target, include = args?["include"], type = type, projection = args?["projection"]?.ToString(), verbose = args?["verbose"]?.ToObject<bool?>() ?? false };
+                    return new { module = "Analyze", action = "GetConversionContext", target = target, include = args?["include"], type = type, projection = args?["projection"]?.ToString(), verbose = args?["verbose"]?.ToObject<bool?>() ?? false, guid = args?["guid"]?.ToString(), entityKey = args?["entityKey"]?.ToString(), path = args?["path"]?.ToString() };
 
                 case "genexus_inject_context":
                     bool recursive = args?["recursive"]?.Value<bool>() ?? false;
@@ -23,9 +24,13 @@ namespace GxMcp.Gateway.Routers
                     string? mode = args?["mode"]?.ToString();
                     switch (mode)
                     {
+                        case "context":
+                        case "deep_context":
+                            return new { module = "Analyze", action = "Get360Context", target = target, type = type };
                         case "linter":
                             bool linterFix = args?["fix"]?.ToObject<bool?>() ?? false;
-                            return new { module = "Linter", action = "linter", target = target, type = type, @params = new JObject { ["fix"] = linterFix } };
+                            bool linterDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
+                            return new { module = "Linter", action = "linter", target = target, type = type, @params = new JObject { ["fix"] = linterFix, ["dryRun"] = linterDryRun } };
                         case "navigation":
                             return new { module = "Analyze", action = "GetNavigation", target = target, type = type };
                         case "hierarchy":
@@ -33,7 +38,7 @@ namespace GxMcp.Gateway.Routers
                         case "impact":
                             // v2.3.8 (Task 1.4 + post-self-review): delegate to ImpactAnalysis
                             // with index-readiness envelope. Flags must be flattened at the top
-                            // level — BuildWorkerRpcRequest clones the entire workerCommand into
+                            // level — BuildWorkerRpcRequest carries the entire workerCommand in
                             // request.params, so a nested @params would land at
                             // request.params.params.waitForIndex (two levels deep) and the
                             // worker's `args["waitForIndex"]` lookup would miss it. That's

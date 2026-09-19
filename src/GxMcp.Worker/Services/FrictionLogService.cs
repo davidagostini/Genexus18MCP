@@ -65,6 +65,9 @@ namespace GxMcp.Worker.Services
                 };
                 string line = entry.ToString(Newtonsoft.Json.Formatting.None);
                 File.AppendAllText(filePath, line + Environment.NewLine, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                // Retention: a long-lived KB would otherwise grow friction.jsonl
+                // forever. Best-effort tail-keep; never breaks the append.
+                RotateFrictionLog(filePath, ResolveFrictionLogMaxLines());
 
                 return McpResponse.Ok(
                     code: "FrictionLogAppended",
@@ -74,6 +77,34 @@ namespace GxMcp.Worker.Services
             {
                 return Error("AppendFailed", ex.Message);
             }
+        }
+
+        internal const int DefaultFrictionLogMaxLines = 5000;
+
+        internal static int ResolveFrictionLogMaxLines()
+        {
+            var raw = Environment.GetEnvironmentVariable("GXMCP_FRICTION_LOG_MAX_LINES");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v))
+            {
+                if (v <= 0) return int.MaxValue; // explicit disable
+                return v;
+            }
+            return DefaultFrictionLogMaxLines;
+        }
+
+        internal static int RotateFrictionLog(string filePath, int maxLines)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return 0;
+                if (maxLines <= 0 || maxLines == int.MaxValue) return 0;
+                var lines = File.ReadAllLines(filePath);
+                if (lines.Length <= maxLines) return 0;
+                var tail = lines.Skip(Math.Max(0, lines.Length - maxLines)).ToArray();
+                File.WriteAllLines(filePath, tail, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                return tail.Length;
+            }
+            catch { return 0; }
         }
 
         public static string TailCore(string kbPath, int n)
@@ -91,7 +122,9 @@ namespace GxMcp.Worker.Services
                 }
 
                 var lines = File.ReadAllLines(filePath);
-                var tail = lines.Reverse()
+                // Keep LINQ's sequence reversal explicit; System.Memory also exposes
+                // a void Span<T>.Reverse() once the Npgsql dependency is referenced.
+                var tail = Enumerable.Reverse(lines)
                     .Where(l => !string.IsNullOrWhiteSpace(l))
                     .Take(n)
                     .Reverse()

@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Collections.Concurrent;
@@ -13,16 +14,51 @@ using System.Windows.Forms;
 
 namespace GxMcp.Worker
 {
+    internal struct SdkCommandItem
+    {
+        public JObject Obj;
+        public string RawLine;
+    }
+
     class Program
     {
-        public static readonly BlockingCollection<string> CommandQueue = new BlockingCollection<string>();
-        public static readonly BlockingCollection<string> SdkCommandQueue = new BlockingCollection<string>();
+        public static readonly BlockingCollection<string> CommandQueue = new BlockingCollection<string>(ResolveQueueCapacity("GXMCP_COMMAND_QUEUE_CAPACITY", 256));
+        public static readonly BlockingCollection<SdkCommandItem> SdkCommandQueue = new BlockingCollection<SdkCommandItem>(ResolveQueueCapacity("GXMCP_SDK_COMMAND_QUEUE_CAPACITY", 64));
         public static readonly ConcurrentQueue<Action> BackgroundQueue = new ConcurrentQueue<Action>();
         // Plan 037: low-priority jobs that must run on the SAME STA thread as ordinary
         // dispatched commands (the sdkWorker/WinForms-bridge thread below), drained by
         // its poll timer only when no real command is pending. Used by KbWatcherService
         // so its SDK polling no longer touches the SDK from a second STA apartment.
-        public static readonly ConcurrentQueue<Action> SdkActionQueue = new ConcurrentQueue<Action>();
+        public static readonly BlockingCollection<Action> SdkActionQueue = new BlockingCollection<Action>(ResolveSdkActionCapacity());
+        private static int _sdkWorkerThreadId;
+        internal static readonly SdkExecutor SdkExecutor = new SdkExecutor(
+            () => Thread.CurrentThread.ManagedThreadId == Volatile.Read(ref _sdkWorkerThreadId),
+            action =>
+            {
+                if (!SdkActionQueue.TryAdd(action)) return false;
+                try
+                {
+                    if (_bridgeForm != null && _bridgeForm.IsHandleCreated)
+                        _bridgeForm.BeginInvoke((Action)DrainSdkCommands);
+                }
+                catch { }
+                return true;
+            },
+            ResolveSdkActionCapacity());
+
+        private static int ResolveSdkActionCapacity()
+        {
+            var raw = Environment.GetEnvironmentVariable("GXMCP_SDK_QUEUE_CAPACITY");
+            return int.TryParse(raw, out var value) && value > 0 && value <= 4096 ? value : 64;
+        }
+
+        internal static int ResolveQueueCapacity(string variable, int fallback)
+        {
+            var raw = Environment.GetEnvironmentVariable(variable);
+            return int.TryParse(raw, out var value) && value > 0 && value <= 4096 ? value : fallback;
+        }
+
+        internal static bool EnqueueSdkAction(Action action) => SdkExecutor.TryEnqueue(action);
 
         // FR#20 (v2.6.6 Stream B): soft-reload coordination. When a genexus_worker_reload
         // with mode=soft arrives, we flip this flag, drain the queues, persist
@@ -64,7 +100,41 @@ namespace GxMcp.Worker
         private static volatile int _sdkBusy;        // 1 while a command runs on the SdkWorker STA thread
         private static long _sdkBusySinceTicks;       // DateTime.UtcNow.Ticks when the current SDK command started (x86: use Interlocked)
         private static volatile string _sdkBusyOp;    // "method/action" of the in-flight SDK command (diagnostics)
+        private static volatile string _sdkBusyOperationId; // gateway operationId from _meta.progressToken
         private static readonly int _busyRejectThresholdMs = ResolveBusyRejectThresholdMs();
+
+        internal static JObject GetSdkBusyStatus(DateTime? nowUtc = null)
+        {
+            bool active = _sdkBusy == 1;
+            long sinceTicks = Interlocked.Read(ref _sdkBusySinceTicks);
+            var status = new JObject
+            {
+                ["active"] = active,
+                ["operation"] = active ? _sdkBusyOp : null,
+                ["operationId"] = active ? _sdkBusyOperationId : null,
+                ["elapsedMs"] = 0
+            };
+            if (active && sinceTicks > 0)
+            {
+                var since = new DateTime(sinceTicks, DateTimeKind.Utc);
+                status["elapsedMs"] = Math.Max(0L, (long)((nowUtc ?? DateTime.UtcNow) - since).TotalMilliseconds);
+            }
+            return status;
+        }
+
+        internal static void MergeSdkBusyStatus(JObject status, JObject sdkBusy)
+        {
+            if (status == null) return;
+            sdkBusy = sdkBusy ?? new JObject { ["active"] = false, ["elapsedMs"] = 0 };
+            bool active = sdkBusy["active"]?.ToObject<bool?>() == true;
+            status["sdkBusy"] = sdkBusy;
+            if (active)
+            {
+                status["isBusy"] = true;
+                status["activeOperation"] = sdkBusy["operation"]?.DeepClone();
+            }
+        }
+
         private static int ResolveBusyRejectThresholdMs()
         {
             var s = Environment.GetEnvironmentVariable("GXMCP_BUSY_REJECT_MS");
@@ -72,9 +142,14 @@ namespace GxMcp.Worker
             return 3000;
         }
 
-        private static readonly BlockingCollection<string> _outputQueue = new BlockingCollection<string>();
-        private static readonly BlockingCollection<string> _errorQueue = new BlockingCollection<string>();
+        // Output is bounded as well as input. A blocked/slow MCP client must not
+        // turn verbose SDK logging or a large response burst into an unbounded
+        // process-wide queue; QueueWriter applies normal producer backpressure
+        // while the dedicated writer drains it.
+        private static readonly BlockingCollection<string> _outputQueue = new BlockingCollection<string>(ResolveQueueCapacity("GXMCP_OUTPUT_QUEUE_CAPACITY", 256));
+        private static readonly BlockingCollection<string> _errorQueue = new BlockingCollection<string>(ResolveQueueCapacity("GXMCP_ERROR_QUEUE_CAPACITY", 256));
         private static CommandDispatcher _dispatcher;
+        private static MtaCommandExecutor _mtaExecutor;
         private static TextWriter _originalOut;
         private static TextWriter _originalError;
         private static StreamWriter _pipeWriter;
@@ -84,6 +159,15 @@ namespace GxMcp.Worker
         [STAThread]
         static void Main(string[] args)
         {
+            // Shared-host mode is a broker process, not an SDK Worker. It must
+            // start before output capture, SDK validation, or SingleInstanceLock;
+            // the broker owns only the child process and never initializes GX.
+            if (SharedWorkerHost.IsRequested(args))
+            {
+                Environment.ExitCode = SharedWorkerHost.Run(args);
+                return;
+            }
+
             try {
                 // Force UTF-8 on worker stdio before capturing the original writers.
                 Console.InputEncoding = System.Text.Encoding.UTF8;
@@ -139,6 +223,15 @@ namespace GxMcp.Worker
                 // ELITE: Configuration Resolve Logic (Env > Local Config > Error)
                 string gxPath = Environment.GetEnvironmentVariable("GX_PROGRAM_DIR");
                 string kbPath = Environment.GetEnvironmentVariable("GX_KB_PATH");
+                string driver = Environment.GetEnvironmentVariable("GXMCP_DRIVER") ?? "native-sdk";
+                string targetMajor = Environment.GetEnvironmentVariable("GXMCP_TARGET_MAJOR") ?? "";
+
+                for (int i = 0; i < args.Length; i++)
+                {
+                    if (args[i] == "--driver" && i + 1 < args.Length) { driver = args[i + 1]; }
+                    if (args[i] == "--major" && i + 1 < args.Length) { targetMajor = args[i + 1]; }
+                }
+                GxMcp.Worker.Compatibility.DynamicSdkBridge.Initialize(driver, targetMajor);
 
                 if (string.IsNullOrEmpty(gxPath) || string.IsNullOrEmpty(kbPath))
                 {
@@ -152,6 +245,23 @@ namespace GxMcp.Worker
 
                 if (string.IsNullOrEmpty(gxPath))
                     throw new Exception("GX_PROGRAM_DIR not specified in environment or local config.json.");
+
+                string sdkManifest = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "", "sdk-compatibility.json");
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsLegacyDriver)
+                {
+                    Logger.Info($"[Worker] Starting in legacy driver mode '{driver}' for GeneXus major '{targetMajor}'. Bypassing native manifest assembly validation.");
+                }
+                else
+                {
+                    var sdkCompatibility = SdkCompatibilityValidator.Validate(gxPath, sdkManifest);
+                    if (!sdkCompatibility.IsCompatible)
+                    {
+                        Logger.Error(sdkCompatibility.Diagnostic);
+                        Environment.Exit(1);
+                        return;
+                    }
+                    Logger.Info(sdkCompatibility.Diagnostic);
+                }
 
                 // FR#19 (v2.6.6 Stream B): refuse to start when another worker already
                 // serves this (kbPath, workerExe) pair. We resolve the cli-arg kbPath
@@ -232,26 +342,61 @@ namespace GxMcp.Worker
                 // warmup dominates; a sudden jump in kbOpen points at the data-store
                 // connect the SDK attempts during open.
                 var coldStartSw = System.Diagnostics.Stopwatch.StartNew();
-                TryWarmupArtechTaskCctor(gxPath);
-
-                InitializeSdk(gxPath);
+                if (!GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    TryWarmupArtechTaskCctor(gxPath);
+                    InitializeSdk(gxPath);
+                }
+                else
+                {
+                    Logger.Info($"[Worker] Starting in COM GXPublic driver mode for GeneXus {targetMajor} — skipping .NET SDK initialization.");
+                }
                 _dispatcher = CommandDispatcher.Instance;
+                _mtaExecutor = new MtaCommandExecutor(
+                    ResolveQueueCapacity("GXMCP_MTA_CONCURRENCY", 8),
+                    ResolveQueueCapacity("GXMCP_MTA_QUEUE_CAPACITY", 256));
                 
                 // Check command line arguments for --kb
+                bool kbArgumentProvided = false;
                 for (int i = 0; i < args.Length; i++)
                 {
                     if (args[i] == "--kb" && i + 1 < args.Length)
                     {
                         kbPath = args[i + 1];
+                        kbArgumentProvided = true;
                         break;
                     }
+                }
+
+                // The gateway owns the binding. An inherited GX_KB_PATH is accepted only
+                // when it agrees with --kb; it can never silently switch the open worker.
+                if (!string.IsNullOrWhiteSpace(kbPath))
+                {
+                    var binding = new WorkerKbBinding(kbPath);
+                    if (kbArgumentProvided)
+                        binding.ValidateEnvironment(Environment.GetEnvironmentVariable("GX_KB_PATH"));
                 }
 
                 if (!string.IsNullOrEmpty(kbPath))
                 {
                     try {
                         Logger.Info($"Worker auto-opening KB: {kbPath}");
-                        _dispatcher.GetKbService().OpenKB(kbPath);
+                        if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                        {
+                            if (!GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.OpenKB(kbPath, out string openError))
+                            {
+                                Logger.Error($"Worker failed to open KB via GXPublic COM: {openError}");
+                            }
+                            else
+                            {
+                                _dispatcher.MarkLegacyMetadataIndexReady();
+                                Logger.Info($"Worker connected KB via GXPublic COM successfully: {kbPath}");
+                            }
+                        }
+                        else
+                        {
+                            _dispatcher.GetKbService().OpenKB(kbPath);
+                        }
                     } catch (Exception ex) {
                         Logger.Error($"Worker failed to auto-open KB: {ex.Message}");
                     }
@@ -303,27 +448,42 @@ namespace GxMcp.Worker
                 // Start External KB Watcher
                 // Fase 2: pass the IndexCacheService so detected changes update the in-memory
                 // index live (keeps it warm during a session); the notification callback is
-                // unchanged.
+                // unchanged. Deletions use a separate callback so mirrors can remove the
+                // corresponding textual entry immediately.
                 var watcher = new KbWatcherService(_dispatcher.GetKbService(), (name, type, time) => {
+                    _dispatcher.GetTextMirrorService()?.NotifyObjectChanged(name, type, time);
                     SendNotification("notifications/resources/updated", new {
                         name = name,
                         type = type,
                         updatedAt = time,
                         external = true
                     });
-                }, _dispatcher.GetIndexCacheService());
+                }, _dispatcher.GetIndexCacheService(), (name, type, time) => {
+                    _dispatcher.GetTextMirrorService()?.NotifyObjectDeleted(name, type, time);
+                    SendNotification("notifications/resources/updated", new {
+                        name = name,
+                        type = type,
+                        deletedAt = time,
+                        deleted = true,
+                        external = true
+                    });
+                });
                 watcher.Start();
 
                 var readerThread = new Thread(() => {
                     while (true) {
                         string line = Console.ReadLine();
                         if (line == null) break;
-                        if (line.Trim().Equals("ping", StringComparison.OrdinalIgnoreCase) || line.Contains("\"method\":\"ping\"") || line.Contains("\"action\":\"Ping\""))
+                        bool sharedChild = string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_CHILD"), "1", StringComparison.Ordinal);
+                        if (!sharedChild && (line.Trim().Equals("ping", StringComparison.OrdinalIgnoreCase) || line.Contains("\"method\":\"ping\"") || line.Contains("\"action\":\"Ping\"")))
                         {
                             WriteLine("{\"jsonrpc\":\"2.0\",\"result\":{\"status\":\"Ready\"},\"id\":\"heartbeat\"}");
                             if (!line.Contains("\"method\"")) continue;
                         }
-                        if (!string.IsNullOrWhiteSpace(line)) CommandQueue.Add(line);
+                        if (!string.IsNullOrWhiteSpace(line) && !CommandQueue.TryAdd(line))
+                        {
+                            SendQueueBusy(line, "main command queue");
+                        }
                     }
                     CommandQueue.CompleteAdding();
                 }) { IsBackground = true, Name = "HeartbeatReader" };
@@ -331,6 +491,7 @@ namespace GxMcp.Worker
 
                                 // DEDICATED SDK WORKER THREAD (STA with WinForms Bridge)
                 var sdkWorker = new Thread(() => {
+                    Volatile.Write(ref _sdkWorkerThreadId, Thread.CurrentThread.ManagedThreadId);
                     Logger.Info("SDK Worker Thread started (WinForms Bridge enabled).");
                     _bridgeForm = new Form { 
                         ShowInTaskbar = false, 
@@ -339,28 +500,8 @@ namespace GxMcp.Worker
                     };
                     
                     // The 'Quiet Mode' loop: process commands on the UI thread
-                    var pollTimer = new System.Windows.Forms.Timer { Interval = 10 };
-                    pollTimer.Tick += (s, e) => {
-                        if (SdkCommandQueue.TryTake(out string line))
-                        {
-                            // Bug #4: publish in-flight state so the main dispatch loop can
-                            // fast-reject a heavy command that races in behind this one.
-                            // (x86 worker: 64-bit writes need Interlocked to be atomic.)
-                            Interlocked.Exchange(ref _sdkBusySinceTicks, DateTime.UtcNow.Ticks);
-                            _sdkBusyOp = DescribeCommand(line);
-                            _sdkBusy = 1;
-                            try { ProcessCommand(line); }
-                            catch (Exception ex) { Logger.Error("SDK Command Error: " + ex.Message); }
-                            finally { _sdkBusy = 0; _sdkBusyOp = null; }
-                        }
-                        // Plan 037: low-priority SDK jobs (KbWatcher polling) only run when no
-                        // real dispatched command is waiting this tick — never starves normal traffic.
-                        else if (SdkActionQueue.TryDequeue(out var job))
-                        {
-                            try { job(); }
-                            catch (Exception ex) { Logger.Error("SDK Action Error: " + ex.Message); }
-                        }
-                    };
+                    var pollTimer = new System.Windows.Forms.Timer { Interval = 15 };
+                    pollTimer.Tick += (s, e) => DrainSdkCommands();
                     
                     _bridgeForm.Load += (s, e) => {
                         pollTimer.Start();
@@ -405,12 +546,20 @@ namespace GxMcp.Worker
                 {
                     if (CommandQueue.TryTake(out string line, 100))
                     {
-                        if (_dispatcher.IsThreadSafe(line))
-                            System.Threading.Tasks.Task.Run(() => ProcessCommand(line));
-                        else if (TryRejectBusy(line))
+                        // P3 perf: parseia o comando UMA vez aqui e propaga o JObject pelo
+                        // caminho MTA (Task.Run) — elimina os 3 re-parses em IsThreadSafe/
+                        // Dispatch/DispatchInternal. A fila STA segue recebendo a string crua.
+                        var cmdObj = TryParseCommand(line);
+                        if (_dispatcher.IsThreadSafe(cmdObj))
+                        {
+                            bool highPriority = IsHighPriorityMtaCommand(cmdObj);
+                            if (!_mtaExecutor.TrySubmit(() => ProcessCommand(cmdObj, line), highPriority))
+                                SendQueueBusy(line, "MTA command queue");
+                        }
+                        else if (TryRejectBusy(cmdObj, line))
                         { /* answered with a WorkerBusy envelope — do not queue behind the long op */ }
                         else
-                            SdkCommandQueue.Add(line);
+                            EnqueueSdkCommand(cmdObj, line);
                     }
                 }
 
@@ -421,8 +570,99 @@ namespace GxMcp.Worker
                     Thread.Sleep(50);
                 }
                 Logger.Info("Worker shutting down safely.");
+                _mtaExecutor?.Dispose();
+                SdkActionQueue.CompleteAdding();
+                SdkExecutor.Dispose();
             } catch (Exception ex) {
                 Logger.Error($"Main FATAL: {ex.Message}");
+            }
+        }
+
+        private static bool IsHighPriorityMtaCommand(JObject command)
+        {
+            if (command == null) return false;
+            string method = command["method"]?.ToString();
+            string action = command["action"]?.ToString();
+            if (string.Equals(method, "health", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(method, "ping", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(method, "doctor", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (string.Equals(method, "control", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(action, "Cancel", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return string.Equals(method, "build", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(action, "Status", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "Result", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool EnqueueSdkCommand(JObject obj, string line)
+        {
+            var item = new SdkCommandItem { Obj = obj, RawLine = line };
+            if (!SdkCommandQueue.TryAdd(item))
+            {
+                SendQueueBusy(line, "SDK command queue");
+                return false;
+            }
+            try
+            {
+                if (_bridgeForm != null && _bridgeForm.IsHandleCreated)
+                {
+                    _bridgeForm.BeginInvoke((Action)DrainSdkCommands);
+                }
+            }
+            catch { }
+            return true;
+        }
+
+        private static bool EnqueueSdkCommand(string line) => EnqueueSdkCommand(null, line);
+
+        private static void SendQueueBusy(string line, string queueName)
+        {
+            string idJson = "null";
+            try { idJson = JObject.Parse(line)["id"]?.ToString() ?? "null"; }
+            catch { }
+
+            string busy = GxMcp.Worker.Models.McpResponse.Err(
+                code: "WorkerBusy",
+                message: "The " + queueName + " is full; the request was not started.",
+                hint: "Retry after the active SDK work yields or cancel the running operation.",
+                retryAfterMs: 250,
+                errorExtra: new JObject
+                {
+                    ["queue"] = queueName,
+                    ["capacity"] = queueName == "SDK command queue" ? SdkCommandQueue.BoundedCapacity : CommandQueue.BoundedCapacity
+                });
+            SendResponse(busy, idJson);
+            Logger.Warn("[QUEUE-BUSY] " + queueName + " capacity="
+                + (queueName == "SDK command queue" ? SdkCommandQueue.BoundedCapacity : CommandQueue.BoundedCapacity)
+                + " id=" + idJson);
+        }
+
+        private static void DrainSdkCommands()
+        {
+            // SDK Save may pump the STA message loop. A nested command or
+            // background job must not run inside another operation's broker scope.
+            if (GxMcp.Worker.Helpers.SdkEventSuppressionScope.IsActive) return;
+            while (SdkCommandQueue.TryTake(out SdkCommandItem item))
+            {
+                Interlocked.Exchange(ref _sdkBusySinceTicks, DateTime.UtcNow.Ticks);
+                _sdkBusyOp = DescribeCommand(item.Obj, item.RawLine);
+                _sdkBusyOperationId = ExtractOperationId(item.Obj, item.RawLine);
+                _sdkBusy = 1;
+                try
+                {
+                    if (item.Obj != null)
+                        ProcessCommand(item.Obj, item.RawLine);
+                    else
+                        ProcessCommand(item.RawLine);
+                }
+                catch (Exception ex) { Logger.Error("SDK Command Error: " + ex.Message); }
+                finally { _sdkBusy = 0; _sdkBusyOp = null; _sdkBusyOperationId = null; }
+            }
+            while (SdkActionQueue.TryTake(out var job))
+            {
+                try { job(); }
+                catch (Exception ex) { Logger.Error("SDK Action Error: " + ex.Message); }
             }
         }
 
@@ -574,9 +814,21 @@ namespace GxMcp.Worker
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 lastStep = name;
-                body();
-                sw.Stop();
-                Logger.Info($"[SDK-INIT] {name} OK in {sw.ElapsedMilliseconds}ms");
+                try
+                {
+                    body();
+                    sw.Stop();
+                    Logger.Info($"[SDK-INIT] {name} OK in {sw.ElapsedMilliseconds}ms");
+                }
+                catch (Exception stepEx)
+                {
+                    sw.Stop();
+                    Logger.Warn($"[SDK-INIT] {name} failed in {sw.ElapsedMilliseconds}ms: {stepEx.Message}");
+                    if (!GxMcp.Worker.Compatibility.DynamicSdkBridge.IsLegacyDriver)
+                    {
+                        throw;
+                    }
+                }
             }
             try {
                 Logger.Debug($"Setting current directory to {gxPath}");
@@ -593,6 +845,12 @@ namespace GxMcp.Worker
                     var blAsm = Assembly.LoadFrom(Path.Combine(gxPath, "Artech.Architecture.BL.Framework.dll"));
                     var t = blAsm.GetType("Artech.Architecture.BL.Framework.Services.CommonServices");
                     t?.GetMethod("Initialize", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, null);
+                });
+
+                Step("UIServices.SetDisableUI", () => {
+                    var uiAsm = Assembly.LoadFrom(Path.Combine(gxPath, "Artech.Architecture.UI.Framework.dll"));
+                    var t = uiAsm.GetType("Artech.Architecture.UI.Framework.Services.UIServices");
+                    t?.GetMethod("SetDisableUI", BindingFlags.Public | BindingFlags.Static)?.Invoke(null, new object[] { true });
                 });
 
                 Step("UIServices.Initialize", () => {
@@ -661,16 +919,19 @@ namespace GxMcp.Worker
             {
                 try
                 {
-                    Thread.Sleep(30000);
-                    double idleMs = (DateTime.UtcNow - new DateTime(Interlocked.Read(ref _lastActivityTicks))).TotalMilliseconds;
+                    Thread.Sleep(15000);
+                    long lastTicks = Interlocked.Read(ref _lastActivityTicks);
+                    double idleMs = (DateTime.UtcNow.Ticks - lastTicks) / (double)TimeSpan.TicksPerMillisecond;
                     bool busy = CommandQueue.Count > 0 || SdkCommandQueue.Count > 0 || !BackgroundQueue.IsEmpty;
-                    if (busy || idleMs < 60000)
+                    long currentMb = GC.GetTotalMemory(false) / (1024 * 1024);
+                    double requiredIdleMs = currentMb > 400 ? 15000 : 60000;
+                    if (busy || idleMs < requiredIdleMs)
                     {
                         compactedThisIdle = false; // activity resumed — re-arm for the next idle window
                         continue;
                     }
                     if (compactedThisIdle) continue;
-                    long beforeMb = GC.GetTotalMemory(false) / (1024 * 1024);
+                    long beforeMb = currentMb;
                     System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
                     GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
                     GC.WaitForPendingFinalizers();
@@ -688,16 +949,47 @@ namespace GxMcp.Worker
         // the worker down mid-request.
         [System.Runtime.ExceptionServices.HandleProcessCorruptedStateExceptions, System.Security.SecurityCritical]
         // Bug #4: compact "method/action" label for the in-flight SDK command.
+        private static string DescribeCommand(JObject o, string line = null)
+        {
+            if (o != null)
+            {
+                try
+                {
+                    string m = o["method"]?.ToString();
+                    string a = o["action"]?.ToString() ?? o["params"]?["action"]?.ToString();
+                    return string.IsNullOrEmpty(a) ? (m ?? "?") : (m + "/" + a);
+                }
+                catch { return "?"; }
+            }
+            if (!string.IsNullOrEmpty(line)) return DescribeCommand(line);
+            return "?";
+        }
+
         private static string DescribeCommand(string line)
         {
             try
             {
                 var o = JObject.Parse(line);
-                string m = o["method"]?.ToString();
-                string a = o["action"]?.ToString() ?? o["params"]?["action"]?.ToString();
-                return string.IsNullOrEmpty(a) ? (m ?? "?") : (m + "/" + a);
+                return DescribeCommand(o, line);
             }
             catch { return "?"; }
+        }
+
+        internal static string ExtractOperationId(JObject o, string line = null)
+        {
+            if (o != null)
+            {
+                try { return o["_meta"]?["progressToken"]?.ToString(); }
+                catch { return null; }
+            }
+            if (!string.IsNullOrEmpty(line)) return ExtractOperationId(line);
+            return null;
+        }
+
+        internal static string ExtractOperationId(string line)
+        {
+            try { return JObject.Parse(line)["_meta"]?["progressToken"]?.ToString(); }
+            catch { return null; }
         }
 
         // Bug #4: when the SdkWorker STA thread has been busy with another command longer than
@@ -706,7 +998,7 @@ namespace GxMcp.Worker
         // gateway time out with a misleading "Gateway timeout starting build"). Control/recovery
         // commands are never rejected so a wedged worker stays recoverable. Returns true when it
         // handled (answered) the command.
-        private static bool TryRejectBusy(string line)
+        private static bool TryRejectBusy(JObject o, string line)
         {
             if (_sdkBusy != 1) return false;
 
@@ -718,7 +1010,8 @@ namespace GxMcp.Worker
             string method = null, action = null;
             try
             {
-                var o = JObject.Parse(line);
+                if (o == null && !string.IsNullOrEmpty(line)) o = JObject.Parse(line);
+                if (o == null) return false;
                 idJson = o["id"]?.ToString() ?? "null";
                 method = o["method"]?.ToString()?.ToLowerInvariant();
                 action = (o["action"]?.ToString() ?? o["params"]?["action"]?.ToString())?.ToLowerInvariant();
@@ -737,25 +1030,86 @@ namespace GxMcp.Worker
                        + ", running " + Math.Round(ageMs / 1000.0, 1) + "s) and runs SDK commands one at a time, so your "
                        + "request was not queued behind it. Retry when it finishes, poll genexus_lifecycle action=status, "
                        + "or cancel the running op with genexus_lifecycle action=cancel.",
-                hint: "The GeneXus model is single-threaded — only one SDK operation runs at a time. Tune the reject window with GXMCP_BUSY_REJECT_MS (ms; 0 disables).");
+                hint: "The GeneXus model is single-threaded — only one SDK operation runs at a time. Tune the reject window with GXMCP_BUSY_REJECT_MS (ms; 0 disables).",
+                retryAfterMs: Math.Max(1000, _busyRejectThresholdMs),
+                errorExtra: new JObject
+                {
+                    ["blockingOperationId"] = _sdkBusyOperationId,
+                    ["blockingOperation"] = _sdkBusyOp,
+                    ["elapsedMs"] = Math.Max(0L, (long)ageMs)
+                });
             SendResponse(busy, idJson);
-            Logger.Warn("[BUSY-REJECT] " + DescribeCommand(line) + " id=" + idJson
+            Logger.Warn("[BUSY-REJECT] " + DescribeCommand(o, line) + " id=" + idJson
                 + " — SDK thread busy with " + (_sdkBusyOp ?? "?") + " for " + Math.Round(ageMs) + "ms");
             return true;
         }
 
+        private static bool TryRejectBusy(string line) => TryRejectBusy(null, line);
+
         private static void ProcessCommand(string line)
+        {
+            JObject obj;
+            try { obj = JObject.Parse(line); }
+            catch (Exception ex)
+            {
+                // Compatibilidade: o parse legado acontecia dentro do try do corpo; uma
+                // linha malformada respondia WorkerInternalError com id "null". Preservar
+                // envelope e mensagem exatamente como antes.
+                Logger.Error("ProcessCommand Error: " + ex.Message);
+                SendWorkerErrorEnvelope("WorkerInternalError", "Unhandled worker error: " + ex.Message, "null");
+                return;
+            }
+            ProcessCommand(obj, line);
+        }
+
+        // P3 perf: parse tolerante usado pelo loop principal. null = JSON malformado —
+        // IsThreadSafe(JObject null) devolve false (NRE capturada), mesma resposta do
+        // overload por string, e a linha segue para TryRejectBusy/fila STA como antes.
+        private static JObject TryParseCommand(string line)
+        {
+            try { return JObject.Parse(line); }
+            catch { return null; }
+        }
+
+        private static void SendWorkerErrorEnvelope(string code, string message, string idJson)
+        {
+            try {
+                string errResult = GxMcp.Worker.Models.McpResponse.Err(code: code, message: message);
+                SendResponse(errResult, idJson);
+            } catch (Exception sendEx) {
+                Logger.Error("ProcessCommand failed to send error response: " + sendEx.Message);
+            }
+        }
+
+        // P3 perf: overload que recebe o comando já parseado pelo loop principal —
+        // usado apenas no caminho MTA (Task.Run); a fila STA continua por string.
+        private static void ProcessCommand(JObject obj, string line)
         {
             MarkWorkerActivity();
             string idJson = "null";
             try {
-                var obj = JObject.Parse(line);
                 idJson = obj["id"]?.ToString() ?? "null";
                 string method = obj["method"]?.ToString();
                 string correlationId = obj["params"]?["correlationId"]?.ToString() ?? "n/a";
+                long queueWaitMs = ComputeQueueWaitMs(obj["_meta"]?["queuedAtUtc"], DateTime.UtcNow);
                 Logger.Info($"[WORKER] Command: {method} ({idJson}) [cid:{correlationId}]");
-                string result = _dispatcher.Dispatch(line);
-                SendResponse(result, idJson);
+                var dispatchSw = Stopwatch.StartNew();
+                string result = _dispatcher.Dispatch(obj, line);
+                dispatchSw.Stop();
+                // Keep phase timings in the response metadata so the Gateway can
+                // aggregate SDK cost separately from its own queue/transform cost.
+                // Dispatch includes the native SDK call and is therefore the only
+                // trustworthy SDK boundary available to the Worker without changing
+                // every service signature.
+                var telemetry = new JObject
+                {
+                    ["sdkMs"] = Math.Max(0L, dispatchSw.ElapsedMilliseconds),
+                    ["queueWaitMs"] = queueWaitMs,
+                    ["cacheOutcome"] = "unknown"
+                };
+                SendResponse(result, idJson, telemetry);
+                if (GxMcp.Worker.Helpers.SdkEventSuppressionScope.IsPoisoned)
+                    SchedulePoisonedExit();
             } catch (Exception ex) when (GxMcp.Worker.Helpers.WorkerCrashGuard.IsCorruptedState(ex)) {
                 // Native/corrupted-state SDK crash: the heap may be inconsistent, so answer THIS
                 // call with a structured error and then exit — the gateway respawns a fresh worker
@@ -809,14 +1163,65 @@ namespace GxMcp.Worker
             });
         }
 
-        private static void SendResponse(string result, string id)
+        private static void SendResponse(string result, string id, JObject telemetry = null)
         {
             try {
+                var transformSw = Stopwatch.StartNew();
                 object resultObj;
                 try { resultObj = JToken.Parse(result); } catch { resultObj = result; }
+                transformSw.Stop();
+
+                JObject resultObject = resultObj as JObject;
+                if (resultObject != null && telemetry != null)
+                {
+                    telemetry["transformMs"] = Math.Max(0L, transformSw.ElapsedMilliseconds);
+                    telemetry["serializeMs"] = 0L;
+                    telemetry["responseBytes"] = 0L;
+                    JObject meta = resultObject["_meta"] as JObject;
+                    if (meta == null)
+                    {
+                        meta = new JObject();
+                        resultObject["_meta"] = meta;
+                    }
+                    meta["telemetry"] = telemetry;
+                }
+
                 var response = new { jsonrpc = "2.0", result = resultObj, id = id };
-                WriteLine(JsonConvert.SerializeObject(response, Formatting.None));
+                var serializeSw = Stopwatch.StartNew();
+                string serialized = JsonConvert.SerializeObject(response, Formatting.None);
+                serializeSw.Stop();
+                if (resultObject != null && telemetry != null)
+                {
+                    telemetry["serializeMs"] = Math.Max(0L, serializeSw.ElapsedMilliseconds);
+                    telemetry["responseBytes"] = System.Text.Encoding.UTF8.GetByteCount(serialized);
+                    // Include the measured values in the final wire payload. The
+                    // second serialization is intentionally limited to instrumented
+                    // responses and keeps the phase contract self-describing.
+                    serialized = JsonConvert.SerializeObject(response, Formatting.None);
+                }
+                WriteLine(serialized);
             } catch (Exception ex) { Logger.Error("SendResponse Error: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Computes the time a command spent in the Gateway/Worker queues from the
+        /// transport-only enqueue timestamp. Invalid or future timestamps are treated as
+        /// zero so telemetry can never turn into a request failure.
+        /// </summary>
+        internal static long ComputeQueueWaitMs(JToken queuedAtUtc, DateTime nowUtc)
+        {
+            if (queuedAtUtc == null || queuedAtUtc.Type == JTokenType.Null) return 0;
+            if (!DateTimeOffset.TryParse(
+                    queuedAtUtc.ToString(),
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                    out var queued))
+                return 0;
+
+            double elapsed = (nowUtc.ToUniversalTime() - queued.UtcDateTime).TotalMilliseconds;
+            if (elapsed <= 0) return 0;
+            // A stale/replayed envelope must not produce unbounded bogus aggregates.
+            return Math.Min((long)Math.Round(elapsed), 24L * 60L * 60L * 1000L);
         }
 
         public static void SendNotification(string method, object @params)

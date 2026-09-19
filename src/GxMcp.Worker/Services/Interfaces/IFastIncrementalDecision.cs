@@ -5,15 +5,17 @@ namespace GxMcp.Worker.Services
     // Item 28 (mcp-improvements-2026-05-22, Tier-S) — EXPERIMENTAL.
     //
     // Decides what the in-process build runner can SKIP when the agent opts into
-    // fastIncremental=true. The decision is purely advisory: BuildService still
-    // does the build, but it can skip Specify on already-clean targets and skip
-    // the IdeWebBuildAndDeploy module-copy step entirely when the dirty set is
+    // fastIncremental=true. BuildService applies the decision to the in-process
+    // runner: it can skip Specify on already-clean targets and skip the
+    // IdeWebBuildAndDeploy module-copy step entirely when the dirty set is
     // limited to "incremental-safe" kinds (Procedure / WebPanel / Transaction).
     //
     // The interface exists so unit tests can inject a deterministic decision
-    // without standing up an EditDirtyTracker / IndexCacheService. The default
-    // implementation (DefaultFastIncrementalDecision) reads EditDirtyTracker
-    // and asks IndexCacheService for the target type.
+    // without standing up an EditDirtyTracker / IndexCacheService. BuildService
+    // passes the decision into the real runner: safe decisions select the
+    // targeted path, while ForceFullBuild explicitly selects the legacy full
+    // path. The default implementation reads EditDirtyTracker and asks
+    // IndexCacheService for the target type.
     public interface IFastIncrementalDecision
     {
         FastIncrementalDecision Decide(string kbPath, IReadOnlyList<string> targets);

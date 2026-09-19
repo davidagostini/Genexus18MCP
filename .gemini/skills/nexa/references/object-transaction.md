@@ -12,7 +12,7 @@ A `Transaction` object (or `TRN`) represents real-world entities mapping to data
 
 GeneXus automatically normalizes to third normal form (3NF)
 
-Each `Transaction` maps to one or more [Table](./object-table.md) objects by level structure, and each mapped `Table` defines associated [Index](./object-index.md) objects for filtering and ordering
+Each `Transaction` maps to one or more [Table](./object-table.md) objects by level structure
 
 ---
 
@@ -28,6 +28,10 @@ Transaction <name>
 
 	#Events
 		<events>
+	#End
+
+	#Layout
+		<layout>
 	#End
 
 	#Variables
@@ -46,26 +50,28 @@ Transaction <name>
 
 Where:
 - `<name>`: Transaction name using alphanumeric or underscore, starting with letter
-- `<attributes>`: Entity attributes (mandatory `DataType`; see [ATTRIBUTE/VARIABLE](#attributevariable))
-- `<rules>`: Business rules governing Transaction behavior (see [RULES](#rules))
-- `<events>`: Transaction lifecycle event handlers (see [EVENTS](#events))
-- `<variables>`: Variables (mandatory `DataType`; see [ATTRIBUTE/VARIABLE](#attributevariable))
+- `<attributes>`: Entity attributes with mandatory `DataType`; see [ATTRIBUTE/VARIABLE](#attributevariable) section
+- `<rules>`: Business rules governing Transaction behavior; see [RULES](#rules) section
+- `<events>`: Transaction lifecycle event handlers; see [EVENTS](#events) section
+- `<layout>`: Hierarchical/composable XML-based web layout definition; see [LAYOUT](#layout) section
+- `<variables>`: Variable definitions with mandatory `DataType`; see [ATTRIBUTE/VARIABLE](#attributevariable) section
 - `<properties>`: Optional object properties in TOML syntax; see [properties](./properties-object-transaction.md)
-- `<documentation>`: Optional object documentation; check [common-markdown](./common-markdown.md)
+- `<documentation>`: Optional object documentation; see [markdown](./common-markdown.md)
 
 ---
 
 # OUTPUT
-Use [global-output](./global-output.md) with `<type>` value: `transaction`
+Use [global-output](./global-output.md)
 
 Workflow:
 - Create or update `Transaction` artifact
-- Execute `import_text_to_kb` tool; on failure, stop
-- Execute `export_kb_to_text` tool
-- Inspect `<name>.table.main.gx` artifacts and read `#Index` section
-- Extract `Index` names and validate their `*.index.main.gx` artifacts
-- Create or update only user `Index` if requested or for 1:1 relationships (unique FK)
-- Update `Table` artifacts `#Indexes` section only with missing user `Index` names
+- Import changes into `Knowledge Base`; on failure, stop
+- Export changes from `Knowledge Base` into filesystem
+- Inspect `src/#tables/*.gx` artifacts matching `Transaction` base table
+- Analyze `Table` artifacts and update `#Indexes` section if required
+	* Ensure `Unique` user index over FKs for 1:1 relationships
+	* Never create user indexes without explicit confirmation
+	* Never create or update automatic indexes
 
 ---
 
@@ -117,13 +123,17 @@ Transaction Payment
 	PaymentAmount [ DataType = 'Numeric(10.2)' ]
 }
 
-Index UPaymentByOrder
+Table Payments
 {
-	OrderId
-
-	#Index
-		Source = "User"
-		Type = "Unique"
+	#Indexes
+		UPaymentByOrder
+		[
+			Source = 'User',
+			Type = 'Unique'
+		]
+		{
+			OrderId
+		}
 	#End
 }
 ~~~
@@ -184,9 +194,9 @@ Modes:
 
 Structure:
 ~~~
-<name>.transaction.main.gx
+<name>.gx
 <name>/
-	<name>_DataProvider.dataprovider.main.gx
+	<name>_DataProvider.gx
 ~~~
 
 Constraints:
@@ -238,6 +248,20 @@ Event After Trn
 	EndIf
 EndEvent
 ~~~
+
+---
+
+# LAYOUT
+Readonly declarative XML-based screen web layout schema used in `#Layout` region
+
+Scopes:
+- Mirror HTML concepts with GeneXus-specific syntax
+- Define hirarchical structure and control composition
+
+Rules:
+- See [GeneXus Layout](./frontend-layout.md) for available GXML syntax elements and attributes
+- Escape XML special characters; e.g. `&` (✘) → `&amp;` (✓), `"` (✘) → `&quote;` (✓)
+- Forbid edits on exported layouts; automatically regenerated after `Transaction` updates
 
 ---
 
@@ -400,9 +424,9 @@ DataProvider Country_DataProvider
 
 Saved as:
 ~~~
-Country.transaction.main.gx
+Country.gx
 Country/
-└─ Country_DataProvider.dataprovider.main.gx
+└─ Country_DataProvider.gx
 ~~~
 
 ## Example 5
@@ -502,7 +526,7 @@ DataProvider Document_DataProvider
 
 Saved as:
 ~~~
-Document.transaction.main.gx
+Document.gx
 Document/
-└─ Document_DataProvider.dataprovider.main.gx
+└─ Document_DataProvider.gx
 ~~~

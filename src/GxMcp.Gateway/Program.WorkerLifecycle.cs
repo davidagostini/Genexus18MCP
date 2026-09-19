@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
@@ -13,7 +15,7 @@ namespace GxMcp.Gateway
         {
             _kbResolver = new KbResolver(config);
             _workerPool = new WorkerPool(config);
-            _workerPool.OnRpcResponse += HandleWorkerResponse;
+            _workerPool.OnRpcResponseWithContext += HandleWorkerResponse;
             _workerPool.OnWorkerExited += (kb, stopReason) => {
                 string alias = kb.NormalizedAlias;
                 int aborted = 0;
@@ -24,6 +26,12 @@ namespace GxMcp.Gateway
                     string id = kvp.Key;
                     if (_pendingRequests.TryRemove(id, out var pending))
                     {
+                        if (stopReason == WorkerStopReason.GatewayShutdown)
+                        {
+                            pending.CompletionSource.TrySetCanceled();
+                            aborted++;
+                            continue;
+                        }
                         _operationTracker.MarkFailedByRequest(id, $"Worker for KB '{kb.Alias}' crashed/exited.");
                         var errorJson = JsonConvert.SerializeObject(new
                         {
@@ -47,7 +55,8 @@ namespace GxMcp.Gateway
                     stopReason == WorkerStopReason.GatewayShutdown ||
                     stopReason == WorkerStopReason.BusyReject ||
                     stopReason == WorkerStopReason.ExplicitClose ||
-                    stopReason == WorkerStopReason.PlannedReload)
+                    stopReason == WorkerStopReason.PlannedReload ||
+                    stopReason == WorkerStopReason.SdkCompatibilityRejected)
                 {
                     Log($"[Respawn] Skipped eager respawn for KB '{kb.Alias}' — stop reason: {stopReason}.");
                     return;
@@ -57,6 +66,8 @@ namespace GxMcp.Gateway
                     Log($"[Respawn] Skipped eager respawn for KB '{kb.Alias}' — planned exit in progress.");
                     return;
                 }
+                var respawnPool = _workerPool;
+                var respawnCancellation = _respawnTestCancellation.Token;
                 Task.Run(async () =>
                 {
                     // issue #26 P1: retry the respawn a few times with backoff instead of
@@ -68,14 +79,14 @@ namespace GxMcp.Gateway
                     Exception? lastEx = null;
                     for (int attempt = 1; attempt <= maxAttempts; attempt++)
                     {
+                        if (respawnCancellation.IsCancellationRequested) return;
                         try
                         {
                             var ctSrc = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                            // Drop only the dead LIVE entry so AcquireAsync's fast path can't
-                            // return the just-exited WorkerProcess — but keep the durable
-                            // _known record (issue #26 P3) so the KB stays resolvable.
-                            try { _workerPool!.DropLiveEntry(kb.NormalizedAlias); } catch { }
-                            await _workerPool!.AcquireAsync(kb, ctSrc.Token).ConfigureAwait(false);
+                            // WorkerPool detaches the exited entry before raising this
+                            // event. Do not remove by alias here: a concurrent AcquireAsync
+                            // may already have installed a healthy replacement.
+                            await respawnPool!.AcquireAsync(kb, ctSrc.Token).ConfigureAwait(false);
                             _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
                             Log($"[Respawn] Replacement worker spawned for KB '{kb.Alias}' (attempt {attempt}).");
                             // issue #25 #2: the index bootstrap fires once per gateway process,
@@ -84,8 +95,8 @@ namespace GxMcp.Gateway
                             // lifecycle call — forcing the agent to re-walk. Re-arm and re-fire
                             // the one-shot: BulkIndex(force:false) reuses the persisted on-disk
                             // snapshot (delta-on-open) instead of a cold 38k re-walk.
-                            Interlocked.Exchange(ref _indexBootstrapStarted, 0);
-                            TriggerIndexBootstrapOnce();
+                            ResetIndexBootstrapForAlias(kb.NormalizedAlias);
+                            TriggerIndexBootstrapOnce(kb.NormalizedAlias);
                             return;
                         }
                         catch (Exception ex)
@@ -94,7 +105,15 @@ namespace GxMcp.Gateway
                             Log($"[Respawn] Attempt {attempt}/{maxAttempts} to respawn worker for KB '{kb.Alias}' failed: {ex.Message}");
                             if (attempt < maxAttempts)
                             {
-                                try { await Task.Delay(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false); } catch { }
+                                try
+                                {
+                                    if (respawnCancellation.IsCancellationRequested) return;
+                                    if (RespawnDelayForTest != null)
+                                        await RespawnDelayForTest(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false);
+                                    else
+                                        await Task.Delay(TimeSpan.FromSeconds(attempt)).ConfigureAwait(false);
+                                }
+                                catch { }
                             }
                         }
                     }
@@ -109,6 +128,7 @@ namespace GxMcp.Gateway
                     // early if a worker came up by any path or the gateway is shutting down.
                     for (int slow = 1; slow <= 30; slow++)
                     {
+                        if (respawnCancellation.IsCancellationRequested) return;
                         try { await Task.Delay(TimeSpan.FromSeconds(60), _gatewayLifetime.Token).ConfigureAwait(false); }
                         catch { return; } // gateway shutting down
                         if (IsEagerRespawnSuppressed()) return;
@@ -120,12 +140,12 @@ namespace GxMcp.Gateway
                         try
                         {
                             var slowCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                            try { _workerPool!.DropLiveEntry(kb.NormalizedAlias); } catch { }
-                            await _workerPool!.AcquireAsync(kb, slowCts.Token).ConfigureAwait(false);
+                            try { respawnPool!.DropLiveEntry(kb.NormalizedAlias); } catch { }
+                            await respawnPool!.AcquireAsync(kb, slowCts.Token).ConfigureAwait(false);
                             _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
                             Log($"[Respawn] Slow-retry respawn succeeded for KB '{kb.Alias}' (retry {slow}).");
-                            Interlocked.Exchange(ref _indexBootstrapStarted, 0);
-                            TriggerIndexBootstrapOnce();
+                            ResetIndexBootstrapForAlias(kb.NormalizedAlias);
+                            TriggerIndexBootstrapOnce(kb.NormalizedAlias);
                             return;
                         }
                         catch (Exception ex)
@@ -145,29 +165,32 @@ namespace GxMcp.Gateway
         // only the GxMcp.Worker.* assembly files; the dependency DLLs already sit in targetDir.
         private static void CopyWorkerBinaries(string sourceDir, string? targetDir)
         {
-            try
+            if (string.IsNullOrWhiteSpace(targetDir) || !System.IO.Directory.Exists(sourceDir))
             {
-                if (string.IsNullOrWhiteSpace(targetDir) || !System.IO.Directory.Exists(sourceDir))
-                {
-                    Log($"[Gateway] worker_reload copy skipped — sourceDir '{sourceDir}' missing or targetDir unresolved.");
-                    return;
-                }
-                string[] files = { "GxMcp.Worker.exe", "GxMcp.Worker.dll", "GxMcp.Worker.pdb", "GxMcp.Worker.exe.config" };
-                int copied = 0;
-                foreach (var f in files)
-                {
-                    string src = System.IO.Path.Combine(sourceDir, f);
-                    if (!System.IO.File.Exists(src)) continue;
-                    string dst = System.IO.Path.Combine(targetDir!, f);
-                    for (int attempt = 0; attempt < 10; attempt++)
-                    {
-                        try { System.IO.File.Copy(src, dst, overwrite: true); copied++; break; }
-                        catch (System.IO.IOException) when (attempt < 9) { System.Threading.Thread.Sleep(150); }
-                    }
-                }
-                Log($"[Gateway] worker_reload swapped {copied} worker binary file(s): {sourceDir} -> {targetDir}");
+                throw new InvalidOperationException($"Worker binary swap source or target is unavailable (sourceDir='{sourceDir}', targetDir='{targetDir ?? "<null>"}').");
             }
-            catch (Exception ex) { Log($"[Gateway] worker_reload CopyWorkerBinaries failed: {ex.Message}"); }
+
+            string[] requiredFiles = { "GxMcp.Worker.exe", "GxMcp.Worker.dll" };
+            foreach (var file in requiredFiles)
+            {
+                if (!System.IO.File.Exists(System.IO.Path.Combine(sourceDir, file)))
+                    throw new InvalidOperationException($"Worker binary swap source is missing required file '{file}'.");
+            }
+
+            string[] files = { "GxMcp.Worker.exe", "GxMcp.Worker.dll", "GxMcp.Worker.pdb", "GxMcp.Worker.exe.config" };
+            int copied = 0;
+            foreach (var file in files)
+            {
+                string src = System.IO.Path.Combine(sourceDir, file);
+                if (!System.IO.File.Exists(src)) continue;
+                string dst = System.IO.Path.Combine(targetDir, file);
+                for (int attempt = 0; attempt < 10; attempt++)
+                {
+                    try { System.IO.File.Copy(src, dst, overwrite: true); copied++; break; }
+                    catch (System.IO.IOException) when (attempt < 9) { System.Threading.Thread.Sleep(150); }
+                }
+            }
+            Log($"[Gateway] worker_reload swapped {copied} worker binary file(s): {sourceDir} -> {targetDir}");
         }
 
         private static void RestartWorker(Configuration config)
@@ -180,16 +203,98 @@ namespace GxMcp.Gateway
                 }
             }
             // Clear cache on KB change
-            _semanticCache.Clear();
+            _semanticCache.InvalidateScope(string.Empty);
+            System.Threading.Interlocked.Increment(ref SemanticCacheEpoch);
             StartWorker(config);
             BroadcastToolsListChanged("worker_restarted");
             BroadcastResourcesListChanged("worker_restarted");
         }
 
-        private static void HandleWorkerResponse(string json)
+        internal static JObject RewriteProgressTokenForClient(JObject workerEnvelope, JToken clientProgressToken)
+        {
+            if (workerEnvelope == null) throw new ArgumentNullException(nameof(workerEnvelope));
+            if (clientProgressToken == null || clientProgressToken.Type == JTokenType.Null)
+                throw new ArgumentException("A client progress token is required.", nameof(clientProgressToken));
+
+            var routed = (JObject)workerEnvelope.DeepClone();
+            var parameters = routed["params"] as JObject;
+            if (parameters == null)
+            {
+                parameters = new JObject();
+                routed["params"] = parameters;
+            }
+            parameters.Remove("progressToken");
+            parameters.Add(new JProperty("progressToken", clientProgressToken.DeepClone()));
+            return routed;
+        }
+
+        internal static bool IsProgressSessionBound(string? sessionId)
+        {
+            return !string.IsNullOrWhiteSpace(sessionId)
+                && !string.Equals(sessionId, "http-modern", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static PendingWorkerRequest? FindPendingForOperation(string operationId)
+        {
+            if (string.IsNullOrWhiteSpace(operationId)) return null;
+
+            PendingWorkerRequest? match = null;
+            foreach (var pending in _pendingRequests.Values)
+            {
+                if (!string.Equals(pending.OperationId, operationId, StringComparison.Ordinal))
+                    continue;
+                if (match == null || pending.CreatedAtUtc > match.CreatedAtUtc)
+                    match = pending;
+            }
+            return match;
+        }
+
+        private static void RouteWorkerProgress(JObject workerEnvelope, string operationId, PendingWorkerRequest pending)
+        {
+            JToken? clientToken = pending.ClientProgressToken;
+            if (clientToken == null || clientToken.Type == JTokenType.Null)
+            {
+                // A client has to opt in to progress. Internal operation ids are
+                // deliberately never exposed as an unsolicited client token.
+                Log($"[Gateway] Dropped progress for operation '{operationId}' because the client supplied no progressToken.");
+                return;
+            }
+
+            var routed = RewriteProgressTokenForClient(workerEnvelope, clientToken);
+            string json = routed.ToString(Formatting.None);
+            if (string.Equals(pending.McpSessionId, "stdio", StringComparison.OrdinalIgnoreCase))
+            {
+                EmitStdioNotification(json);
+                return;
+            }
+
+            // The modern 2026 sessionless POST transport has no server-owned
+            // session or response stream for unsolicited worker frames. Drop the
+            // frame rather than routing it through a process-wide pseudo-session.
+            if (!IsProgressSessionBound(pending.McpSessionId))
+            {
+                Log($"[Gateway] Dropped progress for operation '{operationId}' without a session-bound transport.");
+                return;
+            }
+
+            if (_httpSessions.TryGet(pending.McpSessionId, out var session) && session != null)
+                QueueSessionMessage(session, json);
+            else
+                Log($"[Gateway] Dropped progress for operation '{operationId}' because its owning session expired.");
+        }
+
+        private static void HandleWorkerResponse(string json, JObject? val, string? workerAlias = null)
         {
             try {
-                var val = JObject.Parse(json);
+                // PERFORMANCE (perf-review): `val` is the parsed envelope WorkerProcess
+                // already produced to route the line — no re-parse here (this was a full
+                // JObject.Parse of every response, often a large search/read payload).
+                // Defensive fallback only if the upstream parse failed.
+                if (val == null)
+                {
+                    try { val = JObject.Parse(json); }
+                    catch { Log("HandleWorkerResponse Error: could not parse worker response."); return; }
+                }
                 string? id = val["id"]?.ToString();
 
                 if (string.IsNullOrEmpty(id))
@@ -201,13 +306,21 @@ namespace GxMcp.Gateway
                         var p = val["params"];
                         string name = p?["name"]?.ToString() ?? "unknown";
                         Log($"[Gateway] Notification from Worker: Resource {name} updated externally.");
-                        BroadcastResourceUpdated($"genexus://objects/{name}", "external_kb_change");
+                        BroadcastResourceUpdated(
+                            $"genexus://objects/{name}",
+                            "external_kb_change",
+                            workerAlias,
+                            string.IsNullOrWhiteSpace(workerAlias)
+                                ? (long?)null
+                                : _semanticCache.GetRevision(workerAlias!));
                     }
                     else if (method == "notifications/progress" || method == "notifications/message")
                     {
                         // A4: correlate the frame to its tracked operation (the worker
-                        // command's progressToken is the operationId) and bump UpdatedAtUtc
-                        // so a status poll shows live progress instead of a frozen timestamp.
+                        // command's private progressToken is the operationId) and bump
+                        // UpdatedAtUtc so a status poll shows live progress instead of a
+                        // frozen timestamp. The client-facing token is restored below from
+                        // the pending request context; the private operation id never leaks.
                         if (method == "notifications/progress")
                         {
                             var pp = val["params"];
@@ -227,6 +340,16 @@ namespace GxMcp.Gateway
                                 Log($"[Gateway] Dropped stale/unknown progress token '{opId}' (op not active) — not relayed to client.");
                                 return;
                             }
+
+                            var pendingProgress = FindPendingForOperation(opId);
+                            if (pendingProgress == null)
+                            {
+                                Log($"[Gateway] Dropped progress token '{opId}' because no pending request context remains.");
+                                return;
+                            }
+
+                            RouteWorkerProgress(val, opId, pendingProgress);
+                            return;
                         }
                         if (ShouldForwardNotificationToStdio(method, val["params"]))
                         {
@@ -246,6 +369,10 @@ namespace GxMcp.Gateway
                 _operationTracker.CompleteFromWorker(id, val);
                 if (_pendingRequests.TryRemove(id, out var pending))
                 {
+                    // PERF: hand the parsed envelope to the caller so SendWorkerCommandAsync
+                    // doesn't JObject.Parse the raw json a third time.
+                    pending.ParsedResponse = val;
+                    pending.ResponseBytes = Encoding.UTF8.GetByteCount(json);
                     pending.CompletionSource.TrySetResult(json);
                     if (!string.IsNullOrWhiteSpace(pending.OperationId))
                     {
@@ -267,42 +394,93 @@ namespace GxMcp.Gateway
         // Records end-to-end tool latency (from just before the worker send to the response)
         // into ToolLatencyStats and emits one [TOOL-LATENCY] log line. Cold-start is already
         // awaited before CreatedAtUtc is stamped, so this measures real tool cost, not boot.
-        private static void RecordToolLatency(string toolName, DateTime createdAtUtc)
+        private static void RecordToolLatency(
+            string toolName,
+            DateTime createdAtUtc,
+            DateTime requestStartedAtUtc,
+            JObject? response,
+            long responseBytes,
+            string? resultClassOverride = null,
+            long startupMs = 0,
+            long transformMs = 0,
+            string? cacheOutcome = null)
         {
             try
             {
                 double ms = (DateTime.UtcNow - createdAtUtc).TotalMilliseconds;
-                ToolLatencyStats.Record(toolName, ms);
-                Log($"[TOOL-LATENCY] tool={toolName} ms={(long)ms}");
+                long queueWaitMs = Math.Max(0, (long)(createdAtUtc - requestStartedAtUtc).TotalMilliseconds);
+                string resultClass;
+                if (resultClassOverride != null)
+                    resultClass = resultClassOverride;
+                else
+                    resultClass = response?["error"] != null ? "error" : "success";
+                JObject? telemetry = response?["result"]?["_meta"]?["telemetry"] as JObject
+                    ?? response?["_meta"]?["telemetry"] as JObject;
+                long sdkMs = telemetry?["sdkMs"]?.ToObject<long?>() ?? 0;
+                long workerTransformMs = telemetry?["transformMs"]?.ToObject<long?>() ?? 0;
+                long serializeMs = telemetry?["serializeMs"]?.ToObject<long?>() ?? 0;
+                ToolLatencyStats.Record(
+                    toolName,
+                    ms,
+                    resultClass,
+                    queueWaitMs,
+                    Math.Max(0, responseBytes),
+                    startupMs,
+                    sdkMs,
+                    Math.Max(workerTransformMs, transformMs),
+                    serializeMs,
+                    cacheOutcome);
+                // PERF: per-request instrumentation line — gated so high-throughput
+                // pipelines can drop the DateTime formatting + lock + disk write per call.
+                if (_verboseRequestLogs) Log($"[TOOL-LATENCY] tool={toolName} ms={(long)ms} queueWaitMs={queueWaitMs} startupMs={startupMs} sdkMs={sdkMs} transformMs={Math.Max(workerTransformMs, transformMs)} serializeMs={serializeMs} result={resultClass} cache={cacheOutcome ?? "unknown"} responseBytes={responseBytes}");
             }
             catch { /* instrumentation must never break the call */ }
         }
 
-        private static JObject BuildWorkerRpcRequest(JObject workerCommand, string requestId, string? operationId = null)
+        private static string? ReadCacheOutcome(JObject? response)
         {
+            if (response == null) return null;
+            return response["_meta"]?["cacheOutcome"]?.ToString()
+                ?? response["result"]?["_meta"]?["cacheOutcome"]?.ToString();
+        }
+
+        internal static JObject BuildWorkerRpcRequest(JObject workerCommand, string requestId, string? operationId = null)
+        {
+            // PERFORMANCE (perf-review): zero-copy RPC envelope. The previous version
+            // DeepCloned every hoisted field AND the whole command under `params` — 5
+            // full-tree copies per request, then a single serialization. For
+            // payload-heavy tools (genexus_edit with 50 targets) that was the largest
+            // per-call allocation on the send path. workerCommand is never mutated
+            // after `correlationId` is stamped (SendWorkerCommandAsync only reads it,
+            // including on a worker-crash retry), so sharing the same JToken instances
+            // is safe: the worker reads these fields and never mutates the request
+            // before it is serialized.
             var rpc = new JObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = requestId,
                 ["method"] = workerCommand["module"]?.ToString() ?? string.Empty,
-                ["action"] = workerCommand["action"]?.DeepClone(),
-                ["target"] = workerCommand["target"]?.DeepClone(),
-                ["payload"] = workerCommand["payload"]?.DeepClone(),
+                ["action"] = workerCommand["action"],
+                ["target"] = workerCommand["target"],
+                ["payload"] = workerCommand["payload"],
                 // Hoist dryRun alongside action/target/payload: several worker handlers
                 // (Refactor, index, build, run, github) read it from the top level of the
                 // request, but it only ever arrived nested under params — so dryRun was
                 // silently dropped and those previews executed for real. Carry it up too.
-                ["dryRun"] = workerCommand["dryRun"]?.DeepClone(),
-                ["params"] = workerCommand.DeepClone()
+                ["dryRun"] = workerCommand["dryRun"],
+                ["params"] = workerCommand
             };
 
-            if (!string.IsNullOrWhiteSpace(operationId))
+            // Carry an enqueue timestamp through the pipe so the Worker can report the
+            // time spent waiting behind the bounded command/STA queues. This is telemetry
+            // only: it never participates in routing, timeout decisions, or payload hashes.
+            var meta = new JObject
             {
-                rpc["_meta"] = new JObject
-                {
-                    ["progressToken"] = operationId
-                };
-            }
+                ["queuedAtUtc"] = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)
+            };
+            if (!string.IsNullOrWhiteSpace(operationId))
+                meta["progressToken"] = operationId;
+            rpc["_meta"] = meta;
 
             return rpc;
         }
@@ -311,17 +489,15 @@ namespace GxMcp.Gateway
         // Generous (cold-start is ~50s); only caps a wedged/never-ready worker.
         private const int WorkerSdkReadyCeilingMs = 180000;
 
-        // issue #25 #2: read-only / idempotent tools that are safe to re-send once
-        // after a worker crash. Writes/edits/builds are deliberately excluded — a
-        // blind resend of a mutation could double-apply. The gateway already eagerly
-        // respawns the worker; this retry hides the transient "crashed/exited" error
-        // from the client for reads so the agent doesn't have to reconnect + re-issue.
-        private static readonly HashSet<string> RetrySafeReadTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        // issue #25 #2: re-send only operations that the canonical classifier
+        // proves are read-only. Mutating modes (for example analyze/linter with
+        // fix=true and sdk_probe/surface) must never inherit a stale read allowlist.
+        internal static bool IsRetrySafeOperation(string toolName, JObject? toolArgs)
         {
-            "genexus_read", "genexus_list_objects", "genexus_inspect", "genexus_query",
-            "genexus_search_source", "genexus_analyze", "genexus_structure", "genexus_navigation",
-            "genexus_whoami", "genexus_doctor"
-        };
+            if (string.IsNullOrWhiteSpace(toolName)) return false;
+            return OperationClassifier.Describe(toolName, toolArgs).Kind
+                == OperationClassifier.OperationKind.ReadOnly;
+        }
 
         private static bool IsWorkerCrashEnvelope(JObject workerResponse)
         {
@@ -331,11 +507,10 @@ namespace GxMcp.Gateway
                    msg.IndexOf("crashed/exited", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static bool ShouldRetryWorkerCrash(JObject workerResponse, string toolName, int attempt)
+        internal static bool ShouldRetryWorkerCrash(JObject workerResponse, string toolName, JObject? toolArgs, int attempt)
         {
             return attempt == 1
-                && !string.IsNullOrEmpty(toolName)
-                && RetrySafeReadTools.Contains(toolName)
+                && IsRetrySafeOperation(toolName, toolArgs)
                 && IsWorkerCrashEnvelope(workerResponse);
         }
 
@@ -349,14 +524,20 @@ namespace GxMcp.Gateway
             JObject? toolArgs = null,
             bool trackOperation = false,
             JToken? progressToken = null,
-            Func<JObject, Task>? heartbeat = null)
+            Func<JObject, Task>? heartbeat = null,
+            string? operationIdentity = null,
+            string? mcpRequestId = null,
+            JToken? mcpRequestIdToken = null,
+            string? mcpSessionId = null)
         {
             string requestId = Guid.NewGuid().ToString();
             string correlationId = Guid.NewGuid().ToString("N");
-            string? operationId = null;
+            string? operationId = operationIdentity;
 
             if (trackOperation)
             {
+                if (!string.IsNullOrWhiteSpace(operationIdentity))
+                    throw new ArgumentException("A tracked operation cannot also supply an external operation identity.", nameof(operationIdentity));
                 operationId = _operationTracker.StartOperation(requestId, toolName, toolArgs, correlationId);
                 BroadcastNotification("notifications/message", new
                 {
@@ -370,6 +551,18 @@ namespace GxMcp.Gateway
                 });
             }
 
+            // Shared-host writes need a stable Gateway-local owner identity. The
+            // field is internal transport metadata, not a public MCP argument;
+            // it lets the Worker reject a foreign genexus_multi_agent_lock while
+            // keeping independent sessions distinct on one shared SDK process.
+            if (workerCommand["_gxmcpOwnerId"] == null)
+            {
+                workerCommand["_gxmcpOwnerId"] = "gateway:" + StateScope.ProcessScopeId.ToString();
+                bool forceLock = toolArgs?["force"]?.ToObject<bool?>() == true
+                    || toolArgs?["lockForce"]?.ToObject<bool?>() == true;
+                if (forceLock) workerCommand["_gxmcpForce"] = true;
+            }
+
             workerCommand["correlationId"] = correlationId;
 
             // issue #25 #2: idempotent single retry for read-only tools. When a worker
@@ -378,6 +571,9 @@ namespace GxMcp.Gateway
             // once to the replacement instead of surfacing the transient error (which
             // forced the user to manually /mcp reconnect and re-issue).
             int workerAttempt = 0;
+            DateTime requestStartedAtUtc = DateTime.UtcNow;
+            long startupWaitMs = 0;
+            PendingWorkerRequest? lastPending = null;
             while (true)
             {
                 workerAttempt++;
@@ -392,8 +588,11 @@ namespace GxMcp.Gateway
                 // forever; on cap we proceed and let the normal op timeout apply.
                 if (!worker.IsSdkReady)
                 {
+                    var startupSw = System.Diagnostics.Stopwatch.StartNew();
                     bool ready = await McpRouter.AwaitWithHeartbeat(
                         worker.SdkReadyTask, WorkerSdkReadyCeilingMs, progressToken, heartbeat, $"{toolName} (worker starting)");
+                    startupSw.Stop();
+                    startupWaitMs += Math.Max(0L, startupSw.ElapsedMilliseconds);
                     if (!ready)
                         Log($"[Gateway] worker not SDK-ready after {WorkerSdkReadyCeilingMs}ms for tool {toolName}; proceeding — op timeout applies.");
                 }
@@ -405,23 +604,34 @@ namespace GxMcp.Gateway
                     CorrelationId = correlationId,
                     OperationId = operationId,
                     CreatedAtUtc = DateTime.UtcNow,
-                    WorkerAlias = worker.Kb?.NormalizedAlias
+                    WorkerAlias = worker.Kb?.NormalizedAlias,
+                    McpRequestId = mcpRequestId,
+                    McpRequestIdToken = mcpRequestIdToken?.DeepClone(),
+                    McpSessionId = mcpSessionId ?? "stdio",
+                    ClientProgressToken = progressToken?.DeepClone(),
+                    KbAlias = worker.Kb?.NormalizedAlias,
+                    RequestStartedAtUtc = requestStartedAtUtc,
+                    StartupWaitMs = startupWaitMs
                 };
+                lastPending = pending;
                 _pendingRequests[attemptRequestId] = pending;
                 // A worker-crash retry mints a fresh attemptRequestId; the worker's completion
                 // comes back keyed by it, so link it to the operation or CompleteFromWorker misses
                 // and the op record stays "Running" forever. Idempotent on the first attempt.
-                if (operationId != null)
+                if (trackOperation && operationId != null)
                 {
                     _operationTracker.LinkRequest(attemptRequestId, operationId);
                 }
 
-                await worker.SendCommandAsync(workerRequest.ToString(Formatting.None));
+                // PERF: pass the JObject so WorkerProcess doesn't re-parse the
+                // serialized command on the write path (it serializes exactly once).
+                await worker.SendCommandAsync(workerRequest);
 
                 if (timeoutMs <= 0)
                 {
-                    var workerResponse = JObject.Parse(await pending.CompletionSource.Task.ConfigureAwait(false));
-                    if (ShouldRetryWorkerCrash(workerResponse, toolName, workerAttempt))
+                    var workerResponse = pending.ParsedResponse
+                        ?? JObject.Parse(await pending.CompletionSource.Task.ConfigureAwait(false));
+                    if (ShouldRetryWorkerCrash(workerResponse, toolName, toolArgs, workerAttempt))
                     {
                         Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");
                         await Task.Delay(750).ConfigureAwait(false);
@@ -435,8 +645,23 @@ namespace GxMcp.Gateway
                     {
                         workerErrorObjNoTimeout["correlationId"] = correlationId;
                     }
-                    RecordToolLatency(toolName, pending.CreatedAtUtc);
-                    return onSuccess(workerResponse);
+                    var transformSwNoTimeout = System.Diagnostics.Stopwatch.StartNew();
+                    var transformedNoTimeout = onSuccess(workerResponse);
+                    transformSwNoTimeout.Stop();
+                    long transformedBytesNoTimeout = pending.ResponseBytes > 0
+                        ? pending.ResponseBytes
+                        : (transformedNoTimeout == null ? 0 : Encoding.UTF8.GetByteCount(transformedNoTimeout.ToString(Newtonsoft.Json.Formatting.None)));
+                    RecordToolLatency(
+                        toolName,
+                        pending.CreatedAtUtc,
+                        pending.RequestStartedAtUtc,
+                        workerResponse,
+                        transformedBytesNoTimeout,
+                        resultClassOverride: null,
+                        startupMs: pending.StartupWaitMs,
+                        transformMs: transformSwNoTimeout.ElapsedMilliseconds,
+                        cacheOutcome: ReadCacheOutcome(transformedNoTimeout));
+                    return transformedNoTimeout;
                 }
 
                 // MCP-spec keepalive for long synchronous tool calls: while waiting on the
@@ -455,15 +680,19 @@ namespace GxMcp.Gateway
                 // unchanged (full timeout + heartbeats).
                 bool noClientProgressToken = progressToken == null
                     || progressToken.Type == JTokenType.Null;
+                bool lifecycleStatusWait = string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(toolArgs?["action"]?.ToString(), "status", StringComparison.OrdinalIgnoreCase)
+                    && ((toolArgs?["wait"]?.ToObject<int?>() ?? toolArgs?["wait_seconds"]?.ToObject<int?>() ?? 0) > 0);
                 int effectiveTimeoutMs = timeoutMs;
-                if (noClientProgressToken && !string.IsNullOrWhiteSpace(operationId))
+                if (noClientProgressToken && !string.IsNullOrWhiteSpace(operationId) && !lifecycleStatusWait)
                     effectiveTimeoutMs = Math.Min(timeoutMs, McpRouter.SafeLongPollSecondsWithoutProgress * 1000);
                 bool workerCompleted = await McpRouter.AwaitWithHeartbeat(
                     pending.CompletionSource.Task, effectiveTimeoutMs, progressToken, heartbeat, toolName);
                 if (workerCompleted)
                 {
-                    var workerResponse = JObject.Parse(await pending.CompletionSource.Task);
-                    if (ShouldRetryWorkerCrash(workerResponse, toolName, workerAttempt))
+                    var workerResponse = pending.ParsedResponse
+                        ?? JObject.Parse(await pending.CompletionSource.Task);
+                    if (ShouldRetryWorkerCrash(workerResponse, toolName, toolArgs, workerAttempt))
                     {
                         Log($"[Retry] {toolName} hit worker crash on attempt {workerAttempt}; re-sending to replacement worker.");
                         await Task.Delay(750).ConfigureAwait(false);
@@ -477,8 +706,23 @@ namespace GxMcp.Gateway
                     {
                         workerErrorObj["correlationId"] = correlationId;
                     }
-                    RecordToolLatency(toolName, pending.CreatedAtUtc);
-                    return onSuccess(workerResponse);
+                    var transformSw = System.Diagnostics.Stopwatch.StartNew();
+                    var transformed = onSuccess(workerResponse);
+                    transformSw.Stop();
+                    long transformedBytes = pending.ResponseBytes > 0
+                        ? pending.ResponseBytes
+                        : (transformed == null ? 0 : Encoding.UTF8.GetByteCount(transformed.ToString(Newtonsoft.Json.Formatting.None)));
+                    RecordToolLatency(
+                        toolName,
+                        pending.CreatedAtUtc,
+                        pending.RequestStartedAtUtc,
+                        workerResponse,
+                        transformedBytes,
+                        resultClassOverride: null,
+                        startupMs: pending.StartupWaitMs,
+                        transformMs: transformSw.ElapsedMilliseconds,
+                        cacheOutcome: ReadCacheOutcome(transformed));
+                    return transformed;
                 }
                 break; // timeout — fall through to the timeout handling below
             }
@@ -503,6 +747,17 @@ namespace GxMcp.Gateway
             }
 
             Log($"{timeoutLogMessage} (operationId={operationId ?? "n/a"}, correlationId={correlationId})");
+            if (lastPending != null)
+            {
+                RecordToolLatency(
+                    toolName,
+                    lastPending.CreatedAtUtc,
+                    lastPending.RequestStartedAtUtc,
+                    null,
+                    lastPending.ResponseBytes,
+                    "timeout",
+                    lastPending.StartupWaitMs);
+            }
             return onTimeout(operationId, correlationId);
         }
 
@@ -560,10 +815,34 @@ namespace GxMcp.Gateway
             }
         }
 
+        // Keep the Gateway's async build poller alive at least until the Worker
+        // watchdog can terminalize the same build. Build All/Rebuild All use a
+        // 2400s Worker cap by default; the previous fixed 1800s Gateway cap could
+        // mark the job failed while the Worker was still legitimately running.
+        internal static int ResolveAsyncBuildHardCapSeconds(string? action)
+        {
+            bool fullKbBuild = string.Equals(action, "build_all", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "rebuild", StringComparison.OrdinalIgnoreCase);
+            int workerTimeout = fullKbBuild ? 2400 : 900;
+            string? raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_TIMEOUT_SEC");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out int configured) && configured > 0)
+                workerTimeout = Math.Min(Math.Max(configured, 60), 7200);
+
+            return Math.Max(1800, workerTimeout + 300);
+        }
+
         internal static int GetToolTimeoutMs(string? toolName, JObject? args)
         {
             if (toolName == "genexus_lifecycle" || toolName == "genexus_analyze" || toolName == "genexus_test")
             {
+                if (toolName == "genexus_lifecycle"
+                    && string.Equals(args?["action"]?.ToString(), "status", StringComparison.OrdinalIgnoreCase))
+                {
+                    int wait = args?["wait"]?.ToObject<int?>()
+                        ?? args?["wait_seconds"]?.ToObject<int?>() ?? 0;
+                    wait = Math.Max(0, Math.Min(McpRouter.MaxLongPollSeconds, wait));
+                    return Math.Min(900000, (wait + 10) * 1000);
+                }
                 return 600000;
             }
 
@@ -572,6 +851,18 @@ namespace GxMcp.Gateway
             // while the worker was still legitimately applying). Reads (status/pending/…) are
             // fast but share the tool name, so the generous ceiling is harmless for them.
             if (toolName == "genexus_gxserver")
+            {
+                return 600000;
+            }
+
+            // genexus_db action=reorg_impact / reorg_preview / drift_check with deep=true
+            // runs ISpecifierService.ImpactDatabase — a full specification pass that is
+            // build-heavy and can take minutes on a large KB (the 60s default cut it off
+            // while the worker was still legitimately working). Fast (deep=false) reorg/
+            // drift reads share the tool name, so the generous ceiling is harmless for them.
+            if ((string.Equals(toolName, "genexus_db", StringComparison.OrdinalIgnoreCase)
+                 || string.Equals(toolName, "genexus_db_drift", StringComparison.OrdinalIgnoreCase))
+                && args?["deep"]?.ToObject<bool?>() == true)
             {
                 return 600000;
             }
@@ -643,7 +934,36 @@ namespace GxMcp.Gateway
                    || string.Equals(toolName, "genexus_variable", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(toolName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(toolName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)
-                   || string.Equals(toolName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase);
+                   || string.Equals(toolName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(toolName, "genexus_io", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool IsAsyncObjectTextAction(JObject? args)
+        {
+            string? action = args?["action"]?.ToString()?.ToLowerInvariant();
+            return action == "export_kb_to_text"
+                || action == "import_text_to_kb"
+                || action == "delete_kb_objects";
+        }
+
+        internal static bool IsMutationPreview(JObject? args)
+        {
+            if (args == null) return false;
+            var changeSet = args["changeSet"] as JObject;
+            string? changeSetAction = changeSet?["action"]?.ToString();
+            return string.Equals(changeSetAction, "preview", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(changeSetAction, "validate", StringComparison.OrdinalIgnoreCase)
+                   || args["dryRun"]?.ToObject<bool?>() == true
+                   || string.Equals(args["validate"]?.ToString(), "only", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(args["validate"]?.ToString(), "validate-only", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool ShouldRunMutationAsync(string? toolName, JObject? args)
+        {
+            if (args?["async"]?.ToObject<bool?>() != true || IsMutationPreview(args)) return false;
+            if (string.Equals(toolName, "genexus_io", StringComparison.OrdinalIgnoreCase))
+                return IsAsyncObjectTextAction(args);
+            return IsAsyncMutationTool(toolName);
         }
 
         private static JObject BuildAsyncAcceptedPayload(JobEntry job, string acceptedSummary)
@@ -661,16 +981,34 @@ namespace GxMcp.Gateway
             };
         }
 
+        // Issue #79: only edit/variable jobs carry the watchdog bound in their accepted
+        // envelope — they are the tools whose SDK save can silently block. gxserver
+        // update/commit is deliberately excluded: a server apply can legitimately run
+        // arbitrarily long (an 850-object changelist exceeded even the 10 min sync
+        // ceiling), so it gets no stall bound and no 'will be marked stalled' promise.
+        internal static JObject BuildAsyncMutationAcceptedPayload(JobEntry job, string acceptedSummary)
+        {
+            var payload = BuildAsyncAcceptedPayload(job, acceptedSummary);
+            int boundSeconds = AsyncEditWatchdogMs(job.EstimatedSeconds) / 1000;
+            payload["stallBoundSeconds"] = boundSeconds;
+            payload["hint"] = payload["hint"]!.ToString()
+                + " If it stays 'running' past " + boundSeconds
+                + "s the SDK call is blocked (an IDE modal dialog can hold the model) or retrying a failing validation — the job will be marked 'stalled' with recovery steps AND the wedged worker process will be recycled (force-killed and respawned) so the KB stays usable; you can also cancel earlier with genexus_lifecycle action=cancel.";
+            return payload;
+        }
+
         internal static JObject BuildAsyncEditAcceptedPayload(JobEntry job)
-            => BuildAsyncAcceptedPayload(job, "Edit accepted;");
+            => BuildAsyncMutationAcceptedPayload(job, "Edit accepted;");
 
         internal static JObject BuildAsyncVariableAcceptedPayload(JobEntry job)
-            => BuildAsyncAcceptedPayload(job, "Variable update accepted;");
+            => BuildAsyncMutationAcceptedPayload(job, "Variable update accepted;");
 
         internal static JObject BuildAsyncLifecycleAcceptedPayload(JobEntry job, string? action)
         {
             string acceptedSummary = string.Equals(action, "validate", StringComparison.OrdinalIgnoreCase)
                 ? "Validate accepted;"
+                : string.Equals(action, "build_all", StringComparison.OrdinalIgnoreCase)
+                    ? "Build All accepted;"
                 : string.Equals(action, "rebuild", StringComparison.OrdinalIgnoreCase)
                     ? "Rebuild accepted;"
                     : "Build accepted;";
@@ -690,7 +1028,62 @@ namespace GxMcp.Gateway
                 return success ? "Variable update succeeded" : "Variable update failed";
             }
 
+            if (string.Equals(toolName, "genexus_io", StringComparison.OrdinalIgnoreCase))
+            {
+                return success ? "Object Text operation succeeded" : "Object Text operation failed";
+            }
+
             return success ? "Edit succeeded" : "Edit failed";
+        }
+
+        // Issue #79: the async edit/variable/gxserver path waits on the SDK with NO
+        // timeout (timeoutMs=0), so a blocked SDK call — an IDE modal dialog holding the
+        // model, or the SDK retrying a failing validation internally — left the job
+        // 'running' forever with no actionable signal. This watchdog converts that dead
+        // end into a terminal "stalled" state after a generous multiple of the caller's
+        // estimate, so a legitimate slow write still finishes while a genuinely stuck
+        // one surfaces with recovery steps.
+        //
+        // Bound = max(10 min, min(est × 8, 60 min)); override with
+        // GXMCP_ASYNC_JOB_WATCHDOG_S (seconds, 0 disables the watchdog).
+        internal static int AsyncEditWatchdogMs(int estimatedSeconds)
+        {
+            var envVal = Environment.GetEnvironmentVariable("GXMCP_ASYNC_JOB_WATCHDOG_S");
+            if (!string.IsNullOrWhiteSpace(envVal) && int.TryParse(envVal, out var parsed))
+            {
+                return parsed <= 0 ? int.MaxValue : parsed * 1000; // 0/negative disables
+            }
+            long boundSeconds = Math.Max(600L, Math.Min(estimatedSeconds * 8L, 3600L));
+            return (int)(boundSeconds * 1000);
+        }
+
+        // Plan 069: `workerRecycled` reports whether the wedged worker process was
+        // force-recycled (RecycleStalledWorker) the moment the stall was detected, so
+        // the envelope can tell the agent the KB is coming back instead of leaving it
+        // to rediscover the dead worker on the next call.
+        internal static JObject BuildStalledAsyncMutationEnvelope(string jobId, string toolName, int estimatedSeconds, int boundSeconds, bool workerRecycled = false)
+        {
+            string boundText = boundSeconds > 0
+                ? "did not return within the " + boundSeconds + "s time bound (caller estimated " + estimatedSeconds + "s)"
+                : "did not return within the configured time bound (caller estimated " + estimatedSeconds + "s; watchdog disabled)";
+            var envelope = new JObject
+            {
+                ["status"] = "stalled",
+                ["code"] = "AsyncJobStalled",
+                ["tool"] = toolName,
+                ["jobId"] = jobId,
+                ["estimated_seconds"] = estimatedSeconds,
+                ["boundSeconds"] = boundSeconds,
+                ["message"] = "The SDK operation " + boundText
+                    + ". The write is likely blocked by a modal dialog in the GeneXus IDE holding the model (e.g. \"object modified externally — reload?\"), or the SDK is retrying a failing validation internally. This job is now terminal; it will not keep 'running'.",
+                ["hint"] = "1) Run the same edit WITHOUT async=true to get the immediate SDK error (the sync path surfaces TransactionFailed/srcXXXX in seconds). 2) Or cancel with genexus_lifecycle action=cancel target=op:" + jobId + " and check the IDE for a waiting dialog. 3) genexus_read the object before retrying — the write may have partially persisted."
+            };
+            if (workerRecycled)
+            {
+                envelope["recycledWorker"] = true;
+                envelope["workerRecovery"] = "The wedged worker process was force-recycled the moment the stall was detected and a replacement worker is respawning for this KB (WorkerStopReason.Wedged → eager respawn). Subsequent tool calls should proceed normally; re-run the edit only after the replacement is up (check genexus_whoami or genexus_kb action=list), and genexus_read the object first — the write may have partially persisted.";
+            }
+            return envelope;
         }
 
         internal static void NormalizeEditAndBuildPayload(JObject? payload)
@@ -742,6 +1135,11 @@ namespace GxMcp.Gateway
             if (resultObj == null) return true;
             if (resultObj["error"] != null) return false;
             if (resultObj["isError"]?.ToObject<bool?>() == true) return false;
+            if (resultObj["cancelled"]?.ToObject<bool?>() == true
+                || string.Equals(resultObj["code"]?.ToString(), "Cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
 
             string? innerStatus = resultObj["status"]?.ToString();
             if (string.Equals(innerStatus, "Error", StringComparison.OrdinalIgnoreCase)

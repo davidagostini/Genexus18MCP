@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -9,40 +8,70 @@ using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
 {
-    public sealed class IdempotencyMiddleware
+    public sealed class IdempotencyMiddleware : GxMcp.Gateway.Pipelines.IMcpMiddleware
     {
-        private static readonly HashSet<string> WriteTools = new HashSet<string>
-        {
-            "genexus_edit", "genexus_create_object", "genexus_delete_object", "genexus_refactor",
-            "genexus_forge", "genexus_import_object"
-        };
-
         private readonly IdempotencyCache _cache;
         private readonly string _kbPath;
+        private readonly string? _modelScope;
+        private readonly string? _environmentScope;
 
-        public IdempotencyMiddleware(IdempotencyCache cache, string kbPath)
+        public IdempotencyMiddleware(
+            IdempotencyCache cache,
+            string kbPath,
+            string? modelScope = null,
+            string? environmentScope = null)
         {
             _cache = cache;
             _kbPath = kbPath;
+            _modelScope = modelScope;
+            _environmentScope = environmentScope;
+        }
+
+        public async Task<JObject?> InvokeAsync(GxMcp.Gateway.Pipelines.McpPipelineContext context, GxMcp.Gateway.Pipelines.McpPipelineNextDelegate next)
+        {
+            var toolCall = new JObject
+            {
+                ["name"] = context.ToolName,
+                ["arguments"] = context.Arguments
+            };
+
+            var res = await Invoke(toolCall, async tc =>
+            {
+                var n = await next().ConfigureAwait(false);
+                return n ?? new JObject();
+            }).ConfigureAwait(false);
+
+            return res;
         }
 
         public async Task<JObject> Invoke(JObject toolCall, Func<JObject, Task<JObject>> next)
         {
             var tool = toolCall["name"]?.ToString() ?? "";
-            if (!WriteTools.Contains(tool)) return await next(toolCall).ConfigureAwait(false);
-
             var args = toolCall["arguments"] as JObject ?? new JObject();
-            var key = args["idempotencyKey"]?.ToString();
+            var normalizedArgs = OperationClassifier.NormalizeArguments(tool, args, out var canonicalTool);
+            if (OperationClassifier.Describe(canonicalTool, normalizedArgs).Kind != OperationClassifier.OperationKind.Mutating)
+                return await next(toolCall).ConfigureAwait(false);
+            var key = normalizedArgs["idempotencyKey"]?.ToString();
             if (string.IsNullOrEmpty(key)) return await next(toolCall).ConfigureAwait(false);
             ValidateKey(key);
 
-            var dryRun = args["dryRun"]?.ToObject<bool?>() ?? false;
+            var dryRun = normalizedArgs["dryRun"]?.ToObject<bool?>() ?? false;
             if (dryRun) return await next(toolCall).ConfigureAwait(false);
 
-            var hash = HashPayload(args);
+            // Bind the durable key to the runtime snapshot when the KB handle has
+            // one. Explicit request fields win; raw values never enter the journal,
+            // which stores only their hashes.
+            var evidenceArgs = (JObject)normalizedArgs.DeepClone();
+            if (evidenceArgs["modelId"] == null && !string.IsNullOrWhiteSpace(_modelScope))
+                evidenceArgs["modelId"] = _modelScope;
+            if (evidenceArgs["environmentId"] == null && !string.IsNullOrWhiteSpace(_environmentScope))
+                evidenceArgs["environmentId"] = _environmentScope;
+
+            var hash = HashPayload(evidenceArgs);
+            var evidence = MutationOperationEvidence.FromArguments(evidenceArgs);
 
             bool computed = false;
-            var result = await _cache.GetOrCompute(_kbPath, tool, key, hash,
+            var result = await _cache.GetOrCompute(_kbPath, canonicalTool, key, hash,
                 async () =>
                 {
                     computed = true;
@@ -50,7 +79,7 @@ namespace GxMcp.Gateway
                     if ((bool?)raw["isError"] == true)
                         throw new ErrorNotCacheable(raw);
                     return raw;
-                }).ConfigureAwait(false);
+                }, evidence).ConfigureAwait(false);
 
             if (!computed)
             {
@@ -62,27 +91,25 @@ namespace GxMcp.Gateway
             return result;
         }
 
-        private static void ValidateKey(string key)
+        internal static void ValidateKey(string key)
         {
             if (key.Length < 1 || key.Length > 128)
                 throw new UsageException("usage_error", "idempotencyKey length must be 1..128");
             foreach (var c in key)
-                if (!(char.IsLetterOrDigit(c) || c == '_' || c == '-'))
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                      (c >= '0' && c <= '9') || c == '_' || c == '-'))
                     throw new UsageException("usage_error",
                         "idempotencyKey charset must be [A-Za-z0-9_-]");
         }
 
         private static string HashPayload(JObject args)
         {
-            var canonical = (JObject)args.DeepClone();
-            canonical.Remove("idempotencyKey");
-            canonical.Remove("dryRun");
-            var sorted = JsonCanonicalize(canonical);
+            var sorted = JsonCanonicalize(args, isRoot: true);
             using var sha = SHA256.Create();
             return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(sorted)));
         }
 
-        private static string JsonCanonicalize(JToken t)
+        private static string JsonCanonicalize(JToken t, bool isRoot = false)
         {
             if (t is JObject o)
             {
@@ -91,9 +118,12 @@ namespace GxMcp.Gateway
                 bool first = true;
                 foreach (var p in o.Properties().OrderBy(p => p.Name, StringComparer.Ordinal))
                 {
+                    if (isRoot && (p.Name == "idempotencyKey" || p.Name == "dryRun"))
+                        continue;
+
                     if (!first) sb.Append(',');
                     first = false;
-                    sb.Append(JsonCanonicalize(p.Name)).Append(':').Append(JsonCanonicalize(p.Value));
+                    sb.Append(JsonCanonicalize(p.Name)).Append(':').Append(JsonCanonicalize(p.Value, isRoot: false));
                 }
                 sb.Append('}');
                 return sb.ToString();
@@ -105,7 +135,7 @@ namespace GxMcp.Gateway
                 for (int i = 0; i < a.Count; i++)
                 {
                     if (i > 0) sb.Append(',');
-                    sb.Append(JsonCanonicalize(a[i]));
+                    sb.Append(JsonCanonicalize(a[i], isRoot: false));
                 }
                 sb.Append(']');
                 return sb.ToString();

@@ -46,10 +46,145 @@ namespace GxMcp.Worker.Helpers
             catch (Exception ex) { diffSummary = "Right parse error: " + ex.Message; structuredDiff = new XmlEquivalenceDiff { Summary = diffSummary }; return false; }
 
             var ok = ElementsEqual(da.Root, db.Root, "/", out diffSummary, out structuredDiff);
+            // WorkWithPlus materializes an empty Parameters node for a
+            // WebComponent control even when the author omitted it. This is a
+            // canonical SDK projection, not a rejected authored child. Accept
+            // only that exact normalization; substantive children and all
+            // other structure remain strict.
+            if (!ok && WwpEmptyWebComponentParametersEquivalent(da.Root, db.Root))
+            {
+                diffSummary = null;
+                structuredDiff = null;
+                return true;
+            }
+            // Report-layout projection: the persisted <Report> is a SUPERSET of the request
+            // (the projection re-emits SDK defaults like BorderStyle/ForeColor that the
+            // caller never sent). Only accept requested⊆persisted — never the reverse, or
+            // an empty persisted block would "verify" a request full of new controls.
+            if (!ok && ReportRootSubsetEquivalent(db.Root, da.Root))
+            {
+                diffSummary = null;
+                structuredDiff = null;
+                return true;
+            }
             if (!ok && structuredDiff == null)
                 structuredDiff = new XmlEquivalenceDiff { Summary = diffSummary };
             return ok;
         }
+
+        private static bool WwpEmptyWebComponentParametersEquivalent(XElement persisted, XElement requested)
+        {
+            if (persisted == null || requested == null) return false;
+            var persistedCopy = new XElement(persisted);
+            var requestedCopy = new XElement(requested);
+            bool hasWebComponent = persistedCopy.Descendants()
+                .Concat(requestedCopy.Descendants())
+                .Any(e => e.Name.LocalName.Equals("webComponent", StringComparison.OrdinalIgnoreCase));
+            if (!hasWebComponent) return false;
+
+            bool removed = RemoveImplicitParameters(persistedCopy) | RemoveImplicitParameters(requestedCopy);
+            if (!removed) return false;
+
+            return ElementsEqual(persistedCopy, requestedCopy, "/", out _, out _);
+        }
+
+        private static bool RemoveImplicitParameters(XElement root)
+        {
+            bool removed = false;
+            foreach (var component in root.Descendants()
+                .Where(e => e.Name.LocalName.Equals("webComponent", StringComparison.OrdinalIgnoreCase)))
+            {
+                foreach (var parameters in component.Elements()
+                    .Where(e => e.Name.LocalName.Equals("parameters", StringComparison.OrdinalIgnoreCase))
+                    .ToList())
+                {
+                    if (!parameters.HasAttributes && !parameters.HasElements
+                        && !parameters.Nodes().OfType<XText>().Any(t => !string.IsNullOrWhiteSpace(t.Value)))
+                    {
+                        parameters.Remove();
+                        removed = true;
+                    }
+                }
+            }
+            return removed;
+        }
+
+        /// <summary>
+        /// Subset equivalence for &lt;Report&gt; roots: every attribute requested on an
+        /// element must exist with the same value in the persisted element (matched by
+        /// ControlName for controls, Name for print blocks), but the persisted side may
+        /// carry additional SDK-default attributes. Child order may differ.
+        /// </summary>
+        private static bool ReportRootSubsetEquivalent(XElement requestedRoot, XElement persistedRoot)
+        {
+            if (requestedRoot == null || persistedRoot == null) return false;
+            if (!string.Equals(requestedRoot.Name.LocalName, "Report", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(persistedRoot.Name.LocalName, "Report", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            return ReportElementsSubset(requestedRoot, persistedRoot);
+        }
+
+        private static bool ReportElementsSubset(XElement requested, XElement persisted)
+        {
+            if (requested.Name.LocalName != persisted.Name.LocalName) return false;
+            if (requested.Name.LocalName == "Control")
+            {
+                string reqId = AttrValue(requested, "ControlName") ?? AttrValue(requested, "Name");
+                string perId = AttrValue(persisted, "ControlName") ?? AttrValue(persisted, "Name");
+                if (!string.Equals(reqId, perId, StringComparison.OrdinalIgnoreCase)) return false;
+            }
+
+            foreach (var attr in requested.Attributes())
+            {
+                if (attr.Name.LocalName == "TypeName") continue; // projection-only hint
+                var match = persisted.Attributes().FirstOrDefault(a => a.Name.LocalName == attr.Name.LocalName);
+                if (match == null) return false;
+                if (!string.Equals(NormalizeNumber(attr.Value), NormalizeNumber(match.Value), StringComparison.Ordinal))
+                    return false;
+            }
+
+            foreach (var reqChild in requested.Elements())
+            {
+                if (reqChild.Name.LocalName == "Control")
+                {
+                    string reqId = AttrValue(reqChild, "ControlName") ?? AttrValue(reqChild, "Name");
+                    XElement perChild = null;
+                    if (reqId != null)
+                    {
+                        perChild = persisted.Elements()
+                            .FirstOrDefault(c => string.Equals(
+                                AttrValue(c, "ControlName") ?? AttrValue(c, "Name"),
+                                reqId, StringComparison.OrdinalIgnoreCase));
+                    }
+                    if (perChild == null) return false;
+                    if (!ReportElementsSubset(reqChild, perChild)) return false;
+                }
+                else
+                {
+                    var candidates = persisted.Elements().Where(c => c.Name.LocalName == reqChild.Name.LocalName).ToList();
+                    if (candidates.Count == 0) return false;
+                    if (candidates.Count == 1)
+                    {
+                        if (!ReportElementsSubset(reqChild, candidates[0])) return false;
+                    }
+                    else
+                    {
+                        // Ambiguous: require at least one to match.
+                        if (!candidates.Any(c => ReportElementsSubset(reqChild, c))) return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        private static string AttrValue(XElement e, string localName)
+            => e.Attributes().FirstOrDefault(a => a.Name.LocalName == localName)?.Value;
+
+        private static string NormalizeNumber(string v)
+            => decimal.TryParse(v, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var d)
+                ? d.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : v;
 
         private static bool ElementsEqual(XElement x, XElement y, string path, out string diff, out XmlEquivalenceDiff structured)
         {
@@ -120,6 +255,12 @@ namespace GxMcp.Worker.Helpers
                     // sides are "&Name" vs "var:N" / "att:N".
                     if (IsVariableRefAttribute(ax[i].Name.LocalName) &&
                         IsAmpersandVsVarRefPair(ax[i].Value, ay[i].Value))
+                    {
+                        continue;
+                    }
+                    // Issue #122: Color attribute equivalence (e.g. BackColor="144; 238; 144|" vs "144, 238, 144" or "#90EE90")
+                    if (ColorHelper.IsColorAttributeName(ax[i].Name.LocalName) &&
+                        ColorHelper.IsColorEquivalent(ax[i].Value, ay[i].Value))
                     {
                         continue;
                     }

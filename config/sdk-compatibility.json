@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "supportedVersion": "18.0.10.184260",
+  "anchor": "Artech.Architecture.Common.dll",
+  "assemblies": [
+    { "path": "Artech.Architecture.Common.dll", "sha256": "573019a7a79720e54be949a6569c4339975ffcb2e814b75ed884c0b474808c09" },
+    { "path": "Artech.Genexus.Common.dll", "sha256": "8c2a98536ecbeb7e3b4cdf8871068ff50b61cf8a91b19f0eaf755caf1c3aa4a4" },
+    { "path": "Artech.Udm.Framework.dll", "sha256": "a78300b68e4252d1efabb32122db9ca6cf26f6dfe4b6a6a037a3eabcf7b2e997" },
+    { "path": "Artech.Architecture.BL.Framework.dll", "sha256": "188bf54749ecef344d852c219d784eebcafe7a0f8b078c5444f140e9a71ecc86" },
+    { "path": "Artech.Architecture.Language.dll", "sha256": "b4ddc933feab6d37768ce0cb367a119f9b2826bdb4d888bdde3cb0accb244701" },
+    { "path": "Artech.Common.Language.dll", "sha256": "3fbbb74121f9c82ea67db6b25d12b1425305e440e52065ed972d43820df415bf" },
+    { "path": "Artech.Architecture.Interfaces.dll", "sha256": "e63f4f91b7f966f7983dafc78575a38980e9386ffc0872e4d45a51d7dc63f19b" },
+    { "path": "Artech.Common.Properties.dll", "sha256": "3942d4d8d70d97ac7c3582fcfe4e7d8cdd2a373d805ccc9fa8d8d8739d43143c" },
+    { "path": "Artech.Common.Helpers.dll", "sha256": "033cfa66d8647baebdd69ea4b1e8b744344a941fa0ba36a0d42a759694346e7e" },
+    { "path": "Artech.Common.Controls.dll", "sha256": "203c3f27f3f97caca21cea23cafd9c0446c8460015d944252650517c9473c703" },
+    { "path": "Artech.Common.dll", "sha256": "438ed6f7c47fa81afc2f9969cd626db94b749c24712042d24c5ad207ad7c6b8d" },
+    { "path": "Artech.Architecture.UI.Framework.dll", "sha256": "18e8614d283563ea6314343c15d3becf638cc9d1407befc9626c8a4623a1eed9" },
+    { "path": "Packages/Artech.Packages.GAM.dll", "sha256": "04683929ba4912a0de38dd9792d8efc7ce002cc5b34ae528f003fe7a9effe726" },
+    { "path": "Packages/Artech.Packages.TeamDevClient.BL.dll", "sha256": "8cb13101a22eff5a840fe0adcfdb0eb87cd8408b4ba6b408fdc71778116b75b2" },
+    { "path": "GeneXus.TeamDevClient.Architecture.BL.dll", "sha256": "e54a25119b49bcb921f1ad33f9881414d0e56219c1ab884474069ff14ac20580", "optional": true },
+    { "path": "Packages/Artech.Packages.GenexusBL.dll", "sha256": "35a776ee80ca2e838789af84375ba692eca610fa19d31cbeead4c52addf8e48a" },
+    { "path": "Packages/Artech.Packages.Specifier.dll", "sha256": "1f206a3e5619f5c0e4ada10461c92bac16c4471fd90c9daeab3d487bbdfa38f3" }
+  ]
+}

@@ -33,16 +33,35 @@ namespace GxMcp.Worker.Services
                     retryAfterMs: 10000,
                     target: type);
 
-                var candidates = index.Objects.Values
-                    .Where(o => IsTypeMatch(o.Type, type))
-                    .Where(o => o.Complexity > 5 && o.CalledBy.Count > 2)
+                IEnumerable<SearchIndex.IndexEntry> candidatesSource = null;
+                if (index.TypeIndex != null && index.TypeIndex.Count > 0)
+                {
+                    var matchingTypes = index.TypeIndex.Keys
+                        .Where(k => !string.IsNullOrEmpty(k) && IsTypeMatch(k, type))
+                        .ToList();
+                    if (matchingTypes.Count > 0)
+                    {
+                        candidatesSource = index.FindByTypes(matchingTypes);
+                    }
+                }
+                if (candidatesSource == null && index.Objects != null)
+                {
+                    candidatesSource = index.Objects.Values.Where(o => o != null && IsTypeMatch(o.Type, type));
+                }
+                if (candidatesSource == null)
+                {
+                    candidatesSource = Enumerable.Empty<SearchIndex.IndexEntry>();
+                }
+
+                var candidates = candidatesSource
+                    .Where(o => o != null && o.Complexity > 5 && o.CalledBy != null && o.CalledBy.Count > 2)
                     .OrderBy(o => o.Complexity)
                     .Take(5)
                     .ToList();
 
                 if (candidates.Count == 0)
                 {
-                    candidates = index.Objects.Values.Where(o => IsTypeMatch(o.Type, type)).Take(1).ToList();
+                    candidates = candidatesSource.Where(o => o != null).Take(1).ToList();
                 }
 
                 if (candidates.Count == 0) return McpResponse.Err(

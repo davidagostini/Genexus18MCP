@@ -72,5 +72,22 @@ namespace GxMcp.Gateway.Tests
             var matches = AutoTypeInjector.CompleteName(Kb, "Cust", cap: 2).ToList();
             Assert.Equal(2, matches.Count);
         }
+
+        [Fact]
+        public void CompleteNameByType_FiltersAttributesAndModules_AndExcludesAmbiguousNames()
+        {
+            AutoTypeInjector.PrimeIndex(Kb, new (string, string?)[]
+            {
+                ("CustomerId", "Attribute"),
+                ("CustomerModule", "Module"),
+                ("Customer", null),
+            });
+
+            Assert.Equal(new[] { "CustomerId" },
+                AutoTypeInjector.CompleteNameByType(Kb, "cust", "Attribute").ToArray());
+            Assert.Equal(new[] { "CustomerModule" },
+                AutoTypeInjector.CompleteNameByType(Kb, "cust", "Module").ToArray());
+            Assert.Empty(AutoTypeInjector.CompleteNameByType(Kb, "cust", "Transaction"));
+        }
     }
 }

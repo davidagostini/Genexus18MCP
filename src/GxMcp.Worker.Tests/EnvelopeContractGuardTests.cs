@@ -15,14 +15,10 @@ namespace GxMcp.Worker.Tests
     public class EnvelopeContractGuardTests
     {
         private static readonly string WorkerServicesDir = Path.GetFullPath(
-            Path.Combine(
-                System.AppDomain.CurrentDomain.BaseDirectory,
-                "..", "..", "..", "..", "GxMcp.Worker", "Services"));
+            Path.Combine(TestFixtures.FindRepoRoot(), "src", "GxMcp.Worker", "Services"));
 
         private static readonly string WorkerModelsDir = Path.GetFullPath(
-            Path.Combine(
-                System.AppDomain.CurrentDomain.BaseDirectory,
-                "..", "..", "..", "..", "GxMcp.Worker", "Models"));
+            Path.Combine(TestFixtures.FindRepoRoot(), "src", "GxMcp.Worker", "Models"));
 
         [Fact]
         public void NoServiceCallsLegacyMcpResponseSuccess()
@@ -144,8 +140,7 @@ namespace GxMcp.Worker.Tests
             // deleting it without updating tests/dispatcher comments is
             // a silent regression risk.
             string docPath = Path.GetFullPath(Path.Combine(
-                System.AppDomain.CurrentDomain.BaseDirectory,
-                "..", "..", "..", "..", "..", "docs", "envelope.md"));
+                TestFixtures.FindRepoRoot(), "docs", "envelope.md"));
             Assert.True(File.Exists(docPath),
                 "docs/envelope.md is the source of truth for the canonical MCP envelope. " +
                 "Do not delete it. Expected at: " + docPath);

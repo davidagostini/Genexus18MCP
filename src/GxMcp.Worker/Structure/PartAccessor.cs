@@ -195,9 +195,19 @@ namespace GxMcp.Worker.Structure
 
         public static bool IsDesignSystem(KBObject obj)
         {
-            var n = obj?.TypeDescriptor?.Name;
-            return !string.IsNullOrEmpty(n) &&
-                   n.IndexOf("DesignSystem", StringComparison.OrdinalIgnoreCase) >= 0;
+            try
+            {
+                var descriptorName = obj?.TypeDescriptor?.Name;
+                var runtimeName = obj?.GetType()?.Name;
+                return (!string.IsNullOrEmpty(descriptorName)
+                        && descriptorName.IndexOf("DesignSystem", StringComparison.OrdinalIgnoreCase) >= 0)
+                    || (!string.IsNullOrEmpty(runtimeName)
+                        && runtimeName.IndexOf("DesignSystem", StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>Resolve the Tokens or Styles part of a Design System object (by descriptor
@@ -217,6 +227,43 @@ namespace GxMcp.Worker.Structure
 
         public static KBObjectPart GetPart(KBObject obj, string partName)
         {
+            if (obj != null && string.Equals(partName, "DataViewIndexes", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var property = obj.GetType().GetProperty("DataViewIndexes", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (property?.GetValue(obj, null) is KBObjectPart dataViewIndexes) return dataViewIndexes;
+                }
+                catch { }
+                foreach (KBObjectPart part in obj.Parts)
+                {
+                    string typeName = part?.GetType()?.Name ?? string.Empty;
+                    string descriptorName = part?.TypeDescriptor?.Name ?? string.Empty;
+                    if (typeName.IndexOf("DataViewIndex", StringComparison.OrdinalIgnoreCase) >= 0
+                        || descriptorName.IndexOf("DataViewIndex", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return part;
+                }
+            }
+
+            // GeneXus API objects keep their authored methods in the typed
+            // ServiceGroupSource part. It is not exposed by the generic Parts
+            // descriptor under the user-facing name "Methods" on every GX
+            // version, so resolve this alias before the GUID/name fallbacks.
+            if (obj != null && string.Equals(obj.TypeDescriptor?.Name, "API", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(partName)
+                && (partName.Equals("Methods", StringComparison.OrdinalIgnoreCase)
+                    || partName.Equals("ServiceGroupSource", StringComparison.OrdinalIgnoreCase)
+                    || partName.Equals("Source", StringComparison.OrdinalIgnoreCase)
+                    || partName.Equals("Code", StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    dynamic d = obj;
+                    if (d.ServiceGroupSource != null) return (KBObjectPart)d.ServiceGroupSource;
+                }
+                catch { }
+            }
+
             // issue #26: DSO Tokens/Styles are addressable by name directly, ahead of the
             // generic ISource fallback that would otherwise map both to the first source part.
             if (IsDesignSystem(obj) && !string.IsNullOrEmpty(partName))
@@ -230,6 +277,28 @@ namespace GxMcp.Worker.Structure
                 {
                     var sp = GetDesignSystemPart(obj, styles: true);
                     if (sp != null) return sp;
+                }
+            }
+
+            // Theme styles and regular Design System style sheets are not exposed
+            // consistently through TypeDescriptor names across GeneXus updates. Use
+            // the concrete part names as a stable SDK-compatible alias before the
+            // GUID/source fallbacks.
+            if (!string.IsNullOrWhiteSpace(partName)
+                && (partName.Equals("ThemeStyles", StringComparison.OrdinalIgnoreCase)
+                    || partName.Equals("StyleSheet", StringComparison.OrdinalIgnoreCase)
+                    || partName.Equals("Theme", StringComparison.OrdinalIgnoreCase)))
+            {
+                foreach (KBObjectPart p in obj.Parts)
+                {
+                    string concrete = p?.GetType()?.Name ?? string.Empty;
+                    if ((partName.Equals("ThemeStyles", StringComparison.OrdinalIgnoreCase)
+                         || partName.Equals("Theme", StringComparison.OrdinalIgnoreCase))
+                        && concrete.IndexOf("ThemeStylesPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return p;
+                    if (partName.Equals("StyleSheet", StringComparison.OrdinalIgnoreCase)
+                        && concrete.IndexOf("DesignStylesPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return p;
                 }
             }
 
@@ -288,6 +357,34 @@ namespace GxMcp.Worker.Structure
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
+            if (obj.TypeDescriptor?.Name?.Equals("DataView", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                try
+                {
+                    var property = obj.GetType().GetProperty("DataViewIndexes", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (property?.GetValue(obj, null) is KBObjectPart) names.Add("DataViewIndexes");
+                }
+                catch { }
+            }
+
+            // API.ServiceGroupSource is the native methods/route part. Surface
+            // the stable MCP name even when the SDK descriptor says Source or
+            // ServiceGroupSource, and avoid exposing a misleading duplicate.
+            if (obj != null && string.Equals(obj.TypeDescriptor?.Name, "API", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    dynamic d = obj;
+                    if (d.ServiceGroupSource != null)
+                    {
+                        names.Add("Methods");
+                        names.RemoveAll(n => string.Equals(n, "Source", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(n, "ServiceGroupSource", StringComparison.OrdinalIgnoreCase));
+                    }
+                }
+                catch { }
+            }
+
             // "Source" and "Events" both resolve to the same ISource part on WebPanels/Transactions —
             // keep only the canonical "Events" name; FindPart still accepts "Source" as alias.
             bool hasEvents = names.Any(n => string.Equals(n, "Events", StringComparison.OrdinalIgnoreCase));
@@ -312,6 +409,15 @@ namespace GxMcp.Worker.Structure
             if (part == null)
             {
                 return null;
+            }
+
+            if (part.Type == DesignSystemTokensPartGuid)
+            {
+                return "Tokens";
+            }
+            if (part.Type == DesignSystemStylesPartGuid)
+            {
+                return "Styles";
             }
 
             if (part is ISource)
@@ -345,6 +451,12 @@ namespace GxMcp.Worker.Structure
             {
                 return "Variables";
             }
+
+            string concreteName = part.GetType().Name ?? string.Empty;
+            if (concreteName.IndexOf("ThemeStylesPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "ThemeStyles";
+            if (concreteName.IndexOf("DesignStylesPart", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "StyleSheet";
 
             if (!string.IsNullOrWhiteSpace(part.TypeDescriptor?.Name))
             {

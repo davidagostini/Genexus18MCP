@@ -97,6 +97,97 @@ namespace GxMcp.Worker.Tests
             Assert.Null(reloaded.TypeIndex); // derived, not persisted — rebuilt on load via BuildParentIndex
         }
 
+        [Fact]
+        public void PromoteSourceForSearch_PopulatesFullSourceAndSourceTokens()
+        {
+            var svc = new IndexCacheService();
+            svc.AddOrUpdateBatch(new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Proc1", Type = "Procedure", Guid = "g1" }
+            });
+            svc.EnsureSourceTokenIndex();
+            var entry = svc.TryGetLoadedIndex().Objects["Procedure:Proc1"];
+            string source = "parm(in:&CustomerId); ProcessInvoicePayment();";
+
+            Assert.True(svc.PromoteSourceForSearch(entry, source));
+            Assert.Equal(source, entry.FullSource);
+            Assert.Contains("Procedure:Proc1", svc.TryGetLoadedIndex().SourceTokenIndex["processinvoicepayment"]);
+            Assert.False(svc.PromoteSourceForSearch(entry, "different source"));
+
+            var reloaded = SearchIndex.FromJson(svc.TryGetLoadedIndex().ToJson());
+            Assert.Equal(source, reloaded.Objects["Procedure:Proc1"].FullSource);
+        }
+
+        [Fact]
+        public void PromoteSourceForSearch_RecordsConfirmedEmptySource()
+        {
+            var svc = new IndexCacheService();
+            svc.AddOrUpdateBatch(new[]
+            {
+                new SearchIndex.IndexEntry { Name = "EmptyProc", Type = "Procedure", Guid = "empty-guid" }
+            });
+            svc.EnsureSourceTokenIndex();
+            var entry = svc.TryGetLoadedIndex().Objects["Procedure:EmptyProc"];
+
+            Assert.True(svc.PromoteSourceForSearch(entry, string.Empty));
+            Assert.NotNull(entry.FullSource);
+            Assert.Empty(entry.FullSource);
+            Assert.DoesNotContain("Procedure:EmptyProc", svc.TryGetLoadedIndex().SourceTokenIndex.Values.SelectMany(keys => keys));
+
+            var reloaded = SearchIndex.FromJson(svc.TryGetLoadedIndex().ToJson());
+            Assert.NotNull(reloaded.Objects["Procedure:EmptyProc"].FullSource);
+            Assert.Empty(reloaded.Objects["Procedure:EmptyProc"].FullSource);
+        }
+
+        [Fact]
+        public void PromoteSourceForSearch_AllowsBoundedLargeSource()
+        {
+            var svc = new IndexCacheService();
+            svc.AddOrUpdateBatch(new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Proc1", Type = "Procedure", Guid = "g1" }
+            });
+            var entry = svc.TryGetLoadedIndex().Objects["Procedure:Proc1"];
+
+            string source = new string('x', 256 * 1024 + 1);
+            Assert.True(svc.PromoteSourceForSearch(entry, source));
+            Assert.Equal(source, entry.FullSource);
+        }
+
+        [Fact]
+        public void PromoteSourceForSearch_RejectsSourceOverPerEntryBound()
+        {
+            var svc = new IndexCacheService();
+            svc.AddOrUpdateBatch(new[]
+            {
+                new SearchIndex.IndexEntry { Name = "Proc1", Type = "Procedure", Guid = "g1" }
+            });
+            var entry = svc.TryGetLoadedIndex().Objects["Procedure:Proc1"];
+
+            Assert.False(svc.PromoteSourceForSearch(entry, new string('x', 2 * 1024 * 1024 + 1)));
+            Assert.Null(entry.FullSource);
+        }
+
+        [Fact]
+        public void PromoteSourceForSearch_RejectsSourceWhenAggregateBudgetIsFull()
+        {
+            var entries = Enumerable.Range(0, 5)
+                .Select(i => new SearchIndex.IndexEntry
+                {
+                    Name = "Proc" + i,
+                    Type = "Procedure",
+                    Guid = "g" + i,
+                    FullSource = i < 4 ? new string('x', 2 * 1024 * 1024) : null
+                })
+                .ToArray();
+            var svc = new IndexCacheService();
+            svc.AddOrUpdateBatch(entries);
+            var entry = svc.TryGetLoadedIndex().Objects["Procedure:Proc4"];
+
+            Assert.False(svc.PromoteSourceForSearch(entry, "new source"));
+            Assert.Null(entry.FullSource);
+        }
+
         // ── Step 3: indexed prefilter path vs full-scan fallback — same results ──
 
         private static IndexCacheService BuildIndexed()
@@ -185,6 +276,31 @@ namespace GxMcp.Worker.Tests
             var fullScan = ListNames(BuildFullScan(), typeFilter: "Procedure");
             Assert.Equal(fullScan, indexed);
             Assert.Equal(new[] { "Proc1", "Proc2" }, indexed.OrderBy(n => n));
+        }
+
+        [Fact]
+        public void FindByGuid_IndexedAndFallback_ReturnExpectedEntry()
+        {
+            var indexed = BuildIndexed().TryGetLoadedIndex();
+            var fullScan = BuildFullScan().TryGetLoadedIndex();
+
+            var foundIndexed = indexed.FindByGuid("g1");
+            var foundFullScan = fullScan.FindByGuid("g1");
+
+            Assert.NotNull(foundIndexed);
+            Assert.NotNull(foundFullScan);
+            Assert.Equal("Proc1", foundIndexed.Name);
+            Assert.Equal("Proc1", foundFullScan.Name);
+
+            // Case insensitive lookup
+            Assert.NotNull(indexed.FindByGuid("G1"));
+            Assert.NotNull(fullScan.FindByGuid("G1"));
+
+            // Non-existent guid returns null
+            Assert.Null(indexed.FindByGuid("non-existent"));
+            Assert.Null(fullScan.FindByGuid("non-existent"));
+            Assert.Null(indexed.FindByGuid(null));
+            Assert.Null(indexed.FindByGuid(""));
         }
     }
 }

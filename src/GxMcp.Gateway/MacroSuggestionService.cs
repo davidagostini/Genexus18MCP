@@ -22,22 +22,7 @@ namespace GxMcp.Gateway
     //   6. Generate proposedName from tool verbs + constant discriminators.
     internal sealed class MacroSuggestionService
     {
-        // Tools whose calls don't mutate the KB — sequences of only these are not a
-        // candidate macro (likely investigation, not a workflow).
-        private static readonly HashSet<string> ReadOnlyTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "genexus_query",
-            "genexus_list_objects",
-            "genexus_read",
-            "genexus_inspect",
-            "genexus_analyze",
-            "genexus_whoami",
-            "genexus_recipe",
-            "genexus_doc",
-            "genexus_logs",
-            "genexus_history",
-            "genexus_doctor",
-        };
+
 
         private readonly OperationTracker _tracker;
         private readonly string _userMacroDir;
@@ -88,7 +73,7 @@ namespace GxMcp.Gateway
                     if (nonOverlapping.Count < minRepetitions) continue;
 
                     // Skip shapes whose every tool is read-only.
-                    if (nonOverlapping[0].All(s => ReadOnlyTools.Contains(s.ToolName))) continue;
+                    if (nonOverlapping[0].All(s => OperationClassifier.IsReadOnly(s.ToolName, s.ToolArguments))) continue;
 
                     var candidate = BuildCandidate(nonOverlapping);
                     if (candidate != null) candidates.Add(candidate);
@@ -160,19 +145,32 @@ namespace GxMcp.Gateway
             }
             catch (Exception ex)
             {
-                return ErrorEnvelope("Failed to crystallize macro: " + ex.Message);
+                string operationId = Guid.NewGuid().ToString("N");
+                Program.Log($"{{\"event\":\"macro_crystallize_failed\",\"operationId\":\"{operationId}\",\"exceptionType\":\"{ex.GetType().FullName}\",\"exception\":\"{LogValue(ex.ToString())}\"}}");
+                return ErrorEnvelope("Macro crystallization failed. See server logs for details.", operationId);
             }
         }
 
         // --- helpers ---
 
-        private static JObject ErrorEnvelope(string message)
+        private static JObject ErrorEnvelope(string message, string operationId = null)
         {
-            return new JObject
+            var result = new JObject
             {
                 ["status"] = "Error",
                 ["error"] = message
             };
+            if (!string.IsNullOrEmpty(operationId)) result["operationId"] = operationId;
+            return result;
+        }
+
+        internal static string LogValue(string value)
+        {
+            string redacted = Regex.Replace(
+                value ?? string.Empty,
+                @"(?is)(?<key>\b(?:password|passwd|pass|token|secret|api[-_]?key|authorization|credential)\b)\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)",
+                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>");
+            return redacted.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(((char)13).ToString(), "\r").Replace(((char)10).ToString(), "\n");
         }
 
         // Shape = pipe-joined "tool|sortedKey,sortedKey" tuples. Values not included

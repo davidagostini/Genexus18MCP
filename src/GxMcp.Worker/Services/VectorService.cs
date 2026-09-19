@@ -30,12 +30,13 @@ namespace GxMcp.Worker.Services
             foreach (var rawWord in words)
             {
                 int hash = rawWord.ToLowerInvariant().GetHashCode();
-                for (int i = 0; i < 128; i++)
+                for (int bit = 0; bit < 32; bit++)
                 {
-                    if (((hash >> (i % 32)) & 1) == 1)
-                        vector[i] += 1.0f;
-                    else
-                        vector[i] -= 1.0f;
+                    float delta = ((hash >> bit) & 1) == 1 ? 1.0f : -1.0f;
+                    vector[bit] += delta;
+                    vector[bit + 32] += delta;
+                    vector[bit + 64] += delta;
+                    vector[bit + 96] += delta;
                 }
             }
 
@@ -49,7 +50,8 @@ namespace GxMcp.Worker.Services
 
             if (magnitude > 0)
             {
-                for (int i = 0; i < 128; i++) vector[i] /= magnitude;
+                float invMag = 1.0f / magnitude;
+                for (int i = 0; i < 128; i++) vector[i] *= invMag;
             }
 
             return vector;

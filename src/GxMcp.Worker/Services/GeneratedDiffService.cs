@@ -341,10 +341,26 @@ namespace GxMcp.Worker.Services
         /// timestamp-granularity skew, unlike the absolute <paramref name="sinceUtc"/>
         /// comparison used when no snapshot is available.
         /// </summary>
-        internal static GeneratedFileEvidence ProbeGeneratedFreshness(string kbPath, string target, DateTime sinceUtc, DateTime? priorMtimeUtc = null)
+        internal static GeneratedFileEvidence ProbeGeneratedFreshness(string kbPath, string target, DateTime sinceUtc, DateTime? priorMtimeUtc = null, string preferredWebPath = null)
         {
             var ev = new GeneratedFileEvidence { Target = target };
             var files = FindGeneratedFiles(kbPath, target, allRoots: true);
+            // A KB can retain generated files for several environments. Once the
+            // active environment's web root is known, never use a newer file from a
+            // different environment as evidence for this build.
+            if (!string.IsNullOrWhiteSpace(preferredWebPath))
+            {
+                string preferred = Path.GetFullPath(preferredWebPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                files = files.Where(f =>
+                {
+                    try
+                    {
+                        string full = Path.GetFullPath(f);
+                        return full.StartsWith(preferred, StringComparison.OrdinalIgnoreCase);
+                    }
+                    catch { return false; }
+                }).ToList();
+            }
             ev.FileCount = files.Count;
             ev.Found = files.Count > 0;
             foreach (var f in files)

@@ -2,7 +2,7 @@
 
 Common issues when installing or running the GeneXus MCP server, and how to fix them.
 
-> **First step for any issue:** run `npx genexus-mcp doctor --mcp-smoke` and read the output. It checks GeneXus path, KB path, worker availability, .NET runtimes, and runs a protocol smoke test. Most problems are diagnosed by that one command.
+> **First step for any issue:** run `npx genexus-mcp doctor --mcp-smoke` and read the output. It checks GeneXus path, KB path, worker availability, .NET runtimes, and runs a protocol smoke test. If an stdio client only reports an exit code, also read `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt`.
 
 ---
 
@@ -10,15 +10,46 @@ Common issues when installing or running the GeneXus MCP server, and how to fix 
 
 ### "GeneXus installation not found"
 
-The installer couldn't locate GeneXus 18 in the default path.
+The installer couldn't locate the primary GeneXus SDK from the version catalog in
+the default path.
 
-**Fix:** pass `--gx` explicitly. The path is the folder that contains `GeneXus.exe` — usually:
+**Fix:** pass `--gx` explicitly. The path is the folder that contains the GeneXus executable (`GeneXus.exe`, `gx.exe`, or classic GX8 `gxw32.exe`) — usually:
 
 ```bash
 npx genexus-mcp@latest init --gx "C:\Program Files (x86)\GeneXus\GeneXus18"
 ```
 
+The example above is the current primary SDK. The complete supported list and
+default paths live in [`docs/generated/supported-versions.md`](docs/generated/supported-versions.md).
+
 If GeneXus is installed somewhere else (custom install, network drive), point `--gx` to that folder.
+
+### "GeneXus SDK major does not match KB major"
+
+The MCP checks the KB's `.gxw` metadata against the selected `GeneXus.exe`
+version before writing `config.json`. This prevents a GX17 KB from silently
+starting with GX18 when both SDKs are installed. For example, a GX17 KB must be
+initialized with the GX17 installation:
+
+```powershell
+npx genexus-mcp@latest init `
+  --kb "C:\KBs\KBTeste17" `
+  --gx "C:\Program Files (x86)\GeneXus\GeneXus17Trial"
+```
+
+If init reports `sdk_kb_mismatch`, correct `--gx`; no new config is written.
+If it reports `sdk_selection_required` or `sdk_identity_unresolved`, pass the
+paths explicitly and ensure the selected folder contains the intended
+`GeneXus.exe`. Run `npx genexus-mcp doctor --format json` and inspect the
+`kb_sdk_compatibility` check plus `genexus_whoami` for `major`, `version`, and
+`detectionSource`. The CLI reads valid version files when present and otherwise
+uses the Windows executable metadata, so a normal GeneXus installation does not
+need a manually-created version file.
+
+If the KB's `.gxw` file is empty or has no version fields, open the KB once in
+the matching GeneXus IDE so it is initialized, then rerun init. Until that
+metadata exists, the CLI intentionally requires an explicit `--gx` choice and
+does not infer the major from the KB folder name.
 
 ### "Knowledge Base not found" / "KB path invalid"
 
@@ -29,19 +60,44 @@ The folder you passed isn't a GeneXus KB.
 - The KB must have been **opened in GeneXus IDE at least once** so it's initialized and built.
 - Make sure the path doesn't have unescaped quotes or trailing slashes.
 
+For GX8/GX9 classic DAT KBs there may be no `.gxw` file. The Gateway accepts
+the legacy root when it contains at least two known markers such as `DATA001`,
+`GXSPC001`, `kbdata`, `ATTRIBUT.DAT`, or `ATT.XPW`. Open it with an explicit
+per-KB legacy driver so it does not inherit the global GX18 SDK:
+
+```json
+{
+  "action": "open",
+  "path": "D:\\GX80\\SECT",
+  "alias": "SECT80",
+  "driver": "com-gxpublic",
+  "installationPath": "C:\\Program Files (x86)\\ARTech\\GeneXus\\gxw80",
+  "major": "8"
+}
+```
+
+The GX8 installation is discovered from the classic `Setup\\80` registry key
+and `gxw32.exe`; GXPublic is discovered from the registered 32-bit ProgID. If
+the provider is missing, `open` now fails before spawning a worker with
+`GXMCP_GXPUBLIC_PROVIDER_NOT_REGISTERED` instead of leaving a misleading
+`no_worker`/`IndexNotReady` state. The documented `GXPublic.GXPublic.4` and the
+installed `GXPubGXX.GXPublic(.5)` compatibility registration are accepted.
+
 ```bash
 npx genexus-mcp@latest init --kb "C:\KBs\YourKB"
 ```
 
-### Installer succeeds, but `npx` is slow on every launch
+### Installer succeeds, but an npm bootstrap launcher is slow on every launch
 
-`npx` re-resolves the package each call. To skip that, install globally:
+`npx` resolves the package for clients that use the npm launcher. Antigravity skips
+that bootstrap when the packaged gateway executable is available. For every client,
+use the fixed-path installer when you need a stable executable path:
 
-```bash
-npm install -g genexus-mcp
+```pwsh
+iex (irm https://raw.githubusercontent.com/lennix1337/Genexus18MCP/main/scripts/install.ps1)
 ```
 
-Then your client can invoke `genexus-mcp` directly instead of `npx genexus-mcp`.
+The fixed-path installer registers the gateway directly and avoids the npx cache.
 
 ---
 
@@ -60,7 +116,7 @@ The installer prints a JSON block. It must appear in your client's MCP config. W
 | **Claude Desktop** | `%APPDATA%\Claude\claude_desktop_config.json` |
 | **Claude Code** | `%USERPROFILE%\.claude.json` (or run `claude mcp list`) |
 | **Cursor** | Settings → MCP → check the `mcpServers` block |
-| **Antigravity** | App settings → MCP servers |
+| **Antigravity** | `%USERPROFILE%\.gemini\config\mcp_config.json` (or `%USERPROFILE%\.gemini\antigravity\mcp_config.json`) |
 
 The relevant block looks like:
 
@@ -75,7 +131,7 @@ The relevant block looks like:
 }
 ```
 
-> ⚠️ On Windows, the command **must** be `npx.cmd`, not `npx`. Plain `npx` fails because clients launch processes without a shell.
+> ⚠️ On Windows, clients using the npm launcher must use `npx.cmd`, not `npx`. Plain `npx` fails because clients launch processes without a shell. Antigravity normally receives a direct `GxMcp.Gateway.exe` path from `init`.
 
 ### Step 2 — Fully restart the client
 
@@ -88,6 +144,24 @@ The relevant block looks like:
 - **Cursor**: Output panel → "MCP" channel
 
 Look for `genexus-mcp` startup messages or errors.
+
+### Antigravity only shows `exit status 1` or `0xffffffff`
+
+The Antigravity Language Server may discard the child process stderr. Read the
+launcher breadcrumb from PowerShell:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\GenexusMCP\logs\last-stdio-error.txt"
+```
+
+The file is written by the npm wrapper for missing executables, spawn failures, and
+non-zero gateway exits. It includes the UTC timestamp, exit code, and the last 64 KiB
+of stderr. If `genexus-mcp clients` reports Antigravity's launcher as stale, refresh
+the package path with:
+
+```powershell
+npx genexus-mcp@latest clients add --clients antigravity
+```
 
 ### Step 4 — Verify the gateway can start standalone
 
@@ -105,7 +179,7 @@ If `doctor` passes but the client still doesn't see tools, the problem is the cl
 ### "Worker failed to start" / .NET 4.8 errors
 
 The MCP has two parts:
-- **Gateway** (.NET 8) — runs always
+- **Gateway** (.NET 10) — runs always
 - **Worker** (.NET Framework 4.8) — hosts the GeneXus SDK, spins up on first command
 
 The worker needs **.NET Framework 4.8** installed on Windows. It's bundled with Windows 10 (1903+) and Windows 11, but on Server SKUs or older installs you may need to install it manually: [.NET Framework 4.8 download](https://dotnet.microsoft.com/download/dotnet-framework/net48).
@@ -120,7 +194,7 @@ It reports the .NET runtimes detected.
 
 ### "Worker idle timeout" — first request slow
 
-Expected. The worker is lazy by design and shuts down after `WorkerIdleTimeoutMinutes` (default 5) of inactivity to unlock GeneXus build artifacts. First request after idle takes ~3-8s to spin it back up; subsequent calls are fast.
+Expected. The worker is lazy by design and shuts down after `WorkerIdleTimeoutMinutes` (default 60) of inactivity to unlock GeneXus build artifacts. First request after idle takes ~3-8s to spin it back up; subsequent calls are fast.
 
 To keep it warm longer, edit `config.json`:
 
@@ -133,7 +207,7 @@ To keep it warm longer, edit `config.json`:
 The worker holds open handles to KB files while running. If you need to do something in the GeneXus IDE that conflicts (rebuild, change DBMS, etc.):
 
 ```bash
-npx genexus-mcp lifecycle --action stop-worker
+genexus_worker_reload mode=soft
 ```
 
 The worker will respawn on the next MCP call.
@@ -214,10 +288,10 @@ For `ForeColor`, `BackColor`, `BorderColor`, send values as palette names (`Blac
 
 If none of the above helps:
 
-1. Run `npx genexus-mcp doctor --mcp-smoke > diagnostic.txt 2>&1`
+1. Run `npx genexus-mcp doctor --mcp-smoke > diagnostic.txt 2>&1` and include `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt` when the client only reports an exit code.
 2. Reproduce the issue with `claude --debug` (or your client's equivalent) to capture MCP traffic.
 3. [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) and attach `diagnostic.txt` + the client log excerpt. Include:
-   - GeneXus 18 version (Help → About in the IDE)
+   - GeneXus version (Help → About in the IDE) and the selected install path
    - Node.js version (`node --version`)
    - Windows version
    - Your `config.json` with paths redacted if sensitive

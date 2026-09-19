@@ -1,13 +1,15 @@
 {
   "name": "genexus-mcp",
-  "version": "2.37.0",
+  "version": "3.7.0",
   "mcpName": "io.github.lennix1337/genexus",
-  "description": "GeneXus 18 MCP server — read, edit, and analyze GeneXus knowledge base objects (transactions, web panels, procedures, SDTs) directly from Claude, Cursor, and other AI agents over the Model Context Protocol.",
+  "description": "GeneXus 16, GeneXus 17, GeneXus 18 MCP server with native SDK support; basic legacy compatibility for GeneXus Evolution 3, GeneXus Evolution 2, GeneXus Evolution 1, GeneXus 15, GeneXus 9.0, GeneXus 8.0 via com-gxpublic and dotnet-reflection drivers — read, edit, and analyze Knowledge Base objects directly from Claude, Cursor, and other AI agents over the Model Context Protocol.",
   "keywords": [
     "mcp",
     "mcp-server",
     "model-context-protocol",
     "genexus",
+    "genexus-17",
+    "genexus17",
     "genexus-18",
     "genexus18",
     "claude",
@@ -30,23 +32,31 @@
     "automation"
   ],
   "scripts": {
-    "test": "node --test cli/run.test.js",
-    "lint": "eslint cli scripts eslint.config.js",
-    "prepack": "node scripts/clean-package.js"
+    "test": "node --test cli/run.test.js cli/lib/client-adapters.test.js cli/docs.test.js scripts/lint.test.js scripts/verify-install.test.js && npm run test:live-contract",
+    "lint": "node scripts/lint.js",
+    "test:live-contract": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-live.test.ps1",
+    "test:integration": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/integration-preflight.ps1",
+    "test:upstream-drift": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-upstream-drift.ps1",
+    "test:one": "node scripts/test-one.js",
+    "prepack": "node scripts/clean-package.js",
+    "postinstall": "node scripts/verify-install.js"
   },
   "bin": {
     "genexus-mcp": "cli/run.js"
   },
   "files": [
     "cli",
+    "config/gx-versions.json",
     "publish",
-    "docs/llm_cli_mcp_playbook.md"
+    "docs/llm_cli_mcp_playbook.md",
+    "scripts/verify-install.js",
+    "scripts/test-one.js"
   ],
   "os": [
     "win32"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "author": "lennix1337",
   "license": "MIT",

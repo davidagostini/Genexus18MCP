@@ -33,6 +33,50 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(600000, timeoutMs);
         }
 
+        [Theory]
+        [InlineData("wait", 60, 70000)]
+        [InlineData("wait_seconds", 45, 55000)]
+        public void LifecycleStatusWaitGetsRequestedBudgetInsteadOfGenericFiftySecondCap(string field, int wait, int expected)
+        {
+            int timeoutMs = Program.GetToolTimeoutMs("genexus_lifecycle", new JObject
+            {
+                ["action"] = "status",
+                [field] = wait
+            });
+            Assert.Equal(expected, timeoutMs);
+            Assert.True(timeoutMs > McpRouter.SafeLongPollSecondsWithoutProgress * 1000);
+        }
+
+        // Plan 070: deep=true on genexus_db (reorg_impact/reorg_preview/drift_check)
+        // runs ISpecifierService.ImpactDatabase — a build-heavy specification pass that
+        // exceeds the 60s default; the deep flag must lift the sync ceiling to 10 min.
+        [Theory]
+        [InlineData("genexus_db")]
+        [InlineData("genexus_db_drift")]
+        public void GetToolTimeoutMs_DeepDbAnalysis_GetsTenMinuteCeiling(string toolName)
+        {
+            int timeoutMs = Program.GetToolTimeoutMs(toolName, new JObject { ["deep"] = true, ["action"] = "reorg_impact" });
+            Assert.Equal(600000, timeoutMs);
+        }
+
+        [Fact]
+        public void GetToolTimeoutMs_ShallowDbAnalysis_KeepsDefaultCeiling()
+        {
+            // deep=false (or omitted) is the fast timestamp heuristic — 60s is fine.
+            int withDeepFalse = Program.GetToolTimeoutMs("genexus_db", new JObject { ["deep"] = false, ["action"] = "reorg_impact" });
+            int withoutDeep = Program.GetToolTimeoutMs("genexus_db", new JObject { ["action"] = "reorg_impact" });
+            Assert.Equal(60000, withDeepFalse);
+            Assert.Equal(60000, withoutDeep);
+        }
+
+        [Fact]
+        public void GetToolTimeoutMs_DeepFlagOnOtherTools_KeepsDefaultCeiling()
+        {
+            // The deep flag must not leak the 10-min ceiling onto unrelated tools.
+            int timeoutMs = Program.GetToolTimeoutMs("genexus_query", new JObject { ["deep"] = true });
+            Assert.Equal(60000, timeoutMs);
+        }
+
         [Fact]
         public void GetToolTimeoutMs_ApplyPattern_UsesReapplyWindowPlusCushion()
         {

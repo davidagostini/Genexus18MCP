@@ -17,6 +17,8 @@ Validate against `/mcp`.
 Required baseline:
 
 - `MCP-Protocol-Version: 2025-11-25`
+- POST `Content-Type: application/json` and `Accept: application/json, text/event-stream`
+- SSE `GET` requests must include `Accept: text/event-stream`
 - `initialize` before other MCP requests
 - `MCP-Session-Id` reused after initialization
 
@@ -34,6 +36,17 @@ When launching the gateway as a stdio MCP server:
 - stdout must remain reserved for protocol messages
 - logs belong on stderr
 - the process must stay idle without printing banner text
+- the npm wrapper persists failed stdio launches at `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt`
+
+### Recover after a closed client transport
+
+If a client-owned STDIO process exits, the agent can self-heal without any
+script or client restart: call `genexus_connection_recover`. It probes every
+open worker, kills and respawns only the unhealthy ones (force=true targets
+all), confirms each replacement is SDK-ready, and clears the semantic cache.
+For out-of-band HTTP access from a terminal, any MCP client pointed at
+`http://127.0.0.1:5000/mcp` works — the gateway must already be running;
+process supervision remains the deployment's responsibility.
 
 ## Common failure modes
 
@@ -70,6 +83,8 @@ Use:
 Automated smoke script:
 
 - `powershell -ExecutionPolicy Bypass -File scripts/mcp_smoke.ps1`
+- `python scripts/mcp-wire-conformance.py` exercises legacy HTTP, sessionless
+  2026 HTTP/SSE and stdio with request-id and Host/origin isolation checks.
 
 You can also stream status via SSE (`GET /mcp`) and listen for `notifications/message` entries emitted by the gateway.
 

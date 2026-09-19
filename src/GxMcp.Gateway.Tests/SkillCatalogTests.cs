@@ -39,6 +39,22 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void OfficialNexaSkill_IsEmbeddedWithSafeReferenceLookup()
+        {
+            var nexa = SkillCatalog.FindByKey("nexa");
+
+            Assert.NotNull(nexa);
+            Assert.Contains("MCP", nexa.Body, System.StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("gxnext", nexa.Body, System.StringComparison.OrdinalIgnoreCase);
+            Assert.True(NexaSkillPack.ReferenceCount >= 100);
+
+            Assert.True(NexaSkillPack.TryRead("references/object-transaction.md", out var transaction));
+            Assert.Contains("Transaction", transaction);
+            Assert.False(NexaSkillPack.TryRead("references/../SKILL.md", out _));
+            Assert.False(NexaSkillPack.TryRead("references/object-transaction.md/extra", out _));
+        }
+
+        [Fact]
         public void NavigationSkill_KillsTheCallProtocolModalHallucination()
         {
             // The motivating example: an LLM suggested `CallProtocol = Modal`,

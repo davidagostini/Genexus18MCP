@@ -99,24 +99,28 @@ namespace GxMcp.Worker.Helpers
             }
 
             string trimmed = xml.Trim();
-            if (trimmed.StartsWith("<!DOCTYPE html", StringComparison.OrdinalIgnoreCase) ||
-                trimmed.StartsWith("<html", StringComparison.OrdinalIgnoreCase))
+            if (trimmed.StartsWith("<!DOCTYPE html", StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException("Layout writes require raw GxMultiForm XML, not preview HTML. Read part='Layout' again and edit the returned XML.");
+                throw new InvalidOperationException("Layout writes require raw XML (GxMultiForm, BODY, or HTML), not preview HTML. Read part='WebForm' or part='Layout' again and edit the returned XML.");
             }
 
             var doc = XDocument.Parse(trimmed, LoadOptions.PreserveWhitespace);
             string rootName = doc.Root?.Name.LocalName ?? string.Empty;
-            if (!string.Equals(rootName, "GxMultiForm", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(rootName, "GxMultiForm", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "BODY", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "HTML", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "Layout", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "ReportPart", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rootName, "Report", StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    string.Format("Visual writes currently require the full GxMultiForm XML document. Received root '{0}' for part '{1}'.", rootName, partName ?? "Layout"));
+                    string.Format("Visual writes currently require a valid GxMultiForm, BODY, HTML, Layout, ReportPart, or Report XML document. Received root '{0}' for part '{1}'.", rootName, partName ?? "Layout"));
             }
 
             return doc.ToString();
         }
 
-        public static void ApplyEditableXml(KBObjectPart part, string xml)
+        public static void ApplyEditableXml(KBObjectPart part, string xml, string baselineXml = null)
         {
             if (part == null)
             {
@@ -128,7 +132,7 @@ namespace GxMcp.Worker.Helpers
             // ELITE: Support ReportPart persistence
             if (ReportLayoutHelper.IsReportPart(part) != null)
             {
-                if (!ReportLayoutHelper.WriteLayout(part, normalized))
+                if (!ReportLayoutHelper.WriteLayout(part, normalized, baselineXml))
                 {
                     throw new InvalidOperationException("Failed to write Report layout via reflection.");
                 }

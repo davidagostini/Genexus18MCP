@@ -24,6 +24,14 @@ namespace GxMcp.Worker.Services
         private IndexCacheService _indexCacheService;
         private CallerGraphService _callerGraphService;
         private static readonly ConcurrentDictionary<string, BuildTaskStatus> _tasks = new ConcurrentDictionary<string, BuildTaskStatus>();
+        // The generator's User Control factory call together with its (non-nested)
+        // argument list: gx.uc.getNew(this,6,0,"DashboardViewer","DV1Container","Dashboardviewer1","DV1").
+        private static readonly Regex _userControlFactoryRegex = new Regex(
+            @"\bgx\.uc\.getNew\s*\(([^()]*)\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // Any runtime property binding emitted for a User Control instance. A healthy
+        // instance always carries at least Class/Visible; a degraded one carries none.
+        private static readonly Regex _userControlPropertyBindingRegex = new Regex(
+            @"\.setProp\s*\(", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // issue #42 — builds whose RunBuild is genuinely executing right now, keyed by
         // taskId. Add on entry, remove in finally. This is the source of truth for
@@ -218,6 +226,9 @@ namespace GxMcp.Worker.Services
         // and MSBuild surfaces some lines as 'error : <message>' (no code). Capture all three forms.
         private static readonly Regex _rxError      = new Regex(@"\berror\s*(:|[A-Z]{2,4}\d+\s*:)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex _rxWarning    = new Regex(@"\bwarning\s*(:|[A-Z]{2,4}\d+\s*:)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex _rxAmbiguousObject = new Regex(
+            @"(?:ambiguous|ambiguo|ambíguo).*(?:object|objeto|nome Objeto)|(?:object|objeto|nome Objeto).*?(?:ambiguous|ambiguo|ambíguo)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
         // issue #32 item 5: the GeneXus specifier emits "Object 'X' was not found in the
         // Knowledge Base" (EN) / "Objeto 'X' não foi encontrado na Knowledge Base" (PT-BR)
         // as a warning during a single-object spec pass on a freshly created/edited object,
@@ -374,6 +385,51 @@ namespace GxMcp.Worker.Services
             return _rxGenerationOk.IsMatch(output) && _rxCompilationOk.IsMatch(output);
         }
 
+        internal static bool HasBuildAllCompletionEvidence(string output)
+        {
+            return !string.IsNullOrEmpty(output)
+                && output.IndexOf("[GXMCP-BUILD-ALL] BuildAll completed", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        internal static bool DetectBuildAllReorgRequired(string output)
+        {
+            if (string.IsNullOrWhiteSpace(output)) return false;
+            string text = output.ToLowerInvariant();
+            bool mentionsReorg = text.Contains("reorg") || text.Contains("reorganization") || text.Contains("reorganiza");
+            if (!mentionsReorg) return false;
+            if (text.Contains("no reorg") || text.Contains("no reorganization")
+                || text.Contains("not required") || text.Contains("not needed")
+                || text.Contains("does not require") || text.Contains("doesn't require")
+                || text.Contains("não necessária") || text.Contains("nao necessaria")
+                || text.Contains("não requer") || text.Contains("nao requer"))
+                return false;
+            return text.Contains("required") || text.Contains("needed") || text.Contains("necess");
+        }
+
+        internal static void FinalizeBuildAllStatus(BuildTaskStatus status, string output)
+        {
+            if (status == null || !string.Equals(status.Action, "BuildAll", StringComparison.OrdinalIgnoreCase)) return;
+            status.BuildMode = "BuildAll";
+            status.KbOpened = status.KbOpened == true
+                || (!string.IsNullOrEmpty(output) && output.IndexOf("[GXMCP-BUILD-ALL] KB opened", StringComparison.OrdinalIgnoreCase) >= 0);
+            status.BuildAllDone = status.BuildAllDone == true || HasBuildAllCompletionEvidence(output);
+            status.ReorgRequired = status.ReorgRequired == true || DetectBuildAllReorgRequired(output);
+            status.MsBuildExitCode = status.ExitCode;
+
+            if (status.ReorgRequired == true)
+            {
+                status.Status = "ReorgRequired";
+                status.Error = "Build All stopped because the selected Knowledge Base requires reorganization. Run genexus_lifecycle action=reorg explicitly, then retry action=build_all.";
+                status.Hint = "FailIfReorg=true prevented a silent schema change. Run genexus_lifecycle action=reorg, then retry action=build_all.";
+            }
+            else if (status.BuildAllDone != true)
+            {
+                status.Status = "Failed";
+                status.Error = "Build All did not emit completion evidence; an exit code of 0 alone is not sufficient to confirm that Build All ran.";
+                status.Hint = "Inspect fullLogPath and retry after confirming the SDK/MSBuild task completed.";
+            }
+        }
+
         // v2.6.6 Stream E (FR#9): CS2001 referencing "<obj>_bc.cs" is treated as
         // an orphan demotion when the underlying object is not a Transaction in the
         // current index (either missing entirely, or renamed to a different type).
@@ -393,6 +449,13 @@ namespace GxMcp.Worker.Services
                     if (string.Equals(name, t, StringComparison.OrdinalIgnoreCase)) return true;
             }
             return false;
+        }
+
+        private bool IsKnownBuildTarget(string name, BuildTaskStatus status)
+        {
+            if (!IsBuildTarget(name, status) || _indexCacheService == null) return false;
+            try { return _indexCacheService.TryGetEntryByName(name) != null; }
+            catch { return false; }
         }
 
         internal static bool IsBcOrphanError(string line, IndexCacheService lookup)
@@ -444,14 +507,15 @@ namespace GxMcp.Worker.Services
         //   environment: CS2001 (missing generated .cs, e.g. GxWebServicesConfig.cs),
         //                MSB3245 (unresolved DLL ref), MSB3027/MSB3021 (locked output),
         //                MSB4018/MSB4062 (task crash), CS0006 (missing metadata file),
-        //                NU#### (NuGet restore).
-        //   spec:        spc####, gen####.
+        //                NU#### (NuGet restore), gtm####/mtd####/pmm#### (build infrastructure),
+        //                rgz####/rgo#### (reorganization infrastructure).
+        //   spec:        spc####, gen####, src####, qry####.
         //   code:        everything else that matched _rxError (authored-code CS####).
         private static readonly Regex _rxEnvError = new Regex(
-            @"\b(CS2001|CS0006|MSB3245|MSB3027|MSB3021|MSB4018|MSB4062|NU\d{3,4})\b",
+            @"\b(CS2001|CS0006|MSB3245|MSB3027|MSB3021|MSB4018|MSB4062|NU\d{3,4}|gtm\d+|mtd\d+|pmm\d+|rgz\d+|rgo\d+)\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex _rxSpecError = new Regex(
-            @"\berror\s+(spc|gen)\d+\b",
+            @"\berror\s+(spc|gen|src|qry)\d+\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         internal static string ClassifyErrorCategory(string line)
@@ -494,9 +558,21 @@ namespace GxMcp.Worker.Services
         public class BuildTaskStatus
         {
             public string TaskId { get; set; }
-            public string Status { get; set; }            // Accepted | Running | Succeeded | Failed | Error | Cancelled
+            public string Status { get; set; }            // Accepted | Running | Succeeded | Failed | Error | Cancelled | ReorgRequired
             public string Phase { get; set; }             // Starting | OpeningKB | Specifying | Generating | Compiling | Finishing | Done
             public string Action { get; set; }
+            [JsonProperty("buildMode", NullValueHandling = NullValueHandling.Ignore)]
+            public string BuildMode { get; set; }
+            [JsonProperty("kbOpened", NullValueHandling = NullValueHandling.Ignore)]
+            public bool? KbOpened { get; set; }
+            [JsonProperty("buildAllDone", NullValueHandling = NullValueHandling.Ignore)]
+            public bool? BuildAllDone { get; set; }
+            [JsonProperty("reorgRequired", NullValueHandling = NullValueHandling.Ignore)]
+            public bool? ReorgRequired { get; set; }
+            [JsonProperty("msBuildExitCode", NullValueHandling = NullValueHandling.Ignore)]
+            public int? MsBuildExitCode { get; set; }
+            public string Environment { get; set; }
+            public bool? UpToDate { get; set; }
             // issue #42 hardening (D) — the KB this build belongs to. The concurrent-build
             // reject and activeBuilds surfacing filter on it so a build on KB-A never
             // rejects a build on KB-B under a future shared-worker / warm-spares mode.
@@ -517,6 +593,10 @@ namespace GxMcp.Worker.Services
             /// </summary>
             public HashSet<string> SuggestedRebuildTargets { get; set; } =
                 new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            public HashSet<string> NotFoundTargets { get; set; } =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            public HashSet<string> UnreachableTargets { get; set; } =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             public int LineCount { get; set; }
             public string LastLine { get; set; }
             public List<string> TailLines { get; set; } = new List<string>();
@@ -532,31 +612,29 @@ namespace GxMcp.Worker.Services
             // so they auto-serialize into every status/result envelope.
             [JsonProperty("envErrors")]
             public List<string> EnvErrors =>
-                (ErrorsDetailed ?? new List<ErrorDetail>())
-                    .Where(e => e.category == "environment")
-                    .Select(e => e.rewritten ?? e.raw)
-                    .ToList();
+                ErrorsDetailed != null
+                    ? ErrorsDetailed.Where(e => e.category == "environment").Select(e => e.rewritten ?? e.raw).ToList()
+                    : new List<string>();
             [JsonProperty("codeErrors")]
             public List<string> CodeErrors =>
-                (ErrorsDetailed ?? new List<ErrorDetail>())
-                    .Where(e => e.category != "environment")
-                    .Select(e => e.rewritten ?? e.raw)
-                    .ToList();
+                ErrorsDetailed != null
+                    ? ErrorsDetailed.Where(e => e.category != "environment").Select(e => e.rewritten ?? e.raw).ToList()
+                    : new List<string>();
             [JsonProperty("envErrorCount")]
-            public int EnvErrorCount => (ErrorsDetailed ?? new List<ErrorDetail>()).Count(e => e.category == "environment");
+            public int EnvErrorCount => ErrorsDetailed != null ? ErrorsDetailed.Count(e => e.category == "environment") : 0;
             [JsonProperty("codeErrorCount")]
-            public int CodeErrorCount => (ErrorsDetailed ?? new List<ErrorDetail>()).Count(e => e.category != "environment");
+            public int CodeErrorCount => ErrorsDetailed != null ? ErrorsDetailed.Count(e => e.category != "environment") : 0;
             // Populated only when the failure is purely environmental so the agent
             // doesn't chase a phantom code bug. Null (omitted) otherwise.
             [JsonProperty("envErrorsHint")]
             public string EnvErrorsHint =>
                 (EnvErrorCount > 0 && CodeErrorCount == 0)
-                    ? "Build failed only on environment/infra errors (missing generated sources, unresolved DLL references, locked outputs, or NuGet restore) — not on the edited object's spec/code. Fix the KB environment (regenerate/restore) and rebuild; the authored object may already be correct."
+                    ? "Build failed only on environment/infra errors (missing generated sources, unresolved DLL references, locked outputs, metadata/package generation, reorganization, or NuGet restore) — not on the edited object's spec/code. Fix the KB environment (regenerate/restore) and rebuild; the authored object may already be correct."
                     : null;
             [JsonProperty("specErrorCount")]
             public int SpecErrorCount =>
-                (ErrorsDetailed ?? new List<ErrorDetail>()).Count(e => e.category == "spec");
-            // spc####/gen#### diagnostics are only trustworthy when the build environment
+                ErrorsDetailed != null ? ErrorsDetailed.Count(e => e.category == "spec") : 0;
+            // spc####/gen####/src####/qry#### diagnostics are only trustworthy when the build environment
             // is fully generated. In an ungenerated/broken environment the specifier can
             // emit a spurious spc#### that is invariant to the Source (fixed line number,
             // fires even on known-good objects). Surface a hint whenever spec errors appear
@@ -566,10 +644,22 @@ namespace GxMcp.Worker.Services
             public string SpecErrorsHint =>
                 (SpecErrorCount > 0)
                     ? ((EnvErrorCount > 0
-                            ? "Both spec (spc####/gen####) and environment/infra errors are present — the spec errors are likely INDUCED by the ungenerated/broken build environment, not by the object's Source. "
-                            : "Spec diagnostics (spc####/gen####) depend on a fully generated build environment. ")
+                            ? "Both spec (spc####/gen####/src####/qry####) and environment/infra errors are present — the spec errors are likely INDUCED by the ungenerated/broken build environment, not by the object's Source. "
+                            : "Spec diagnostics (spc####/gen####/src####/qry####) depend on a fully generated build environment. ")
                        + "If a spc#### cites a fixed line unrelated to the actual Source, or fires regardless of what the Source contains (even on known-good objects), regenerate the environment (genexus_lifecycle action=rebuild, then action=reorg) before treating it as an authored-code error. For build-independent Source validation use genexus_lifecycle action=validate (save-time SDK check).")
                     : null;
+            [JsonProperty("suggestedFixes", NullValueHandling = NullValueHandling.Ignore)]
+            public List<AutoFixSuggestion> SuggestedFixes
+            {
+                get
+                {
+                    var rawLines = (ErrorsDetailed != null && ErrorsDetailed.Count > 0)
+                        ? ErrorsDetailed.Select(e => e.raw ?? e.rewritten)
+                        : (Errors ?? new List<string>());
+                    var diagnosed = ErrorDiagnoser.Diagnose(rawLines, Target ?? CurrentObject);
+                    return (diagnosed != null && diagnosed.Count > 0) ? diagnosed : null;
+                }
+            }
             // FR#9 (v2.6.6 Stream E): CS2001 errors referencing "<obj>_bc.cs" where
             // the underlying Transaction no longer exists (or isn't a Transaction)
             // are demoted to warnings — counted here, full lines preserved in
@@ -610,11 +700,14 @@ namespace GxMcp.Worker.Services
             // the KB-wide DeveloperMenu regeneration (the dominant cost of a full
             // build-all) is skipped. Surfaced in the status/accepted envelope.
             public bool CompileCheck { get; set; }
+            public bool CompileCheckCallersRequested { get; set; }
+            public int CompileCheckCallerCap { get; set; }
             // Callers pulled in by compile_check beyond the objects the user named,
             // and whether the caller graph was capped. Echoed so the agent knows
             // the coverage of the check.
             public List<string> CompileCheckCallers { get; set; }
             public bool CompileCheckTruncated { get; set; }
+            public bool CompileCheckGraphAvailable { get; set; }
             // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental decision metadata.
             // Surfaced under top-level response fields (not status output) so the
             // agent sees the decision exactly once, with the Accepted envelope.
@@ -623,6 +716,8 @@ namespace GxMcp.Worker.Services
             public string FastIncrementalFallbackReason { get; set; }
             [JsonIgnore] internal bool FastIncrementalCanSkipDeploy { get; set; }
             [JsonIgnore] internal IReadOnlyList<string> FastIncrementalCanSkipSpecify { get; set; }
+            [JsonIgnore] internal bool FastIncrementalForceFullBuild { get; set; }
+            public string FastIncrementalAppliedPath { get; set; }
             // Item 72 (friction 2026-05-22) — webhook URL to POST a failure summary
             // to when terminal Status == "Failed". Empty / null disables the call.
             [JsonIgnore] internal string NotifyOnFailureUrl { get; set; }
@@ -683,14 +778,47 @@ namespace GxMcp.Worker.Services
             {
                 return (Phase ?? "") + "|" + (TargetsDone?.ToString() ?? "") + "|" + ErrorCount + "|" + WarningCount + "|" + (Status ?? "");
             }
+
+            /// <summary>
+            /// Progress-only fingerprint for the no-progress watchdog. This is deliberately
+            /// separate from ComputeBaseline(), whose compact shape is an external ETag for
+            /// status long-polling. A build can advance through objects and output lines while
+            /// its phase, target count, and diagnostic counts remain unchanged.
+            /// </summary>
+            internal string ComputeLivenessBaseline()
+            {
+                return (Phase ?? "") + "|" + (TargetsDone?.ToString() ?? "") + "|"
+                    + (CurrentObject ?? "") + "|" + LineCount + "|" + ErrorCount + "|"
+                    + WarningCount + "|" + (Status ?? "");
+            }
         }
 
         // v2.6.6 Stream F: terminal statuses always return immediately from GetStatusWait.
         private static readonly HashSet<string> _terminalStatuses =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "Succeeded", "Failed", "Cancelled", "Error" };
+            { "Succeeded", "Failed", "Cancelled", "Error", "ReorgRequired" };
         private static bool IsTerminalStatus(string s)
             => !string.IsNullOrEmpty(s) && _terminalStatuses.Contains(s);
+
+        /// <summary>
+        /// Terminalizes a watchdog failure without replacing the diagnostic phase with the
+        /// normal successful-build terminal phase (Done). The phase captured under the same
+        /// lock is passed to the caller's message factory, so the envelope and text agree.
+        /// </summary>
+        internal static bool TrySetWatchdogFailure(BuildTaskStatus status, Func<string, string> errorFactory)
+        {
+            if (status == null || errorFactory == null) return false;
+            lock (status._lock)
+            {
+                if (IsTerminalStatus(status.Status)) return false;
+                string phase = status.Phase ?? "?";
+                status.Status = "Failed";
+                status.Error = errorFactory(phase);
+                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                return true;
+            }
+        }
 
         // Item 28 (mcp-improvements-2026-05-22, Tier-S) — EXPERIMENTAL. Pluggable
         // decision strategy for the fastIncremental opt-in. Default impl reads
@@ -737,10 +865,27 @@ namespace GxMcp.Worker.Services
         {
             public List<string> Expanded { get; set; } = new List<string>();
             public List<string> Skipped { get; set; } = new List<string>();
+            public List<string> AmbiguousTargets { get; set; } = new List<string>();
+            public List<string> UnresolvedTargets { get; set; } = new List<string>();
+            public bool TargetResolutionAvailable { get; set; }
             public bool Truncated { get; set; }
             public int NodeCap { get; set; }
             public int RequestedNodes { get; set; }
             public string IncludeCallees { get; set; }
+        }
+
+        private sealed class CompileCheckPlan
+        {
+            public List<string> RequestedTargets { get; } = new List<string>();
+            public List<string> ExpandedTargets { get; } = new List<string>();
+            public List<string> CanonicalSeeds { get; } = new List<string>();
+            public List<string> CallersAdded { get; } = new List<string>();
+            public List<string> AmbiguousTargets { get; } = new List<string>();
+            public List<string> UnresolvedTargets { get; } = new List<string>();
+            public bool CallerGraphAvailable { get; set; }
+            public bool TargetResolutionAvailable { get; set; }
+            public bool Truncated { get; set; }
+            public int CallerCap { get; set; }
         }
 
         public BuildPlan ExpandTargets(IEnumerable<string> targets, string includeCallees = "transitive", int cap = 200)
@@ -751,6 +896,25 @@ namespace GxMcp.Worker.Services
                 .Select(t => t.Trim())
                 .ToList();
             var originalSet = new HashSet<string>(originalList, StringComparer.OrdinalIgnoreCase);
+
+            var index = _indexCacheService?.TryGetLoadedIndex();
+            plan.TargetResolutionAvailable = index != null;
+            if (index != null)
+            {
+                foreach (var target in originalList)
+                {
+                    var candidates = FindCompileCheckTargetCandidates(index, target);
+                    if (candidates.Count > 1)
+                        plan.AmbiguousTargets.Add(target);
+                    else if (candidates.Count == 0)
+                        plan.UnresolvedTargets.Add(target);
+                }
+                if (plan.AmbiguousTargets.Count > 0 || plan.UnresolvedTargets.Count > 0)
+                {
+                    plan.Expanded.AddRange(originalList);
+                    return plan;
+                }
+            }
 
             // No graph or "none" → preserve original order, but still inject
             // BC variants (FR#8) since the BC heuristic is index-driven, not
@@ -833,10 +997,18 @@ namespace GxMcp.Worker.Services
             if (_indexCacheService == null) return result;
             foreach (var t in originalList)
             {
-                var entry = _indexCacheService.TryGetEntryByName(t);
+                SearchIndex.IndexEntry entry = null;
+                var index = _indexCacheService.TryGetLoadedIndex();
+                if (index != null)
+                {
+                    var candidates = FindCompileCheckTargetCandidates(index, t);
+                    if (candidates.Count == 1) entry = candidates[0];
+                }
+                if (entry == null && !t.Contains(":"))
+                    entry = _indexCacheService.TryGetEntryByName(t);
                 if (entry == null) continue;
                 if (!string.Equals(entry.Type, "Transaction", StringComparison.OrdinalIgnoreCase)) continue;
-                var bcName = t + "_bc";
+                var bcName = entry.Name + "_bc";
                 if (originalSet.Contains(bcName)) continue;
                 if (seen.Contains(bcName)) continue;
                 // Single name-keyed lookup confirms presence; previously this
@@ -870,8 +1042,31 @@ namespace GxMcp.Worker.Services
         // without the full ~compile+deploy build. Reuses the whole build-task pipeline;
         // the #13 error split surfaces the spec diagnostics under codeErrors.
         public string Specify(string target)
-            => Build("Build", target, includeCallees: "none", buildPlanCap: 200,
-                     skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false, specifyOnly: true);
+        {
+            var plan = BuildCompileCheckPlan(target, buildPlanCap: 200, includeCallers: false, callerCap: 0);
+            if (plan.TargetResolutionAvailable && plan.AmbiguousTargets.Count > 0)
+            {
+                return McpResponse.Err(
+                    code: "SpecifyTargetAmbiguous",
+                    message: "The Specify target resolves to multiple typed GeneXus objects.",
+                    hint: "Use Type:Name or GUID.", target: target,
+                    extra: new JObject { ["targets"] = JArray.FromObject(plan.AmbiguousTargets) });
+            }
+            if (plan.TargetResolutionAvailable && plan.UnresolvedTargets.Count > 0)
+            {
+                return McpResponse.Err(
+                    code: "SpecifyTargetUnresolved",
+                    message: "The Specify target does not resolve to an indexed GeneXus object.",
+                    hint: "Use a unique object name, Type:Name, or GUID.", target: target,
+                    extra: new JObject { ["targets"] = JArray.FromObject(plan.UnresolvedTargets) });
+            }
+
+            string canonicalTarget = plan.CanonicalSeeds.Count > 0
+                ? string.Join(",", plan.CanonicalSeeds)
+                : target;
+            return Build("Build", canonicalTarget, includeCallees: "none", buildPlanCap: 200,
+                skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false, specifyOnly: true);
+        }
 
         // mode=compile_check: "did my edits break the build?" without the ~200s
         // DeveloperMenu regeneration a full build-all pays. Expands the requested
@@ -893,59 +1088,209 @@ namespace GxMcp.Worker.Services
         public string CompileCheck(string target, int buildPlanCap = 200,
             bool includeCallers = true, int callerCap = 0)
         {
-            var seeds = ParseTargets(target);
-            if (seeds.Count == 0)
+            var plan = BuildCompileCheckPlan(target, buildPlanCap, includeCallers, callerCap);
+            string validationError = BuildCompileCheckValidationError(plan, target);
+            if (validationError != null) return validationError;
+
+            // Callers already gives the objects that must recompile against the
+            // changed target; re-expanding callees here would pull the whole
+            // dependency graph back in. Keep the plan to {seeds + callers}.
+            string result = Build("Build", string.Join(",", plan.ExpandedTargets),
+                includeCallees: "none", buildPlanCap: buildPlanCap,
+                skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false,
+                specifyOnly: false, compileCheck: true,
+                compileCheckCallers: plan.CallersAdded, compileCheckTruncated: plan.Truncated,
+                compileCheckGraphAvailable: plan.CallerGraphAvailable,
+                compileCheckCallersRequested: includeCallers,
+                compileCheckCallerCap: plan.CallerCap);
+            return result;
+        }
+
+        private CompileCheckPlan BuildCompileCheckPlan(
+            string target, int buildPlanCap, bool includeCallers, int callerCap)
+        {
+            var plan = new CompileCheckPlan
+            {
+                CallerGraphAvailable = includeCallers && _callerGraphService != null,
+                CallerCap = callerCap > 0
+                    ? Math.Min(callerCap, Math.Max(0, buildPlanCap))
+                    : Math.Min(CompileCheckDefaultCallerCap, Math.Max(0, buildPlanCap))
+            };
+            plan.RequestedTargets.AddRange(ParseTargets(target));
+
+            if (plan.RequestedTargets.Count == 0)
+            {
+                plan.TargetResolutionAvailable = true;
+                return plan;
+            }
+
+            SearchIndex index = _indexCacheService?.TryGetLoadedIndex();
+            plan.TargetResolutionAvailable = _indexCacheService == null || index != null;
+            if (!plan.TargetResolutionAvailable) return plan;
+
+            foreach (var requested in plan.RequestedTargets)
+            {
+                if (index == null)
+                {
+                    plan.CanonicalSeeds.Add(requested);
+                    continue;
+                }
+
+                var candidates = FindCompileCheckTargetCandidates(index, requested);
+                if (candidates.Count > 1)
+                {
+                    plan.AmbiguousTargets.Add(requested);
+                    continue;
+                }
+                if (candidates.Count == 0)
+                {
+                    plan.UnresolvedTargets.Add(requested);
+                    continue;
+                }
+
+                plan.CanonicalSeeds.Add(candidates[0].Name);
+            }
+
+            if (plan.AmbiguousTargets.Count > 0 || plan.UnresolvedTargets.Count > 0)
+                return plan;
+
+            // Keep the compile-check preview identical to the actual Build() expansion.
+            // In particular, a Transaction's <name>_bc companion must be present before
+            // both the Transaction and its caller closure. Use the resolved typed seed
+            // when finding the companion so Type:Name does not fall back to a homonym.
+            var requestedSet = new HashSet<string>(plan.RequestedTargets, StringComparer.OrdinalIgnoreCase);
+            foreach (var seed in plan.CanonicalSeeds) requestedSet.Add(seed);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var bcPrefix = CollectBcVariants(plan.RequestedTargets, requestedSet, seen);
+            plan.ExpandedTargets.AddRange(bcPrefix);
+            plan.ExpandedTargets.AddRange(plan.RequestedTargets);
+            foreach (var seed in plan.CanonicalSeeds) seen.Add(seed);
+
+            if (includeCallers && _callerGraphService != null && plan.CallerCap > 0)
+            {
+                foreach (var seed in plan.CanonicalSeeds)
+                {
+                    // CallerGraphService is name-keyed. A typed target that shares its
+                    // bare name with another object cannot safely provide caller
+                    // coverage, even though the build target itself is unambiguous.
+                    if (index != null && index.FindByName(seed).Count != 1)
+                    {
+                        plan.CallerGraphAvailable = false;
+                        continue;
+                    }
+
+                    TransitiveResult transitive;
+                    try { transitive = _callerGraphService.GetCallersTransitive(seed, plan.CallerCap); }
+                    catch
+                    {
+                        plan.CallerGraphAvailable = false;
+                        continue;
+                    }
+                    if (transitive == null)
+                    {
+                        plan.CallerGraphAvailable = false;
+                        continue;
+                    }
+                    if (transitive.Truncated) plan.Truncated = true;
+                    foreach (var caller in transitive.Nodes ?? Enumerable.Empty<string>())
+                    {
+                        if (index != null && index.FindByName(caller).Count != 1)
+                        {
+                            plan.CallerGraphAvailable = false;
+                            continue;
+                        }
+                        if (plan.CallersAdded.Count >= plan.CallerCap)
+                        {
+                            plan.Truncated = true;
+                            break;
+                        }
+                        if (seen.Add(caller))
+                        {
+                            plan.ExpandedTargets.Add(caller);
+                            plan.CallersAdded.Add(caller);
+                        }
+                    }
+                }
+            }
+
+            return plan;
+        }
+
+        private static List<SearchIndex.IndexEntry> FindCompileCheckTargetCandidates(
+            SearchIndex index, string requested)
+        {
+            if (index == null || string.IsNullOrWhiteSpace(requested))
+                return new List<SearchIndex.IndexEntry>();
+
+            string trimmed = requested.Trim();
+            int colon = trimmed.IndexOf(':');
+            if (colon > 0)
+            {
+                string type = trimmed.Substring(0, colon).Trim();
+                string name = trimmed.Substring(colon + 1).Trim();
+                return index.FindByType(type)
+                    .Where(entry => entry != null
+                        && string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
+            if (Guid.TryParse(trimmed, out var guid))
+            {
+                var byGuid = index.FindByGuid(guid.ToString("D")) ?? index.FindByGuid(trimmed);
+                return byGuid == null
+                    ? new List<SearchIndex.IndexEntry>()
+                    : new List<SearchIndex.IndexEntry> { byGuid };
+            }
+
+            return index.FindByName(trimmed);
+        }
+
+        private static string BuildCompileCheckValidationError(CompileCheckPlan plan, string target)
+        {
+            if (plan == null || plan.RequestedTargets.Count == 0)
             {
                 return McpResponse.Err(
                     code: "CompileCheckNeedsTarget",
                     message: "mode=compile_check requires target=<object(s)> (comma-separated). It compiles the named objects plus everything that calls them, skipping the DeveloperMenu regeneration — so it must know which objects you changed. For a full from-scratch KB compile, use action=build with no target.");
             }
 
-            // Expand to transitive callers so a changed signature surfaces errors in
-            // every object that invokes it — the KB-wide breakage a plain targeted
-            // build misses. Callers unavailable (no caller graph / index not built)
-            // degrades gracefully to just the named objects, with a note.
-            // callers=false skips this entirely (target-only check).
-            var expanded = new List<string>(seeds);
-            var seen = new HashSet<string>(seeds, StringComparer.OrdinalIgnoreCase);
-            var addedCallers = new List<string>();
-            bool truncated = false;
-            // Cap the caller closure so a base BC doesn't drag the whole KB. An
-            // explicit callerCap>0 overrides the modest default; both stay under
-            // buildPlanCap (the hard BuildPlanTooLarge ceiling in ExpandTargets).
-            int effectiveCallerCap = callerCap > 0
-                ? Math.Min(callerCap, buildPlanCap)
-                : Math.Min(CompileCheckDefaultCallerCap, buildPlanCap);
-            bool graphAvailable = _callerGraphService != null;
-            if (includeCallers && graphAvailable)
+            var supportedFormats = new JArray("unique object name", "Type:Name", "GUID");
+            if (!plan.TargetResolutionAvailable)
             {
-                foreach (var s in seeds)
-                {
-                    TransitiveResult tr;
-                    try { tr = _callerGraphService.GetCallersTransitive(s, effectiveCallerCap); }
-                    catch { continue; }
-                    if (tr == null) continue;
-                    if (tr.Truncated) truncated = true;
-                    foreach (var c in tr.Nodes)
-                    {
-                        if (addedCallers.Count >= effectiveCallerCap) { truncated = true; break; }
-                        if (seen.Add(c)) { expanded.Add(c); addedCallers.Add(c); }
-                    }
-                }
+                return McpResponse.Err(
+                    code: "CompileCheckTargetResolutionUnavailable",
+                    message: "compile_check could not validate its target because the Worker index is not ready.",
+                    hint: "Wait for the KB index to become ready, then retry. Supported target formats are a unique object name, Type:Name, or GUID.",
+                    target: target,
+                    extra: new JObject { ["supportedTargetFormats"] = supportedFormats });
             }
-
-            // A3: callers already gives the objects that must recompile against the
-            // changed target; re-expanding CALLEES (transitive) here would pull each
-            // caller's whole dependency graph back in — re-dragging orchestrators and
-            // the DeveloperMenu the check is meant to skip. Keep the plan to exactly
-            // {seeds + callers}: includeCallees=none.
-            string result = Build("Build", string.Join(",", expanded),
-                includeCallees: "none", buildPlanCap: buildPlanCap,
-                skipFullDeploy: false, notifyOnFailure: null, fastIncremental: false,
-                specifyOnly: false, compileCheck: true,
-                compileCheckCallers: addedCallers, compileCheckTruncated: truncated,
-                compileCheckGraphAvailable: graphAvailable);
-            return result;
+            if (plan.AmbiguousTargets.Count > 0)
+            {
+                return McpResponse.Err(
+                    code: "BuildTargetAmbiguous",
+                    message: "One or more compile_check targets resolve to multiple typed GeneXus objects. Use Type:Name or GUID.",
+                    hint: "Disambiguate each target with its object type or GUID.",
+                    target: target,
+                    extra: new JObject
+                    {
+                        ["targets"] = JArray.FromObject(plan.AmbiguousTargets),
+                        ["supportedTargetFormats"] = supportedFormats
+                    });
+            }
+            if (plan.UnresolvedTargets.Count > 0)
+            {
+                return McpResponse.Err(
+                    code: "CompileCheckTargetUnresolved",
+                    message: "One or more compile_check targets do not resolve to indexed GeneXus objects.",
+                    hint: "Use a unique object name, Type:Name, or GUID. Folder paths and textual EntityKey values are not supported build identifiers.",
+                    target: target,
+                    extra: new JObject
+                    {
+                        ["targets"] = JArray.FromObject(plan.UnresolvedTargets),
+                        ["supportedTargetFormats"] = supportedFormats
+                    });
+            }
+            return null;
         }
 
         /// <summary>
@@ -953,10 +1298,69 @@ namespace GxMcp.Worker.Services
         /// Returns code=DryRun with the resolved targets list so the agent can
         /// preview what would compile.
         /// </summary>
-        public string BuildDryRun(string action, string target, string includeCallees, int buildPlanCap)
+        public string BuildDryRun(
+            string action,
+            string target,
+            string includeCallees,
+            int buildPlanCap,
+            bool includeCallers = true,
+            int callerCap = 0)
         {
             try
             {
+                if (string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrWhiteSpace(target))
+                    {
+                        return McpResponse.Err(
+                            code: "BuildAllTargetNotAllowed",
+                            message: "action=build_all is global and cannot accept target; omit target. Use action=build for directed builds.",
+                            extra: new JObject { ["action"] = "build_all", ["target"] = target });
+                    }
+
+                    return McpResponse.Ok(
+                        code: "DryRun",
+                        result: new JObject
+                        {
+                            ["preview"] = new JObject
+                            {
+                                ["action"] = "BuildAll",
+                                ["buildMode"] = "BuildAll",
+                                ["kbWide"] = true,
+                                ["failIfReorg"] = true,
+                                ["wouldBuild"] = new JArray("<entire selected Knowledge Base>"),
+                                ["includeCallees"] = "ignored for Build All",
+                                ["buildPlanCap"] = buildPlanCap
+                            }
+                        });
+                }
+
+                if (string.Equals(action, "CompileCheck", StringComparison.OrdinalIgnoreCase))
+                {
+                    var compilePlan = BuildCompileCheckPlan(target, buildPlanCap, includeCallers, callerCap);
+                    string validationError = BuildCompileCheckValidationError(compilePlan, target);
+                    if (validationError != null) return validationError;
+
+                    return McpResponse.Ok(
+                        code: "DryRun",
+                        result: new JObject
+                        {
+                            ["preview"] = new JObject
+                            {
+                                ["action"] = "CompileCheck",
+                                ["wouldBuild"] = JArray.FromObject(compilePlan.ExpandedTargets),
+                                ["includeCallees"] = "none",
+                                ["buildPlanCap"] = buildPlanCap,
+                                ["callers"] = includeCallers,
+                                ["callerCap"] = compilePlan.CallerCap,
+                                ["callersAdded"] = JArray.FromObject(compilePlan.CallersAdded),
+                                ["truncated"] = compilePlan.Truncated,
+                                ["callerGraphAvailable"] = compilePlan.CallerGraphAvailable,
+                                ["targetResolutionAvailable"] = compilePlan.TargetResolutionAvailable
+                            }
+                        });
+                }
+
                 var targets = ParseTargets(target);
                 BuildPlan plan = null;
                 if (action != null && action.Equals("Build", StringComparison.OrdinalIgnoreCase) && targets.Count > 0)
@@ -974,6 +1378,28 @@ namespace GxMcp.Worker.Services
                                 ["includeCallees"] = plan.IncludeCallees
                             });
                     }
+                    if (plan.AmbiguousTargets.Count > 0)
+                    {
+                        return McpResponse.Err(
+                            code: "BuildTargetAmbiguous",
+                            message: "One or more build targets resolve to multiple typed GeneXus objects.",
+                            extra: new JObject { ["targets"] = JArray.FromObject(plan.AmbiguousTargets) });
+                    }
+                    if (plan.UnresolvedTargets.Count > 0)
+                    {
+                        return McpResponse.Err(
+                            code: "BuildTargetUnresolved",
+                            message: "One or more build targets do not resolve to indexed GeneXus objects.",
+                            hint: "Use a unique object name, Type:Name, or GUID. Folder paths and textual EntityKey values are not supported build identifiers.",
+                            target: target,
+                            extra: new JObject
+                            {
+                                ["targets"] = JArray.FromObject(plan.UnresolvedTargets),
+                                ["supportedTargetFormats"] = new JArray("unique object name", "Type:Name", "GUID"),
+                                ["targetResolutionAvailable"] = plan.TargetResolutionAvailable
+                            }
+                            );
+                    }
                     targets = plan.Expanded;
                 }
                 return McpResponse.Ok(
@@ -985,7 +1411,8 @@ namespace GxMcp.Worker.Services
                             ["action"] = action,
                             ["wouldBuild"] = new JArray(targets.ToArray()),
                             ["includeCallees"] = includeCallees ?? "transitive",
-                            ["buildPlanCap"] = buildPlanCap
+                            ["buildPlanCap"] = buildPlanCap,
+                            ["targetResolutionAvailable"] = plan?.TargetResolutionAvailable ?? false
                         }
                     });
             }
@@ -1010,8 +1437,18 @@ namespace GxMcp.Worker.Services
                      compileCheck: false, compileCheckCallers: null, compileCheckTruncated: false, compileCheckGraphAvailable: true, fullDeploy: fullDeploy);
 
         public string Build(string action, string target, string includeCallees, int buildPlanCap, bool skipFullDeploy, string notifyOnFailure, bool fastIncremental, bool specifyOnly,
-                            bool compileCheck, List<string> compileCheckCallers, bool compileCheckTruncated, bool compileCheckGraphAvailable, bool fullDeploy = false)
+                            bool compileCheck, List<string> compileCheckCallers, bool compileCheckTruncated, bool compileCheckGraphAvailable,
+                            bool fullDeploy = false, bool compileCheckCallersRequested = true, int compileCheckCallerCap = 0)
         {
+            if (string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(target))
+            {
+                return McpResponse.Err(
+                    code: "BuildAllTargetNotAllowed",
+                    message: "action=build_all is global and cannot accept target; omit target. Use action=build for directed builds.",
+                    extra: new JObject { ["action"] = "build_all", ["target"] = target });
+            }
+
             // issue #37 item 4: fast-fail reorg on a DBA-managed datastore
             // (Reorganize Server tables = No). GeneXus never applies the delta there,
             // so CheckAndInstallDatabase is a no-op the agent should not queue+poll.
@@ -1099,13 +1536,80 @@ namespace GxMcp.Worker.Services
                         includeCallees = plan.IncludeCallees
                     });
                 }
+                if (plan.AmbiguousTargets.Count > 0)
+                {
+                    return JsonConvert.SerializeObject(new
+                    {
+                        status = "BuildTargetAmbiguous",
+                        code = "BuildTargetAmbiguous",
+                        targets = plan.AmbiguousTargets,
+                        requested = targets,
+                        includeCallees = plan.IncludeCallees
+                    });
+                }
+                if (plan.TargetResolutionAvailable && plan.UnresolvedTargets.Count > 0)
+                {
+                    return JsonConvert.SerializeObject(new
+                    {
+                        status = "BuildTargetUnresolved",
+                        code = "BuildTargetUnresolved",
+                        message = "One or more build targets do not resolve to indexed GeneXus objects.",
+                        hint = "Use a unique object name, Type:Name, or GUID. Folder paths and textual EntityKey values are not supported build identifiers.",
+                        targets = plan.UnresolvedTargets,
+                        requested = targets,
+                        targetResolutionAvailable = plan.TargetResolutionAvailable
+                    });
+                }
                 targets = plan.Expanded;
             }
 
             string taskId = Guid.NewGuid().ToString().Substring(0, 8);
+            // Resolve through KbService so the result follows the same SDK shape
+            // probing used by whoami/environment telemetry.  On GeneXus 18 U5 the
+            // active environment is not consistently exposed through
+            // DesignModel.Environment, which previously left build responses with
+            // no Environment field (#103 item 3).
+            string envName = null;
+            try { envName = _kbService?.GetActiveEnvironment(); } catch { }
+            if (string.IsNullOrWhiteSpace(envName))
+            {
+                try { envName = _kbService?.GetKB()?.DesignModel?.Environment?.Name; } catch { }
+            }
+            bool targetedBuild = action != null
+                && action.Equals("Build", StringComparison.OrdinalIgnoreCase)
+                && targets.Count > 0;
+            bool singleTargetNoCallees = targetedBuild
+                && targets.Count == 1
+                && string.Equals(includeCallees ?? "transitive", "none", StringComparison.OrdinalIgnoreCase);
+            bool fastDecisionAllowsSkip = fastIncremental
+                && fiDecision != null
+                && !fiDecision.ForceFullBuild
+                && fiDecision.CanSkipDeploy
+                && !fullDeploy;
+            // A conservative decision must override an explicitly requested skip when
+            // the same call asked for fastIncremental: risky/unknown targets must take
+            // the full build path. For a safe decision, wire the result into the actual
+            // runner flag instead of exposing CanSkipDeploy as metadata only.
+            bool effectiveSkipFullDeploy = singleTargetNoCallees
+                && !fullDeploy
+                && !(fastIncremental && fiDecision?.ForceFullBuild == true)
+                && (skipFullDeploy || fastDecisionAllowsSkip);
+            string fastIncrementalAppliedPath = null;
+            if (fastIncremental && fiDecision != null)
+            {
+                if (fiDecision.ForceFullBuild)
+                    fastIncrementalAppliedPath = "full";
+                else if (effectiveSkipFullDeploy)
+                    fastIncrementalAppliedPath = "targeted-no-deploy";
+                else
+                    fastIncrementalAppliedPath = "targeted";
+            }
+
             var status = new BuildTaskStatus {
                 TaskId = taskId,
                 Action = action,
+                BuildMode = string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase) ? "BuildAll" : null,
+                Environment = envName,
                 Target = target,
                 // Always echo the parsed list so the agent can confirm what got dispatched,
                 // including the single-target case. Doc contract says "the parsed list".
@@ -1115,13 +1619,8 @@ namespace GxMcp.Worker.Services
                 StartTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
                 StartedAt = DateTime.UtcNow,
                 BuildPlan = plan,
-                SpecifyOnly = specifyOnly
-                    && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase)
-                    && targets.Count >= 1,
-                SkipFullDeploy = skipFullDeploy
-                    && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase)
-                    && targets.Count == 1
-                    && string.Equals(includeCallees ?? "transitive", "none", StringComparison.OrdinalIgnoreCase),
+                SpecifyOnly = specifyOnly && targetedBuild,
+                SkipFullDeploy = effectiveSkipFullDeploy,
                 FullDeploy = fullDeploy
                     && string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase),
                 NotifyOnFailureUrl = notifyOnFailure,
@@ -1131,9 +1630,14 @@ namespace GxMcp.Worker.Services
                 FastIncrementalFallbackReason = fiDecision?.ForceFullBuild == true ? fiDecision.FallbackReason : null,
                 FastIncrementalCanSkipDeploy = fiDecision?.CanSkipDeploy == true && fiDecision.ForceFullBuild == false,
                 FastIncrementalCanSkipSpecify = fiDecision?.ForceFullBuild == false ? fiDecision.CanSkipSpecify : null,
+                FastIncrementalForceFullBuild = fastIncremental && fiDecision?.ForceFullBuild == true,
+                FastIncrementalAppliedPath = fastIncrementalAppliedPath,
                 CompileCheck = compileCheck,
+                CompileCheckCallersRequested = compileCheck && compileCheckCallersRequested,
+                CompileCheckCallerCap = compileCheck ? compileCheckCallerCap : 0,
                 CompileCheckCallers = (compileCheck && compileCheckCallers != null && compileCheckCallers.Count > 0) ? compileCheckCallers : null,
-                CompileCheckTruncated = compileCheck && compileCheckTruncated
+                CompileCheckTruncated = compileCheck && compileCheckTruncated,
+                CompileCheckGraphAvailable = compileCheck && compileCheckGraphAvailable
             };
 
             // Best-effort caller lookup for hint (only meaningful for single-object builds)
@@ -1148,6 +1652,8 @@ namespace GxMcp.Worker.Services
             }
 
             _tasks[taskId] = status;
+            // Retention sweep (never breaks registration — SweepBuildTasks is total).
+            SweepBuildTasks();
 
             // issue #42 (P3c): register the in-flight build here — synchronously, before the
             // background task is scheduled — so a second Build() call cannot slip through the
@@ -1161,16 +1667,56 @@ namespace GxMcp.Worker.Services
             if (compileCheck)
             {
                 acceptedMessage = $"compile_check started for {targets.Count} object(s) "
-                    + (compileCheckGraphAvailable
+                    + (!compileCheckCallersRequested
+                        ? "(named objects only — caller expansion disabled). "
+                        : compileCheckGraphAvailable
                         ? $"(named objects + their transitive callers) — spec+gen+compile only, DeveloperMenu regeneration skipped. "
-                        : "(named objects only — caller graph unavailable, run genexus_lifecycle action=index to check the full blast radius). ")
+                        : "(named targets plus any callers resolved; caller graph unavailable or incomplete, so caller coverage is not guaranteed). ")
                     + "Poll action='status' target=<taskId> for progress.";
             }
             else
             {
-                acceptedMessage = targets.Count > 1
-                    ? $"Batch build started for {targets.Count} objects in a single KB-open cycle. Poll action='status' target=<taskId> for progress."
-                    : "Build task started in background. Poll genexus_lifecycle action='status' with target=<taskId> for progress.";
+                if (string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase))
+                {
+                    acceptedMessage = "Build All started for the entire selected Knowledge Base. It will stop with ReorgRequired if reorganization is needed. Poll genexus_lifecycle action=status with target=<taskId> for progress.";
+                }
+                else if (targets.Count > 1)
+                {
+                    acceptedMessage = $"Batch build started for {targets.Count} objects in a single KB-open cycle. Poll action='status' target=<taskId> for progress.";
+                }
+                else
+                {
+                    acceptedMessage = "Build task started in background. Poll genexus_lifecycle action='status' with target=<taskId> for progress.";
+                }
+            }
+
+            JObject compileCheckPayload = null;
+            if (compileCheck)
+            {
+                string compileCheckNote = null;
+                if (compileCheckTruncated)
+                {
+                    compileCheckNote = $"Caller graph hit callerCap={status.CompileCheckCallerCap} — some callers were not included. Raise callerCap or check the omitted callers separately.";
+                }
+                else if (!status.CompileCheckCallersRequested)
+                {
+                    compileCheckNote = "Caller expansion was disabled — only the named objects were checked.";
+                }
+                else if (!compileCheckGraphAvailable)
+                {
+                    compileCheckNote = "Caller graph unavailable or incomplete — caller coverage is not guaranteed; inspect callersAdded.";
+                }
+
+                compileCheckPayload = new JObject();
+                if (status.CompileCheckCallers == null)
+                    compileCheckPayload["callersAdded"] = JValue.CreateNull();
+                else
+                    compileCheckPayload["callersAdded"] = JArray.FromObject(status.CompileCheckCallers);
+                compileCheckPayload["callers"] = status.CompileCheckCallersRequested;
+                compileCheckPayload["callerCap"] = status.CompileCheckCallerCap;
+                compileCheckPayload["truncated"] = status.CompileCheckTruncated;
+                compileCheckPayload["callerGraphAvailable"] = compileCheckGraphAvailable;
+                compileCheckPayload["note"] = compileCheckNote;
             }
 
             return JsonConvert.SerializeObject(new {
@@ -1178,25 +1724,19 @@ namespace GxMcp.Worker.Services
                 message = acceptedMessage,
                 taskId = taskId,
                 targets = targets.Count > 0 ? targets : null,
-                compileCheck = compileCheck ? new {
-                    callersAdded = status.CompileCheckCallers,
-                    truncated = status.CompileCheckTruncated,
-                    callerGraphAvailable = compileCheckGraphAvailable,
-                    note = compileCheckTruncated
-                        ? "Caller graph hit the buildPlanCap — some callers were not included. Raise buildPlanCap or check the omitted callers separately."
-                        : (!compileCheckGraphAvailable
-                            ? "Caller graph unavailable (index not built) — only the named objects were checked, not their callers."
-                            : null)
-                } : null,
+                compileCheck = compileCheckPayload,
                 callersToAlsoBuild = status.CallersToAlsoBuild,
                 hint = status.Hint,
                 // Item 28 — EXPERIMENTAL. Surfaces decision outcome when fastIncremental=true.
                 fastIncrementalFallback = status.FastIncrementalFallback ? (bool?)true : null,
                 fallbackReason = status.FastIncrementalFallbackReason,
-                fastIncremental = (fastIncremental && fiDecision != null && !fiDecision.ForceFullBuild)
+                fastIncrementalAppliedPath = status.FastIncrementalAppliedPath,
+                fastIncremental = fastIncremental && fiDecision != null && !fiDecision.ForceFullBuild
                     ? new {
                         canSkipDeploy = fiDecision.CanSkipDeploy,
                         canSkipSpecify = fiDecision.CanSkipSpecify,
+                        appliedSkipFullDeploy = status.SkipFullDeploy,
+                        appliedPath = status.FastIncrementalAppliedPath,
                         experimental = true
                     }
                     : null,
@@ -1336,7 +1876,7 @@ namespace GxMcp.Worker.Services
         {
             if (string.IsNullOrEmpty(taskId))
             {
-                return JsonConvert.SerializeObject(new { tasks = _tasks.Values.OrderByDescending(t => t.StartTime).Take(10) });
+                return JsonConvert.SerializeObject(new { tasks = _tasks.Values.OrderByDescending(t => t.StartTime).Take(10) }, Formatting.None);
             }
 
             if (_tasks.TryGetValue(taskId, out var status))
@@ -1370,7 +1910,9 @@ namespace GxMcp.Worker.Services
                     // Replace the flat warnings array with a paginated wrapper
                     var paginatedWarnings = BatchService.BuildStatusPayload(status.Warnings, page, pageSize);
                     jo["warnings"] = paginatedWarnings["warnings"];
-                    jo["_meta"] = paginatedWarnings["_meta"];
+                    var meta = paginatedWarnings["_meta"] as JObject ?? new JObject();
+                    meta["snapshot"] = status.ComputeBaseline();
+                    jo["_meta"] = meta;
 
                     return jo.ToString(Formatting.None);
                 }
@@ -1413,11 +1955,13 @@ namespace GxMcp.Worker.Services
                 terminal = IsTerminalStatus(status.Status);
             }
 
-            // Terminal → always return now. Baseline mismatch → caller is behind, return now.
-            // Empty sinceBaseline means caller has no prior snapshot; surface current state.
+            // Terminal -> always return now. A changed baseline means the caller is
+            // behind, so return immediately. With no prior snapshot, establish the
+            // current baseline and still honor waitSeconds; otherwise the public
+            // wait parameter is silently reduced to a zero-second status read.
             bool baselineDiffers = !string.IsNullOrEmpty(sinceBaseline)
                                    && !string.Equals(sinceBaseline, currentBaseline, StringComparison.Ordinal);
-            if (terminal || baselineDiffers || string.IsNullOrEmpty(sinceBaseline))
+            if (terminal || baselineDiffers)
             {
                 return AnnotateWithBaseline(GetStatus(taskId, page, pageSize, compact), taskId);
             }
@@ -1458,6 +2002,8 @@ namespace GxMcp.Worker.Services
         private string AnnotateWithBaseline(string statusJson, string taskId)
         {
             if (string.IsNullOrEmpty(statusJson) || string.IsNullOrEmpty(taskId)) return statusJson;
+            // Fast path: if snapshot is already present in statusJson, return as-is without re-parsing
+            if (statusJson.IndexOf("\"snapshot\":", StringComparison.Ordinal) >= 0) return statusJson;
             if (!_tasks.TryGetValue(taskId, out var status)) return statusJson;
             try
             {
@@ -1629,11 +2175,14 @@ namespace GxMcp.Worker.Services
         // issue #37 items 2/3: build/preview could run unbounded (>9min observed) and
         // never terminalize, forcing the agent to poll "Running" forever. Wall-clock cap
         // (seconds) after which the task is force-failed and any spawned MSBuild.exe tree
-        // is killed. Override with GXMCP_BUILD_TIMEOUT_SEC; RebuildAll gets a larger default
-        // (a full KB rebuild is legitimately long). Clamped to [60, 7200].
+        // is killed. Override with GXMCP_BUILD_TIMEOUT_SEC; full-KB builds get a larger
+        // default (a full KB build is legitimately long). Clamped to [60, 7200].
         internal static int ResolveBuildTimeoutSeconds(string action)
         {
-            int def = (action != null && action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase)) ? 2400 : 900;
+            bool fullKbBuild = action != null
+                && (action.Equals("BuildAll", StringComparison.OrdinalIgnoreCase)
+                    || action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase));
+            int def = fullKbBuild ? 2400 : 900;
             var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_TIMEOUT_SEC");
             if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v) && v > 0)
                 def = v;
@@ -1666,17 +2215,124 @@ namespace GxMcp.Worker.Services
         {
             if (string.IsNullOrEmpty(action)) return false;
             return action.Equals("Build", StringComparison.OrdinalIgnoreCase)
+                || action.Equals("BuildAll", StringComparison.OrdinalIgnoreCase)
                 || action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase)
                 || action.Equals("Sync", StringComparison.OrdinalIgnoreCase);
         }
 
-        // Strip a "Type:Name" qualifier down to the bare object name the generator
-        // uses for the file (<Name>.cs). Null/empty-safe.
-        private static string BareName(string t)
+        // Resolve the generated-file key used by the evidence gate. BuildOne receives
+        // the original target identity; this helper only normalizes the filename key.
+        // Null/empty-safe.
+        private string BareName(string t)
         {
             if (string.IsNullOrWhiteSpace(t)) return null;
-            t = t.Trim();
-            return t.Contains(":") ? t.Substring(t.LastIndexOf(':') + 1).Trim() : t;
+            string candidate = t.Trim();
+            int colon = candidate.LastIndexOf(':');
+            if (colon >= 0) candidate = candidate.Substring(colon + 1).Trim();
+
+            if (Guid.TryParse(candidate, out var guid))
+            {
+                try
+                {
+                    var index = _indexCacheService?.TryGetLoadedIndex();
+                    var entry = index?.FindByGuid(guid.ToString("D")) ?? index?.FindByGuid(candidate);
+                    if (!string.IsNullOrWhiteSpace(entry?.Name)) return entry.Name;
+                }
+                catch { }
+            }
+            return candidate;
+        }
+
+        // Split a JS argument list on top-level commas, ignoring commas inside string
+        // literals. Good enough for the generator's flat factory-call argument lists
+        // (the caller only feeds it argument lists that contain no nested parentheses).
+        internal static List<string> SplitJsArguments(string argList)
+        {
+            var args = new List<string>();
+            if (argList == null) return args;
+            var sb = new StringBuilder();
+            char quote = '\0';
+            for (int i = 0; i < argList.Length; i++)
+            {
+                char c = argList[i];
+                if (quote != '\0')
+                {
+                    sb.Append(c);
+                    if (c == '\\' && i + 1 < argList.Length) { sb.Append(argList[++i]); continue; }
+                    if (c == quote) quote = '\0';
+                    continue;
+                }
+                if (c == '\'' || c == '"') { quote = c; sb.Append(c); continue; }
+                if (c == ',') { args.Add(sb.ToString().Trim()); sb.Length = 0; continue; }
+                sb.Append(c);
+            }
+            if (sb.Length > 0 || args.Count > 0) args.Add(sb.ToString().Trim());
+            return args;
+        }
+
+        // True when the argument is the string literal "this" — the placeholder the
+        // generator emits for a User Control whose control name it failed to resolve.
+        private static bool IsThisPlaceholder(string arg)
+        {
+            if (string.IsNullOrEmpty(arg) || arg.Length < 3) return false;
+            char q = arg[0];
+            if ((q != '\'' && q != '"') || arg[arg.Length - 1] != q) return false;
+            return string.Equals(arg.Substring(1, arg.Length - 2).Trim(), "this", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// issue #103 item 4. Detects a generated .js whose User Control came out degraded —
+        /// the failure mode that renders &lt;span&gt;undefined&lt;/span&gt; at runtime and, once the
+        /// screen is saved, writes the bound attribute back empty.
+        ///
+        /// The signature of a degraded instance, measured against IDE-generated baselines, is:
+        ///   - the control-name argument of gx.uc.getNew(...) emitted as the literal string
+        ///     "this" instead of the control's name (e.g. "Qv1"), and/or
+        ///   - not a single setProp(...) binding left in the file.
+        ///
+        /// Deliberately NOT a per-instance "Gx Control Type" count: that property is emitted
+        /// only sporadically by the generator (1 of 32 User Control objects in the reference
+        /// KB carried it, IDE builds included), so requiring one per gx.uc.getNew made every
+        /// healthy build report a degradation and buried the real one in the noise.
+        /// </summary>
+        internal static JObject DetectUserControlBindingDegradation(string objectName, string jsPath, string jsText)
+        {
+            if (string.IsNullOrEmpty(jsText)) return null;
+
+            var factoryCalls = _userControlFactoryRegex.Matches(jsText);
+            if (factoryCalls.Count == 0) return null;
+
+            var placeholders = new JArray();
+            foreach (Match m in factoryCalls)
+            {
+                var args = SplitJsArguments(m.Groups[1].Value);
+                // parentObject, ucId, lastId, className, containerName, controlName, fieldName
+                if (args.Count < 6) continue;
+                if (!IsThisPlaceholder(args[5])) continue;
+                placeholders.Add(args[3].Trim('\'', '"'));
+            }
+
+            int propertyBindings = _userControlPropertyBindingRegex.Matches(jsText).Count;
+            bool noBindings = propertyBindings == 0;
+            if (placeholders.Count == 0 && !noBindings) return null;
+
+            string reason;
+            if (placeholders.Count > 0 && noBindings)
+                reason = "User Control JS lost every setProp binding and emitted \"this\" as the control name.";
+            else if (placeholders.Count > 0)
+                reason = "User Control JS emitted \"this\" as the control name instead of the control's name.";
+            else
+                reason = "User Control JS contains gx.uc.getNew instances but not a single setProp binding.";
+
+            return new JObject
+            {
+                ["object"] = objectName,
+                ["jsPath"] = jsPath,
+                ["userControlInstances"] = factoryCalls.Count,
+                ["propertyBindings"] = propertyBindings,
+                ["placeholderControlNames"] = placeholders,
+                ["reason"] = reason
+            };
         }
 
         /// <summary>
@@ -1693,26 +2349,145 @@ namespace GxMcp.Worker.Services
         private void AttachGenerateEvidence(BuildTaskStatus status, string action, List<string> targets)
         {
             if (status == null) return;
-            // Only meaningful for a successful (or partial-success) build of a
-            // code-emitting action. specifyOnly never compiles/generates .cs to disk.
-            if (status.SpecifyOnly) return;
-            if (!IsCodeEmittingAction(action)) return;
             bool succeeded = string.Equals(status.Status, "Succeeded", StringComparison.OrdinalIgnoreCase)
                              || (status.PartialSuccess == true);
             if (!succeeded) return;
 
-            string kbPath = GetKBPath();
-            if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) return;
-
-            // Which targets do we expect to have regenerated?
-            //  - explicit Build targets → those objects.
-            //  - RebuildAll / Sync / targetless Build → the dirty-at-start set (objects
-            //    edited via MCP that the build was supposed to flush). If nothing was
-            //    tracked dirty, we can't cheaply enumerate the whole KB — skip quietly.
+            // Which targets do we expect to have regenerated / specified?
             var checkList = (targets != null && targets.Count > 0)
                 ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
                 : (status.DirtyAtStart ?? new List<string>());
             if (checkList.Count == 0) return;
+            Logger.Info("[GENERATE-EVIDENCE] begin action=" + action + " targets=" + string.Join(";", checkList)
+                + " specifyOnly=" + status.SpecifyOnly + " kb=" + GetKBPath());
+
+            var unreachableSet = ParseUnreachableFromLog(status.FullLogPath);
+            var notFoundSet = ParseNotFoundFromLog(status.FullLogPath);
+            if (status.NotFoundTargets != null)
+            {
+                foreach (var nf in status.NotFoundTargets) notFoundSet.Add(nf);
+            }
+            if (status.UnreachableTargets != null)
+            {
+                foreach (var un in status.UnreachableTargets) unreachableSet.Add(un);
+            }
+
+            // issue #86: action=specify (specifyOnly) verification
+            if (status.SpecifyOnly)
+            {
+                var specifyUnreachable = new JArray();
+                var specifyNotFound = new JArray();
+                var specifySpecified = new JArray();
+
+                foreach (var t in checkList)
+                {
+                    string bare = BareName(t);
+                    if (string.IsNullOrEmpty(bare)) continue;
+
+                    if (notFoundSet.Contains(bare))
+                    {
+                        specifyNotFound.Add(new JObject
+                        {
+                            ["object"] = bare,
+                            ["reason"] = "notFoundInKnowledgeBase"
+                        });
+                    }
+                    else if (unreachableSet.Contains(bare))
+                    {
+                        specifyUnreachable.Add(new JObject
+                        {
+                            ["object"] = bare,
+                            ["reason"] = "unreachable"
+                        });
+                    }
+                    else
+                    {
+                        specifySpecified.Add(new JObject
+                        {
+                            ["object"] = bare
+                        });
+                    }
+                }
+
+                bool ok = specifyUnreachable.Count == 0 && specifyNotFound.Count == 0;
+                var specifyEvidence = new JObject
+                {
+                    ["ok"] = ok,
+                    ["objectsChecked"] = checkList.Count,
+                    ["objectsSpecified"] = specifySpecified.Count,
+                    ["specified"] = specifySpecified
+                };
+
+                if (specifyUnreachable.Count > 0) specifyEvidence["unreachable"] = specifyUnreachable;
+                if (specifyNotFound.Count > 0) specifyEvidence["notFound"] = specifyNotFound;
+
+                if (!ok)
+                {
+                    var gapNames = specifyUnreachable.Select(x => (string)x["object"])
+                        .Concat(specifyNotFound.Select(x => (string)x["object"]))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    string joinedNames = string.Join(", ", gapNames);
+
+                    specifyEvidence["note"] = "Specify reported success but " + gapNames.Count
+                        + " object(s) were unreachable or not found in the Knowledge Base: " + joinedNames
+                        + ". The object was not specified by GeneXus.";
+
+                    lock (status._lock)
+                    {
+                        if (status.Warnings.Count < 50)
+                            status.Warnings.Add("[specify-gap] Object unreachable or not found during specify: " + joinedNames);
+                        status.WarningCount++;
+                        if (string.IsNullOrEmpty(status.Hint))
+                        {
+                            status.Hint = "Specification gap: object " + joinedNames
+                                + " was unreachable (spc0217) or not found. Give it a caller or set as Main object to specify. See generateEvidence.unreachable / generateEvidence.notFound.";
+                        }
+                    }
+                }
+
+                status.GenerateEvidence = specifyEvidence;
+                return;
+            }
+
+            if (!IsCodeEmittingAction(action)) return;
+
+            string kbPath = GetKBPath();
+            if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) return;
+            string activeEnvironmentWebPath = null;
+            try { activeEnvironmentWebPath = _kbService?.GetActiveEnvironmentWebPath(); } catch { }
+            // A running worker always has KbService injected. Keep the unscoped probe
+            // only for direct unit/legacy callers that construct BuildService alone;
+            // those callers have no SDK environment to resolve or accidentally cross.
+            bool environmentResolutionRequired = _kbService != null;
+            if (environmentResolutionRequired
+                && (string.IsNullOrWhiteSpace(activeEnvironmentWebPath) || !Directory.Exists(activeEnvironmentWebPath)))
+            {
+                var unresolved = new JObject
+                {
+                    ["ok"] = false,
+                    ["environmentScoped"] = false,
+                    ["environmentUnresolved"] = true,
+                    ["objectsChecked"] = checkList.Count,
+                    ["staleOrMissing"] = new JArray(checkList.Select(t => new JObject
+                    {
+                        ["object"] = BareName(t),
+                        ["reason"] = "activeEnvironmentOutputRootUnavailable"
+                    })),
+                    ["note"] = "Build completed without a uniquely resolved active-environment Web output root; generated-file evidence was not inferred from another environment."
+                };
+                lock (status._lock)
+                {
+                    status.GenerateEvidence = unresolved;
+                    status.Status = "Failed";
+                    status.ErrorCount++;
+                    status.Warnings.Add("[generate-gap] active environment output root could not be resolved; build evidence is unavailable.");
+                    status.WarningCount++;
+                    if (string.IsNullOrEmpty(status.Hint))
+                        status.Hint = "The build was not reported as a clean success because the active environment output root could not be resolved safely.";
+                }
+                return;
+            }
 
             // issue #42 hardening (A) — set of objects that were dirty (edited via MCP
             // but not yet successfully built) when the build started. GeneXus generation
@@ -1733,7 +2508,7 @@ namespace GxMcp.Worker.Services
             // "rebuild with deploy=true" hint misleads the agent (a rebuild won't
             // generate an unreachable object). Parse the build log for spc0217 so those
             // objects land in their own bucket with an accurate reason/hint.
-            var unreachableSet = ParseUnreachableFromLog(status.FullLogPath);
+            // unreachableSet already parsed above
 
             var filesWritten = new JArray();
             var staleOrMissing = new JArray();
@@ -1747,7 +2522,7 @@ namespace GxMcp.Worker.Services
                 DateTime? prior = null;
                 if (preMtimes != null && preMtimes.TryGetValue(bare, out var pm)) prior = pm;
                 GeneratedDiffService.GeneratedFileEvidence ev;
-                try { ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, status.StartedAt, prior); }
+                try { ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, status.StartedAt, prior, activeEnvironmentWebPath); }
                 catch { continue; }
                 if (ev.Fresh)
                 {
@@ -1814,7 +2589,14 @@ namespace GxMcp.Worker.Services
                         if (string.IsNullOrEmpty(cbare) || !seen.Add(cbare)) continue;
                         if (checkSet.Contains(cbare)) continue; // already built
                         bool hasCs;
-                        try { hasCs = GeneratedDiffService.FindGeneratedFiles(kbPath, cbare, allRoots: true).Count > 0; }
+                        try
+                        {
+                            // Reuse the same active-environment filter as the primary
+                            // freshness probe; a newer callee file in another environment
+                            // must not make this build look complete.
+                            hasCs = GeneratedDiffService.ProbeGeneratedFreshness(
+                                kbPath, cbare, DateTime.MinValue, null, activeEnvironmentWebPath).Found;
+                        }
                         catch { hasCs = true; }
                         if (!hasCs) referencedButNotBuilt.Add(cbare);
                     }
@@ -1824,25 +2606,49 @@ namespace GxMcp.Worker.Services
             var degradedUserControls = new JArray();
             try
             {
-                foreach (JObject item in filesWritten)
+                // A target can be successfully checked without being regenerated.
+                // Its existing JS still matters: otherwise a known degraded User
+                // Control is silently reported as
+                // a clean build whenever GeneXus says "up to date" (#103 item 4).
+                var generatedEvidence = filesWritten
+                    .Concat(upToDate)
+                    .OfType<JObject>()
+                    .GroupBy(x => x["object"]?.ToString() ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.First());
+
+                foreach (JObject item in generatedEvidence)
                 {
-                    string csPath = item["path"]?.ToString();
-                    if (string.IsNullOrEmpty(csPath)) continue;
-                    string dir = Path.GetDirectoryName(csPath);
                     string objName = item["object"]?.ToString();
-                    if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(objName)) continue;
-                    string jsPath = Path.Combine(dir, objName.ToLowerInvariant() + ".js");
-                    if (File.Exists(jsPath) && File.GetLastWriteTimeUtc(jsPath) >= status.StartedAt)
+                    string generatedPath = item["path"]?.ToString();
+                    if (string.IsNullOrEmpty(objName) || string.IsNullOrEmpty(generatedPath)) continue;
+
+                    string resolvedGeneratedPath = Path.IsPathRooted(generatedPath)
+                        ? generatedPath
+                        : Path.Combine(kbPath, generatedPath);
+                    string jsPath;
+                    if (string.Equals(Path.GetExtension(resolvedGeneratedPath), ".js", StringComparison.OrdinalIgnoreCase))
+                    {
+                        jsPath = resolvedGeneratedPath;
+                    }
+                    else
+                    {
+                        string dir = Path.GetDirectoryName(resolvedGeneratedPath);
+                        jsPath = string.IsNullOrEmpty(dir)
+                            ? null
+                            : Path.Combine(dir, objName.ToLowerInvariant() + ".js");
+                    }
+
+                    // The .cs freshness gate above identifies the generated object. The
+                    // companion JS can retain an older timestamp when GeneXus rewrites
+                    // files through its generator cache, so do not discard a real partial
+                    // binding signal solely because the JS mtime is not newer.
+                    if (!string.IsNullOrEmpty(jsPath) && File.Exists(jsPath))
                     {
                         string jsText = File.ReadAllText(jsPath);
-                        if (jsText.Contains("gx.uc.getNew") && !jsText.Contains("setProp("))
+                        var degradation = DetectUserControlBindingDegradation(objName, jsPath, jsText);
+                        if (degradation != null)
                         {
-                            degradedUserControls.Add(new JObject
-                            {
-                                ["object"] = objName,
-                                ["jsPath"] = jsPath,
-                                ["reason"] = "User Control instantiated via gx.uc.getNew but missing setProp property bindings."
-                            });
+                            degradedUserControls.Add(degradation);
                         }
                     }
                 }
@@ -1857,16 +2663,26 @@ namespace GxMcp.Worker.Services
                 ["filesWritten"] = filesWritten,
                 ["staleOrMissing"] = staleOrMissing
             };
+            if (emittedCount == 0 && staleOrMissing.Count == 0)
+            {
+                evidence["upToDate"] = true;
+                lock (status._lock)
+                {
+                    status.UpToDate = true;
+                }
+            }
             if (degradedUserControls.Count > 0)
             {
                 evidence["degradedUserControls"] = degradedUserControls;
                 lock (status._lock)
                 {
                     var names = string.Join(", ", degradedUserControls.Select(x => (string)x["object"]));
-                    status.Warnings.Add("[user-control-degraded] User Control JS generated without setProp for: " + names);
+                    status.Warnings.Add("[user-control-degraded] User Control JS generated without property bindings for: " + names);
                     status.WarningCount++;
                     if (string.IsNullOrEmpty(status.Hint))
-                        status.Hint = "User Control degradation detected: generated JS for " + names + " missing setProp bindings. Verify UserControls directory.";
+                        status.Hint = "User Control degradation detected: generated JS for " + names + " lost its setProp bindings "
+                            + "(the control renders as <span>undefined</span> and saving the screen writes the bound attribute back empty). "
+                            + "Regenerate the object from the IDE and compare the setProp list against a known-good build.";
                 }
             }
             if (upToDate.Count > 0)
@@ -1909,6 +2725,9 @@ namespace GxMcp.Worker.Services
             }
 
             status.GenerateEvidence = evidence;
+            Logger.Info("[GENERATE-EVIDENCE] complete action=" + action + " objects=" + checkList.Count
+                + " emitted=" + emittedCount + " stale=" + staleOrMissing.Count
+                + " webRoot=" + (activeEnvironmentWebPath ?? "<none>"));
         }
 
         // Parse a build log for spc0217 ("Object is unreachable") diagnostics and return
@@ -1931,28 +2750,655 @@ namespace GxMcp.Worker.Services
                 {
                     if (line.IndexOf("spc0217", StringComparison.OrdinalIgnoreCase) < 0) continue;
                     int a = line.IndexOf("<FullName>", StringComparison.OrdinalIgnoreCase);
-                    if (a < 0) continue;
-                    a += "<FullName>".Length;
-                    int b = line.IndexOf("</FullName>", a, StringComparison.OrdinalIgnoreCase);
-                    if (b < 0) continue;
-                    string full = line.Substring(a, b - a).Trim();
-                    if (full.Length == 0) continue;
-                    string name;
-                    int q1 = full.IndexOf('\'');
-                    int q2 = q1 >= 0 ? full.IndexOf('\'', q1 + 1) : -1;
-                    if (q1 >= 0 && q2 > q1)
-                        name = full.Substring(q1 + 1, q2 - q1 - 1).Trim();     // Procedure 'Foo' → Foo
-                    else
+                    if (a >= 0)
                     {
-                        var parts = full.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        name = parts.Length > 0 ? parts[parts.Length - 1] : full;
+                        a += "<FullName>".Length;
+                        int b = line.IndexOf("</FullName>", a, StringComparison.OrdinalIgnoreCase);
+                        if (b >= 0)
+                        {
+                            string full = line.Substring(a, b - a).Trim();
+                            if (full.Length > 0)
+                            {
+                                string name;
+                                int q1 = full.IndexOf('\'');
+                                int q2 = q1 >= 0 ? full.IndexOf('\'', q1 + 1) : -1;
+                                if (q1 >= 0 && q2 > q1)
+                                    name = full.Substring(q1 + 1, q2 - q1 - 1).Trim();     // Procedure 'Foo' → Foo
+                                else
+                                {
+                                    var parts = full.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                                    name = parts.Length > 0 ? parts[parts.Length - 1] : full;
+                                }
+                                if (!string.IsNullOrEmpty(name)) set.Add(name);
+                                continue;
+                            }
+                        }
                     }
-                    if (!string.IsNullOrEmpty(name)) set.Add(name);
+                    int quote1 = line.IndexOf('\'');
+                    int quote2 = quote1 >= 0 ? line.IndexOf('\'', quote1 + 1) : -1;
+                    if (quote1 >= 0 && quote2 > quote1)
+                    {
+                        string name = line.Substring(quote1 + 1, quote2 - quote1 - 1).Trim();
+                        if (!string.IsNullOrEmpty(name)) set.Add(name);
+                    }
                 }
             }
             catch { /* best-effort — empty set on any error */ }
             return set;
         }
+
+        private static HashSet<string> ParseNotFoundFromLog(string logPath)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(logPath)) return set;
+            try
+            {
+                if (!File.Exists(logPath)) return set;
+                var info = new FileInfo(logPath);
+                if (info.Length > 8 * 1024 * 1024) return set;
+                foreach (var line in File.ReadLines(logPath))
+                {
+                    var m = _rxObjectNotFoundWarning.Match(line);
+                    if (m.Success)
+                    {
+                        string obj = m.Groups["obj"].Value;
+                        if (!string.IsNullOrEmpty(obj)) set.Add(obj);
+                    }
+                }
+            }
+            catch { }
+            return set;
+        }
+
+        internal static string BuildExternalProjectXml(string importPath, string kbPath, string action, IList<string> targets, BuildTaskStatus status = null)
+        {
+            importPath = SecurityElement.Escape(importPath ?? string.Empty);
+            string kbPathEsc = SecurityElement.Escape(kbPath ?? string.Empty);
+            bool buildAll = string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase);
+
+            var sb = new StringBuilder();
+            // issue #37 item 1: pin the 4.0 toolset so GeneXus tasks resolve under
+            // the .NET Framework MSBuild used by the Worker.
+            sb.AppendLine("<Project DefaultTargets=\"Execute\" ToolsVersion=\"4.0\" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">");
+            sb.AppendLine("  <Import Project=\"" + importPath + "\" />");
+            sb.AppendLine("  <Target Name=\"Execute\">");
+            sb.AppendLine("    <OpenKnowledgeBase Directory=\"" + kbPathEsc + "\" Output=\"IDE\" />");
+
+            if (buildAll)
+            {
+                sb.AppendLine("    <Message Importance=\"High\" Text=\"[GXMCP-BUILD-ALL] KB opened\" />");
+                sb.AppendLine("    <Message Importance=\"High\" Text=\"[GXMCP-BUILD-ALL] BuildAll started\" />");
+                sb.AppendLine("    <BuildAll ForceRebuild=\"false\" CompileMains=\"true\" FailIfReorg=\"true\" DoNotExecuteReorg=\"true\" DetailedNavigation=\"false\" Output=\"IDE\" EventsSuspended=\"true\" />");
+                sb.AppendLine("    <Message Importance=\"High\" Text=\"[GXMCP-BUILD-ALL] BuildAll completed\" />");
+            }
+            else if (targets != null && targets.Count > 0 &&
+                (string.Equals(action, "Build", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(action, "Rebuild", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (status != null)
+                {
+                    status.TargetsTotal = targets.Count;
+                    status.TargetsDone = 0;
+                }
+                string joined = string.Join(";", targets.Select(t => SecurityElement.Escape(t ?? string.Empty)));
+                sb.AppendLine("    <SpecifyOneOnly ObjectNames=\"" + joined + "\" />");
+                bool force = string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "Rebuild", StringComparison.OrdinalIgnoreCase);
+                sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"" + (force ? "true" : "false") + "\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
+            }
+            else if (string.Equals(action, "RebuildAll", StringComparison.OrdinalIgnoreCase)
+                  || string.Equals(action, "Rebuild", StringComparison.OrdinalIgnoreCase))
+            {
+                sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"true\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
+            }
+            else if (string.Equals(action, "Reorg", StringComparison.OrdinalIgnoreCase))
+                sb.AppendLine("    <CheckAndInstallDatabase />");
+            else if (string.Equals(action, "Validate", StringComparison.OrdinalIgnoreCase)
+                  || string.Equals(action, "Check", StringComparison.OrdinalIgnoreCase))
+                sb.AppendLine("    <CheckKnowledgeBase />");
+            else
+                sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"false\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
+
+            sb.AppendLine("    <CloseKnowledgeBase />");
+            if (buildAll)
+            {
+                // OnError must be the last task in the target. If BuildAll fails
+                // (especially on ReorgRequired), the normal close is skipped and
+                // this handler releases the SDK KB before MSBuild exits.
+                sb.AppendLine("    <OnError ExecuteTargets=\"CloseOnBuildAllError\" />");
+            }
+            sb.AppendLine("  </Target>");
+            if (buildAll)
+                sb.AppendLine("  <Target Name=\"CloseOnBuildAllError\"><CloseKnowledgeBase /></Target>");
+            sb.AppendLine("</Project>");
+            return sb.ToString();
+        }
+
+        internal static string BuildMsBuildArguments(string action, string projectPath)
+        {
+            string msbuildParallelism = string.Equals(action, "BuildAll", StringComparison.OrdinalIgnoreCase)
+                ? "/m:1"
+                : "/m";
+            return "/nologo " + msbuildParallelism + " /v:n /nodeReuse:false /target:Execute \"" + projectPath + "\"";
+        }
+
+        // RunBuild phases, extracted verbatim (YAGNI split — no behavior change).
+        // RunBuild stays the orchestrator: timers → snapshots → in-process phase →
+        // external-MSBuild phase → finally cleanup. Each phase below owns exactly
+        // one of those blocks.
+
+        // issue #42 (P3a) — emit a build-active heartbeat so the gateway keeps
+        // the worker alive during a long background build. A background build
+        // is NOT an in-flight RPC, so without this the gateway's idle-reap /
+        // heap-recycle timer could kill the worker mid-build. The gateway bumps
+        // _lastActivityUtc on each notification (see HandleWorkerRpcResponse).
+        internal static System.Threading.Timer StartBuildHeartbeatTimer(BuildTaskStatus status)
+        {
+            return new System.Threading.Timer(_ =>
+            {
+                try
+                {
+                    if (IsTerminalStatus(status.Status)) return;
+                    Program.SendNotification("notifications/worker/build_active",
+                        new { taskId = status.TaskId, phase = status.Phase, action = status.Action });
+                }
+                catch { }
+            }, null, 5000, 20000);
+        }
+
+        // issue #37 items 2/3: wall-clock watchdog. Terminalizes the task (and kills any
+        // external MSBuild tree) if it exceeds the cap, so a wedged SDK build/deploy step
+        // doesn't leave the status stuck at "Running". The underlying thread may still be
+        // blocked inside the SDK, but the agent gets a terminal Failed/TimedOut it can act on.
+        internal static System.Threading.Timer StartWallClockWatchdogTimer(BuildTaskStatus status, int timeoutSec)
+        {
+            return new System.Threading.Timer(_ =>
+            {
+                try
+                {
+                    if (IsTerminalStatus(status.Status)) return;
+                    Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " exceeded " + timeoutSec
+                                + "s (phase=" + status.Phase + ") — force-failing and killing any MSBuild tree.");
+                    try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
+                    lock (status._lock)
+                    {
+                        if (IsTerminalStatus(status.Status)) return;
+                        if (!TrySetWatchdogFailure(status, phase =>
+                            "Build timed out after " + timeoutSec + "s at phase '" + phase
+                            + "' and was terminated. If this was a full deploy/reorg step (WebAppConfig, CheckAndInstallDatabase), it may still be running in the SDK; check the KB in the IDE. Raise the cap with GXMCP_BUILD_TIMEOUT_SEC if the KB legitimately needs longer."))
+                            return;
+                    }
+                    MaybeNotifyOnFailure(status);
+                    try { status.StateChangeSignal.Set(); } catch { }
+                }
+                catch (Exception ex) { Logger.Warn("[BUILD-TIMEOUT] watchdog threw: " + ex.Message); }
+            }, null, timeoutSec * 1000, System.Threading.Timeout.Infinite);
+        }
+
+        // issue #42 — no-progress watchdog. The wall-clock cap above only
+        // fires after the FULL timeout (900s/2400s); a build that wedges early
+        // (phase + counts frozen) would otherwise sit "Running" for the whole
+        // cap. This lighter timer force-fails once no observable progress
+        // (phase / object / output-line / error / warning / targetsDone) has been seen for
+        // noProgressSec. Null when disabled (noProgressSec <= 0).
+        internal static System.Threading.Timer StartNoProgressWatchdogTimer(BuildTaskStatus status)
+        {
+            int noProgressSec = ResolveBuildNoProgressSeconds();
+            if (noProgressSec <= 0) return null;
+            string lastBaseline = status.ComputeLivenessBaseline();
+            DateTime lastProgressUtc = DateTime.UtcNow;
+            int tickMs = Math.Max(5000, Math.Min(30000, noProgressSec * 1000 / 4));
+            return new System.Threading.Timer(_ =>
+            {
+                try
+                {
+                    if (IsTerminalStatus(status.Status)) return;
+                    string cur = status.ComputeLivenessBaseline();
+                    if (!string.Equals(cur, lastBaseline, StringComparison.Ordinal))
+                    {
+                        lastBaseline = cur;
+                        lastProgressUtc = DateTime.UtcNow;
+                        return;
+                    }
+                    if ((DateTime.UtcNow - lastProgressUtc).TotalSeconds < noProgressSec) return;
+                    Logger.Warn("[BUILD-NOPROGRESS] taskId=" + status.TaskId + " no progress for "
+                                + noProgressSec + "s (phase=" + status.Phase + ") — force-failing.");
+                    try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
+                    lock (status._lock)
+                    {
+                        if (IsTerminalStatus(status.Status)) return;
+                        if (!TrySetWatchdogFailure(status, phase =>
+                            "Build made no observable progress for " + noProgressSec + "s at phase '"
+                            + phase + "' and was terminated (no-progress watchdog). The SDK build step "
+                            + "may be wedged; check the KB in the IDE. Tune with GXMCP_BUILD_NOPROGRESS_SEC (0 disables)."))
+                            return;
+                    }
+                    MaybeNotifyOnFailure(status);
+                    try { status.StateChangeSignal.Set(); } catch { }
+                }
+                catch (Exception ex) { Logger.Warn("[BUILD-NOPROGRESS] watchdog threw: " + ex.Message); }
+            }, null, tickMs, tickMs);
+        }
+
+        // issue #42 — snapshot the dirty set BEFORE the pipeline runs, since
+        // InProcessBuildRunner calls EditDirtyTracker.MarkClean as it builds,
+        // plus the pre-build .cs mtimes for the evidence gate. Best-effort:
+        // every probe is guarded so a snapshot failure never fails the build.
+        internal void SnapshotPreBuildEvidence(BuildTaskStatus status, string action, List<string> targets, string kbPath)
+        {
+            // The evidence gate in the finally uses this to know which targets were
+            // expected to regenerate their .cs.
+            try { status.DirtyAtStart = EditDirtyTracker.GetDirty(kbPath); } catch { status.DirtyAtStart = null; }
+
+            // issue #42 hardening (C) — snapshot the current freshest .cs mtime for
+            // each target we'll later gate, BEFORE the generator can touch it. Cheap
+            // best-effort; failure just falls the gate back to wall-clock comparison.
+            try
+            {
+                if (IsCodeEmittingAction(action) && !status.SpecifyOnly)
+                {
+                    var gateList = (targets != null && targets.Count > 0)
+                        ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase)
+                        : (status.DirtyAtStart ?? new List<string>()).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase);
+                    var snap = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+                    string activeEnvironmentWebPath = null;
+                    try { activeEnvironmentWebPath = _kbService?.GetActiveEnvironmentWebPath(); } catch { }
+                    foreach (var bare in gateList)
+                    {
+                        if (string.IsNullOrEmpty(bare)) continue;
+                        var ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, DateTime.MinValue, null, activeEnvironmentWebPath);
+                        if (ev.Found && ev.FreshestWriteUtc != null) snap[bare] = ev.FreshestWriteUtc.Value;
+                    }
+                    status.PreBuildMtimes = snap;
+                }
+            }
+            catch { status.PreBuildMtimes = null; }
+        }
+
+        // v2.6.6 Stream D — in-process build phase. Reuses the already-open
+        // KbService._kb instance + invokes GeneXus MSBuild tasks directly
+        // instead of spawning MSBuild.exe (which re-opens the KB out of
+        // process, the dominant cost in targeted builds).
+        //
+        // 2026-05-21 LIVE-TEST FINDING + FIX: ArtechTask's static ctor
+        // activates the GxServiceManager process-singleton and throws
+        // `GxException: O Service Manager já foi ativado` if another
+        // path (KbService.OpenKB → InitializeSdk) activated SM first.
+        // Worker boot now warms the ArtechTask cctor BEFORE
+        // InitializeSdk (Program.TryWarmupArtechTaskCctor) so the IDE
+        // ordering holds and subsequent in-process builds succeed.
+        // ON by default; opt-out with GXMCP_INPROCESS_BUILD=0.
+        //
+        // Returns true when the pipeline terminalized the build (success or
+        // failure with diagnostics, including the specifyOnly refusal); false
+        // when it could not run, so the caller falls through to the external
+        // MSBuild.exe phase.
+        internal bool RunInProcessBuildPhase(BuildTaskStatus status, string action, List<string> targets)
+        {
+            bool useInProcess =
+                !string.Equals(Environment.GetEnvironmentVariable("GXMCP_INPROCESS_BUILD"), "0", StringComparison.OrdinalIgnoreCase)
+                && _kbService != null && _kbService.IsOpen;
+            if (!useInProcess) return false;
+            status.Phase = "InProcess-Specifying";
+            EmitPhaseProgress(status.Phase);
+            Logger.Info("[BUILD-INPROCESS] taskId=" + status.TaskId
+                        + " kb=" + _kbService.GetKbPath()
+                        + " targets=" + (targets != null ? string.Join(";", targets) : "<all>"));
+            var sw = Stopwatch.StartNew();
+            InProcessBuildOutcome outcome = InProcessBuildOutcome.CouldNotRun;
+            try
+            {
+                outcome = InProcessBuildRunner.Run(
+                    status, action, targets,
+                    (s, l, err) => HandleLine(s, l, err),
+                    _kbService.KbObject, _kbService.KbLock,
+                    skipFullDeploy: status.SkipFullDeploy,
+                    kbPath: _kbService.GetKbPath(),
+                    specifyOnly: status.SpecifyOnly,
+                    fullDeploy: status.FullDeploy,
+                    forceFullBuild: status.FastIncrementalForceFullBuild,
+                    skipSpecifyTargets: status.FastIncrementalCanSkipSpecify);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("[BUILD-INPROCESS] orchestrator threw: " + ex.Message);
+                outcome = InProcessBuildOutcome.CouldNotRun;
+            }
+            sw.Stop();
+            Logger.Info("[BUILD-INPROCESS-DONE] taskId=" + status.TaskId
+                        + " outcome=" + outcome + " elapsedMs=" + sw.ElapsedMilliseconds);
+            // The in-process pipeline actually ran — either it succeeded, or it
+            // failed with diagnostics. In both cases we terminalize from the
+            // captured output. A full MSBuild.exe rebuild would only reproduce a
+            // failure at many times the wall-clock (the "build never returns" the
+            // reporter saw), so it is NOT attempted here. The external fallback is
+            // reserved for outcome == CouldNotRun below.
+            if (outcome == InProcessBuildOutcome.Succeeded
+                || outcome == InProcessBuildOutcome.FailedWithDiagnostics)
+            {
+                status.BuildPath = "inproc";
+                // FR#22: still emit shaped output envelope from FullOutput.
+                string fullText = status.FullOutput.ToString();
+                try
+                {
+                    string fullLogPath;
+                    BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out fullLogPath);
+                    status.FullLogPath = fullLogPath;
+                    status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
+                }
+                catch { }
+
+                bool failed = outcome == InProcessBuildOutcome.FailedWithDiagnostics
+                              || status.ErrorCount > 0;
+                status.Status = failed ? "Failed" : "Succeeded";
+                status.ExitCode = failed ? 1 : 0;
+                status.MsBuildExitCode = status.ExitCode;
+                FinalizeBuildAllStatus(status, fullText);
+                // A1 (parity with the MSBuild.exe branch below): when the
+                // in-process pipeline reports failure but emitted zero code
+                // errors AND the captured output shows Generation + Compilation
+                // both succeeded, the failure is a downstream/late step
+                // (WebAppConfig, a standalone-module deploy like GAMUser) —
+                // the target's .cs/.dll are already written. Flag it as a
+                // partial success so the gateway renders effective_status=
+                // PartialSuccess (isError=false) instead of a contradictory
+                // "Failed with 0 errors".
+                if (failed && status.ErrorCount == 0
+                    && DidGenerationAndCompilationSucceed(fullText))
+                {
+                    status.PartialSuccess = true;
+                }
+                status.Phase = "Done";
+                EmitPhaseProgress(status.Phase);
+
+                // When the pipeline reported failure but emitted no itemized
+                // error line (the build-all IdeWebBuildAndDeploy case — the SDK
+                // signals failure through >E0 section markers, not "error CS####:"
+                // text), leave the agent something actionable: the failed section
+                // and a pointer to the per-object spec check that DOES itemize.
+                if (outcome == InProcessBuildOutcome.FailedWithDiagnostics && status.ErrorCount == 0)
+                {
+                    if (status.PhaseFailure == null)
+                        status.PhaseFailure = ExtractPhaseFailure(fullText)
+                            ?? new PhaseFailureInfo
+                            {
+                                Name = status.Phase ?? "Build",
+                                Message = "The in-process GeneXus build reported failure without an itemized error line."
+                            };
+                    status.Hint = "Build failed in-process with no itemized error list (the SDK signalled failure at the section level). "
+                        + "Run genexus_lifecycle action=specify target=<object> for spc*/gen* diagnostics on a specific object, or open the KB in the IDE to see the full build output.";
+                }
+
+                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                // Attach the evidence before publishing the terminal signal. The
+                // gateway's async poller stops at the first Succeeded status; if the
+                // signal fires first, it can persist a terminal result without the
+                // evidence that is added in RunBuild's finally block (#103).
+                try { AttachGenerateEvidence(status, action, targets); }
+                catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
+                Logger.Info("Background Build " + status.TaskId + " " + status.Status
+                            + " (inproc, errors=" + status.ErrorCount + ", warnings=" + status.WarningCount
+                            + ", " + status.ElapsedSeconds + "s)");
+                // Wake any event-driven status wait callers on the terminal edge.
+                try { status.StateChangeSignal.Set(); } catch { }
+                // Item 72 (friction 2026-05-22) — POST webhook on terminal Failed (not PartialSuccess).
+                MaybeNotifyOnFailure(status);
+                return true;
+            }
+            // outcome == CouldNotRun — the in-process path never executed a build.
+            // issue #28 item 12: never fall back to a full MSBuild.exe spawn for a
+            // spec-check request — that would compile + deploy, the opposite of what
+            // specifyOnly asked for. Report spec-unavailable instead.
+            if (status.SpecifyOnly)
+            {
+                status.Status = "Failed";
+                status.ExitCode = 1;
+                status.MsBuildExitCode = status.ExitCode;
+                status.Phase = "Done";
+                EmitPhaseProgress(status.Phase);
+                status.Error = "Spec-check (specifyOnly) could not run in-process (GeneXus MSBuild tasks unavailable in this worker). Not falling back to a full build. Run a normal build to see diagnostics.";
+                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                try { status.StateChangeSignal.Set(); } catch { }
+                return true;
+            }
+            Logger.Warn("[BUILD-INPROCESS-FALLBACK] taskId=" + status.TaskId + " falling back to MSBuild.exe spawn");
+            return false;
+        }
+
+        // External MSBuild.exe fallback phase. Spawns MSBuild.exe against a generated
+        // project (Build All stays single-node so cancellation and evidence capture do
+        // not depend on implicit MSBuild worker-node interleaving), waits bounded by
+        // timeoutSec, and terminalizes the status. tempFile/reapPid/reapStart flow out
+        // for RunBuild's finally-block cleanup, exactly as the inline code assigned them.
+        internal void RunExternalMsBuildPhase(BuildTaskStatus status, string action, List<string> targets, string kbPath, int timeoutSec, out string tempFile, out int reapPid, out DateTime reapStart)
+        {
+            tempFile = null;
+            reapPid = 0;
+            reapStart = DateTime.MinValue;
+            status.BuildPath = "msbuild-exe";
+
+            tempFile = Path.Combine(Path.GetTempPath(), "GxBuild_" + Guid.NewGuid().ToString().Substring(0, 8) + ".msbuild");
+            string projectXml = BuildExternalProjectXml(
+                Path.Combine(_gxDir, "Genexus.Tasks.targets"), kbPath, action, targets, status);
+            File.WriteAllText(tempFile, projectXml);
+
+            // Use /v:n (normal) so we get per-object progress lines, not /v:q.
+            // Build All stays single-node so cancellation and evidence capture do
+            // not depend on implicit MSBuild worker-node interleaving.
+            var psi = new ProcessStartInfo
+            {
+                FileName = _msbuildPath,
+                Arguments = BuildMsBuildArguments(action, tempFile),
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WorkingDirectory = _gxDir,
+                // MSBuild on Windows writes via the system OEM/ANSI code page (PT-BR usually
+                // 850/1252). Reading the streams as UTF-8 mangles accented characters
+                // ("Compila��o", "n�", etc.) which is unreadable for LLM consumers. Pin
+                // both streams to the console's actual output encoding so TailLines/Output
+                // stay legible. Fall back to UTF-8 only when CodePagesEncodingProvider
+                // isn't registered.
+                StandardOutputEncoding = ResolveMsbuildEncoding(),
+                StandardErrorEncoding = ResolveMsbuildEncoding()
+            };
+
+            if (!string.IsNullOrEmpty(_gxDir))
+            {
+                try
+                {
+                    psi.EnvironmentVariables["GX_PATH"] = _gxDir;
+                    psi.EnvironmentVariables["GX_PROGRAM_DIR"] = _gxDir;
+                    psi.EnvironmentVariables["GeneXusPath"] = _gxDir;
+                }
+                catch { }
+            }
+
+            using (var process = new Process { StartInfo = psi, EnableRaisingEvents = true })
+            {
+                status.Process = process;
+                process.OutputDataReceived += (s, e) => HandleLine(status, e.Data, false);
+                process.ErrorDataReceived  += (s, e) => HandleLine(status, e.Data, true);
+
+                process.Start();
+                reapPid = process.Id;
+                try { reapStart = process.StartTime; } catch { reapStart = DateTime.MinValue; }
+                status.Phase = "OpeningKB";
+                EmitPhaseProgress(status.Phase);
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                // issue #37 items 2/3: bound the wait so a wedged MSBuild step doesn't
+                // block this thread forever. The watchdog also fires at the same cap;
+                // killing here lets us record ExitCode and terminalize cleanly.
+                if (!process.WaitForExit(timeoutSec * 1000))
+                {
+                    Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " MSBuild.exe exceeded "
+                                + timeoutSec + "s — killing process tree.");
+                    KillProcessTree(process);
+                    try { process.WaitForExit(5000); } catch { }
+                }
+
+                status.ExitCode = process.HasExited ? process.ExitCode : -1;
+                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+
+                // FR#22 (v2.6.6 Stream C): full log → disk, shaped envelope → status.
+                string fullText = status.FullOutput.ToString();
+                string fullLogPath;
+                BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out fullLogPath);
+                status.FullLogPath = fullLogPath;
+                status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
+
+                status.Phase = "Done";
+                Helpers.Logger.CurrentPhase = "Done";
+                EmitPhaseProgress(status.Phase);
+
+                // Don't clobber a terminal state the watchdog already set on timeout.
+                if (!IsTerminalStatus(status.Status))
+                {
+                    if (status.ExitCode == 0 && status.ErrorCount == 0)
+                        status.Status = "Succeeded";
+                    else
+                        status.Status = "Failed";
+                }
+                FinalizeBuildAllStatus(status, fullText);
+
+                // Friction 2026-05-22: when ErrorCount==0 and ExitCode!=0, the
+                // failure is a late MSBuild step (WebAppConfig, deploy task,
+                // file-missing) that doesn't emit a proper "error <code>:" line.
+                // Parse the raw output for >RO/>E0 markers so the agent gets a
+                // named phase_failure instead of "Failed: 0 errors, 0 warnings".
+                if (status.ErrorCount == 0 && status.ExitCode != 0)
+                {
+                    status.PhaseFailure = ExtractPhaseFailure(fullText);
+                    if (DidGenerationAndCompilationSucceed(fullText))
+                    {
+                        status.PartialSuccess = true;
+                    }
+                }
+
+                // Publish GenerateEvidence before the terminal signal. The gateway's
+                // async poller stops at the first terminal status and otherwise races
+                // the finally block below, losing the evidence in the stored result.
+                try { AttachGenerateEvidence(status, action, targets); }
+                catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
+
+                // Stream F: wake any pending status wait callers.
+                try { status.StateChangeSignal.Set(); } catch { }
+
+                Logger.Info("Background Build " + status.TaskId + " " + status.Status +
+                            " (errors=" + status.ErrorCount + ", warnings=" + status.WarningCount +
+                            ", " + status.ElapsedSeconds + "s)");
+                // Item 72 (friction 2026-05-22) — POST webhook on terminal Failed (not PartialSuccess).
+                MaybeNotifyOnFailure(status);
+            }
+        }
+
+        // _tasks retention (worker weight). Completed build statuses accumulated
+        // forever (FullOutput buffers included): _tasks is write-only, so long
+        // sessions grew the worker without bound until the blunt 1500MB idle heap
+        // recycle. Sweep on every registration: drop terminal entries past cap/TTL
+        // (oldest-completed first, never non-terminal, never anything completed
+        // <60s ago so a just-terminal build can't vanish mid-poll), and release
+        // the FullOutput buffer of older terminal entries (the status envelope
+        // keeps answering — FullOutput is JsonIgnore; the full text lives on disk
+        // via FullLogPath when shaping succeeded).
+        internal static int ResolveBuildTaskCap()
+        {
+            int def = 50;
+            var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_TASK_CAP");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v) && v > 0)
+                def = v;
+            if (def < 10) def = 10; // gateway lists Take(10) — flooring keeps that envelope intact
+            return def;
+        }
+
+        internal static int ResolveBuildTaskTtlMinutes()
+        {
+            int def = 180;
+            var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_TASK_TTL_MIN");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v) && v > 0)
+                def = v;
+            if (def < 60) def = 60; // async pollers run up to 45min — flooring keeps their taskId resolvable
+            return def;
+        }
+
+        internal static int ResolveBuildFullOutputKeepMinutes()
+        {
+            int def = 15;
+            var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_FULLOUTPUT_KEEP_MIN");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v) && v > 0)
+                def = v;
+            if (def < 1) def = 1;
+            return def;
+        }
+
+        internal static DateTime BuildTaskCompletedAtUtc(BuildTaskStatus status)
+        {
+            try
+            {
+                if (status != null && status.ElapsedSeconds != null)
+                    return status.StartedAt.ToUniversalTime().AddSeconds(status.ElapsedSeconds.Value);
+            }
+            catch { }
+            try { return status.StartedAt.ToUniversalTime(); } catch { return DateTime.MinValue; }
+        }
+
+        internal static int SweepBuildTasks()
+        {
+            try
+            {
+                return SweepBuildTasks(DateTime.UtcNow, ResolveBuildTaskCap(), ResolveBuildTaskTtlMinutes(), ResolveBuildFullOutputKeepMinutes());
+            }
+            catch { return 0; }
+        }
+
+        internal static int SweepBuildTasks(DateTime nowUtc, int taskCap, int taskTtlMinutes, int fullOutputKeepMinutes)
+        {
+            int evicted = 0;
+            try
+            {
+                var terminal = new List<KeyValuePair<string, BuildTaskStatus>>();
+                foreach (var kv in _tasks.ToArray())
+                {
+                    var st = kv.Value;
+                    if (st == null) { if (_tasks.TryRemove(kv.Key, out _)) evicted++; continue; }
+                    if (!IsTerminalStatus(st.Status)) continue;
+                    DateTime completed = BuildTaskCompletedAtUtc(st);
+                    double ageMin = (nowUtc - completed).TotalMinutes;
+                    // Release the big buffer early; the envelope (Output/Errors/Warnings/
+                    // counts/fullLogPath) keeps answering status/result reads.
+                    if (ageMin > fullOutputKeepMinutes && st.FullOutput != null && st.FullOutput.Length > 0)
+                    {
+                        try { lock (st._lock) { st.FullOutput.Clear(); } } catch { }
+                    }
+                    terminal.Add(kv);
+                }
+                // Oldest-completed first so cap pressure lands on the stalest entries.
+                terminal.Sort((a, b) => DateTime.Compare(BuildTaskCompletedAtUtc(a.Value), BuildTaskCompletedAtUtc(b.Value)));
+                int over = terminal.Count - Math.Max(0, taskCap);
+                foreach (var kv in terminal)
+                {
+                    DateTime completed = BuildTaskCompletedAtUtc(kv.Value);
+                    double ageMin = (nowUtc - completed).TotalMinutes;
+                    if (ageMin < 1) continue; // just-terminal grace: never vanish a build mid-poll
+                    if (ageMin > taskTtlMinutes || over > 0)
+                    {
+                        if (_tasks.TryRemove(kv.Key, out _)) { evicted++; over--; }
+                    }
+                }
+            }
+            catch { }
+            return evicted;
+        }
+
+        internal static void InjectBuildTaskForTest(string taskId, BuildTaskStatus status) { _tasks[taskId] = status; }
+        internal static bool RemoveBuildTaskForTest(string taskId) { return _tasks.TryRemove(taskId, out _); }
+        internal static bool TryGetBuildTaskForTest(string taskId, out BuildTaskStatus status) { return _tasks.TryGetValue(taskId, out status); }
 
         private void RunBuild(BuildTaskStatus status, string action, List<string> targets)
         {
@@ -1981,90 +3427,10 @@ namespace GxMcp.Worker.Services
             }
             try
             {
-                // issue #42 (P3a) — emit a build-active heartbeat so the gateway keeps
-                // the worker alive during a long background build. A background build
-                // is NOT an in-flight RPC, so without this the gateway's idle-reap /
-                // heap-recycle timer could kill the worker mid-build. The gateway bumps
-                // _lastActivityUtc on each notification (see HandleWorkerRpcResponse).
-                buildHeartbeat = new System.Threading.Timer(_ =>
-                {
-                    try
-                    {
-                        if (IsTerminalStatus(status.Status)) return;
-                        Program.SendNotification("notifications/worker/build_active",
-                            new { taskId = status.TaskId, phase = status.Phase, action = status.Action });
-                    }
-                    catch { }
-                }, null, 5000, 20000);
-                watchdog = new System.Threading.Timer(_ =>
-                {
-                    try
-                    {
-                        if (IsTerminalStatus(status.Status)) return;
-                        Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " exceeded " + timeoutSec
-                                    + "s (phase=" + status.Phase + ") — force-failing and killing any MSBuild tree.");
-                        try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
-                        lock (status._lock)
-                        {
-                            if (IsTerminalStatus(status.Status)) return;
-                            status.Status = "Failed";
-                            status.Phase = "Done";
-                            status.Error = "Build timed out after " + timeoutSec + "s at phase '" + (status.Phase ?? "?")
-                                + "' and was terminated. If this was a full deploy/reorg step (WebAppConfig, CheckAndInstallDatabase), it may still be running in the SDK; check the KB in the IDE. Raise the cap with GXMCP_BUILD_TIMEOUT_SEC if the KB legitimately needs longer.";
-                            status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                            status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-                        }
-                        MaybeNotifyOnFailure(status);
-                        try { status.StateChangeSignal.Set(); } catch { }
-                    }
-                    catch (Exception ex) { Logger.Warn("[BUILD-TIMEOUT] watchdog threw: " + ex.Message); }
-                }, null, timeoutSec * 1000, System.Threading.Timeout.Infinite);
-
-                // issue #42 — no-progress watchdog. The wall-clock cap above only
-                // fires after the FULL timeout (900s/2400s); a build that wedges early
-                // (phase + counts frozen) would otherwise sit "Running" for the whole
-                // cap. This lighter timer force-fails once no observable progress
-                // (phase / error / warning / targetsDone) has been seen for
-                // noProgressSec. Disabled when noProgressSec <= 0.
-                int noProgressSec = ResolveBuildNoProgressSeconds();
-                if (noProgressSec > 0)
-                {
-                    string lastBaseline = status.ComputeBaseline();
-                    DateTime lastProgressUtc = DateTime.UtcNow;
-                    int tickMs = Math.Max(5000, Math.Min(30000, noProgressSec * 1000 / 4));
-                    noProgressWatchdog = new System.Threading.Timer(_ =>
-                    {
-                        try
-                        {
-                            if (IsTerminalStatus(status.Status)) return;
-                            string cur = status.ComputeBaseline();
-                            if (!string.Equals(cur, lastBaseline, StringComparison.Ordinal))
-                            {
-                                lastBaseline = cur;
-                                lastProgressUtc = DateTime.UtcNow;
-                                return;
-                            }
-                            if ((DateTime.UtcNow - lastProgressUtc).TotalSeconds < noProgressSec) return;
-                            Logger.Warn("[BUILD-NOPROGRESS] taskId=" + status.TaskId + " no progress for "
-                                        + noProgressSec + "s (phase=" + status.Phase + ") — force-failing.");
-                            try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
-                            lock (status._lock)
-                            {
-                                if (IsTerminalStatus(status.Status)) return;
-                                status.Status = "Failed";
-                                status.Phase = "Done";
-                                status.Error = "Build made no observable progress for " + noProgressSec + "s at phase '"
-                                    + (status.Phase ?? "?") + "' and was terminated (no-progress watchdog). The SDK build step "
-                                    + "may be wedged; check the KB in the IDE. Tune with GXMCP_BUILD_NOPROGRESS_SEC (0 disables).";
-                                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-                            }
-                            MaybeNotifyOnFailure(status);
-                            try { status.StateChangeSignal.Set(); } catch { }
-                        }
-                        catch (Exception ex) { Logger.Warn("[BUILD-NOPROGRESS] watchdog threw: " + ex.Message); }
-                    }, null, tickMs, tickMs);
-                }
+                // Watchdog/heartbeat timers (factored Start*Timer methods above).
+                buildHeartbeat = StartBuildHeartbeatTimer(status);
+                watchdog = StartWallClockWatchdogTimer(status, timeoutSec);
+                noProgressWatchdog = StartNoProgressWatchdogTimer(status);
                 if (_kbService != null)
                 {
                     int waits = 0;
@@ -2078,324 +3444,14 @@ namespace GxMcp.Worker.Services
                     return;
                 }
 
-                // issue #42 — snapshot the dirty set BEFORE the pipeline runs, since
-                // InProcessBuildRunner calls EditDirtyTracker.MarkClean as it builds.
-                // The evidence gate in the finally uses this to know which targets were
-                // expected to regenerate their .cs.
-                try { status.DirtyAtStart = EditDirtyTracker.GetDirty(kbPath); } catch { status.DirtyAtStart = null; }
+                // Pre-build evidence snapshots (factored method above).
+                SnapshotPreBuildEvidence(status, action, targets, kbPath);
 
-                // issue #42 hardening (C) — snapshot the current freshest .cs mtime for
-                // each target we'll later gate, BEFORE the generator can touch it. Cheap
-                // best-effort; failure just falls the gate back to wall-clock comparison.
-                try
-                {
-                    if (IsCodeEmittingAction(action) && !status.SpecifyOnly)
-                    {
-                        var gateList = (targets != null && targets.Count > 0)
-                            ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase)
-                            : (status.DirtyAtStart ?? new List<string>()).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase);
-                        var snap = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-                        foreach (var bare in gateList)
-                        {
-                            if (string.IsNullOrEmpty(bare)) continue;
-                            var ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, DateTime.MinValue);
-                            if (ev.Found && ev.FreshestWriteUtc != null) snap[bare] = ev.FreshestWriteUtc.Value;
-                        }
-                        status.PreBuildMtimes = snap;
-                    }
-                }
-                catch { status.PreBuildMtimes = null; }
-
-                // v2.6.6 Stream D — in-process build path. Reuse the already-open
-                // KbService._kb instance + invoke GeneXus MSBuild tasks directly
-                // instead of spawning MSBuild.exe (which re-opens the KB out of
-                // process, the dominant cost in targeted builds).
-                //
-                // 2026-05-21 LIVE-TEST FINDING + FIX: ArtechTask's static ctor
-                // activates the GxServiceManager process-singleton and throws
-                // `GxException: O Service Manager já foi ativado` if another
-                // path (KbService.OpenKB → InitializeSdk) activated SM first.
-                // Worker boot now warms the ArtechTask cctor BEFORE
-                // InitializeSdk (Program.TryWarmupArtechTaskCctor) so the IDE
-                // ordering holds and subsequent in-process builds succeed.
-                // ON by default; opt-out with GXMCP_INPROCESS_BUILD=0.
-                bool useInProcess =
-                    !string.Equals(Environment.GetEnvironmentVariable("GXMCP_INPROCESS_BUILD"), "0", StringComparison.OrdinalIgnoreCase)
-                    && _kbService != null && _kbService.IsOpen;
-                if (useInProcess)
-                {
-                    status.Phase = "InProcess-Specifying";
-                    EmitPhaseProgress(status.Phase);
-                    Logger.Info("[BUILD-INPROCESS] taskId=" + status.TaskId
-                                + " kb=" + _kbService.GetKbPath()
-                                + " targets=" + (targets != null ? string.Join(";", targets) : "<all>"));
-                    var sw = Stopwatch.StartNew();
-                    InProcessBuildOutcome outcome = InProcessBuildOutcome.CouldNotRun;
-                    try
-                    {
-                        outcome = InProcessBuildRunner.Run(
-                            status, action, targets,
-                            (s, l, err) => HandleLine(s, l, err),
-                            _kbService.KbObject, _kbService.KbLock,
-                            skipFullDeploy: status.SkipFullDeploy,
-                            kbPath: _kbService.GetKbPath(),
-                            specifyOnly: status.SpecifyOnly,
-                            fullDeploy: status.FullDeploy);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error("[BUILD-INPROCESS] orchestrator threw: " + ex.Message);
-                        outcome = InProcessBuildOutcome.CouldNotRun;
-                    }
-                    sw.Stop();
-                    Logger.Info("[BUILD-INPROCESS-DONE] taskId=" + status.TaskId
-                                + " outcome=" + outcome + " elapsedMs=" + sw.ElapsedMilliseconds);
-                    // The in-process pipeline actually ran — either it succeeded, or it
-                    // failed with diagnostics. In both cases we terminalize from the
-                    // captured output. A full MSBuild.exe rebuild would only reproduce a
-                    // failure at many times the wall-clock (the "build never returns" the
-                    // reporter saw), so it is NOT attempted here. The external fallback is
-                    // reserved for outcome == CouldNotRun below.
-                    if (outcome == InProcessBuildOutcome.Succeeded
-                        || outcome == InProcessBuildOutcome.FailedWithDiagnostics)
-                    {
-                        status.BuildPath = "inproc";
-                        // FR#22: still emit shaped output envelope from FullOutput.
-                        string fullText = status.FullOutput.ToString();
-                        try
-                        {
-                            string fullLogPath;
-                            BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out fullLogPath);
-                            status.FullLogPath = fullLogPath;
-                            status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
-                        }
-                        catch { }
-
-                        bool failed = outcome == InProcessBuildOutcome.FailedWithDiagnostics
-                                      || status.ErrorCount > 0;
-                        status.Status = failed ? "Failed" : "Succeeded";
-                        // A1 (parity with the MSBuild.exe branch below): when the
-                        // in-process pipeline reports failure but emitted zero code
-                        // errors AND the captured output shows Generation + Compilation
-                        // both succeeded, the failure is a downstream/late step
-                        // (WebAppConfig, a standalone-module deploy like GAMUser) —
-                        // the target's .cs/.dll are already written. Flag it as a
-                        // partial success so the gateway renders effective_status=
-                        // PartialSuccess (isError=false) instead of a contradictory
-                        // "Failed with 0 errors".
-                        if (failed && status.ErrorCount == 0
-                            && DidGenerationAndCompilationSucceed(fullText))
-                        {
-                            status.PartialSuccess = true;
-                        }
-                        status.Phase = "Done";
-                        EmitPhaseProgress(status.Phase);
-
-                        // When the pipeline reported failure but emitted no itemized
-                        // error line (the build-all IdeWebBuildAndDeploy case — the SDK
-                        // signals failure through >E0 section markers, not "error CS####:"
-                        // text), leave the agent something actionable: the failed section
-                        // and a pointer to the per-object spec check that DOES itemize.
-                        if (outcome == InProcessBuildOutcome.FailedWithDiagnostics && status.ErrorCount == 0)
-                        {
-                            if (status.PhaseFailure == null)
-                                status.PhaseFailure = ExtractPhaseFailure(fullText)
-                                    ?? new PhaseFailureInfo
-                                    {
-                                        Name = status.Phase ?? "Build",
-                                        Message = "The in-process GeneXus build reported failure without an itemized error line."
-                                    };
-                            status.Hint = "Build failed in-process with no itemized error list (the SDK signalled failure at the section level). "
-                                + "Run genexus_lifecycle action=specify target=<object> for spc*/gen* diagnostics on a specific object, or open the KB in the IDE to see the full build output.";
-                        }
-
-                        status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                        status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-                        Logger.Info("Background Build " + status.TaskId + " " + status.Status
-                                    + " (inproc, errors=" + status.ErrorCount + ", warnings=" + status.WarningCount
-                                    + ", " + status.ElapsedSeconds + "s)");
-                        // Wake any event-driven status wait callers on the terminal edge.
-                        try { status.StateChangeSignal.Set(); } catch { }
-                        // Item 72 (friction 2026-05-22) — POST webhook on terminal Failed (not PartialSuccess).
-                        MaybeNotifyOnFailure(status);
-                        return;
-                    }
-                    // outcome == CouldNotRun — the in-process path never executed a build.
-                    // issue #28 item 12: never fall back to a full MSBuild.exe spawn for a
-                    // spec-check request — that would compile + deploy, the opposite of what
-                    // specifyOnly asked for. Report spec-unavailable instead.
-                    if (status.SpecifyOnly)
-                    {
-                        status.Status = "Failed";
-                        status.Phase = "Done";
-                        EmitPhaseProgress(status.Phase);
-                        status.Error = "Spec-check (specifyOnly) could not run in-process (GeneXus MSBuild tasks unavailable in this worker). Not falling back to a full build. Run a normal build to see diagnostics.";
-                        status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                        status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-                        try { status.StateChangeSignal.Set(); } catch { }
-                        return;
-                    }
-                    Logger.Warn("[BUILD-INPROCESS-FALLBACK] taskId=" + status.TaskId + " falling back to MSBuild.exe spawn");
-                }
-
-                status.BuildPath = "msbuild-exe";
-
-                tempFile = Path.Combine(Path.GetTempPath(), "GxBuild_" + Guid.NewGuid().ToString().Substring(0, 8) + ".msbuild");
-                string importPath = SecurityElement.Escape(Path.Combine(_gxDir, "Genexus.Tasks.targets"));
-                string kbPathEsc = SecurityElement.Escape(kbPath);
-
-                var sb = new StringBuilder();
-                // issue #37 item 1: without an explicit ToolsVersion the 2003-schema project
-                // resolves under the CLR-2.0 toolset (tasks searched in Framework\v2.0.50727),
-                // where the .NET 4.x GeneXus task assemblies can't load — CheckAndInstallDatabase
-                // (reorg) then fails MSB4036 "task not found". Pin 4.0 so the tasks resolve.
-                sb.AppendLine("<Project DefaultTargets=\"Execute\" ToolsVersion=\"4.0\" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">");
-                sb.AppendLine("  <Import Project=\"" + importPath + "\" />");
-                sb.AppendLine("  <Target Name=\"Execute\">");
-                // Open with Output="IDE" — same flag the GeneXus IDE passes. Without it
-                // the standalone msbuild later hits opaque Win32 ERROR_FILE_NOT_FOUND
-                // inside the deploy/IIS step ("Atualização de configuração da web").
-                sb.AppendLine("    <OpenKnowledgeBase Directory=\"" + kbPathEsc + "\" Output=\"IDE\" />");
-
-                if (targets != null && targets.Count > 0 &&
-                    (action.Equals("Build", StringComparison.OrdinalIgnoreCase) ||
-                     action.Equals("Rebuild", StringComparison.OrdinalIgnoreCase) ||
-                     action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase)))
-                {
-                    status.TargetsTotal = targets.Count;
-                    status.TargetsDone = 0;
-                    // issue #53: Honor target parameter for rebuilds so specifying a target
-                    // rebuilds ONLY the target instead of forcing a full KB rebuild.
-                    string joined = string.Join(";", targets.Select(t => SecurityElement.Escape(t)));
-                    sb.AppendLine("    <SpecifyOneOnly ObjectNames=\"" + joined + "\" />");
-                    bool force = action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase) || action.Equals("Rebuild", StringComparison.OrdinalIgnoreCase);
-                    sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"" + (force ? "true" : "false") + "\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
-                }
-                else if (action.Equals("RebuildAll", StringComparison.OrdinalIgnoreCase) || action.Equals("Rebuild", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Full force-rebuild — same task the IDE's "Rebuild All" fires.
-                    sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"true\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
-                }
-                else if (action.Equals("Reorg", StringComparison.OrdinalIgnoreCase))
-                    sb.AppendLine("    <CheckAndInstallDatabase />");
-                else if (action.Equals("Validate", StringComparison.OrdinalIgnoreCase) || action.Equals("Check", StringComparison.OrdinalIgnoreCase))
-                    sb.AppendLine("    <CheckKnowledgeBase />");
-                else if (action.Equals("Sync", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Sync = full incremental KB build (no force). IDE-style.
-                    sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"false\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
-                }
-                else
-                {
-                    sb.AppendLine("    <IdeWebBuildAndDeploy ForceRebuild=\"false\" CompileMains=\"true\" Output=\"IDE\" EventsSuspended=\"true\" />");
-                }
-
-                sb.AppendLine("    <CloseKnowledgeBase />");
-                sb.AppendLine("  </Target></Project>");
-                File.WriteAllText(tempFile, sb.ToString());
-
-                // Use /v:n (normal) so we get per-object progress lines, not /v:q
-                var psi = new ProcessStartInfo
-                {
-                    FileName = _msbuildPath,
-                    Arguments = "/nologo /m /v:n /nodeReuse:false /target:Execute \"" + tempFile + "\"",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                    WorkingDirectory = _gxDir,
-                    // MSBuild on Windows writes via the system OEM/ANSI code page (PT-BR usually
-                    // 850/1252). Reading the streams as UTF-8 mangles accented characters
-                    // ("Compila��o", "n�", etc.) which is unreadable for LLM consumers. Pin
-                    // both streams to the console's actual output encoding so TailLines/Output
-                    // stay legible. Fall back to UTF-8 only when CodePagesEncodingProvider
-                    // isn't registered.
-                    StandardOutputEncoding = ResolveMsbuildEncoding(),
-                    StandardErrorEncoding = ResolveMsbuildEncoding()
-                };
-
-                if (!string.IsNullOrEmpty(_gxDir))
-                {
-                    try
-                    {
-                        psi.EnvironmentVariables["GX_PATH"] = _gxDir;
-                        psi.EnvironmentVariables["GX_PROGRAM_DIR"] = _gxDir;
-                        psi.EnvironmentVariables["GeneXusPath"] = _gxDir;
-                    }
-                    catch { }
-                }
-
-                using (var process = new Process { StartInfo = psi, EnableRaisingEvents = true })
-                {
-                    status.Process = process;
-                    process.OutputDataReceived += (s, e) => HandleLine(status, e.Data, false);
-                    process.ErrorDataReceived  += (s, e) => HandleLine(status, e.Data, true);
-
-                    process.Start();
-                    reapPid = process.Id;
-                    try { reapStart = process.StartTime; } catch { reapStart = DateTime.MinValue; }
-                    status.Phase = "OpeningKB";
-                    EmitPhaseProgress(status.Phase);
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-                    // issue #37 items 2/3: bound the wait so a wedged MSBuild step doesn't
-                    // block this thread forever. The watchdog also fires at the same cap;
-                    // killing here lets us record ExitCode and terminalize cleanly.
-                    if (!process.WaitForExit(timeoutSec * 1000))
-                    {
-                        Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " MSBuild.exe exceeded "
-                                    + timeoutSec + "s — killing process tree.");
-                        KillProcessTree(process);
-                        try { process.WaitForExit(5000); } catch { }
-                    }
-
-                    status.ExitCode = process.HasExited ? process.ExitCode : -1;
-                    status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                    status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-
-                    // FR#22 (v2.6.6 Stream C): full log → disk, shaped envelope → status.
-                    string fullText = status.FullOutput.ToString();
-                    string fullLogPath;
-                    BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out fullLogPath);
-                    status.FullLogPath = fullLogPath;
-                    status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
-
-                    status.Phase = "Done";
-                    Helpers.Logger.CurrentPhase = "Done";
-                    EmitPhaseProgress(status.Phase);
-
-                    // Don't clobber a terminal state the watchdog already set on timeout.
-                    if (!IsTerminalStatus(status.Status))
-                    {
-                        if (status.ExitCode == 0 && status.ErrorCount == 0)
-                            status.Status = "Succeeded";
-                        else
-                            status.Status = "Failed";
-                    }
-
-                    // Friction 2026-05-22: when ErrorCount==0 and ExitCode!=0, the
-                    // failure is a late MSBuild step (WebAppConfig, deploy task,
-                    // file-missing) that doesn't emit a proper "error <code>:" line.
-                    // Parse the raw output for >RO/>E0 markers so the agent gets a
-                    // named phase_failure instead of "Failed: 0 errors, 0 warnings".
-                    if (status.ErrorCount == 0 && status.ExitCode != 0)
-                    {
-                        status.PhaseFailure = ExtractPhaseFailure(fullText);
-                        if (DidGenerationAndCompilationSucceed(fullText))
-                        {
-                            status.PartialSuccess = true;
-                        }
-                    }
-
-                    // Stream F: wake any pending status wait callers.
-                    try { status.StateChangeSignal.Set(); } catch { }
-
-                    Logger.Info("Background Build " + status.TaskId + " " + status.Status +
-                                " (errors=" + status.ErrorCount + ", warnings=" + status.WarningCount +
-                                ", " + status.ElapsedSeconds + "s)");
-                    // Item 72 (friction 2026-05-22) — POST webhook on terminal Failed (not PartialSuccess).
-                    MaybeNotifyOnFailure(status);
-                }
+                // Build phases (factored methods above): in-process first, external
+                // MSBuild.exe only when the in-process pipeline could not run.
+                bool handledInProcess = RunInProcessBuildPhase(status, action, targets);
+                if (!handledInProcess)
+                    RunExternalMsBuildPhase(status, action, targets, kbPath, timeoutSec, out tempFile, out reapPid, out reapStart);
             }
             catch (Exception ex)
             {
@@ -2411,7 +3467,14 @@ namespace GxMcp.Worker.Services
                 // in-process and MSBuild.exe branches (both reach here via return /
                 // fall-through). On a terminal success for a code-emitting action,
                 // verify the requested/dirty targets actually got fresh generated .cs.
-                try { AttachGenerateEvidence(status, action, targets); }
+                // The normal terminal paths attach before StateChangeSignal.Set().
+                // Keep this as a fallback for exceptional/early-return paths, but do
+                // not scan the KB a second time after a successful build.
+                try
+                {
+                    if (status.GenerateEvidence == null)
+                        AttachGenerateEvidence(status, action, targets);
+                }
                 catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
                 // Guaranteed MSBuild cleanup: on ANY exit path (success, failure, or
                 // exception — not just cancel/timeout) reap the spawned MSBuild process
@@ -2445,6 +3508,14 @@ namespace GxMcp.Worker.Services
                 status.LineCount++;
                 status.LastLine = line;
                 status.FullOutput.AppendLine(line);
+
+                if (line.IndexOf("[GXMCP-BUILD-ALL] KB opened", StringComparison.OrdinalIgnoreCase) >= 0)
+                    status.KbOpened = true;
+                if (line.IndexOf("[GXMCP-BUILD-ALL] BuildAll completed", StringComparison.OrdinalIgnoreCase) >= 0)
+                    status.BuildAllDone = true;
+                if (string.Equals(status.Action, "BuildAll", StringComparison.OrdinalIgnoreCase)
+                    && DetectBuildAllReorgRequired(line))
+                    status.ReorgRequired = true;
 
                 // FR#12: keep noise out of TailLines but always preserve it in FullOutput.
                 // Errors/warnings/phase-change lines never count as noise.
@@ -2493,6 +3564,13 @@ namespace GxMcp.Worker.Services
                 if (_rxBuildOneEnd.IsMatch(line) && status.TargetsTotal.HasValue)
                 {
                     status.TargetsDone = (status.TargetsDone ?? 0) + 1;
+                }
+
+                var notFoundError = _rxObjectNotFoundWarning.Match(line);
+                if (notFoundError.Success && IsKnownBuildTarget(notFoundError.Groups["obj"].Value, status))
+                {
+                    status.NotFoundTargets.Add(notFoundError.Groups["obj"].Value);
+                    return;
                 }
 
                 if (_rxError.IsMatch(line))
@@ -2559,15 +3637,48 @@ namespace GxMcp.Worker.Services
                             status.SuggestedRebuildTargets.Add(norm);
                     }
                 }
+                else if (_rxAmbiguousObject.IsMatch(line))
+                {
+                    status.ErrorCount++;
+                    string rawErr = line.Trim();
+                    if (status.Errors.Count < 50) status.Errors.Add(rawErr);
+                    if (status.ErrorsDetailed.Count < 50)
+                        status.ErrorsDetailed.Add(new ErrorDetail
+                        {
+                            raw = rawErr,
+                            phase = status.Phase,
+                            gxObject = status.CurrentObject,
+                            category = "ambiguous-object"
+                        });
+                }
                 else if (_rxWarning.IsMatch(line))
                 {
+                    if (line.IndexOf("spc0217", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        int q1 = line.IndexOf('\'');
+                        int q2 = q1 >= 0 ? line.IndexOf('\'', q1 + 1) : -1;
+                        if (q1 >= 0 && q2 > q1)
+                        {
+                            string unObj = line.Substring(q1 + 1, q2 - q1 - 1).Trim();
+                            if (!string.IsNullOrEmpty(unObj)) status.UnreachableTargets.Add(unObj);
+                        }
+                    }
+
                     // issue #32 item 5: drop the spurious "<obj> not found in the Knowledge
                     // Base" warning when <obj> is one of the objects we're building — the
                     // object exists (it's the spec target); the warning is misleading noise.
+                    // issue #86: do NOT suppress when specifyOnly=true, because GeneXus skips
+                    // specifying unreachable/uncalled objects entirely.
                     var nf = _rxObjectNotFoundWarning.Match(line);
-                    if (nf.Success && IsBuildTarget(nf.Groups["obj"].Value, status))
+                    if (nf.Success)
                     {
-                        return;
+                        string objName = nf.Groups["obj"].Value;
+                        status.NotFoundTargets.Add(objName);
+                        if (IsBuildTarget(objName, status)
+                            && (!status.SpecifyOnly || IsKnownBuildTarget(objName, status)))
+                        {
+                            return;
+                        }
                     }
                     status.WarningCount++;
                     if (status.Warnings.Count < 50) status.Warnings.Add(line.Trim());
@@ -2713,60 +3824,12 @@ namespace GxMcp.Worker.Services
 
         public string ReorgPreview(string target)
         {
-            var result = new JObject
+            return new ReorgImpactService(_kbService).Run(new JObject
             {
-                ["status"] = "Stub",
-                ["target"] = target ?? string.Empty,
-                ["ddl"] = new JArray(),
-                ["summary"] = new JObject
-                {
-                    ["tables_added"] = 0,
-                    ["tables_changed"] = 0,
-                    ["columns_added"] = 0,
-                    ["columns_dropped"] = 0
-                }
-            };
-
-            // issue #37 item 4: report the datastore + reorg mode so the agent can tell
-            // WHETHER reorg is even possible. In a DBA-managed environment
-            // (Reorganize Server tables = No) GeneXus never applies the delta — action=reorg
-            // there is a no-op the agent should not keep retrying.
-            bool? reorgEnabled = null;
-            try
-            {
-                dynamic kb = _kbService?.GetKB();
-                if (kb != null)
-                {
-                    // Statically type — see CheckReorgDisabled: a dynamic `ds` would make
-                    // re.Value<bool>() a dynamic generic call that fails to bind.
-                    JObject ds = DatabaseInfoService.GetDefaultDataStoreInfo(kb);
-                    if (ds != null)
-                    {
-                        result["datastore"] = ds;
-                        JToken re = ds["reorgEnabled"];
-                        if (re != null && re.Type == JTokenType.Boolean) reorgEnabled = re.Value<bool>();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn("[REORG-PREVIEW] datastore introspection failed: " + ex.Message);
-            }
-            result["reorgEnabled"] = reorgEnabled.HasValue ? (JToken)reorgEnabled.Value : JValue.CreateNull();
-
-            if (reorgEnabled == false)
-            {
-                result["note"] = "This datastore has 'Reorganize Server tables = No' (DBA-managed). GeneXus generates the DDL during Impact Analysis but NEVER applies it to the server — action=reorg is a no-op here. Obtain the DDL from the GeneXus IDE Impact Analysis report and hand it to your DBA / apply it via a DB tool; do not keep retrying action=reorg. reorg_preview does not yet extract the generated DDL text on this worker.";
-            }
-            else
-            {
-                result["note"] = "reorg_preview does not extract the generated DDL text (no non-mutating SDK plan API is wired on net48). "
-                    + (reorgEnabled == true
-                        ? "This datastore has reorg ENABLED, so action=reorg on a non-production environment will apply and surface the actual CREATE/ALTER statements."
-                        : "The 'Reorganize server tables' toggle is not exposed by the GeneXus 18 SDK object model, so the MCP cannot auto-detect a DBA-managed no-reorg environment — confirm it in the IDE (datastore/environment Properties). If it is set to No, GeneXus generates the DDL during Impact Analysis but never applies it; apply the script via your DB tooling.")
-                    + " For build-independent schema-drift findings use action=validate-kb.";
-            }
-            return result.ToString(Newtonsoft.Json.Formatting.None);
+                ["action"] = "reorg_preview",
+                ["name"] = target,
+                ["deep"] = true
+            });
         }
     }
 }

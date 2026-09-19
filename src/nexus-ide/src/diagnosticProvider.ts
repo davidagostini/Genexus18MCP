@@ -32,8 +32,6 @@ export class GxDiagnosticProvider {
         const refresh = (async () => {
         try {
             const objName = this.getObjName(document);
-            const currentPart = this.getPartName(document.uri);
-
             const result = await this.fsProvider.analyzeObject(
                 objName,
                 'linter',

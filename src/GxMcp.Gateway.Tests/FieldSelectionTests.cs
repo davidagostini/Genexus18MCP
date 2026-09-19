@@ -67,29 +67,46 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void EmptyPartsArray_RoutesToExtractSource()
+        public void EmptyPartsArray_RoutesToExtractFullObject()
         {
             var args = JObject.Parse(
                 "{\"name\":\"Customer\",\"parts\":[]}");
             var msg = _router.ConvertToolCall("genexus_read", args);
             var obj = JObject.FromObject(msg!);
 
-            // Empty array means "no selection" → fall back to legacy single-part
-            Assert.Equal("ExtractSource", obj["action"]?.ToString());
+            // Empty array means "no part selection" → fall back to SOTA 1-roundtrip full object
+            Assert.Equal("ExtractFullObject", obj["action"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData("all")]
+        [InlineData("full")]
+        [InlineData("summary")]
+        [InlineData("360")]
+        public void PartAliases_RouteToExtractFullObject(string partAlias)
+        {
+            var args = new JObject { ["name"] = "Customer", ["part"] = partAlias };
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            Assert.NotNull(msg);
+            var obj = JObject.FromObject(msg!);
+
+            Assert.Equal("Read", obj["module"]?.ToString());
+            Assert.Equal("ExtractFullObject", obj["action"]?.ToString());
+            Assert.Equal("Customer", obj["target"]?.ToString());
         }
 
         [Fact]
-        public void NullParts_RoutesToExtractSource()
+        public void NullParts_RoutesToExtractFullObject()
         {
             var args = JObject.Parse(
                 "{\"name\":\"Customer\"}");
             var msg = _router.ConvertToolCall("genexus_read", args);
             var obj = JObject.FromObject(msg!);
 
-            Assert.Equal("ExtractSource", obj["action"]?.ToString());
+            Assert.Equal("ExtractFullObject", obj["action"]?.ToString());
         }
 
-        // ── parts= + targets= should use targets path (targets wins) ─────────
+        // ── parts= + targets= should preserve field selection ────────────────
 
         [Fact]
         public void Targets_WithoutParts_RoutesToBatchRead()
@@ -101,6 +118,19 @@ namespace GxMcp.Gateway.Tests
 
             Assert.Equal("Batch", obj["module"]?.ToString());
             Assert.Equal("BatchRead", obj["action"]?.ToString());
+        }
+
+        [Fact]
+        public void Targets_WithParts_ForwardsRequestedPartsToBatchRead()
+        {
+            var args = JObject.Parse(
+                "{\"targets\":[\"Proc1\",\"Proc2\"],\"parts\":[\"Variables\"]}");
+            var msg = _router.ConvertToolCall("genexus_read", args);
+            var obj = JObject.FromObject(msg!);
+
+            Assert.Equal("Batch", obj["module"]?.ToString());
+            Assert.Equal("BatchRead", obj["action"]?.ToString());
+            Assert.Equal("Variables", obj["parts"]?[0]?.ToString());
         }
     }
 }

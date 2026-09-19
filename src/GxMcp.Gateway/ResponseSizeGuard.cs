@@ -11,8 +11,15 @@ namespace GxMcp.Gateway
         public const int DefaultMaxBytes = 220_000; // ~55k tokens
 
         private readonly int _maxBytes;
+        private readonly Action<string> _log;
 
-        public ResponseSizeGuard(int maxBytes = DefaultMaxBytes) => _maxBytes = maxBytes;
+        public ResponseSizeGuard(int maxBytes = DefaultMaxBytes) : this(maxBytes, Program.Log) { }
+
+        internal ResponseSizeGuard(int maxBytes, Action<string> log)
+        {
+            _maxBytes = maxBytes;
+            _log = log;
+        }
 
         public (JObject result, bool truncated) Apply(JObject payload, string toolName, JObject? args)
         {
@@ -35,7 +42,7 @@ namespace GxMcp.Gateway
                 }
             };
 
-            Program.Log($"[Gateway] OVERSIZE tool={toolName} size={size}");
+            _log($"[Gateway] OVERSIZE tool={toolName} size={size}");
             return (sentinel, true);
         }
 
@@ -78,32 +85,54 @@ namespace GxMcp.Gateway
             return Encoding.UTF8.GetByteCount(serializedJson);
         }
 
+        [ThreadStatic]
+        private static CountingTextWriter? t_countingWriter;
+
+        private sealed class CountingTextWriter : TextWriter
+        {
+            public override Encoding Encoding => Encoding.UTF8;
+            public long Count;
+
+            public void Reset() => Count = 0;
+
+            public override void Write(char value)
+            {
+                if (value <= 0x7F) Count++;
+                else if (value <= 0x7FF) Count += 2;
+                else if (char.IsSurrogate(value)) Count += 2;
+                else Count += 3;
+            }
+
+            public override void Write(string? value)
+            {
+                if (!string.IsNullOrEmpty(value))
+                    Count += Encoding.UTF8.GetByteCount(value);
+            }
+
+            public override void Write(char[] buffer, int index, int count)
+            {
+                if (buffer != null && count > 0)
+                    Count += Encoding.UTF8.GetByteCount(buffer, index, count);
+            }
+
+            public override void Write(ReadOnlySpan<char> buffer)
+            {
+                if (!buffer.IsEmpty)
+                    Count += Encoding.UTF8.GetByteCount(buffer);
+            }
+        }
+
         internal static long ByteSize(JToken token)
         {
-            var counter = new CountingStream();
-            using (var writer = new StreamWriter(counter, Encoding.UTF8, bufferSize: 32 * 1024, leaveOpen: true) { AutoFlush = false })
-            using (var jw = new JsonTextWriter(writer) { Formatting = Formatting.None })
+            if (token == null) return 0;
+            var writer = t_countingWriter ??= new CountingTextWriter();
+            writer.Reset();
+            using (var jw = new JsonTextWriter(writer) { Formatting = Formatting.None, CloseOutput = false })
             {
                 token.WriteTo(jw);
                 jw.Flush();
-                writer.Flush();
             }
-            return counter.Length;
-        }
-
-        private sealed class CountingStream : Stream
-        {
-            public long Count;
-            public override bool CanWrite => true;
-            public override bool CanRead => false;
-            public override bool CanSeek => false;
-            public override long Length => Count;
-            public override long Position { get => Count; set => throw new NotSupportedException(); }
-            public override void Write(byte[] buffer, int offset, int count) => Count += count;
-            public override void Flush() { }
-            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-            public override void SetLength(long value) => throw new NotSupportedException();
+            return writer.Count;
         }
     }
 }

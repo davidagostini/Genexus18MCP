@@ -91,5 +91,17 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(0, status.ErrorCount);
             Assert.Equal(0, status.WarningCount);
         }
+
+        [Fact]
+        public void HandleLine_AmbiguousObjectDiagnostic_IsCountedAsErrorEvenWithoutErrorPrefix()
+        {
+            var svc = new BuildService();
+            var status = new BuildService.BuildTaskStatus { TaskId = "ambiguous-object" };
+
+            InvokeHandleLine(svc, status, ">W'SampleEntity' é um nome Objeto ambíguo. Pode se referir a Table ou Transaction.");
+
+            Assert.Equal(1, status.ErrorCount);
+            Assert.Contains("ambíguo", status.Errors[0]);
+        }
     }
 }

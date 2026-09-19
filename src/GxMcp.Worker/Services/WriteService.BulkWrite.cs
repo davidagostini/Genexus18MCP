@@ -98,6 +98,43 @@ namespace GxMcp.Worker.Services
             // When transactional=true, pre-snapshot every target's prior content
             // and roll back all successful writes on the first Error.
             bool transactional = args?["transactional"]?.ToObject<bool?>() ?? false;
+            string concurrencyPolicy = args?["concurrencyPolicy"]?.ToString() ?? "warn";
+
+            string kbPath = null;
+            string kbName = null;
+            try
+            {
+                var kb = _objectService?.GetKbService()?.GetKB();
+                kbPath = _objectService?.GetKbService()?.GetKbPath();
+                kbName = kb?.Name;
+            }
+            catch { }
+
+            // Issue #128: Pre-flight fail_if_open check for all targets before mutating state
+            if (string.Equals(concurrencyPolicy, "fail_if_open", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var it in items)
+                {
+                    string targetName = it?["name"]?.ToString();
+                    if (string.IsNullOrEmpty(targetName)) continue;
+                    IdeConcurrencyStatus probe = null;
+                    try { probe = IdeConcurrencyDetector.Check(kbPath, kbName, targetName); } catch { }
+                    if (probe != null && probe.IsTargetObjectOpen)
+                    {
+                        return McpResponse.Err(
+                            code: "IdeObjectOpen",
+                            message: probe.WarningMessage,
+                            hint: "Close the object tab in GeneXus IDE without saving, reload it, or set concurrencyPolicy='warn' to proceed anyway.",
+                            nextSteps: new JArray(McpResponse.NextStep(
+                                tool: "genexus_edit",
+                                args: new JObject { ["concurrencyPolicy"] = "warn" },
+                                why: "Force bulk write by setting concurrencyPolicy='warn'.")),
+                            target: targetName,
+                            extra: probe.ToWarningObject(targetName, kbName));
+                    }
+                }
+            }
+
             var results = new JArray();
             int success = 0, failure = 0, skipped = 0;
 
@@ -143,6 +180,19 @@ namespace GxMcp.Worker.Services
                 }
 
                 string raw = WriteObject(name, part, content, itemType, true, false, true, itemDryRun);
+
+                // Issue #128: attach IDE concurrency warning and nudge IDE if applicable
+                IdeConcurrencyStatus itemProbe = null;
+                try { itemProbe = IdeConcurrencyDetector.Check(kbPath, kbName, name); } catch { }
+                if (itemProbe != null && itemProbe.HasWarning)
+                {
+                    raw = AttachWarning(raw, itemProbe.ToWarningObject(name, kbName));
+                }
+                if (!itemDryRun && itemProbe != null)
+                {
+                    itemProbe.TickleIde();
+                }
+
                 var parsed = GxMcp.Worker.Helpers.JsonUtil.SafeParse(raw);
                 results.Add(parsed);
 

@@ -257,6 +257,9 @@ Static Methods:
 - `Guid.Empty()`: Returns empty GUID (all zeros)
 - `Guid.FromString(<value>)`: Parses GUID from string
 
+Instance methods:
+- `<guid>.ToString()`: Returns GUID as string
+
 Examples:
 ~~~
 &SessionGuid = Guid.NewGuid()
@@ -267,6 +270,9 @@ EndIf
 
 ## Embedding
 Words or phrases as numerical vectors for semantic search
+
+Availability:
+- ProductVersion: `>=19`
 
 Methods:
 - `<embedding>.GenerateEmbedding(<text>[, <messages>])`: Converts `<text>` to vector (embedding), optionally fills `<messages>` variable (type: `Messages, GeneXus.Common` SDT)

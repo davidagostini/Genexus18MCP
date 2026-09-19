@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using GxMcp.Worker.Models;
 using GxMcp.Worker.Services;
 using Xunit;
@@ -21,6 +22,266 @@ namespace GxMcp.Worker.Tests
 
         private static SearchIndex.IndexEntry Entry(string type, string name) =>
             new SearchIndex.IndexEntry { Name = name, Type = type, Guid = Guid.NewGuid().ToString() };
+
+        [Fact]
+        public void ReplaceAll_PreservesConcurrentLiteWalkMutation_AndHonorsRemoval()
+        {
+            var cache = new IndexCacheService();
+            var original = Entry("Procedure", "Original");
+            cache.ReplaceAll(new[] { original });
+            cache.BeginLiteWalk();
+            var added = Entry("Procedure", "Added");
+            cache.AddOrUpdateBatch(new[] { added });
+            cache.RemoveEntryByGuid(original.Guid);
+            cache.ReplaceAll(new[] { original });
+
+            var index = cache.GetIndex();
+            Assert.True(index.Objects.ContainsKey("Procedure:Added"));
+            Assert.False(index.Objects.ContainsKey("Procedure:Original"));
+        }
+
+        [Fact]
+        public void ShardedLoad_RejectsPostFlushShardMixUsingManifestHash()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "HashProbe") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                int shard = IndexCacheService.ShardOf("Procedure:HashProbe");
+                File.AppendAllText(cache.ShardFilePathForTest(shard), "crash-mix");
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.ThrowsAny<Exception>(() => reloaded.GetIndex());
+                Assert.Null(reloaded.TryGetLoadedIndex());
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void VersionedSnapshot_PublishesCertifiedPointerOnlyAfterCompleteSlot()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "Certified") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                string firstPointer = File.ReadAllText(cache.SnapshotPointerPathForTest);
+                string firstSlot = cache.CertifiedSlotPathForTest;
+                Assert.True(Directory.Exists(firstSlot));
+
+                cache.ReplaceAll(new[] { Entry("Procedure", "Rebuilt") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                Assert.NotEqual(firstPointer, File.ReadAllText(cache.SnapshotPointerPathForTest));
+                Assert.NotEqual(firstSlot, cache.CertifiedSlotPathForTest);
+                Assert.True(File.Exists(Path.Combine(cache.CertifiedSlotPathForTest, "manifest.json")));
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void VersionedSnapshot_FailedPublicationRetriesEveryDirtyShard()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                var entry = Entry("Procedure", "RetryProbe");
+                entry.Description = "before";
+                cache.ReplaceAll(new[] { entry });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                string originalPointer = File.ReadAllText(cache.SnapshotPointerPathForTest);
+                long originalGeneration = cache.FlushedGeneration;
+
+                cache.AddOrUpdateBatch(new[] {
+                    new SearchIndex.IndexEntry {
+                        Name = entry.Name, Type = entry.Type, Guid = entry.Guid, Description = "after"
+                    }
+                });
+                using (File.Open(cache.SnapshotPointerPathForTest, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    Assert.False(cache.FlushNow(100));
+                    Assert.False(cache.IsFullyFlushed);
+                    Assert.Equal(originalGeneration, cache.FlushedGeneration);
+                    Assert.Equal(originalPointer, File.ReadAllText(cache.SnapshotPointerPathForTest));
+                }
+
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                Assert.True(cache.IsFullyFlushed);
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.Equal("after", reloaded.GetIndex().Objects["Procedure:RetryProbe"].Description);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void FlushAndStampSidecar_PreservesPreviousSidecarWhenFlushCannotCertify()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "StampProbe") });
+                cache.ObserveLastUpdate(DateTime.UtcNow.AddMinutes(-30));
+                Assert.True(cache.FlushAndStampSidecar(1, "test"), IndexCacheService.LastFlushErrorMessage ?? "no error");
+
+                var stamped = cache.ValidateOnDiskCache();
+                Assert.True(stamped.MetaPresent);
+                DateTime baseline = stamped.HighWaterMark;
+
+                // A newer hwm observed, but the flush cannot certify it (pointer file held).
+                cache.ObserveLastUpdate(DateTime.UtcNow);
+                cache.AddOrUpdateBatch(new[] { Entry("Procedure", "StampProbe2") });
+                using (File.Open(cache.SnapshotPointerPathForTest, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    // Issue #208: ignoring FlushNow()'s false verdict here would stamp a hwm the
+                    // on-disk body does not contain, and the next warm start would skip these
+                    // objects until they were edited again.
+                    Assert.False(cache.FlushAndStampSidecar(2, "test", timeoutMs: 100));
+                }
+
+                var preserved = cache.ValidateOnDiskCache();
+                Assert.True(preserved.MetaPresent);
+                Assert.Equal(baseline, preserved.HighWaterMark);
+
+                // Once the flush can certify, the sidecar advances with the body.
+                Assert.True(cache.FlushAndStampSidecar(2, "test"));
+                Assert.True(cache.ValidateOnDiskCache().HighWaterMark > baseline);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void FlushAndStampSidecar_DoesNotCreateSidecarWithoutCertifiedFlush()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "NoSidecarProbe") });
+                cache.ObserveLastUpdate(DateTime.UtcNow);
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                Assert.False(cache.ValidateOnDiskCache().MetaPresent);
+
+                cache.AddOrUpdateBatch(new[] { Entry("Procedure", "NoSidecarProbe2") });
+                using (File.Open(cache.SnapshotPointerPathForTest, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    Assert.False(cache.FlushAndStampSidecar(2, "test", timeoutMs: 100));
+                }
+
+                var validation = cache.ValidateOnDiskCache();
+                Assert.False(validation.MetaPresent);
+                Assert.False(validation.CanDelta);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void SourcePromotion_PreservesCertifiedSidecarAcrossSnapshotGeneration()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                var entry = Entry("Procedure", "SourcePromotion");
+                cache.ReplaceAll(new[] { entry });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                cache.ObserveLastUpdate(DateTime.UtcNow);
+                cache.WriteMetaSidecar(1);
+                Assert.True(cache.ValidateOnDiskCache().CanDelta);
+
+                const string source = "parm(in:&Value);";
+                Assert.True(cache.PromoteSourceForSearch(entry, source));
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+
+                var validation = cache.ValidateOnDiskCache();
+                Assert.True(validation.MetaPresent);
+                Assert.True(validation.CanDelta);
+
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                var restored = reloaded.GetIndex().Objects["Procedure:SourcePromotion"];
+                Assert.Equal(source, restored.FullSource);
+                Assert.True(reloaded.ValidateOnDiskCache().CanDelta);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void VersionedSnapshot_NewBodyRequiresItsOwnEnrichmentCertificate()
+        {
+            var cache = new IndexCacheService();
+            cache.Initialize(UniqueKbPath(), proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "CertifiedBody") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                cache.ObserveLastUpdate(DateTime.UtcNow);
+                cache.WriteMetaSidecar(1);
+                Assert.True(cache.ValidateOnDiskCache().CanDelta);
+
+                cache.AddOrUpdateBatch(new[] { Entry("Procedure", "AwaitingEnrichment") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                var validation = cache.ValidateOnDiskCache();
+                Assert.True(validation.BodyPresent);
+                Assert.False(validation.MetaPresent);
+                Assert.False(validation.CanDelta);
+                Assert.False(validation.CanDeltaAcrossDll);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void IsIndexMissing_RecognizesCertifiedSlotAsAvailable()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "CertifiedAvailable") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.False(reloaded.IsIndexMissing);
+                Assert.True(reloaded.GetIndex().Objects.ContainsKey("Procedure:CertifiedAvailable"));
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void VersionedSnapshot_IgnoresAbandonedRebuildSlotAndLoadsCertifiedGeneration()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "KeepCertified") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                string certified = cache.CertifiedSlotPathForTest;
+                string abandoned = Path.Combine(cache.SnapshotSlotsPathForTest, "generation-abandoned");
+                Directory.CreateDirectory(abandoned);
+                File.WriteAllText(Path.Combine(abandoned, "manifest.json"), "{\"incomplete\":true}");
+
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                var index = reloaded.GetIndex();
+                Assert.True(index.Objects.ContainsKey("Procedure:KeepCertified"));
+                Assert.Equal(certified, reloaded.CertifiedSlotPathForTest);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
 
         [Fact]
         public void Flush_OnlyRewritesShardsDirtiedSinceLastFlush()
@@ -127,6 +388,34 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void WarmStart_RoundTrip_PreservesFolderStorageKey()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                var folder = new SearchIndex.IndexEntry
+                {
+                    Name = "DirectionsServices",
+                    Type = "Folder",
+                    Path = "Root Module/GeneXus/Common/DirectionsServices",
+                    Guid = Guid.NewGuid().ToString()
+                };
+                cache.ReplaceAll(new[] { folder });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.False(reloaded.IsIndexMissing);
+                var idx = reloaded.GetIndex();
+                Assert.True(idx.Objects.ContainsKey("Folder:Root Module/GeneXus/Common/DirectionsServices"));
+                Assert.Equal(folder.Guid, idx.Objects["Folder:Root Module/GeneXus/Common/DirectionsServices"].Guid);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
         public void LegacySingleFileSnapshot_StillLoads_ThenMigratesToShardsOnNextFlush()
         {
             string kbPath = UniqueKbPath();
@@ -170,6 +459,139 @@ namespace GxMcp.Worker.Tests
                 var idx2 = reloaded.GetIndex();
                 Assert.True(idx2.Objects.ContainsKey("Procedure:Legacy1"));
                 Assert.Equal("legacy-guid-1", idx2.Objects["Procedure:Legacy1"].Guid);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void ShardedLoad_RejectsInvalidManifestAndCanDeltaIsFalse()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "ManifestProbe") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                cache.ObserveLastUpdate(DateTime.UtcNow);
+                cache.WriteMetaSidecar(1);
+                File.WriteAllText(cache.ShardManifestPathForTest, "{\"schemaVersion\":999}");
+
+                var validation = cache.ValidateOnDiskCache();
+                Assert.False(validation.CanDelta);
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.ThrowsAny<Exception>(() => reloaded.GetIndex());
+                Assert.Null(reloaded.TryGetLoadedIndex());
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void ShardedLoad_RejectsWrongShardAndDoesNotPublishPartialIndex()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "IntegrityProbe") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                int expected = IndexCacheService.ShardOf("Procedure:IntegrityProbe");
+                int wrong = (expected + 1) % IndexCacheService.ShardCount;
+                File.Copy(cache.ShardFilePathForTest(expected), cache.ShardFilePathForTest(wrong), true);
+                File.Delete(cache.ShardFilePathForTest(expected));
+
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.ThrowsAny<Exception>(() => reloaded.GetIndex());
+                Assert.Null(reloaded.TryGetLoadedIndex());
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        // ── C3 regression: MarkDirty must mark shards BEFORE bumping the generation ──
+        // FlushToDisk captures _dirtyGeneration, then pops+writes dirty shards, then
+        // publishes _flushedGeneration = captured gen on success. If MarkDirtyForKey
+        // incremented the generation BEFORE marking the shard dirty, a concurrent flush
+        // could capture the new generation without the shard in _dirtyShards and certify
+        // a mutation whose bytes never reached disk (stale-index-forever on cold start).
+        // Fixed order (shard first, Interlocked.Increment last): any flush observing
+        // generation N is guaranteed by the Interlocked fence to see every shard marked
+        // by mutations <= N, so a certified generation always implies durable bytes.
+
+        [Fact]
+        public void MarkDirtyForKey_BumpsGeneration_AndLeavesIndexUnflushedBeforeAnyFlush()
+        {
+            var cache = new IndexCacheService();
+            cache.Initialize(UniqueKbPath(), proactiveLoad: false);
+            try
+            {
+                // Deterministic half of the fix: after a fully-confirmed flush, a single
+                // MarkDirtyForKey raises the generation by exactly one and flips
+                // IsFullyFlushed back to false — the shard went dirty together with the
+                // generation, before any subsequent flush could run.
+                cache.GetIndex();               // FlushNow no-ops while _index is null
+                cache.SetFlushThrottleForTest(0);
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                Assert.True(cache.IsFullyFlushed);
+
+                long before = cache.DirtyGeneration;
+                cache.MarkDirtyForKey("Procedure:ProbeProc");
+
+                Assert.Equal(before + 1, cache.DirtyGeneration);
+                Assert.False(cache.IsFullyFlushed);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task FlushNow_ConcurrentWithRepeatedMarkDirtyForKey_CertifiedGenerationIsAlwaysDurable()
+        {
+            const int Rounds = 200;
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.GetIndex();
+                cache.SetFlushThrottleForTest(0);
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error"); // baseline
+
+                // Background flusher keeps racing the mutations below, widening the
+                // generation-capture window the old Increment-then-mark order could
+                // lose a mutation in.
+                int stop = 0;
+                var flusher = Task.Run(() =>
+                {
+                    while (System.Threading.Volatile.Read(ref stop) == 0)
+                        cache.FlushNow(50); // best-effort; may return false while busy
+                });
+
+                try
+                {
+                    for (int i = 1; i <= Rounds; i++)
+                    {
+                        long before = cache.DirtyGeneration;
+                        cache.AddOrUpdateBatch(new[] { new SearchIndex.IndexEntry { Name = "RaceProc", Type = "Procedure", Guid = "race-guid", Description = "v" + i } });
+                        Assert.True(cache.DirtyGeneration > before);
+                        Assert.True(cache.FlushNow(), $"FlushNow failed to confirm at round {i}");
+                        Assert.True(cache.IsFullyFlushed);
+
+                        // The discriminating check: whatever generation FlushNow just
+                        // certified MUST contain this round's bytes on disk.
+                        var probe = new IndexCacheService();
+                        probe.Initialize(kbPath, proactiveLoad: false);
+                        var idx = probe.GetIndex();
+                        Assert.True(idx.Objects.TryGetValue("Procedure:RaceProc", out var e), $"entry missing from disk at round {i}");
+                        Assert.Equal("v" + i, e.Description);
+                    }
+                }
+                finally
+                {
+                    System.Threading.Volatile.Write(ref stop, 1);
+                    await flusher;
+                }
             }
             finally { cache.DeleteOnDiskSnapshot(); }
         }

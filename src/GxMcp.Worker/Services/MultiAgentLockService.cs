@@ -1,5 +1,9 @@
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
 
@@ -73,11 +77,27 @@ namespace GxMcp.Worker.Services
 
                 action = (action ?? "status").ToLowerInvariant();
 
-                switch (action)
+                using (var guard = LockGuard.TryAcquire(lockPath, TimeSpan.FromSeconds(5)))
                 {
+                    if (guard == null)
+                        return McpResponse.Err(
+                            code: "LockBusy",
+                            message: "Another process is updating this object lock.",
+                            hint: "Retry the lock operation; no ownership decision was made.",
+                            target: target);
+
+                    switch (action)
+                    {
                     case "status":
                     {
                         var existing = TryReadLock(lockPath, out bool expired);
+                        if (existing?["lockState"]?.ToString() == "corrupt")
+                            return McpResponse.Err(
+                                code: "LockCorrupt",
+                                message: "The existing object lock is unreadable; refusing to guess ownership.",
+                                hint: "Repair or remove the lock only after confirming no writer is active.",
+                                target: target,
+                                extra: new JObject { ["path"] = lockPath });
                         if (existing == null || expired)
                         {
                             return McpResponse.Ok(
@@ -110,6 +130,13 @@ namespace GxMcp.Worker.Services
                                 hint: "Pass ownerId=<unique agent id> to identify the lock holder.",
                                 target: target);
                         var existing = TryReadLock(lockPath, out bool expired);
+                        if (existing?["lockState"]?.ToString() == "corrupt")
+                            return McpResponse.Err(
+                                code: "LockCorrupt",
+                                message: "The existing object lock is unreadable; refusing to replace it.",
+                                hint: "Repair or remove the lock only after confirming no writer is active.",
+                                target: target,
+                                extra: new JObject { ["path"] = lockPath });
                         if (existing != null && !expired)
                         {
                             string existingOwner = existing["ownerId"]?.ToString();
@@ -133,10 +160,17 @@ namespace GxMcp.Worker.Services
                             ["target"] = target,
                             ["part"] = part ?? string.Empty
                         };
-                        string tmp = lockPath + ".tmp";
-                        File.WriteAllText(tmp, entry.ToString(Newtonsoft.Json.Formatting.None));
-                        if (File.Exists(lockPath)) File.Delete(lockPath);
-                        File.Move(tmp, lockPath);
+                        string tmp = lockPath + ".tmp-" + Process.GetCurrentProcess().Id + "-" + Guid.NewGuid().ToString("N");
+                        try
+                        {
+                            File.WriteAllText(tmp, entry.ToString(Newtonsoft.Json.Formatting.None));
+                            if (File.Exists(lockPath)) File.Replace(tmp, lockPath, null);
+                            else File.Move(tmp, lockPath);
+                        }
+                        finally
+                        {
+                            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                        }
                         return McpResponse.Ok(
                             target: target,
                             code: "LockAcquired",
@@ -163,6 +197,15 @@ namespace GxMcp.Worker.Services
                                 });
                         }
                         var existing = TryReadLock(lockPath, out bool expired);
+                        if (existing?["lockState"]?.ToString() == "corrupt")
+                        {
+                            return McpResponse.Err(
+                                code: "LockCorrupt",
+                                message: "The existing object lock is unreadable; refusing to release it.",
+                                hint: "Repair or remove the lock only after confirming no writer is active.",
+                                target: target,
+                                extra: new JObject { ["path"] = lockPath });
+                        }
                         if (existing != null && !expired)
                         {
                             string existingOwner = existing["ownerId"]?.ToString();
@@ -187,16 +230,17 @@ namespace GxMcp.Worker.Services
                             });
                     }
 
-                    default:
-                        return McpResponse.Err(
-                            code: "UnknownAction",
-                            message: "action must be acquire|release|status; got '" + action + "'.",
-                            hint: "Pass action=acquire, action=release, or action=status.",
-                            nextSteps: new JArray(
-                                McpResponse.NextStep(
-                                    tool: "genexus_multi_agent_lock",
-                                    args: new JObject { ["action"] = "status", ["target"] = target },
-                                    why: "Inspect current lock state before retrying with the right action.")));
+                        default:
+                            return McpResponse.Err(
+                                code: "UnknownAction",
+                                message: "action must be acquire|release|status; got '" + action + "'.",
+                                hint: "Pass action=acquire, action=release, or action=status.",
+                                nextSteps: new JArray(
+                                    McpResponse.NextStep(
+                                        tool: "genexus_multi_agent_lock",
+                                        args: new JObject { ["action"] = "status", ["target"] = target },
+                                        why: "Inspect current lock state before retrying with the right action.")));
+                    }
                 }
             }
             catch (Exception ex)
@@ -206,6 +250,58 @@ namespace GxMcp.Worker.Services
                     message: ex.Message,
                     hint: "Check file system permissions for the .gx/locks directory.",
                     target: target);
+            }
+        }
+
+        private sealed class LockGuard : IDisposable
+        {
+            private readonly Mutex _mutex;
+            private bool _held;
+
+            private LockGuard(Mutex mutex)
+            {
+                _mutex = mutex;
+                _held = true;
+            }
+
+            internal static LockGuard TryAcquire(string lockPath, TimeSpan timeout)
+            {
+                string name;
+                using (var sha = SHA256.Create())
+                {
+                    byte[] digest = sha.ComputeHash(Encoding.UTF8.GetBytes(lockPath ?? string.Empty));
+                    var hex = new StringBuilder(digest.Length * 2);
+                    foreach (byte value in digest) hex.Append(value.ToString("x2"));
+                    name = "Local\\GxMcp.MultiAgentLock." + hex;
+                }
+
+                var mutex = new Mutex(false, name);
+                bool acquired = false;
+                try
+                {
+                    try { acquired = mutex.WaitOne(timeout); }
+                    catch (AbandonedMutexException) { acquired = true; }
+                    if (!acquired)
+                    {
+                        mutex.Dispose();
+                        return null;
+                    }
+                    return new LockGuard(mutex);
+                }
+                catch
+                {
+                    if (acquired) { try { mutex.ReleaseMutex(); } catch { } }
+                    mutex.Dispose();
+                    throw;
+                }
+            }
+
+            public void Dispose()
+            {
+                if (!_held) return;
+                _held = false;
+                try { _mutex.ReleaseMutex(); } catch { }
+                try { _mutex.Dispose(); } catch { }
             }
         }
 
@@ -227,9 +323,10 @@ namespace GxMcp.Worker.Services
             }
             catch
             {
-                // Corrupted lock file — treat as expired so a fresh acquire can replace it.
-                expired = true;
-                return null;
+                // Corruption is not evidence of expiry. Preserve a sentinel so
+                // status/acquire/release fail closed instead of guessing ownership.
+                expired = false;
+                return new JObject { ["lockState"] = "corrupt" };
             }
         }
 

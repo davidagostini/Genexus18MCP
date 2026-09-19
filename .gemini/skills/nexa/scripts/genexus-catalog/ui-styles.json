@@ -1,0 +1,5622 @@
+{
+	"gx-animation-type": {
+		"Type": "enum{native;lottie}",
+		"Description": "Define kind of animation",
+		"Context": [
+			"Animation"
+		],
+		"Options": {
+			"native": "Uses built-in animations",
+			"lottie": "Uses Lottie library for animations"
+		},
+		"Default": "native"
+	},
+	"gx-lottie-file": {
+		"Type": "ref(*)",
+		"Description": "Specify Lottie file for animation",
+		"Context": [
+			"Animation"
+		]
+	},
+	"gx-label-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Class applied to attribute label in Abstract Layout",
+		"Context": [
+			"Attribute",
+			"Calendar",
+			"Image",
+			"Multimedia"
+		]
+	},
+	"gx-selected-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Context": [
+			"Rating"
+		]
+	},
+	"gx-unselected-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Context": [
+			"Rating"
+		]
+	},
+	"gx-switch-on-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Context": [
+			"Switch"
+		]
+	},
+	"gx-switch-on-text-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Context": [
+			"Switch"
+		]
+	},
+	"gx-switch-off-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Context": [
+			"Switch"
+		]
+	},
+	"gx-switch-off-text-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Context": [
+			"Switch"
+		]
+	},
+	"gx-font-unicode": {
+		"Type": "string",
+		"Description": "Defines unicode character range font supports",
+		"Context": [
+			"@font-face"
+		],
+		"Default": "U+0-10FFFF"
+	},
+	"gx-background-image-mode": {
+		"Type": "enum{stretch;tile}",
+		"Description": "Background image stretching or tiling mode",
+		"Scope": "Native",
+		"Context": [
+			"Application",
+			"Grid",
+			"GridRow",
+			"Group",
+			"Table"
+		],
+		"Options": {
+			"stretch": "Background image stretches to fill area",
+			"tile": "Background image repeats to cover area"
+		},
+		"Default": "stretch"
+	},
+	"gx-placeholder-image": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed while video thumbnail is loading",
+		"Scope": "Native",
+		"Context": [
+			"Application",
+			"Image",
+			"Multimedia"
+		],
+		"ProductVersion": "<17.1"
+	},
+	"gx-image-loading-indicator": {
+		"Type": "boolean",
+		"Description": "Allows showing loading indicator for images",
+		"Scope": "Native",
+		"Context": [
+			"Application",
+			"Image",
+			"Multimedia"
+		],
+		"Default": "False"
+	},
+	"gx-datepicker-image": {
+		"Type": "ref(Image)",
+		"Description": "Styling class for date picker button",
+		"Scope": "Native",
+		"Context": [
+			"Application"
+		]
+	},
+	"gx-prompt-image": {
+		"Type": "ref(Image)",
+		"Description": "Stylistic class for prompt image button",
+		"Scope": "Native",
+		"Context": [
+			"Application"
+		],
+		"ProductVersion": "<17.10"
+	},
+	"gx-launch-screen-animation-class": {
+		"Type": "class(Animation)",
+		"Description": "Selects animation for `Progress Indicator` element",
+		"Scope": "Native",
+		"Context": [
+			"Application"
+		]
+	},
+	"gx-primary-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Application"
+		]
+	},
+	"gx-primary-color-dark": {
+		"Type": "color",
+		"Description": "Dark variant of primary branding color for status bar",
+		"Scope": "Native",
+		"Context": [
+			"Application"
+		]
+	},
+	"gx-accent-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Application"
+		]
+	},
+	"gx-normal-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Application"
+		]
+	},
+	"gx-activated-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Application"
+		]
+	},
+	"gx-highlighted-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Application",
+			"Attribute",
+			"Button",
+			"MenuItem",
+			"TabPage",
+			"TextBlock"
+		]
+	},
+	"gx-action-tint-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Application"
+		]
+	},
+	"gx-status-bar-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars"
+		]
+	},
+	"gx-title-image": {
+		"Type": "ref(Image)",
+		"Description": "Sets image displayed in column header",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars"
+		]
+	},
+	"gx-large-title-mode": {
+		"Type": "enum{automatic;inherit;always;never}",
+		"Description": "Mode for displaying application bar title",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars"
+		],
+		"Options": {
+			"automatic": "Enables large titles in common use cases",
+			"inherit": "Inherits previous object's mode; behaves like Automatic if first",
+			"always": "Always uses large titles",
+			"never": "Never uses large titles"
+		},
+		"Default": "automatic"
+	},
+	"gx-icon": {
+		"Type": "ref(Image)",
+		"Description": "Default icon for map markers",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars"
+		],
+		"Default": "Default"
+	},
+	"gx-font-category": {
+		"Type": "enum{;headline;subheadline;body;footnote;caption1;caption2}",
+		"Description": "Semantic text styling for automatic adjustments",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars",
+			"Attribute",
+			"Button",
+			"GroupSeparator",
+			"MenuItem",
+			"TabPage",
+			"TextBlock"
+		],
+		"Options": {
+			"": "",
+			"headline": "Heading texts styled semantically",
+			"subheadline": "Subtitles styled semantically",
+			"body": "General text styled semantically",
+			"footnote": "Notes styled semantically",
+			"caption1": "Standard titles styled semantically",
+			"caption2": "Alternative titles styled semantically"
+		},
+		"ProductVersion": "<15.7"
+	},
+	"gx-elevation": {
+		"Type": "integer",
+		"Description": "Controls shadow intensity for controls",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars",
+			"Attribute",
+			"Button",
+			"Grid",
+			"GridRow",
+			"Group",
+			"Image",
+			"Multimedia",
+			"Tab",
+			"Table",
+			"TextBlock"
+		]
+	},
+	"gx-align": {
+		"Type": "enum{default;left;center-screen;center-space;right}",
+		"Description": "Controls horizontal alignment of element",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars"
+		],
+		"Options": {
+			"default": "",
+			"left": "Element aligned to left edge",
+			"center-screen": "",
+			"center-space": "",
+			"right": "Element aligned to right edge"
+		},
+		"Default": "default"
+	},
+	"gx-default-button-class": {
+		"Type": "class(Button)",
+		"Description": "Sets appearance of disabled buttons",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars"
+		]
+	},
+	"gx-back-button-class": {
+		"Type": "class(Button)",
+		"Description": "Customizes appearance of back button",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars"
+		],
+		"ProductVersion": ">=13.b1"
+	},
+	"gx-back-button-image": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for back button",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars"
+		]
+	},
+	"gx-back-button-text": {
+		"Type": "string",
+		"Description": "Text displayed on back button",
+		"Scope": "Native",
+		"Context": [
+			"ApplicationBars"
+		],
+		"ProductVersion": ">=13.b2"
+	},
+	"gx-enter-effect": {
+		"Type": "enum{default;curl-up;curl-down;flip-from-left;flip-from-right;slide-down;slide-up;slide-left;slide-right;push-down;push-up;push-left;push-right;fade;none}",
+		"Description": "Visual transition effect when entering a panel",
+		"Scope": "Native",
+		"Context": [
+			"Form"
+		],
+		"Options": {
+			"default": "Default transition of the platform",
+			"curl-up": "iOS-specific upward curl transition",
+			"curl-down": "iOS-specific downward curl transition",
+			"flip-from-left": "iOS-specific left-to-right flip transition",
+			"flip-from-right": "iOS-specific right-to-left flip transition",
+			"slide-down": "Downward sliding transition",
+			"slide-up": "Upward sliding transition",
+			"slide-left": "Leftward sliding transition",
+			"slide-right": "Rightward sliding transition",
+			"push-down": "Downward pushing transition",
+			"push-up": "Upward pushing transition",
+			"push-left": "Leftward pushing transition",
+			"push-right": "Rightward pushing transition",
+			"fade": "Fading transition",
+			"none": "No visual transition effect"
+		},
+		"Default": "default"
+	},
+	"gx-close-effect": {
+		"Type": "enum{default;curl-up;curl-down;flip-from-left;flip-from-right;slide-down;slide-up;slide-left;slide-right;push-down;push-up;push-left;push-right;fade;none}",
+		"Description": "Visual effect during closing of panel",
+		"Scope": "Native",
+		"Context": [
+			"Form"
+		],
+		"Options": {
+			"default": "Default visual effect of the platform",
+			"curl-up": "iOS only, panel curls up on close",
+			"curl-down": "iOS only, panel curls down on close",
+			"flip-from-left": "iOS only, panel flips from left on close",
+			"flip-from-right": "iOS only, panel flips from right on close",
+			"slide-down": "Panel slides down on close",
+			"slide-up": "Panel slides up on close",
+			"slide-left": "Panel slides left on close",
+			"slide-right": "Panel slides right on close",
+			"push-down": "Panel pushes down on close",
+			"push-up": "Panel pushes up on close",
+			"push-left": "Panel pushes left on close",
+			"push-right": "Panel pushes right on close",
+			"fade": "Panel fades out on close",
+			"none": "No visual effect during panel closing"
+		},
+		"Default": "default"
+	},
+	"gx-call-type": {
+		"Type": "enum{default;push;replace;popup;callout}",
+		"Description": "Navigation mode for opening a new layout",
+		"Scope": "Native",
+		"Context": [
+			"Form"
+		],
+		"Options": {
+			"default": "Default navigation mode",
+			"push": "Pushes new layout onto stack",
+			"replace": "Replaces current layout with new one",
+			"popup": "Opens new layout in popup window",
+			"callout": "Displays callout overlay for new layout"
+		},
+		"Default": "default"
+	},
+	"gx-target-name": {
+		"Type": "string",
+		"Description": "Name of main application object",
+		"Scope": "Native",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-target-size": {
+		"Type": "enum{default;small;medium;large;custom}",
+		"Description": "Size of target control",
+		"Scope": "Native",
+		"Context": [
+			"Form"
+		],
+		"Options": {
+			"default": "Default size of target control",
+			"small": "Smaller size for target control",
+			"medium": "Medium size for target control",
+			"large": "Larger size for target control",
+			"custom": "Custom size for target control"
+		},
+		"Default": "default"
+	},
+	"gx-target-width": {
+		"Type": "string",
+		"Description": "Width of popup target control",
+		"Scope": "Native",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-target-height": {
+		"Type": "string",
+		"Description": "Height of target control",
+		"Scope": "Native",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-content-size-change": {
+		"Type": "enum{default;resize;scroll}",
+		"Description": "Controls layout adaptation to virtual keyboard display",
+		"Scope": "Native",
+		"Context": [
+			"Form"
+		],
+		"Options": {
+			"default": "Resizes screen content as keyboard appears and disappears",
+			"resize": "Resizes screen content as keyboard appears and disappears",
+			"scroll": "Adds scroll to content to display keyboard without resizing elements"
+		},
+		"Default": "default"
+	},
+	"gx-input-view-appearance": {
+		"Type": "enum{default;light;dark}",
+		"Description": "Sets input view appearance style",
+		"Scope": "Native",
+		"Context": [
+			"Form"
+		],
+		"Options": {
+			"default": "Default value. Use Light or Dark depending on platform default.",
+			"light": "Forces light input view",
+			"dark": "Forces dark input view"
+		},
+		"Default": "default"
+	},
+	"gx-loading-animation-class": {
+		"Type": "class(Animation)",
+		"Description": "Selects animation for `Progress Indicator` element",
+		"Scope": "Native",
+		"Context": [
+			"Form",
+			"Grid"
+		]
+	},
+	"gx-animated": {
+		"Type": "boolean",
+		"Description": "Includes animation during state transitions",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Button",
+			"Grid",
+			"GridRow",
+			"Group",
+			"Image",
+			"MenuItem",
+			"Multimedia",
+			"Tab",
+			"Table",
+			"TextBlock"
+		],
+		"Default": "False"
+	},
+	"gx-animation-duration": {
+		"Type": "string",
+		"Description": "Duration of animation in milliseconds",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Button",
+			"Grid",
+			"GridRow",
+			"Group",
+			"Image",
+			"MenuItem",
+			"Multimedia",
+			"Tab",
+			"Table",
+			"TextBlock"
+		]
+	},
+	"gx-highlighted-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Button",
+			"Grid",
+			"GridRow",
+			"Group",
+			"Image",
+			"MenuItem",
+			"Multimedia",
+			"Tab",
+			"Table",
+			"TabPage",
+			"TextBlock"
+		]
+	},
+	"gx-highlighted-background-image": {
+		"Type": "ref(Image)",
+		"Description": "Background image displayed when control is highlighted",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Button",
+			"Grid",
+			"GridRow",
+			"Group",
+			"MenuItem",
+			"Tab",
+			"Table",
+			"TabPage",
+			"TextBlock"
+		]
+	},
+	"gx-invite-message-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Image",
+			"Multimedia"
+		]
+	},
+	"gx-label-width": {
+		"Type": "string",
+		"Description": "Width of control label in responsive design",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Image",
+			"Multimedia"
+		],
+		"Default": "25%"
+	},
+	"gx-label-horizontal-align": {
+		"Type": "enum{default;left;center;right;justify}",
+		"Description": "Controls horizontal alignment of element",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Image",
+			"Multimedia"
+		],
+		"Options": {
+			"default": "",
+			"left": "Element aligned to left edge",
+			"center": "Element centered horizontally",
+			"right": "Element aligned to right edge",
+			"justify": ""
+		},
+		"Default": "left"
+	},
+	"gx-label-vertical-align": {
+		"Type": "enum{default;top;middle;bottom}",
+		"Description": "Controls horizontal alignment of element",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Image",
+			"Multimedia"
+		],
+		"Options": {
+			"default": "",
+			"top": "",
+			"middle": "",
+			"bottom": ""
+		},
+		"Default": "Left"
+	},
+	"gx-show-edit-text-line": {
+		"Type": "boolean",
+		"Description": "Show edit text line indicator",
+		"Scope": "Native",
+		"Context": [
+			"Attribute"
+		],
+		"Default": "True"
+	},
+	"gx-start-dragging-class": {
+		"Type": "keys(class)",
+		"Description": "Class name for drag start animation",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Grid",
+			"GridRow",
+			"Group",
+			"Image",
+			"Multimedia",
+			"Table",
+			"TextBlock"
+		]
+	},
+	"gx-accept-drag-class": {
+		"Type": "keys(class)",
+		"Description": "Indicates if element accepts drag operations",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Grid",
+			"GridRow",
+			"Group",
+			"Image",
+			"Multimedia",
+			"Table",
+			"TextBlock"
+		]
+	},
+	"gx-no-accept-drag-class": {
+		"Type": "keys(class)",
+		"Description": "Indicates if element accepts drag operations",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Grid",
+			"GridRow",
+			"Group",
+			"Image",
+			"Multimedia",
+			"Table",
+			"TextBlock"
+		]
+	},
+	"gx-drag-over-class": {
+		"Type": "keys(class)",
+		"Description": "Class applied to element when dragged over",
+		"Scope": "Native",
+		"Context": [
+			"Attribute",
+			"Grid",
+			"GridRow",
+			"Group",
+			"Image",
+			"Multimedia",
+			"Table",
+			"TextBlock"
+		]
+	},
+	"gx-grid-class": {
+		"Type": "class(Grid)",
+		"Description": "Background class for empty grid",
+		"Scope": "Native",
+		"Context": [
+			"Menu"
+		]
+	},
+	"gx-tab-class": {
+		"Type": "class(Tab)",
+		"Description": "Styling class for tab control",
+		"Scope": "Native",
+		"Context": [
+			"Menu"
+		],
+		"Default": "Tab"
+	},
+	"gx-image-class": {
+		"Type": "class(Image)",
+		"Description": "Class name for image in audio controller",
+		"Scope": "Native",
+		"Context": [
+			"MenuItem"
+		]
+	},
+	"gx-row-horizontal-line-separator": {
+		"Type": "boolean",
+		"Description": "Draws horizontal line between rows",
+		"Scope": "Native",
+		"Context": [
+			"Grid"
+		],
+		"Default": "True"
+	},
+	"gx-horizontal-line-class": {
+		"Type": "class(HorizontalLine)",
+		"Description": "Class name for horizontal line styling",
+		"Scope": "Native",
+		"Context": [
+			"Grid",
+			"Table"
+		]
+	},
+	"gx-grid-odd-row-class": {
+		"Type": "class(GridRow)",
+		"Description": "Applies specified class to odd rows in grid controls",
+		"Scope": "Native",
+		"Context": [
+			"Grid"
+		]
+	},
+	"gx-grid-even-row-class": {
+		"Type": "class(GridRow)",
+		"Description": "Assigns style to even rows in grid controls",
+		"Scope": "Native",
+		"Context": [
+			"Grid"
+		]
+	},
+	"gx-group-separator-class": {
+		"Type": "class(GroupSeparator)",
+		"Description": "Class for group separator styling",
+		"Scope": "Native",
+		"Context": [
+			"Grid",
+			"Group"
+		]
+	},
+	"gx-scroll-indicator-visibility": {
+		"Type": "enum{default;both;horizontal;vertical;none}",
+		"Description": "Scroll indicators visibility behavior",
+		"Scope": "Native",
+		"Context": [
+			"Grid",
+			"Group",
+			"Table"
+		],
+		"Options": {
+			"default": "Platform Default scroll indicators visibility",
+			"both": "ScrollIndicator visible in both directions during tracking",
+			"horizontal": "Horizontal scroll indicator visible during tracking",
+			"vertical": "Vertical scroll indicator visible during tracking",
+			"none": "ScrollIndicator always hidden"
+		},
+		"Default": "default",
+		"ProductVersion": "<15.7"
+	},
+	"gx-scroll-indicator-style": {
+		"Type": "enum{default;dark;light}",
+		"Description": "Scroll indicator appearance style",
+		"Scope": "Native",
+		"Context": [
+			"Grid",
+			"Group",
+			"Table"
+		],
+		"Options": {
+			"default": "Default scroll indicator style",
+			"dark": "Dark themed scroll indicators",
+			"light": "Light themed scroll indicators"
+		},
+		"Default": "default"
+	},
+	"gx-scroll-bouncing": {
+		"Type": "enum{default;when-content-allows-scrolling;always-horizontally;always-vertically;always;never}",
+		"Description": "Controls scroll view bouncing behavior",
+		"Scope": "Native",
+		"Context": [
+			"Grid",
+			"Group",
+			"Table"
+		],
+		"Options": {
+			"default": "Always bounces in any direction when content is bigger than container",
+			"when-content-allows-scrolling": "Bounces only when content exceeds container size",
+			"always-horizontally": "Always bounces horizontally; vertically if content wider",
+			"always-vertically": "Always bounces vertically; horizontally if content taller",
+			"always": "Bounces in any direction always",
+			"never": "Disables bouncing"
+		},
+		"Default": "default"
+	},
+	"gx-caption-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for dashboard filters caption",
+		"Scope": "Native",
+		"Context": [
+			"Group"
+		]
+	},
+	"gx-motion-effect-max-horizontal-offset": {
+		"Type": "integer",
+		"Description": "Maximum horizontal displacement of control during tilt",
+		"Scope": "Native",
+		"Context": [
+			"Group",
+			"Image",
+			"Multimedia",
+			"Table"
+		],
+		"Default": "0"
+	},
+	"gx-motion-effect-max-vertical-offset": {
+		"Type": "integer",
+		"Description": "Maximum vertical displacement of control during motion effect",
+		"Scope": "Native",
+		"Context": [
+			"Group",
+			"Image",
+			"Multimedia",
+			"Table"
+		],
+		"Default": "0"
+	},
+	"gx-content-mode": {
+		"Type": "enum{;original;tile;fill;fill-keeping-aspect;fit}",
+		"Description": "Resizes image to fit control area without distortion",
+		"Scope": "Native",
+		"Context": [
+			"Image",
+			"Multimedia"
+		],
+		"Options": {
+			"": "",
+			"original": "Maintains original size regardless of control area",
+			"tile": "Repeats image to fill control area",
+			"fill": "Scales image to fill entire control area",
+			"fill-keeping-aspect": "",
+			"fit": "Scales image to fit within control area"
+		}
+	},
+	"gx-animation-class": {
+		"Type": "class(Animation)",
+		"Description": "Selects animation for `Progress Indicator` element",
+		"Scope": "Native",
+		"Context": [
+			"Progress"
+		]
+	},
+	"gx-title-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Customizes Progress Indicator title appearance",
+		"Scope": "Native",
+		"Context": [
+			"Progress"
+		]
+	},
+	"gx-description-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Customizes Progress Indicator description appearance",
+		"Scope": "Native",
+		"Context": [
+			"Progress"
+		],
+		"ProductVersion": "<15.9"
+	},
+	"gx-tabs-position": {
+		"Type": "enum{;bottom;top}",
+		"Description": "Position of tab bar",
+		"Scope": "Native",
+		"Context": [
+			"Tab"
+		],
+		"Options": {
+			"": "",
+			"bottom": "Tab bar at bottom edge",
+			"top": "Tab bar at top edge"
+		}
+	},
+	"gx-tab-strip-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-tab-strip-elevation": {
+		"Type": "string",
+		"Description": "Controls shadow intensity for controls",
+		"Scope": "Native",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-tab-strip-height": {
+		"Type": "string",
+		"Description": "Height of tab strip",
+		"Scope": "Native",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-tab-strip-indicator-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-tab-strip-line-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-selected-tab-page-class": {
+		"Type": "class(TabPage)",
+		"Description": "Theme class for selected tab page",
+		"Scope": "Native",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-unselected-tab-page-class": {
+		"Type": "class(TabPage)",
+		"Description": "Theme class for unselected tab page",
+		"Scope": "Native",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-mini-player-title-label-class": {
+		"Type": "class",
+		"Description": "Class applied to attribute label in Abstract Layout",
+		"Scope": "Native",
+		"Context": [
+			"AudioController"
+		]
+	},
+	"gx-mini-player-subtitle-label-class": {
+		"Type": "class",
+		"Description": "Class applied to attribute label in Abstract Layout",
+		"Scope": "Native",
+		"Context": [
+			"AudioController"
+		]
+	},
+	"gx-mini-player-image-class": {
+		"Type": "class",
+		"Description": "Class name for image in audio controller",
+		"Scope": "Native",
+		"Context": [
+			"AudioController"
+		]
+	},
+	"gx-mini-player-play-pause-button-class": {
+		"Type": "class",
+		"Description": "Class for play/pause button appearance",
+		"Scope": "Native",
+		"Context": [
+			"AudioController"
+		]
+	},
+	"gx-full-screen-player-title-label-class": {
+		"Type": "class",
+		"Description": "Class applied to attribute label in Abstract Layout",
+		"Scope": "Native",
+		"Context": [
+			"AudioController"
+		]
+	},
+	"gx-full-screen-player-subtitle-label-class": {
+		"Type": "class",
+		"Description": "Class applied to attribute label in Abstract Layout",
+		"Scope": "Native",
+		"Context": [
+			"AudioController"
+		]
+	},
+	"gx-full-screen-player-image-class": {
+		"Type": "class",
+		"Description": "Class name for image in audio controller",
+		"Scope": "Native",
+		"Context": [
+			"AudioController"
+		]
+	},
+	"gx-full-screen-player-play-pause-button-class": {
+		"Type": "class",
+		"Description": "Class for play/pause button appearance",
+		"Scope": "Native",
+		"Context": [
+			"AudioController"
+		]
+	},
+	"gx-full-screen-player-other-button-class": {
+		"Type": "class",
+		"Description": "Class name for other buttons in full-screen player",
+		"Scope": "Native",
+		"Context": [
+			"AudioController"
+		]
+	},
+	"gx-y-axis-title-lable-class": {
+		"Type": "class",
+		"Description": "Class name for y axis title label",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-y-axis-description-label-class": {
+		"Type": "class",
+		"Description": "Class applied to attribute label in Abstract Layout",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-x-axis-label-class": {
+		"Type": "class",
+		"Description": "Class applied to attribute label in Abstract Layout",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-cell-table-class": {
+		"Type": "class",
+		"Description": "Class name for customizing cell appearance",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-selected-cell-table-class": {
+		"Type": "class",
+		"Description": "Class name for customizing cell appearance",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-x-axis-table-class": {
+		"Type": "class",
+		"Description": "CSS class for x axis table",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-y-axis-table-class": {
+		"Type": "class",
+		"Description": "Class name for y axis table styling",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-even-row-table-class": {
+		"Type": "class",
+		"Description": "Class applied to even rows in matrix grid",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-odd-row-table-class": {
+		"Type": "class",
+		"Description": "Class applied to odd rows in matrix grid",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-selected-row-table-class": {
+		"Type": "class",
+		"Description": "Class name for selected row in grid",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-show-horizontal-rules": {
+		"Type": "boolean",
+		"Description": "Show horizontal rules in matrix",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		],
+		"Default": "True"
+	},
+	"gx-horizontal-line-separator-class": {
+		"Type": "class",
+		"Description": "Class name for horizontal line separator",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-vertical-line-separator-class": {
+		"Type": "class",
+		"Description": "Class name for vertical line separator",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		]
+	},
+	"gx-show-vertical-rules": {
+		"Type": "boolean",
+		"Description": "Show vertical rules in matrix",
+		"Scope": "Native",
+		"Context": [
+			"Matrix"
+		],
+		"Default": "True"
+	},
+	"gx-horizontal-align": {
+		"Type": "enum{default;left;center;right}",
+		"Description": "Controls horizontal alignment of element",
+		"Scope": "Native",
+		"Context": [
+			"MatrixAxisLabel"
+		],
+		"Options": {
+			"default": "",
+			"left": "Element aligned to left edge",
+			"center": "Element centered horizontally",
+			"right": "Element aligned to right edge"
+		},
+		"Default": "default"
+	},
+	"gx-indicator-selected-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"PageController"
+		]
+	},
+	"gx-indicator-unselected-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"PageController"
+		]
+	},
+	"gx-thumb-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Slider"
+		]
+	},
+	"gx-selected-bar-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Slider"
+		]
+	},
+	"gx-unselected-bar-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"Slider"
+		]
+	},
+	"gx-value-class": {
+		"Type": "class",
+		"Description": "Styling class for card control value",
+		"Scope": "Native",
+		"Context": [
+			"Slider"
+		]
+	},
+	"gx-pin-height": {
+		"Type": "integer",
+		"Description": "Height of pin image displayed in map",
+		"Scope": "Native",
+		"Context": [
+			"MapPinImage"
+		]
+	},
+	"gx-pin-width": {
+		"Type": "integer",
+		"Description": "Width of pin image displayed in map",
+		"Scope": "Native",
+		"Context": [
+			"MapPinImage"
+		]
+	},
+	"gx-pin-scale-type": {
+		"Type": "enum{;original;tile;fill;fill-keeping-aspect;fit}",
+		"Description": "Scale type for pin image on map",
+		"Scope": "Native",
+		"Context": [
+			"MapPinImage"
+		],
+		"Options": {
+			"": "",
+			"original": "Keeps original size regardless of control area",
+			"tile": "Repeats image to fill control area",
+			"fill": "Scales image to fill control area",
+			"fill-keeping-aspect": "",
+			"fit": "Scales image to fit within control area while maintaining aspect ratio"
+		}
+	},
+	"gx-stroke-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"MapPolygon",
+			"MapRoute"
+		]
+	},
+	"gx-line-width": {
+		"Type": "integer",
+		"Description": "Stroke width for path rendering",
+		"Scope": "Native",
+		"Context": [
+			"MapPolygon",
+			"MapRoute"
+		]
+	},
+	"gx-line-join": {
+		"Type": "enum{round;miter;bevel}",
+		"Description": "Corners of path rendered as bevel, miter, or round",
+		"Scope": "Native",
+		"Context": [
+			"MapRoute"
+		],
+		"Options": {
+			"round": "Corners rendered with rounded edges",
+			"miter": "Corners rendered with sharp angles",
+			"bevel": "Corners rendered with sloped lines"
+		},
+		"Default": "round"
+	},
+	"gx-miter-limit": {
+		"Type": "integer",
+		"Description": "Limit value to avoid spikes between line segments",
+		"Scope": "Native",
+		"Context": [
+			"MapPolygon",
+			"MapRoute"
+		]
+	},
+	"gx-line-cap": {
+		"Type": "enum{butt;round;square}",
+		"Description": "Style of open ends on path",
+		"Scope": "Native",
+		"Context": [
+			"MapPolygon",
+			"MapRoute"
+		],
+		"Options": {
+			"butt": "Flat end cap",
+			"round": "Circular end cap",
+			"square": "Squared end cap"
+		},
+		"Default": "butt"
+	},
+	"gx-line-dash-pattern": {
+		"Type": "string",
+		"Description": "Specifies line segment and gap lengths for dash pattern",
+		"Scope": "Native",
+		"Context": [
+			"MapPolygon",
+			"MapRoute"
+		]
+	},
+	"gx-line-dash-phase": {
+		"Type": "string",
+		"Description": "Offset for dash pattern start",
+		"Scope": "Native",
+		"Context": [
+			"MapPolygon",
+			"MapRoute"
+		]
+	},
+	"gx-fill-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"MapPolygon"
+		]
+	},
+	"gx-line-join-style": {
+		"Type": "enum{round;miter;bevel}",
+		"Description": "Corners of path rendered as bevel, miter, or round",
+		"Scope": "Native",
+		"Context": [
+			"MapPolygon"
+		],
+		"Options": {
+			"round": "Corners rounded",
+			"miter": "Corners mitred",
+			"bevel": "Corners beveled"
+		},
+		"Default": "round"
+	},
+	"gx-selected-forecolor": {
+		"Type": "color",
+		"Description": "Text color for selected segment",
+		"Scope": "Native",
+		"Context": [
+			"ToggleButtonGroup"
+		]
+	},
+	"gx-selected-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"ToggleButtonGroup"
+		]
+	},
+	"gx-unselected-forecolor": {
+		"Type": "color",
+		"Description": "Text color for unselected ToggleButtonGroup segment",
+		"Scope": "Native",
+		"Context": [
+			"ToggleButtonGroup"
+		]
+	},
+	"gx-unselected-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Native",
+		"Context": [
+			"ToggleButtonGroup"
+		]
+	},
+	"gx-form-popup-class": {
+		"Type": "class(Popup)",
+		"Description": "Styling class for Popup window",
+		"Scope": "Web",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-form-nav-style-class": {
+		"Type": "class(NavigationStyle)",
+		"Description": "Custom class for navigation style",
+		"Scope": "Web",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-enter-effect-length": {
+		"Type": "string",
+		"Description": "Length of enter effect animation",
+		"Scope": "Web",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-enter-effect-duration": {
+		"Type": "string",
+		"Description": "Duration of enter effect",
+		"Scope": "Web",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-enter-effect-opacity": {
+		"Type": "string",
+		"Description": "Opacity level for fade-in effect",
+		"Scope": "Web",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-close-effect-length": {
+		"Type": "string",
+		"Description": "Length of exit animation",
+		"Scope": "Web",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-close-effect-duration": {
+		"Type": "string",
+		"Description": "Duration of exit effect",
+		"Scope": "Web",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-close-effect-opacity": {
+		"Type": "string",
+		"Description": "Opacity level for fade out effect during close",
+		"Scope": "Web",
+		"Context": [
+			"Form"
+		]
+	},
+	"gx-attribute-link-class": {
+		"Type": "class(Attribute)",
+		"Description": "Class applied to readonly Attribute/Variable link",
+		"Scope": "Web",
+		"Context": [
+			"Attribute"
+		]
+	},
+	"gx-attribute-visited-class": {
+		"Type": "class(Attribute)",
+		"Description": "Class applied to visited readonly Attribute/Variable Link",
+		"Scope": "Web",
+		"Context": [
+			"Attribute"
+		]
+	},
+	"gx-attribute-hovered-class": {
+		"Type": "class(Attribute)",
+		"Description": "Class applied when attribute is hovered",
+		"Scope": "Web",
+		"Context": [
+			"Attribute"
+		]
+	},
+	"gx-attribute-focused-class": {
+		"Type": "class(Attribute)",
+		"Description": "Stylistic class applied to focused attribute",
+		"Scope": "Web",
+		"Context": [
+			"Attribute"
+		]
+	},
+	"gx-attribute-highlighted-class": {
+		"Type": "class(Attribute)",
+		"Description": "Class applied to attribute when highlighted",
+		"Scope": "Web",
+		"Context": [
+			"Attribute"
+		]
+	},
+	"gx-attribute-selector-class": {
+		"Type": "class(Section)",
+		"Description": "Class for styling attribute selector button",
+		"Scope": "Web",
+		"Context": [
+			"Attribute"
+		]
+	},
+	"gx-button-hovered-class": {
+		"Type": "class(Button)",
+		"Description": "Class applied to button when hovered",
+		"Scope": "Web",
+		"Context": [
+			"Button"
+		]
+	},
+	"gx-button-focused-class": {
+		"Type": "class(Button)",
+		"Description": "Class applied to button when focused",
+		"Scope": "Web",
+		"Context": [
+			"Button"
+		]
+	},
+	"gx-button-highlighted-class": {
+		"Type": "class(Button)",
+		"Description": "Class applied to button during active state",
+		"Scope": "Web",
+		"Context": [
+			"Button"
+		]
+	},
+	"gx-button-disabled-class": {
+		"Type": "class(Button)",
+		"Description": "Sets appearance of disabled buttons",
+		"Scope": "Web",
+		"Context": [
+			"Button"
+		]
+	},
+	"gx-grid-new-row-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Class for styling new row action",
+		"Scope": "Web",
+		"Context": [
+			"Grid"
+		],
+		"Default": "GridNewRow"
+	},
+	"gx-table-header-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for table header",
+		"Scope": "Web",
+		"Context": [
+			"Grid",
+			"Table"
+		]
+	},
+	"gx-grid-loading-text-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Stylistic class for loading text during data fetching",
+		"Scope": "Web",
+		"Context": [
+			"FreeStyleGrid",
+			"Grid"
+		]
+	},
+	"gx-grid-empty-text-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Theme class for empty grid text",
+		"Scope": "Web",
+		"Context": [
+			"FreeStyleGrid",
+			"Grid"
+		]
+	},
+	"gx-grid-empty-class": {
+		"Type": "class(Grid)",
+		"Description": "Theme class for empty grid background",
+		"Scope": "Web",
+		"Context": [
+			"FreeStyleGrid",
+			"Grid"
+		]
+	},
+	"gx-grid-row-class": {
+		"Type": "class(GridRow)",
+		"Description": "Style header row of grid control",
+		"Scope": "Web",
+		"Context": [
+			"Grid"
+		]
+	},
+	"gx-grid-column-class": {
+		"Type": "class(GridColumn)",
+		"Description": "Applies predefined or custom class for styling grid columns",
+		"Scope": "Web",
+		"Context": [
+			"Grid"
+		]
+	},
+	"gx-grid-header-row-class": {
+		"Type": "class(GridRow)",
+		"Description": "Styling class for grid header row",
+		"Scope": "Web",
+		"Context": [
+			"Grid"
+		]
+	},
+	"gx-grid-selected-row-class": {
+		"Type": "class(GridRow)",
+		"Description": "Class for styling selected row",
+		"Scope": "Web",
+		"Context": [
+			"Grid"
+		]
+	},
+	"gx-grid-hover-row-class": {
+		"Type": "class(GridRow)",
+		"Description": "Class applied to row on hover",
+		"Scope": "Web",
+		"Context": [
+			"Grid"
+		]
+	},
+	"gx-image-hovered-class": {
+		"Type": "class(Image)",
+		"Description": "Class applied to image when hovered",
+		"Scope": "Web",
+		"Context": [
+			"Image"
+		]
+	},
+	"gx-image-focused-class": {
+		"Type": "class(Image)",
+		"Description": "Styling class applied to Image when focused",
+		"Scope": "Web",
+		"Context": [
+			"Image"
+		]
+	},
+	"gx-image-highlighted-class": {
+		"Type": "class(Image)",
+		"Description": "Class applied to image when active",
+		"Scope": "Web",
+		"Context": [
+			"Image"
+		]
+	},
+	"gx-tab-item-class": {
+		"Type": "class(TabPage)",
+		"Description": "Styling class for tab items",
+		"Scope": "Web",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-tab-first-item-class": {
+		"Type": "class(TabPage)",
+		"Description": "Class for styling first item of tab",
+		"Scope": "Web",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-tab-last-item-class": {
+		"Type": "class(TabPage)",
+		"Description": "Class for styling last tab item",
+		"Scope": "Web",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-tab-strip-class": {
+		"Type": "class(Section)",
+		"Description": "CSS class for tab strip styling",
+		"Scope": "Web",
+		"Context": [
+			"Tab"
+		]
+	},
+	"gx-tab-page-selected-class": {
+		"Type": "class(TabPage)",
+		"Description": "Class used to style selected tab page",
+		"Scope": "Web",
+		"Context": [
+			"TabPage"
+		]
+	},
+	"gx-tab-page-hovered-class": {
+		"Type": "class(TabPage)",
+		"Description": "Class applied to tab page when hovered",
+		"Scope": "Web",
+		"Context": [
+			"TabPage"
+		]
+	},
+	"gx-tab-page-focused-class": {
+		"Type": "class(TabPage)",
+		"Description": "Class applied when tab page is focused",
+		"Scope": "Web",
+		"Context": [
+			"TabPage"
+		]
+	},
+	"gx-table-hovered-class": {
+		"Type": "class(Table)",
+		"Description": "Class applied to table on hover",
+		"Scope": "Web",
+		"Context": [
+			"Table"
+		]
+	},
+	"gx-table-highlighted-class": {
+		"Type": "class(Table)",
+		"Description": "Class applied to table during active state",
+		"Scope": "Web",
+		"Context": [
+			"Table"
+		]
+	},
+	"gx-text-block-link-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Class applied to link within text block",
+		"Scope": "Web",
+		"Context": [
+			"TextBlock"
+		]
+	},
+	"gx-text-block-visited-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Class applied to visited links",
+		"Scope": "Web",
+		"Context": [
+			"TextBlock"
+		]
+	},
+	"gx-text-block-hovered-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Class applied to text block when hovered",
+		"Scope": "Web",
+		"Context": [
+			"TextBlock"
+		]
+	},
+	"gx-text-block-focused-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class applied to focused text block",
+		"Scope": "Web",
+		"Context": [
+			"TextBlock"
+		]
+	},
+	"gx-text-block-highlighted-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Class applied to text block during active state",
+		"Scope": "Web",
+		"Context": [
+			"TextBlock"
+		]
+	},
+	"gx-error-viewer-error-line-class": {
+		"Type": "class(ErrorViewerLine)",
+		"Description": "Error line class for error viewer element",
+		"Scope": "Web",
+		"Context": [
+			"ErrorViewer"
+		]
+	},
+	"gx-error-viewer-info-line-class": {
+		"Type": "class(ErrorViewerLine)",
+		"Description": "Class name for info line in error viewer",
+		"Scope": "Web",
+		"Context": [
+			"ErrorViewer"
+		]
+	},
+	"gx-error-viewer-line-close-button-class": {
+		"Type": "class(Button)",
+		"Description": "Class name for close button in error viewer line",
+		"Scope": "Web",
+		"Context": [
+			"ErrorViewerLine"
+		]
+	},
+	"gx-free-style-grid-new-row-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Class for styling new row action",
+		"Scope": "Web",
+		"Context": [
+			"FreeStyleGrid"
+		],
+		"Default": "GridNewRow"
+	},
+	"gx-grid-column-header-class": {
+		"Type": "class(GridColumn)",
+		"Description": "Styling class for grid column header",
+		"Scope": "Web",
+		"Context": [
+			"GridColumn"
+		]
+	},
+	"gx-table-row-hovered-class": {
+		"Type": "class(TableRow)",
+		"Description": "Class applied to table row on hover",
+		"Scope": "Web",
+		"Context": [
+			"TableRow"
+		]
+	},
+	"gx-table-row-cell-class": {
+		"Type": "class(TableCell)",
+		"Description": "Styling class for table cells in a row",
+		"Scope": "Web",
+		"Context": [
+			"TableRow"
+		]
+	},
+	"gx-table-cell-hovered-class": {
+		"Type": "class(TableCell)",
+		"Description": "Class applied to table cell on hover",
+		"Scope": "Web",
+		"Context": [
+			"TableCell"
+		]
+	},
+	"gx-section-hovered-class": {
+		"Type": "class(Section)",
+		"Description": "Class applied to row when hovered",
+		"Scope": "Web",
+		"Context": [
+			"Section"
+		]
+	},
+	"gx-section-highlighted-class": {
+		"Type": "class(Section)",
+		"Description": "Class applied to section during active state",
+		"Scope": "Web",
+		"Context": [
+			"Section"
+		]
+	},
+	"gx-popup-header-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for popup header",
+		"Scope": "Web",
+		"Context": [
+			"Popup"
+		]
+	},
+	"gx-popup-content-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for popup content",
+		"Scope": "Web",
+		"Context": [
+			"Popup"
+		]
+	},
+	"gx-popup-resize-handle-class": {
+		"Type": "class(Image)",
+		"Description": "Styling class for popup resize handle",
+		"Scope": "Web",
+		"Context": [
+			"Popup"
+		]
+	},
+	"gx-popup-close-button-class": {
+		"Type": "class(Image)",
+		"Description": "Class for styling popup close button",
+		"Scope": "Web",
+		"Context": [
+			"Popup"
+		]
+	},
+	"gx-call-target-hidden-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class used to style hidden CallTarget",
+		"Scope": "Web",
+		"Context": [
+			"CallTarget"
+		]
+	},
+	"gx-call-target-collapsed-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for collapsed CallTarget styling",
+		"Scope": "Web",
+		"Context": [
+			"CallTarget"
+		]
+	},
+	"gx-nav-style-mode": {
+		"Type": "enum{idNavStyleModeSlide;idNavStyleModeStatic;idNavStyleModeCustom}",
+		"Description": "Navigation mode for content sliding, static display, or custom styling",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		],
+		"Options": {
+			"idNavStyleModeSlide": "Content slides during navigation",
+			"idNavStyleModeStatic": "Content remains fixed during navigation",
+			"idNavStyleModeCustom": "Allows custom navigation styles"
+		},
+		"Default": "idNavStyleModeStatic"
+	},
+	"gx-nav-style-top-target-height": {
+		"Type": "string",
+		"Description": "Height of target control",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-right-target-width": {
+		"Type": "string",
+		"Description": "Width of popup target control",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-bottom-target-height": {
+		"Type": "string",
+		"Description": "Height of target control",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-left-target-width": {
+		"Type": "string",
+		"Description": "Width of popup target control",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-top-target-height-collapsed": {
+		"Type": "string",
+		"Description": "Height of collapsed navigation target control",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-right-target-width-collapsed": {
+		"Type": "string",
+		"Description": "Width of right target control when collapsed",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-bottom-target-height-collapsed": {
+		"Type": "string",
+		"Description": "Height of collapsed navigation target control",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-left-target-width-collapsed": {
+		"Type": "string",
+		"Description": "Width of left navigation target when collapsed",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-top-target-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling Top CallTarget element",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-right-target-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling right CallTarget",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-bottom-target-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling Bottom CallTarget element",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-left-target-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling left call target element",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-columns-container-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for Dashboard widget container",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-content-target-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class name for styled content call target",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-content-target-when-top-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class to style content target when top target is shown",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-content-target-when-right-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling content target when right target is shown",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-content-target-when-bottom-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling content target when bottom target is shown",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-content-target-when-left-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling content target when left target is shown",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-content-target-when-top-collapsed-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling content target when top target is collapsed",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-content-target-when-right-collapsed-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling content target when right target is collapsed",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-content-target-when-bottom-collapsed-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for collapsed content target styling",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-nav-style-content-target-when-left-collapsed-class": {
+		"Type": "class(CallTarget)",
+		"Description": "Class for styling content target when left navigation is collapsed",
+		"Scope": "Web",
+		"Context": [
+			"NavigationStyle"
+		]
+	},
+	"gx-action-group-item-hovered-class": {
+		"Type": "class(ActionGroupItem)",
+		"Description": "Class applied to hovered action group item",
+		"Scope": "Web",
+		"Context": [
+			"ActionGroupItem"
+		]
+	},
+	"gx-action-group-item-class": {
+		"Type": "class(ActionGroupItem)",
+		"Description": "Class name for action group item",
+		"Scope": "Web",
+		"Context": [
+			"ActionGroup"
+		]
+	},
+	"gx-action-group-selected-item-class": {
+		"Type": "class(ActionGroupItem)",
+		"Description": "Class for highlighted selected item in action group",
+		"Scope": "Web",
+		"Context": [
+			"ActionGroup"
+		]
+	},
+	"gx-action-group-link-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Class for link items in text blocks",
+		"Scope": "Web",
+		"Context": [
+			"ActionGroup"
+		]
+	},
+	"gx-action-group-toggle-button-class": {
+		"Type": "class(Button)",
+		"Description": "Styling class for toggle button in extra small size",
+		"Scope": "Web",
+		"Context": [
+			"ActionGroup"
+		]
+	},
+	"gx-action-group-items-list-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for action group items list",
+		"Scope": "Web",
+		"Context": [
+			"ActionGroup"
+		]
+	},
+	"gx-action-group-title-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Customizes Progress Indicator title appearance",
+		"Scope": "Web",
+		"Context": [
+			"ActionGroup"
+		]
+	},
+	"gx-action-group-image-class": {
+		"Type": "class(Image)",
+		"Description": "Class name for image in audio controller",
+		"Scope": "Web",
+		"Context": [
+			"ActionGroup"
+		]
+	},
+	"gx-dv-main-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-title-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Customizes Progress Indicator title appearance",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-error-class": {
+		"Type": "class(ErrorViewer)",
+		"Description": "Styling class for dashboard errors",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-widget-container-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for Dashboard widget container",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-text-block-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for text blocks in dashboard",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-image-class": {
+		"Type": "class(Image)",
+		"Description": "Class name for image in audio controller",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-object-class": {
+		"Type": "class",
+		"Description": "Styling class for dashboard objects",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-filter-caption-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for dashboard filters caption",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-filter-value-class": {
+		"Type": "class(Attribute)",
+		"Description": "Styling class for card control value",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-widget-frame-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for widget frame",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-widget-frame-title-class": {
+		"Type": "class(Section)",
+		"Description": "Customizes Progress Indicator title appearance",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-widget-frame-body-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for widget frame body",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-table-class": {
+		"Type": "class(Table)",
+		"Description": "Styling class for dashboard tables",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-row-class": {
+		"Type": "class(TableRow)",
+		"Description": "Styling class for dashboard rows",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-dv-cell-class": {
+		"Type": "class(TableCell)",
+		"Description": "Styling class for dashboard cells",
+		"Scope": "Web",
+		"Context": [
+			"DashboardViewer"
+		]
+	},
+	"gx-container-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for Dashboard widget container",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload",
+			"GridPageController"
+		]
+	},
+	"gx-add-files-button-class": {
+		"Type": "class(Button)",
+		"Description": "Styling class for `Add Files` button",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-start-button-class": {
+		"Type": "class(Button)",
+		"Description": "Styling class for start buttons",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-cancel-button-class": {
+		"Type": "class(Button)",
+		"Description": "Styling class for cancel buttons",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-buttons-bar-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for buttons bar",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-drop-zone-class": {
+		"Type": "class(Section)",
+		"Description": "Styling class for drop zone area",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-drop-zone-text-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for drop zone text",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-files-table-class": {
+		"Type": "class(Table)",
+		"Description": "Styling class for file display table",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-files-table-row-class": {
+		"Type": "class(TableRow)",
+		"Description": "Styling class for file upload table rows",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-files-table-cell-class": {
+		"Type": "class(TableCell)",
+		"Description": "Styling class for file display cells",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-file-preview-class": {
+		"Type": "class(Image)",
+		"Description": "Styling class for file preview",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-file-name-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for file name text",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-file-size-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for file size text",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-error-message-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for error messages",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		]
+	},
+	"gx-show-file-size": {
+		"Type": "boolean",
+		"Description": "Indicates if file size is shown in files table",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		],
+		"Default": "True"
+	},
+	"gx-show-file-preview": {
+		"Type": "boolean",
+		"Description": "Indicates if file preview is shown in files table",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		],
+		"Default": "True"
+	},
+	"gx-show-file-buttons": {
+		"Type": "boolean",
+		"Description": "Action buttons visibility in files table",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		],
+		"Default": "True"
+	},
+	"gx-buttons-icons": {
+		"Type": "boolean",
+		"Description": "Shows default icons on action buttons",
+		"Scope": "Web",
+		"Context": [
+			"FileUpload"
+		],
+		"Default": "True"
+	},
+	"gx-page-indicator-selected-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"GridPageController"
+		]
+	},
+	"gx-page-indicator-unselected-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"GridPageController"
+		]
+	},
+	"gx-page-indicator-symbol": {
+		"Type": "string",
+		"Description": "Symbol for page indicator in horizontal grid",
+		"Scope": "Web",
+		"Context": [
+			"GridPageController"
+		]
+	},
+	"gx-arrow-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"GridPageController"
+		]
+	},
+	"gx-left-arrow-symbol": {
+		"Type": "string",
+		"Description": "Symbol for left arrow in horizontal grid",
+		"Scope": "Web",
+		"Context": [
+			"GridPageController"
+		]
+	},
+	"gx-right-arrow-symbol": {
+		"Type": "string",
+		"Description": "Symbol for right arrow in horizontal grid",
+		"Scope": "Web",
+		"Context": [
+			"GridPageController"
+		]
+	},
+	"gx-qv-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-card-container-class": {
+		"Type": "class(Table)",
+		"Description": "Styling class for Dashboard widget container",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-card-element-value-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for card control value",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-card-element-title-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Customizes Progress Indicator title appearance",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-card-sparkline-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-card-max-min-value-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Styling class for card control value",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-card-max-min-title-class": {
+		"Type": "class(TextBlock)",
+		"Description": "Customizes Progress Indicator title appearance",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-selection-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-first": {
+		"Type": "color",
+		"Description": "First color for chart series",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-second": {
+		"Type": "color",
+		"Description": "Second color for chart series",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-third": {
+		"Type": "color",
+		"Description": "Third color for chart series",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-fourth": {
+		"Type": "color",
+		"Description": "Fourth color for chart series",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-fifth": {
+		"Type": "color",
+		"Description": "Fifth color for chart series",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-sixth": {
+		"Type": "color",
+		"Description": "Sixth color for chart series",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-seventh": {
+		"Type": "color",
+		"Description": "Seventh color for chart series",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-eighth": {
+		"Type": "color",
+		"Description": "Eighth color for chart series",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-nineth": {
+		"Type": "color",
+		"Description": "Color of ninth series in chart",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-color-tenth": {
+		"Type": "color",
+		"Description": "Tenth color for chart series",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-background-opacity": {
+		"Type": "string",
+		"Description": "Opacity level of chart tooltip background",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-background-border-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-background-border-width": {
+		"Type": "string",
+		"Description": "Width of chart background border",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-timeline-controls-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-timeline-controls-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-timeline-controls-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-chart-timeline-controls-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-chart-timeline-controls-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-chart-timeline-controls-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-chart-timeline-controls-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-title-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-title-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-title-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-chart-title-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-chart-title-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-chart-title-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-chart-title-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-axes-title-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-axes-title-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-axes-title-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-chart-axes-title-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-chart-axes-title-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-chart-axes-title-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-chart-axes-title-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-axes-labels-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-axes-labels-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-axes-labels-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-chart-axes-labels-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-chart-axes-labels-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-chart-axes-labels-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-chart-axes-labels-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-axes-line-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-axes-line-width": {
+		"Type": "string",
+		"Description": "Stroke width for path rendering",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-series-labels-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-series-labels-opacity": {
+		"Type": "string",
+		"Description": "Background transparency level for series labels",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-series-labels-border-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-series-labels-border-width": {
+		"Type": "string",
+		"Description": "Width of series labels border",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-series-labels-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-series-labels-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-series-labels-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-chart-series-labels-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-chart-series-labels-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-chart-series-labels-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-chart-series-labels-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-tooltip-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-tooltip-opacity": {
+		"Type": "string",
+		"Description": "Background transparency of chart tooltip",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-tooltip-border-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-tooltip-border-width": {
+		"Type": "string",
+		"Description": "Width of chart tooltip border",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-tooltip-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-tooltip-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-tooltip-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-chart-tooltip-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-chart-tooltip-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-chart-tooltip-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-chart-tooltip-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-legend-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-legend-opacity": {
+		"Type": "string",
+		"Description": "Transparency level of chart legend background",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-legend-border-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-legend-border-width": {
+		"Type": "string",
+		"Description": "Width of chart legend border",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-legend-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-legend-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-chart-legend-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-chart-legend-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-chart-legend-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-chart-legend-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-chart-legend-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-selection-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-background-opacity": {
+		"Type": "string",
+		"Description": "Background transparency level for map",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-title-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-title-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-title-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-map-title-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-map-title-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-map-title-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-map-title-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-series-labels-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-series-labels-opacity": {
+		"Type": "string",
+		"Description": "Transparency level of map series labels background",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-series-labels-border-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-series-labels-border-width": {
+		"Type": "string",
+		"Description": "Width of map series labels border",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-series-labels-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-series-labels-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-series-labels-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-map-series-labels-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-map-series-labels-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-map-series-labels-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-map-series-labels-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-tooltip-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-tooltip-opacity": {
+		"Type": "string",
+		"Description": "Opacity level of map tooltip background",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-tooltip-border-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-tooltip-border-width": {
+		"Type": "string",
+		"Description": "Width of map tooltip border",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-tooltip-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-tooltip-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-tooltip-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-map-tooltip-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-map-tooltip-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-map-tooltip-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-map-tooltip-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-legend-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-legend-opacity": {
+		"Type": "string",
+		"Description": "Transparency level of map legend background",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-legend-border-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-legend-border-width": {
+		"Type": "string",
+		"Description": "Width of map legend border",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-legend-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-legend-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-map-legend-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-map-legend-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-map-legend-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-map-legend-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-map-legend-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-main-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-selection-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-border-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-title-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-title-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-title-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-title-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-title-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-title-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-title-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-header-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-header-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-header-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-header-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-header-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-header-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-header-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-header-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-header-height": {
+		"Type": "string",
+		"Description": "Height of pivot table header",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-title-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-title-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-title-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-axes-title-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-axes-title-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-axes-title-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-axes-title-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-title-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-values-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-values-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-values-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-axes-values-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-axes-values-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-axes-values-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-axes-values-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-values-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-total-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-total-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-total-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-axes-total-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-axes-total-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-axes-total-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-axes-total-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-axes-total-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-title-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-title-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-title-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-data-title-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-data-title-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-data-title-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-data-title-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-title-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-values-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-values-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-values-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-data-values-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-data-values-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-data-values-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-data-values-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-values-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-total-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-total-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-total-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-data-total-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-data-total-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-data-total-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-data-total-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-data-total-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-footer-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-footer-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-footer-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-footer-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-footer-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-footer-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-footer-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-footer-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-footer-height": {
+		"Type": "string",
+		"Description": "Height of pivot table footer element",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-footer-rows-per-page": {
+		"Type": "boolean",
+		"Description": "Shows rows per page information in pivot table footer",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Default": "True"
+	},
+	"gx-qv-pivot-table-dialog-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-dialog-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-dialog-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-pivot-table-dialog-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-pivot-table-dialog-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-pivot-table-dialog-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-pivot-table-dialog-title-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-pivot-table-dialog-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-main-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-selection-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-border-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-title-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-title-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-title-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-table-title-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-table-title-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-table-title-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-table-title-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-header-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-header-height": {
+		"Type": "string",
+		"Description": "Height of pivot table header",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-column-headers-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-column-headers-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-column-headers-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-table-column-headers-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-table-column-headers-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-table-column-headers-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-table-column-headers-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-column-headers-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-column-headers-line-height": {
+		"Type": "string",
+		"Description": "Height of column headers in `Query Viewer`",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-body-odd-lines-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-body-odd-lines-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-body-odd-lines-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-table-body-odd-lines-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-table-body-odd-lines-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-table-body-odd-lines-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-table-body-odd-lines-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-body-odd-lines-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-body-even-lines-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-body-even-lines-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-body-even-lines-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-table-body-even-lines-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-table-body-even-lines-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-table-body-even-lines-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-table-body-even-lines-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-body-even-lines-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-footer-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-footer-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-footer-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-table-footer-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-table-footer-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-table-footer-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-table-footer-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-footer-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-footer-height": {
+		"Type": "string",
+		"Description": "Height of pivot table footer element",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-footer-rows-per-page": {
+		"Type": "boolean",
+		"Description": "Shows rows per page information in pivot table footer",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Default": "True"
+	},
+	"gx-qv-table-dialog-font-family": {
+		"Type": "string",
+		"Description": "Font family for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-dialog-font-size": {
+		"Type": "string",
+		"Description": "Font size for QueryViewer control",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-dialog-font-style": {
+		"Type": "enum{;normal;italic;oblique}",
+		"Description": "Text rendered in normal font style",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text rendered in normal font style",
+			"italic": "Text rendered in italic font style",
+			"oblique": "Text rendered in oblique font style"
+		}
+	},
+	"gx-qv-table-dialog-font-weight": {
+		"Type": "enum{;normal;bold;bolder;lighter;100;200;300;400;500;600;700;800;900}",
+		"Description": "Thickness of text characters",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Default thickness",
+			"bold": "Thicker font weight",
+			"bolder": "Even thicker than selected value",
+			"lighter": "Thinner than selected value",
+			"100": "Very thin",
+			"200": "Extra light",
+			"300": "Light",
+			"400": "Normal",
+			"500": "Medium",
+			"600": "Semi bold",
+			"700": "Bold",
+			"800": "Extra bold",
+			"900": "Very thick"
+		}
+	},
+	"gx-qv-table-dialog-font-variant": {
+		"Type": "enum{;normal;small-caps}",
+		"Description": "Text displayed in small capitals",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"normal": "Text displayed in normal font",
+			"small-caps": "Text displayed in small capitals"
+		}
+	},
+	"gx-qv-table-dialog-text-decoration": {
+		"Type": "enum{;none;underline;overline;line-through;blink}",
+		"Description": "Text decoration style applied to control text",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		],
+		"Options": {
+			"": "Use platform default",
+			"none": "No text decoration",
+			"underline": "Line under text",
+			"overline": "Line over text",
+			"line-through": "Line through text",
+			"blink": "Blinking text"
+		},
+		"Default": "line-through"
+	},
+	"gx-qv-table-dialog-title-background-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	},
+	"gx-qv-table-dialog-color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Scope": "Web",
+		"Context": [
+			"QueryViewer"
+		]
+	}
+}

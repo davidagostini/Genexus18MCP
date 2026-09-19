@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway.Routers
@@ -7,14 +8,41 @@ namespace GxMcp.Gateway.Routers
     {
         public string ModuleName => "Operations";
 
+        private static readonly IReadOnlyList<IMcpModuleRouter> DomainRouters = new IMcpModuleRouter[]
+        {
+            new CreateRouter(), new TelemetryRouter(), new IoRouter(), new VersioningRouter(),
+            new DatabaseRouter(), new BrowserRouter(), new RefactorRouter(), new PropertiesRouter(),
+            new StructureRouter(), new AuthoringRouter(), new LayoutRouter()
+        };
+
         public object? ConvertToolCall(string toolName, JObject? args)
         {
+            foreach (var router in DomainRouters)
+            {
+                var result = router.ConvertToolCall(toolName, args);
+                if (result != null) return result;
+            }
+
             switch (toolName)
             {
                 // Creation umbrella: object|popup|sd_panel_*|save_as|scaffold|translate|sample|template.
                 // Replaces genexus_create_object, _create_popup, _sd_panel, _save_as, _forge, _apply_template.
-                case "genexus_create":
-                    return ConvertCreateUmbrella(args);
+                case "genexus_data_view":
+                    return new
+                    {
+                        module = "DataView",
+                        action = "Run",
+                        target = args?["transaction"]?.ToString(),
+                        @params = args
+                    };
+
+                case "genexus_generator_reference":
+                    return new
+                    {
+                        module = "GeneratorReference",
+                        action = "Run",
+                        @params = args
+                    };
 
                 case "genexus_delete_object":
                     return new
@@ -24,7 +52,8 @@ namespace GxMcp.Gateway.Routers
                         target = args?["name"]?.ToString(),
                         type = args?["type"]?.ToString(),
                         confirm = args?["confirm"]?.ToObject<bool?>() ?? false,
-                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        expectedVersion = args?["expectedVersion"]?.ToString()
                     };
 
                 case "genexus_worker_reload":
@@ -43,45 +72,6 @@ namespace GxMcp.Gateway.Routers
                 // Telemetry umbrella: friction_*|learning_report|logs|profile_*.
                 // (executions / watch_event are gateway-only — handled in Program.cs before routing.)
                 // Replaces genexus_logs, _friction_log, _learning, _profile.
-                case "genexus_telemetry":
-                    return ConvertTelemetryUmbrella(args);
-
-                case "genexus_refactor":
-                    return ConvertRefactorToolCall(args);
-
-                // Item 91: genexus_rename_across_kb — thin wrapper that routes to the
-                // existing RefactorService.Refactor(action=RenameObject|RenameAttribute)
-                // path. The service already iterates the index's CalledBy edges and
-                // patches every source-text call-site, so KB-wide rename is just the
-                // RenameAttribute/RenameObject flow under a more discoverable name.
-                case "genexus_rename_across_kb":
-                {
-                    string? from = args?["from"]?.ToString() ?? args?["oldName"]?.ToString();
-                    string? to = args?["to"]?.ToString() ?? args?["newName"]?.ToString();
-                    string? type = args?["type"]?.ToString();
-                    bool renameAcrossDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
-                    // RenameAttribute path is the index-driven one (writes attribute then
-                    // updates every CalledBy edge). For non-Attribute types, RenameObject
-                    // currently falls into the same code path (line 64 of RefactorService).
-                    string refactorAction = string.Equals(type, "Attribute", System.StringComparison.OrdinalIgnoreCase)
-                        ? "RenameAttribute"
-                        : "RenameObject";
-                    return new
-                    {
-                        module = "Refactor",
-                        action = refactorAction,
-                        target = from,
-                        dryRun = renameAcrossDryRun,
-                        payload = new JObject
-                        {
-                            ["oldName"] = from,
-                            ["newName"] = to,
-                            ["type"] = type
-                        }.ToString()
-                    };
-                }
-
-                // Variable umbrella: add|delete|modify. Replaces _add_variable, _delete_variable, _modify_variable.
                 case "genexus_variable":
                 {
                     string? vAction = args?["action"]?.ToString()?.ToLowerInvariant();
@@ -99,13 +89,22 @@ namespace GxMcp.Gateway.Routers
                         varName = args?["varName"]?.ToString(),
                         typeName = args?["typeName"]?.ToString(),
                         basedOn = args?["basedOn"]?.ToString(),
+                        objectType = args?["objectType"]?.ToString(),
+                        objectName = args?["objectName"]?.ToString(),
+                        objectModule = args?["module"]?.ToString(),
+                        expectedVersion = args?["expectedVersion"]?.ToString() ?? args?["baseVersion"]?.ToString(),
                         // issue #28 items 8/9: explicit length/decimals + collection flag.
                         length = args?["length"]?.ToObject<int?>(),
                         decimals = args?["decimals"]?.ToObject<int?>(),
                         collection = args?["collection"]?.ToObject<bool?>(),
                         // issue #32 item 1: batch add — array of {varName,typeName,length,decimals,collection}.
                         variables = args?["variables"],
-                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        // issue #60 — validationMode="specify" runs the inline Specify pass after
+                        // the write; rollbackOnFailure restores the pre-write state on spec errors.
+                        validationMode = args?["validationMode"]?.ToString(),
+                        rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>()
+                            ?? !string.IsNullOrWhiteSpace(args?["objectType"]?.ToString())
                     };
                 }
 
@@ -136,32 +135,30 @@ namespace GxMcp.Gateway.Routers
                     // — both return the same read-only findings without mutating the KB.
                     string apPatMode = args?["mode"]?.ToString();
                     bool isDiagnose = string.Equals(apPatMode, "diagnose", System.StringComparison.OrdinalIgnoreCase);
+                    bool isActions = string.Equals(apPatMode, "actions", System.StringComparison.OrdinalIgnoreCase);
                     bool isDryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
                     return new
                     {
                         module = "Pattern",
-                        action = (isDiagnose || isDryRun) ? "Diagnose" : "Apply",
+                        action = isActions ? "ManageActions" : (isDiagnose || isDryRun) ? "Diagnose" : "Apply",
                         target = args?["name"]?.ToString(),
                         @params = args
                     };
                 }
 
                 case "genexus_sdk_probe":
+                    string sdkProbeMode = args?["mode"]?.ToString();
                     return new
                     {
                         module = "SdkProbe",
-                        action = "Run",
+                        action = string.Equals(sdkProbeMode, "capabilities", StringComparison.OrdinalIgnoreCase) ? "Capabilities" : "Run",
                         target = "_self",
-                        outputDir = args?["outputDir"]?.ToString()
+                        outputDir = args?["outputDir"]?.ToString(),
+                        mode = sdkProbeMode
                     };
 
                 // Versioning umbrella: history_*|undo|time_travel|blame|diff|diff_generated.
                 // Replaces genexus_history, _undo, _time_travel, _blame, _diff, _diff_generated.
-                case "genexus_versioning":
-                    return ConvertVersioningUmbrella(args);
-
-                // export_unified merged into genexus_io umbrella.
-
                 case "genexus_format":
                     return new
                     {
@@ -170,17 +167,6 @@ namespace GxMcp.Gateway.Routers
                         payload = args?["code"]?.ToString()
                     };
 
-                case "genexus_properties":
-                    return ConvertPropertiesToolCall(args);
-
-                // IO umbrella: asset_*|export_part|import_part|export_unified|screenshot_publish|ocr.
-                // Replaces genexus_asset, _export_object, _import_object, _export_unified, _screenshot_publish, _ocr_screenshot.
-                case "genexus_io":
-                    return ConvertIoUmbrella(args);
-
-                // history / undo merged into genexus_versioning umbrella.
-
-                // Item 50 — genexus_security action=audit_gam
                 case "genexus_security":
                     return new
                     {
@@ -190,10 +176,6 @@ namespace GxMcp.Gateway.Routers
 
                 // Database umbrella: drift_check|drift_report|optimize_*|sql_*|sample_data|types_*.
                 // Replaces genexus_db_drift, _db_optimize, _sql, _generate_sample_data, _types, _translations.
-                case "genexus_db":
-                    return ConvertDbUmbrella(args);
-
-                // Item 19 (mcp-improvements-2026-05-22) — semantic WebForm edits.
                 case "genexus_edit_form":
                 {
                     string editAction = args?["action"]?.ToString();
@@ -453,13 +435,6 @@ namespace GxMcp.Gateway.Routers
                 // Browser umbrella: action=smoke|a11y|wcag|capture|cross|preview.
                 // Replaces genexus_smoke_test/_a11y_audit/_wcag_check/_browser_capture/_cross_browser/_preview.
                 // Legacy names still dispatch silently via LegacyToolAliases (McpRouter) until removed.
-                case "genexus_browser":
-                    return ConvertBrowserUmbrella(args);
-
-                // IDE Save-As parity.
-                // save_as merged into genexus_create umbrella.
-
-                // Item 65 — genexus_orient welcome card
                 case "genexus_orient":
                     return new
                     {
@@ -467,18 +442,6 @@ namespace GxMcp.Gateway.Routers
                         action = "Welcome"
                     };
 
-                case "genexus_structure":
-                    return ConvertStructureToolCall(args);
-                case "genexus_authoring":
-                    return ConvertAuthoringToolCall(args);
-                case "genexus_layout":
-                    return ConvertLayoutToolCall(args);
-
-                // create_popup merged into genexus_create umbrella.
-
-                // genexus_api — REST endpoint introspection + breaking-change diff.
-                // Single dispatcher arm; the worker's ApiIntrospectService.Run switches
-                // on args.action (list|describe|diff_baseline|snapshot).
                 case "genexus_api":
                     return new
                     {
@@ -492,6 +455,19 @@ namespace GxMcp.Gateway.Routers
                 // Worker's ProfileService.Run switches on args.action (analyze|hotspots|correlate).
                 // profile merged into genexus_telemetry umbrella.
 
+                // issue #58 — genexus_wwp: WorkWithPlus Action Group / grid-action
+                // editing over the host's PatternInstance XML. Worker's
+                // WwpActionService.Run switches on args.action (list|add_action|
+                // add_user_action|update_action|move_action|remove_action); dryRun supported.
+                case "genexus_wwp":
+                    return new
+                    {
+                        module = "WwpAction",
+                        action = "Run",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
                 // genexus_types — Domain/SDT introspection + value validation.
                 default:
                     return null;
@@ -504,6 +480,18 @@ namespace GxMcp.Gateway.Routers
             string? action = args?["action"]?.ToString();
             string? name = args?["name"]?.ToString();
             string? type = args?["type"]?.ToString();
+
+            if (string.IsNullOrWhiteSpace(action))
+            {
+                if (args?["source"] != null || args?["variables"] != null || args?["rules"] != null || args?["parms"] != null)
+                {
+                    action = "object_atomic";
+                }
+                else if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(type))
+                {
+                    action = "object";
+                }
+            }
 
             switch (action)
             {
@@ -530,7 +518,25 @@ namespace GxMcp.Gateway.Routers
                         folder = args?["folder"]?.ToString(),
                         destModule = args?["module"]?.ToString(),
                         parentPath = args?["parentPath"]?.ToString(),
-                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                        dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                        // issue #60 — validationMode="specify" runs the inline Specify pass after
+                        // creation; rollbackOnFailure deletes/reverts on spec errors (best-effort).
+                        validationMode = args?["validationMode"]?.ToString(),
+                        rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
+                    };
+
+                case "object_atomic":
+                    // Issue #62 — atomic create/update: one validated call with variables[],
+                    // rules[], parms[], properties{} and source. Forward the raw args; the
+                    // worker's AtomicCreateService validates the whole definition BEFORE the
+                    // first save, composes the SDK write primitives, and compensates on failure
+                    // (delete fresh object / restore snapshots) so nothing partial is left.
+                    return new
+                    {
+                        module = "AtomicCreate",
+                        action = "Run",
+                        target = name,
+                        @params = args
                     };
 
                 case "popup":
@@ -616,7 +622,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_create: unknown action '{action}'. Valid: object|popup|sd_panel_create|sd_panel_inspect|sd_panel_edit|save_as|scaffold|translate|sample|template."
+                        error = $"genexus_create: unknown action '{action}'. Valid: object|object_atomic|popup|sd_panel_create|sd_panel_inspect|sd_panel_edit|curl_procedure|save_as|scaffold|translate|sample|template."
                     };
             }
         }
@@ -750,6 +756,69 @@ namespace GxMcp.Gateway.Routers
                         type = args?["type"]?.ToString()
                     };
 
+                case "export_kb_to_text":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ExportTextBatch",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
+                case "import_text_to_kb":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ImportTextBatch",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
+                case "validate_kb_text_files":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ValidateTextBatch",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
+                case "validate_text_in_memory":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ValidateTextInMemory",
+                        @params = args
+                    };
+
+                case "list_text_files":
+                    return new
+                    {
+                        module = "Object",
+                        action = "ListTextInMemory",
+                        @params = args
+                    };
+
+                case "text_mirror_start":
+                    return new { module = "Object", action = "TextMirrorStart", @params = args };
+                case "text_mirror_stop":
+                    return new { module = "Object", action = "TextMirrorStop", @params = args };
+                case "text_mirror_status":
+                    return new { module = "Object", action = "TextMirrorStatus", @params = args };
+                case "text_mirror_catchup":
+                    return new { module = "Object", action = "TextMirrorCatchup", @params = args };
+                case "text_mirror_set_references":
+                    return new { module = "Object", action = "TextMirrorSetReferences", @params = args };
+
+                case "delete_kb_objects":
+                    return new
+                    {
+                        module = "Object",
+                        action = "DeleteTextBatch",
+                        target = args?["name"]?.ToString(),
+                        @params = args
+                    };
+
                 case "export_unified":
                     return new
                     {
@@ -770,7 +839,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_io: unknown action '{action}'. Valid: asset_find|asset_read|asset_write|export_part|import_part|export_unified|screenshot_publish|ocr."
+                        error = $"genexus_io: unknown action '{action}'. Valid: asset_find|asset_read|asset_write|read_blob|export_part|import_part|export_kb_to_text|import_text_to_kb|validate_kb_text_files|validate_text_in_memory|list_text_files|text_mirror_start|text_mirror_stop|text_mirror_status|text_mirror_catchup|text_mirror_set_references|delete_kb_objects|export_unified|screenshot_publish|ocr."
                     };
             }
         }
@@ -784,18 +853,19 @@ namespace GxMcp.Gateway.Routers
             switch (action)
             {
                 case "history_list":
-                    return new { module = "History", action = "list", target = name, part = RouterArgs.Str(args, "part") };
+                    return new { module = "History", action = "list", target = name, part = RouterArgs.Part(args) };
                 case "history_get":
-                    return new { module = "History", action = "get_source", target = name, versionId = RouterArgs.Int(args, "versionId"), part = RouterArgs.Str(args, "part") };
+                    return new { module = "History", action = "get_source", target = name, versionId = RouterArgs.Int(args, "versionId"), part = RouterArgs.Part(args) };
                 case "history_save":
-                    return new { module = "History", action = "save", target = name, part = RouterArgs.Str(args, "part") };
+                    return new { module = "History", action = "save", target = name, part = RouterArgs.Part(args) };
                 case "history_restore":
                     return new
                     {
                         module = "History",
                         action = "restore",
                         target = name,
-                        part = RouterArgs.Str(args, "part"),
+                        part = RouterArgs.Part(args),
+                        versionId = RouterArgs.Int(args, "versionId"),
                         snapshot = RouterArgs.Str(args, "snapshot"),
                         discard = RouterArgs.Bool(args, "discard"),
                         dryRun = RouterArgs.Bool(args, "dryRun")
@@ -866,7 +936,7 @@ namespace GxMcp.Gateway.Routers
         private static object? ConvertDbUmbrella(JObject? args)
         {
             string? action = args?["action"]?.ToString()?.ToLowerInvariant();
-            string? target = args?["target"]?.ToString() ?? args?["name"]?.ToString() ?? args?["trn"]?.ToString();
+            string? target = args?["target"]?.ToString() ?? args?["name"]?.ToString() ?? args?["trn"]?.ToString() ?? args?["transaction"]?.ToString();
             string? type = args?["type"]?.ToString();
 
             switch (action)
@@ -904,6 +974,34 @@ namespace GxMcp.Gateway.Routers
                     return new { module = "Analyze", action = "GenerateSampleData", target, rows, type };
                 }
 
+                case "records_query":
+                    return new
+                    {
+                        module = "Analyze",
+                        action = "QueryRecords",
+                        target,
+                        type,
+                        @params = args
+                    };
+                case "records_insert":
+                    return new
+                    {
+                        module = "Analyze",
+                        action = "InsertRecord",
+                        target,
+                        type,
+                        @params = args
+                    };
+                case "records_update":
+                    return new
+                    {
+                        module = "Analyze",
+                        action = "UpdateRecords",
+                        target,
+                        type,
+                        @params = args
+                    };
+
                 case "types_list":
                 case "types_describe":
                 case "types_validate":
@@ -923,10 +1021,15 @@ namespace GxMcp.Gateway.Routers
                     };
                 }
 
-                // P1 #5: reorg / DDL impact preview. Cheap timestamp heuristic by default;
-                // deep=true runs ISpecifierService.ImpactDatabase (specification, build-heavy).
+                // P1 #5 / issue #61: reorg / DDL impact preview. Cheap timestamp
+                // heuristic by default; deep=true runs ISpecifierService.ImpactDatabase
+                // (specification, build-heavy). reorg_preview additionally diffs the
+                // model-logical vs physical column structure (nullable per #57), lists
+                // indexes, and emits proposed DDL + destructive warnings.
                 case "reorg_impact":
                     return new { module = "ReorgImpact", action = "Run", @params = args };
+                case "reorg_preview":
+                    return new { module = "ReorgImpact", action = "Preview", @params = args };
 
                 // SDK translations import — was genexus_translations action=import.
                 case "translations_import":
@@ -944,7 +1047,7 @@ namespace GxMcp.Gateway.Routers
                     {
                         module = "Error",
                         action = "InvalidAction",
-                        error = $"genexus_db: unknown action '{action}'. Valid: drift_check|drift_report|optimize_analyze|optimize_suggest|optimize_report|sql_ddl|sql_navigation|sample_data|types_list|types_describe|types_validate|translations_import."
+                        error = $"genexus_db: unknown action '{action}'. Valid: drift_check|drift_report|optimize_analyze|optimize_suggest|optimize_report|sql_ddl|sql_navigation|sample_data|records_query|records_insert|records_update|types_list|types_describe|types_validate|translations_import|reorg_impact|reorg_preview."
                     };
             }
         }
@@ -1031,16 +1134,46 @@ namespace GxMcp.Gateway.Routers
 
             if (action == "ExtractProcedure")
             {
+                JObject? payloadObj = null;
+                if (args?["payload"] is JObject pObj) payloadObj = pObj;
+                else if (args?["payload"] is JValue pVal && pVal.Value is string pStr && pStr.TrimStart().StartsWith("{"))
+                {
+                    try { payloadObj = JObject.Parse(pStr); } catch { }
+                }
+
                 return new
                 {
                     module = "Refactor",
                     action,
-                    target = args?["objectName"]?.ToString(),
+                    target = args?["target"]?.ToString() ?? args?["objectName"]?.ToString() ?? payloadObj?["target"]?.ToString(),
                     dryRun = refactorDryRun,
                     payload = new JObject
                     {
-                        ["code"] = args?["code"]?.ToString(),
-                        ["procedureName"] = args?["procedureName"]?.ToString()
+                        ["code"] = args?["code"]?.ToString() ?? args?["codeToExtract"]?.ToString() ?? payloadObj?["code"]?.ToString() ?? payloadObj?["codeToExtract"]?.ToString(),
+                        ["procedureName"] = args?["procedureName"]?.ToString() ?? payloadObj?["procedureName"]?.ToString() ?? payloadObj?["name"]?.ToString()
+                    }.ToString()
+                };
+            }
+
+            if (action == "ExtractSubroutine" || string.Equals(action, "extract_subroutine", StringComparison.OrdinalIgnoreCase))
+            {
+                JObject? payloadObj = null;
+                if (args?["payload"] is JObject pObj) payloadObj = pObj;
+                else if (args?["payload"] is JValue pVal && pVal.Value is string pStr && pStr.TrimStart().StartsWith("{"))
+                {
+                    try { payloadObj = JObject.Parse(pStr); } catch { }
+                }
+
+                return new
+                {
+                    module = "Refactor",
+                    action = "ExtractSubroutine",
+                    target = args?["target"]?.ToString() ?? args?["objectName"]?.ToString() ?? payloadObj?["target"]?.ToString(),
+                    dryRun = refactorDryRun,
+                    payload = new JObject
+                    {
+                        ["code"] = args?["code"]?.ToString() ?? args?["codeToExtract"]?.ToString() ?? payloadObj?["code"]?.ToString() ?? payloadObj?["codeToExtract"]?.ToString(),
+                        ["subroutineName"] = args?["subroutineName"]?.ToString() ?? args?["subroutine"]?.ToString() ?? args?["name"]?.ToString() ?? payloadObj?["subroutineName"]?.ToString() ?? payloadObj?["subroutine"]?.ToString() ?? payloadObj?["name"]?.ToString()
                     }.ToString()
                 };
             }
@@ -1097,26 +1230,52 @@ namespace GxMcp.Gateway.Routers
                     target = args?["name"]?.ToString(),
                     propertyName = args?["propertyName"]?.ToString(),
                     value = args?["value"]?.ToString(),
+                    properties = args?["properties"] as JObject,
                     control = args?["control"]?.ToString(),
-                    type = args?["type"]?.ToString()
+                    type = args?["type"]?.ToString(),
+                    // issue #60 — validationMode="specify" runs the inline Specify pass after
+                    // the property write; rollbackOnFailure restores on spec errors.
+                    validationMode = args?["validationMode"]?.ToString(),
+                    rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                 };
             }
 
             if (action.Equals("move", System.StringComparison.OrdinalIgnoreCase))
             {
+                // Issue #238: folder/module are first-class aliases of destination (matching
+                // genexus_create action=object naming) and carry their kind with them.
+                string? targetModule = args?["targetModule"]?.ToString();
+                string? explicitDestination = args?["destination"]?.ToString();
+                string? folderAlias = args?["folder"]?.ToString();
+                string? moduleAlias = args?["module"]?.ToString();
                 return new
                 {
                     module = "Property",
                     action = "Move",
                     target = args?["name"]?.ToString(),
-                    destination = args?["destination"]?.ToString(),
-                    folder = args?["folder"]?.ToString(),
-                    module_ = args?["module"]?.ToString(),
+                    destination = explicitDestination ?? targetModule ?? folderAlias ?? moduleAlias,
+                    targetModule,
+                    folder = !string.IsNullOrWhiteSpace(folderAlias) ? folderAlias : args?["destModule"]?.ToString(),
+                    module_ = moduleAlias,
                     destModule = args?["destModule"]?.ToString(),
-                    destKind = args?["destKind"]?.ToString(),
+                    destKind = args?["destKind"]?.ToString()
+                        ?? (!string.IsNullOrWhiteSpace(folderAlias) ? "Folder"
+                            : !string.IsNullOrWhiteSpace(moduleAlias) ? "Module"
+                            : string.IsNullOrWhiteSpace(explicitDestination)
+                            && !string.IsNullOrWhiteSpace(targetModule) ? "Module" : null),
                     dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                    baseVersion = args?["baseVersion"]?.ToString(),
+                    rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
                     type = args?["type"]?.ToString()
                 };
+            }
+
+            var propNameToken = args?["propertyName"];
+            var propNamesToken = args?["propertyNames"];
+            if (propNamesToken == null && propNameToken is JArray)
+            {
+                propNamesToken = propNameToken;
+                propNameToken = null;
             }
 
             return new
@@ -1125,7 +1284,12 @@ namespace GxMcp.Gateway.Routers
                 action = "Get",
                 target = args?["name"]?.ToString(),
                 control = args?["control"]?.ToString(),
-                type = args?["type"]?.ToString()
+                type = args?["type"]?.ToString(),
+                propertyName = propNameToken?.ToString(),
+                propertyNames = propNamesToken,
+                properties = args?["properties"],
+                projection = args?["projection"]?.ToString(),
+                query = args?["query"]?.ToString()
             };
         }
 
@@ -1163,6 +1327,12 @@ namespace GxMcp.Gateway.Routers
                 "set_domain" => "SetDomainProperties",
                 "get_logic" => "GetLogicStructure",
                 "update_group" => "UpdateGroupStructure",
+                "move_attribute" => "MoveAttribute",
+                // Issue #97: native TransactionLevel.Items attribute removal (lets agents
+                // drop + re-add a misclassified subtype attribute to force re-derivation)
+                // and the subtype-classification guard-rail.
+                "remove_attribute" => "RemoveAttribute",
+                "check_subtypes" => "CheckSubtypes",
                 _ => null
             };
 
@@ -1173,7 +1343,25 @@ namespace GxMcp.Gateway.Routers
                 module = "Structure",
                 action = mappedAction,
                 target = args?["name"]?.ToString(),
-                payload = args?["payload"]?.ToString()
+                type = args?["type"]?.ToString(),
+                payload = args?["payload"]?.ToString(),
+                transactionModule = args?["module"]?.ToString(),
+                attribute = args?["attribute"]?.ToString(),
+                before = args?["before"]?.ToString(),
+                after = args?["after"]?.ToString(),
+                position = args?["position"]?.ToObject<int?>(),
+                level = args?["level"]?.ToString(),
+                levelPath = args?["levelPath"],
+                dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                baseVersion = args?["baseVersion"]?.ToString(),
+                expectedVersion = args?["expectedVersion"]?.ToString(),
+                // issue #60 — validationMode="specify" runs the inline Specify pass after a
+                // structure write; rollbackOnFailure restores the pre-write state on spec errors.
+                validationMode = args?["validationMode"]?.ToString(),
+                rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>()
+                    ?? (string.Equals(action, "create_index", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(action, "update_visual", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(action, "move_attribute", StringComparison.OrdinalIgnoreCase))
             };
         }
 
@@ -1231,6 +1419,7 @@ namespace GxMcp.Gateway.Routers
                 "scan_mutators" => "ScanMutators",
                 "rename_printblock" => "RenamePrintBlock",
                 "add_printblock" => "AddPrintBlock",
+                "delete_printblock" => "DeletePrintBlock",
                 _ => null
             };
 

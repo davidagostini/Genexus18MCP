@@ -30,6 +30,20 @@ namespace GxMcp.Worker.Helpers
         /// </summary>
         public static string ResolveRoot(string kbPath)
         {
+            // The worker may observe a SDK-reported path, but it cannot choose the
+            // durable root. The gateway-provided owner tuple is authoritative.
+            string scope = Environment.GetEnvironmentVariable("GXMCP_STATE_SCOPE_ID");
+            string kbId = Environment.GetEnvironmentVariable("GXMCP_KB_ID");
+            string generationText = Environment.GetEnvironmentVariable("GXMCP_KB_GENERATION");
+            if (!string.IsNullOrWhiteSpace(scope) && !string.IsNullOrWhiteSpace(kbId)
+                && long.TryParse(generationText, out long generation) && generation >= 0)
+            {
+                string authoritativePath = Environment.GetEnvironmentVariable("GX_KB_PATH");
+                if (!string.IsNullOrWhiteSpace(authoritativePath) && !SamePath(authoritativePath, kbPath))
+                    throw new InvalidOperationException("SDK KB path does not match the gateway-owned GX_KB_PATH.");
+                return ResolveRoot(scope, kbId, generation);
+            }
+
             if (string.IsNullOrWhiteSpace(kbPath))
             {
                 var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -37,6 +51,31 @@ namespace GxMcp.Worker.Helpers
                 return Path.Combine(local, "GenexusMCP", "edit-snapshots");
             }
             return Path.Combine(kbPath, ".gx", "snapshots");
+        }
+
+        private static bool SamePath(string left, string right)
+        {
+            try
+            {
+                string a = Path.GetFullPath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string b = Path.GetFullPath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Resolve a snapshot root that cannot collide across gateway owners or KB generations.</summary>
+        public static string ResolveRoot(string stateScopeId, string kbId, long generation, string baseDirectory = null)
+        {
+            if (string.IsNullOrWhiteSpace(stateScopeId) || string.IsNullOrWhiteSpace(kbId) || generation < 0)
+                throw new ArgumentException("stateScopeId, kbId and a non-negative generation are required.");
+            string local = baseDirectory;
+            if (string.IsNullOrWhiteSpace(local))
+            {
+                local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (string.IsNullOrEmpty(local)) local = Path.GetTempPath();
+            }
+            return Path.Combine(local, "GenexusMCP", "state", stateScopeId, "snapshots", Safe(kbId), "g" + generation);
         }
 
         /// <summary>
@@ -271,6 +310,14 @@ namespace GxMcp.Worker.Helpers
             {
                 Logger.Debug("[EditSnapshotStore] Prune failed: " + ex.Message);
             }
+        }
+
+        private static string Safe(string value)
+        {
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new StringBuilder(value.Length);
+            foreach (char c in value.Trim()) sb.Append(Array.IndexOf(invalid, c) >= 0 || c == '/' || c == '\\' ? '_' : c);
+            return sb.Length == 0 ? "_" : sb.ToString();
         }
 
         private static string Sanitize(string s)

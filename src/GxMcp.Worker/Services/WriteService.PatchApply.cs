@@ -41,6 +41,11 @@ namespace GxMcp.Worker.Services
                 // the v2.6.5 abort-on-first-failure semantics so existing callers are
                 // unaffected.
                 string validate = req["validate"]?.ToString();
+                string baseVersion = req["baseVersion"]?.ToString()
+                    ?? req["expectedVersion"]?.ToString()
+                    ?? req["versionToken"]?.ToString();
+                bool rollbackOnFailure = req["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
+                string transactionModule = req["transactionModule"]?.ToString();
 
                 if (string.IsNullOrEmpty(target))
                     throw new UsageException("usage_error", "target required");
@@ -53,7 +58,8 @@ namespace GxMcp.Worker.Services
                 if (!_objectService.GetKbService().IsOpen)
                     throw new UsageException("usage_error", "object '" + target + "' not found");
 
-                return ApplySemanticOpsCore(target, partName, opsRaw, dryRun, returnPostState, verbose, validate, typeFilter);
+                return ApplySemanticOpsCore(target, partName, opsRaw, dryRun, returnPostState, verbose,
+                    validate, typeFilter, baseVersion, rollbackOnFailure, transactionModule);
             }
             catch (UsageException ux)
             {
@@ -82,7 +88,10 @@ namespace GxMcp.Worker.Services
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        private string ApplySemanticOpsCore(string target, string partName, JArray opsRaw, bool dryRun, bool returnPostState = true, bool verbose = false, string validate = null, string typeFilter = null)
+        private string ApplySemanticOpsCore(string target, string partName, JArray opsRaw, bool dryRun,
+            bool returnPostState = true, bool verbose = false, string validate = null,
+            string typeFilter = null, string baseVersion = null, bool rollbackOnFailure = true,
+            string transactionModule = null)
         {
             var obj = _objectService.FindObject(target, typeFilter);
             if (obj == null)
@@ -99,6 +108,21 @@ namespace GxMcp.Worker.Services
                 && (partName.Equals("Structure", StringComparison.OrdinalIgnoreCase));
             if (isTrnStructure && ops.Count > 0)
             {
+                // Native GX18 persistent removal. TransactionLevel.Attributes has no public
+                // Remove API in v2.40.1; the StructureService detaches the exact
+                // TransactionAttribute from TransactionLevel.Items, snapshots first, re-reads,
+                // and verifies that the global Attribute/SubType Group remain untouched.
+                if (ops.Count == 1 && string.Equals(ops[0].Op, "remove_attribute", StringComparison.OrdinalIgnoreCase))
+                {
+                    var removeArgs = (JObject)ops[0].Args.DeepClone();
+                    removeArgs["attribute"] = ops[0].Args["name"]?.ToString();
+                    removeArgs["dryRun"] = dryRun || string.Equals(validate, "only", StringComparison.OrdinalIgnoreCase);
+                    removeArgs["rollbackOnFailure"] = rollbackOnFailure;
+                    if (!string.IsNullOrWhiteSpace(baseVersion)) removeArgs["baseVersion"] = baseVersion;
+                    if (!string.IsNullOrWhiteSpace(transactionModule)) removeArgs["transactionModule"] = transactionModule;
+                    return (_structureService ?? new StructureService(_objectService)).RemoveAttribute(target, removeArgs);
+                }
+
                 // B11: a Transaction Structure does NOT serialize to a <Structure>-rooted XML
                 // document, so ANY op that reaches the XML path below fails with the cryptic
                 // "<Structure> not found". Route attribute ops to the DSL path; if the batch
@@ -162,7 +186,7 @@ namespace GxMcp.Worker.Services
             // validate=only → never persist; return diagnostics only.
             if (mode == "only" || dryRun)
             {
-                var envelope = DryRunPlanBuilder.BuildEnvelope(target, currentXml, newXml, "ops");
+                var envelope = DryRunPlanBuilder.BuildEnvelope(target, currentXml, newXml, "ops", _kbValidationService);
                 JObject env;
                 try { env = JObject.Parse(envelope.ToString()); }
                 catch { env = new JObject { ["raw"] = envelope.ToString() }; }
@@ -235,7 +259,7 @@ namespace GxMcp.Worker.Services
 
             if (mode == "only" || dryRun)
             {
-                var envelope = DryRunPlanBuilder.BuildEnvelope(target, currentDsl, newDsl, "ops");
+                var envelope = DryRunPlanBuilder.BuildEnvelope(target, currentDsl, newDsl, "ops", _kbValidationService);
                 JObject env;
                 try { env = JObject.Parse(envelope.ToString()); }
                 catch { env = new JObject { ["raw"] = envelope.ToString() }; }
@@ -314,6 +338,44 @@ namespace GxMcp.Worker.Services
                 ["opResults"] = opResultsJson,
                 ["write"] = writeJson
             };
+            // Issue #97 guard-rail: after a successful write that added or re-typed
+            // attributes, flag subtype attributes the SDK left classified as stored
+            // (SECONDARY) while their same-supertype siblings are derived (INFERRED) —
+            // a silent physical-column / supertype-propagation bug. Re-read the
+            // persisted Transaction so the check reflects what the SDK actually saved.
+            if (writeOk && ops.Any(o => string.Equals(o.Op, "add_attribute", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(o.Op, "set_attribute", StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    // Re-read with the resolved object's own type so a null request
+                    // typeFilter can't resolve to a homonym of another kind (an untyped
+                    // FindObject searches all types).
+                    string reReadType = typeFilter ?? obj.TypeDescriptor?.Name;
+                    var verifyObj = _objectService.FindObject(target, reReadType);
+                    if (verifyObj != null)
+                    {
+                        _objectService.MarkReadCacheDirty(verifyObj, "Structure");
+                        var fresh = _objectService.FindObject(target, reReadType) as global::Artech.Genexus.Common.Objects.Transaction;
+                        if (fresh != null)
+                        {
+                            var issues = _structureService?.TryComputeSubtypeClassificationIssues(fresh) ?? new JArray();
+                            if (issues.Count > 0)
+                            {
+                                resp["subtypeClassification"] = new JObject
+                                {
+                                    ["check"] = "subtype_inferred_mismatch",
+                                    ["status"] = "warning",
+                                    ["issues"] = issues,
+                                    ["hint"] = "Subtype attribute(s) are classified as stored (SECONDARY) instead of derived (INFERRED) — this creates a physical column and breaks supertype propagation. The SDK only recomputes the class through the IDE's SubtypeGroup editor; via MCP, remove the attribute (genexus_structure action=remove_attribute or a single remove_attribute op) and re-add it, then re-run genexus_structure action=check_subtypes."
+                                };
+                            }
+                        }
+                    }
+                }
+                catch { /* guard-rail must never break the write response */ }
+            }
+
             if (returnPostState)
                 resp["post_state"] = JsonPatchService.BuildPostState(currentDsl, newDsl, verbose, persistedAfter);
             return resp.ToString(Newtonsoft.Json.Formatting.None);
@@ -405,7 +467,7 @@ namespace GxMcp.Worker.Services
             string newXml = new JsonPatchService().Apply(currentXml, kind, patchArr);
 
             if (dryRun)
-                return DryRunPlanBuilder.BuildEnvelope(target, currentXml, newXml, "patch").ToString(Newtonsoft.Json.Formatting.None);
+                return DryRunPlanBuilder.BuildEnvelope(target, currentXml, newXml, "patch", _kbValidationService).ToString(Newtonsoft.Json.Formatting.None);
 
             string writeResult = WriteObject(target, partName, newXml, typeFilter, false, false, false, false);
             JObject writeJson;

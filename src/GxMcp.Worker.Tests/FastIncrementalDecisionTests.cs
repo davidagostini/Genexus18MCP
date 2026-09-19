@@ -10,7 +10,7 @@ namespace GxMcp.Worker.Tests
     // exercised behind IFastIncrementalDecision; these tests cover the wiring
     // through BuildService + the default heuristic via a fake implementation
     // injected with SetFastIncrementalDecision.
-    public class FastIncrementalDecisionTests
+    public class FastIncrementalDecisionTests : BuildServiceTestBase
     {
         private sealed class FakeFastIncrementalDecision : IFastIncrementalDecision
         {
@@ -60,6 +60,7 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("\"status\":\"Accepted\"", json);
             Assert.Contains("\"fastIncrementalFallback\":true", json);
             Assert.Contains("\"fallbackReason\":\"non-incremental-target-kind\"", json);
+            Assert.Contains("\"fastIncrementalAppliedPath\":\"full\"", json);
             // No "fastIncremental":{...} block — we fell back.
             Assert.DoesNotContain("\"canSkipDeploy\":true", json);
         }
@@ -83,6 +84,7 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("\"status\":\"Accepted\"", json);
             Assert.Contains("\"canSkipDeploy\":true", json);
             Assert.Contains("\"canSkipSpecify\":[\"CleanProc\"]", json);
+            Assert.Contains("\"appliedPath\":\"targeted\"", json);
             // No fallback signal when the fast path is chosen.
             Assert.DoesNotContain("\"fastIncrementalFallback\":true", json);
         }

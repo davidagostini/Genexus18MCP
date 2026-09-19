@@ -1,9 +1,14 @@
 param(
     [string]$KBPath = "C:\KBs\academicoLocal",
-    [string]$OutputPath = "C:\Projetos\GenexusMCP\publish\kb_inventory.json"
+    [string]$OutputPath = "C:\Projetos\GenexusMCP\publish\kb_inventory.json",
+    [string]$GxPath = $env:GX_PATH
 )
 
-$gxPath = "C:\Program Files (x86)\GeneXus\GeneXus18"
+$root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'scripts\gx-version-catalog.ps1')
+$gxCatalog = Get-GxVersionCatalog -Root $root
+if ([string]::IsNullOrWhiteSpace($GxPath)) { $GxPath = Get-GxPrimaryInstallPath -Catalog $gxCatalog }
+$gxPath = $GxPath
 [Reflection.Assembly]::LoadFrom((Join-Path $gxPath "Artech.Common.Helpers.dll")) | Out-Null
 [Reflection.Assembly]::LoadFrom((Join-Path $gxPath "Artech.Architecture.Common.dll")) | Out-Null
 [Reflection.Assembly]::LoadFrom((Join-Path $gxPath "Artech.Genexus.Common.dll")) | Out-Null

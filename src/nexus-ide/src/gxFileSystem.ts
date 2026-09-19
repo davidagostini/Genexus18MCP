@@ -11,9 +11,6 @@ import { GxCacheManager } from "./managers/GxCacheManager";
 import {
   GX_SCHEME,
   DEFAULT_MCP_PORT,
-  MODULE_SEARCH,
-  MODULE_KB,
-  MODULE_HEALTH,
   DEFAULT_STATUS_BAR_TIMEOUT,
   ROOT_PARENT_NAME,
 } from "./constants";
@@ -228,7 +225,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
         15000,
       );
       if (res && typeof res.source === "string") {
-        let decoded = res.isBase64
+        const decoded = res.isBase64
           ? Buffer.from(res.source, "base64").toString("utf8")
           : res.source;
         this._cache.metadataCache.set(uri.toString() + ":" + partName, decoded);
@@ -483,7 +480,7 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
   private async _writeFile(
     uri: vscode.Uri,
     content: Uint8Array,
-    options: { create: boolean; overwrite: boolean },
+    _options: { create: boolean; overwrite: boolean },
   ): Promise<void> {
     const parsed = GxUriParser.parse(uri);
     const target = parsed
@@ -710,16 +707,6 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
         unique.set(getEntryKey(entry), entry);
       }
       return sortEntries(Array.from(unique.values()));
-    };
-
-    const isTimeoutError = (error: unknown): boolean => {
-      const message =
-        typeof error === "string"
-          ? error
-          : error instanceof Error
-            ? error.message
-            : String(error ?? "");
-      return /timeout gateway/i.test(message);
     };
 
     const loadTypedQueriesSequentially = async (
@@ -1090,23 +1077,23 @@ export class GxFileSystemProvider implements vscode.FileSystemProvider {
     ]);
   }
 
-  createDirectory(uri: vscode.Uri): void {
+  createDirectory(_uri: vscode.Uri): void {
     throw vscode.FileSystemError.NoPermissions("Not supported");
   }
-  delete(uri: vscode.Uri, options: { recursive: boolean }): void {
+  delete(_uri: vscode.Uri, _options: { recursive: boolean }): void {
     throw vscode.FileSystemError.NoPermissions("Not supported");
   }
   rename(
-    oldUri: vscode.Uri,
-    newUri: vscode.Uri,
-    options: { overwrite: boolean },
+    _oldUri: vscode.Uri,
+    _newUri: vscode.Uri,
+    _options: { overwrite: boolean },
   ): void {
     throw vscode.FileSystemError.NoPermissions("Not supported");
   }
   copy(
-    source: vscode.Uri,
-    destination: vscode.Uri,
-    options: { overwrite: boolean },
+    _source: vscode.Uri,
+    _destination: vscode.Uri,
+    _options: { overwrite: boolean },
   ): void {
     throw vscode.FileSystemError.NoPermissions("Not supported");
   }

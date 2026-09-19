@@ -44,9 +44,62 @@ namespace GxMcp.Gateway.Routers
             }
         }
 
+        /// <summary>
+        /// Issue #205/#206: reject `scope` / `indentation` on every form except the abbreviated
+        /// mode=patch replace shorthand. The rejection is a coded usage error
+        /// (`ScopeUnsupportedPatchForm` / `IndentationUnsupportedPatchForm`) raised before any
+        /// normalization to `context`/`content`, so the protection can never be silently
+        /// dropped — and never a partially-applied write.
+        /// </summary>
+        private static void RejectProtectedOptionsUnlessAbbreviatedPatch(JObject? args)
+        {
+            if (args == null) return;
+            // Only the object shape is routed as the abbreviated patch form (the same check the
+            // Patch routing below makes), so anything else — including a JSON string — falls
+            // through to the fail-closed rejection instead of dropping the protection.
+            JObject? patchObj = args["patch"] as JObject;
+            JToken? scopeTok = patchObj?["scope"] ?? args["scope"];
+            JToken? indentationTok = patchObj?["indentation"] ?? args["indentation"];
+            if (scopeTok == null && indentationTok == null) return;
+
+            bool hasScope = scopeTok != null;
+            bool objectShaped = (scopeTok == null || scopeTok is JObject)
+                && (indentationTok == null || indentationTok is JObject);
+            bool hasTargets = args["targets"] is JArray;
+            bool hasParts = args["parts"] is JArray partsArr && partsArr.Count > 0;
+            bool hasOperation = !string.IsNullOrWhiteSpace(args["operation"]?.ToString());
+            bool abbreviatedPatchForm = objectShaped
+                && patchObj != null
+                && (patchObj["find"] != null || patchObj["replace"] != null)
+                && string.Equals(args["mode"]?.ToString(), "patch", StringComparison.OrdinalIgnoreCase)
+                && !hasTargets && !hasParts && !hasOperation
+                && args["changeSet"] == null;
+            if (abbreviatedPatchForm)
+            {
+                // The form is supported; the anchors still have to be usable. A scope without a
+                // start anchor would silently search the whole part, so it is rejected up front
+                // too (issue #205 rule 1), before any read.
+                if (scopeTok is JObject scopeObj && string.IsNullOrWhiteSpace(scopeObj["start"]?.ToString()))
+                {
+                    throw new UsageException(
+                        "ScopeStartRequired",
+                        "patch.scope.start is required; a scope without a start anchor would silently search the whole part. "
+                        + "No write was attempted.");
+                }
+                return;
+            }
+
+            throw new UsageException(
+                hasScope ? "ScopeUnsupportedPatchForm" : "IndentationUnsupportedPatchForm",
+                $"patch.{(hasScope ? "scope" : "indentation")} is supported only in the abbreviated mode=patch form "
+                + "(patch={find,replace}); it cannot be combined with operation, mode=ops, targets[], parts[], "
+                + "Insert_After or Append, and it must be a JSON object. No write was attempted.");
+        }
+
         public object? ConvertToolCall(string toolName, JObject? args)
         {
-            string? target = args?["name"]?.ToString();
+            string? nameArg = args?["name"]?.ToString();
+            string? target = nameArg ?? args?["path"]?.ToString() ?? args?["entityKey"]?.ToString() ?? args?["guid"]?.ToString();
             string part = args?["part"]?.ToString() ?? "Source";
 
             switch (toolName)
@@ -55,7 +108,8 @@ namespace GxMcp.Gateway.Routers
                 {
                     var targetsTokRead = args?["targets"];
                     bool hasTargetsRead = targetsTokRead is JArray;
-                    bool hasNameRead = !string.IsNullOrEmpty(target);
+                    bool hasNameRead = !string.IsNullOrEmpty(nameArg) || !string.IsNullOrEmpty(args?["path"]?.ToString())
+                        || !string.IsNullOrEmpty(args?["entityKey"]?.ToString()) || !string.IsNullOrEmpty(args?["guid"]?.ToString());
                     if (hasNameRead && hasTargetsRead)
                         throw new UsageException("usage_error", "name and targets are mutually exclusive");
                     if (hasTargetsRead)
@@ -64,7 +118,12 @@ namespace GxMcp.Gateway.Routers
                             module = "Batch",
                             action = "BatchRead",
                             items = (JArray)targetsTokRead!,
-                            part = part
+                            part = part,
+                            // A batch read must preserve the same field-selection contract as
+                            // a single-object read. Previously targets short-circuited before
+                            // parts was inspected, silently turning parts:["Variables"] into
+                            // the default Source read.
+                            parts = args?["parts"] as JArray
                         };
                     }
                     var partsTok = args?["parts"];
@@ -76,7 +135,31 @@ namespace GxMcp.Gateway.Routers
                             action = "ExtractParts",
                             target = target,
                             parts = (JArray)partsTok!,
-                            type = args?["type"]?.ToString()
+                            type = args?["type"]?.ToString(),
+                            guid = args?["guid"]?.ToString(),
+                            entityKey = args?["entityKey"]?.ToString(),
+                            path = args?["path"]?.ToString()
+                        };
+                    }
+                    string partStr = args?["part"]?.ToString()?.Trim() ?? string.Empty;
+                    bool isFullOrAll = string.IsNullOrEmpty(partStr)
+                        || string.Equals(partStr, "all", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(partStr, "full", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(partStr, "summary", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(partStr, "360", StringComparison.OrdinalIgnoreCase);
+
+                    if (isFullOrAll)
+                    {
+                        // SOTA 1-roundtrip default: omitting 'part' or requesting 'all'/'full'/'summary'/'360'
+                        // extracts the full object (rules, source/events, variables, structure, signatures) tailored to the type.
+                        return new {
+                            module = "Read",
+                            action = "ExtractFullObject",
+                            target = target,
+                            type = args?["type"]?.ToString(),
+                            guid = args?["guid"]?.ToString(),
+                            entityKey = args?["entityKey"]?.ToString(),
+                            path = args?["path"]?.ToString()
                         };
                     }
                     return new {
@@ -86,12 +169,31 @@ namespace GxMcp.Gateway.Routers
                         part = part,
                         offset = args?["offset"]?.ToObject<int?>(),
                         limit = args?["limit"]?.ToObject<int?>(),
-                        type = args?["type"]?.ToString()
+                        type = args?["type"]?.ToString(),
+                        guid = args?["guid"]?.ToString(),
+                        entityKey = args?["entityKey"]?.ToString(),
+                        path = args?["path"]?.ToString()
                     };
                 }
 
                 case "genexus_edit":
                 {
+                    // Issue #205/#206: `scope` / `indentation` are honored only by the
+                    // abbreviated mode=patch form. Evaluated before ANY routing decision
+                    // (changeSet / targets / parts / ops / JSON-Patch) so the protection can
+                    // never be silently dropped while the call is normalized to context/content.
+                    RejectProtectedOptionsUnlessAbbreviatedPatch(args);
+
+                    if (args?["changeSet"] is JObject)
+                    {
+                        return new {
+                            module = "Mutation",
+                            action = "ChangeSet",
+                            target = target,
+                            @params = args
+                        };
+                    }
+
                     if (args?["changes"] != null)
                         throw new UsageException("usage_error", "argument 'changes' removed in v2.0.0; use 'targets' instead");
 
@@ -106,6 +208,18 @@ namespace GxMcp.Gateway.Routers
                             module = "Batch",
                             action = "MultiEdit",
                             items = (JArray)targetsTokEdit!,
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true
+                        };
+                    }
+
+                    if (hasNameEdit && args?["parts"] is JArray partsEditArr && partsEditArr.Count > 0)
+                    {
+                        return new {
+                            module = "Batch",
+                            action = "BatchEdit",
+                            target = target,
+                            changes = partsEditArr,
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
                         };
                     }
@@ -155,7 +269,13 @@ namespace GxMcp.Gateway.Routers
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
                             return_post_state = returnPostState,
                             verbose = verbose,
-                            visualVerify = visualVerify
+                            visualVerify = visualVerify,
+                            // issue #60 — save+specify: run the inline Specify pass after the
+                            // write when validationMode="specify" (rollback on spec errors).
+                            validationMode = args?["validationMode"]?.ToString(),
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                            baseVersion = args?["baseVersion"]?.ToString(),
+                            transactionModule = args?["module"]?.ToString()
                         };
                     }
                     if (mode == "patch")
@@ -190,7 +310,11 @@ namespace GxMcp.Gateway.Routers
                                 dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
                                 return_post_state = returnPostState,
                                 verbose = verbose,
-                                visualVerify = visualVerify
+                                visualVerify = visualVerify,
+                                // issue #60 — save+specify: run the inline Specify pass after the
+                                // write when validationMode="specify" (rollback on spec errors).
+                                validationMode = args?["validationMode"]?.ToString(),
+                                rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false
                             };
                         }
 
@@ -199,15 +323,17 @@ namespace GxMcp.Gateway.Routers
                         // string form was implemented, so callers got
                         // "'context' (old_string) is required for Replace" even with a valid object.
                         // Map find→context and replace→payload to reuse the existing patch pipeline.
-                        string opFromObj = null;
-                        string contextFromObj = null;
-                        string payloadFromObj = null;
+                        string? opFromObj = null;
+                        string? contextFromObj = null;
+                        string? payloadFromObj = null;
+                        JObject? patchObject = null;
                         if (patchTok is JObject patchObj)
                         {
                             var find = patchObj["find"]?.ToString();
                             var replace = patchObj["replace"]?.ToString();
                             if (find != null || replace != null)
                             {
+                                patchObject = patchObj;
                                 contextFromObj = find;
                                 payloadFromObj = replace ?? string.Empty;
                                 opFromObj = "Replace";
@@ -245,19 +371,50 @@ namespace GxMcp.Gateway.Routers
                             // Item 9 (friction 2026-05-22): replaceAll=true applies patch to all
                             // occurrences instead of requiring expectedCount to match exactly.
                             replaceAll = args?["replaceAll"]?.ToObject<bool?>() ?? false,
-                            visualVerify = visualVerify
+                            visualVerify = visualVerify,
+                            // issue #60 — save+specify: run the inline Specify pass after the
+                            // write when validationMode="specify" (rollback on spec errors).
+                            validationMode = args?["validationMode"]?.ToString(),
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
+                            verifyMode = args?["verifyMode"]?.ToString(),
+                            baseVersion = args?["baseVersion"]?.ToString(),
+                            autoDeclareVariables = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false,
+                            // Events complete-save contract: keep the flag on the Patch
+                            // command so the worker can capture/compare the full object.
+                            requireObjectSave = args?["requireObjectSave"]?.ToObject<bool?>() ?? false,
+                            // Issues #205/#206: forward the opt-in protections. `patchShorthand`
+                            // records that the caller used the abbreviated {find,replace} form,
+                            // which is the only form allowed to carry them; without it a
+                            // normalized `operation=Replace` is indistinguishable from an
+                            // explicit operation and the worker must reject the pair.
+                            scope = patchObject?["scope"] ?? args?["scope"],
+                            indentation = patchObject?["indentation"] ?? args?["indentation"],
+                            patchShorthand = patchObject != null
                         };
                     }
                     else
                     {
+                        // issue #60 — forward validationMode/rollbackOnFailure so the worker's
+                        // SaveSpecifyOrchestrator can run the inline Specify pass after the
+                        // write (see CommandDispatcher.Handle_Write). Also pass `validate`
+                        // (strict|best-effort|only) which the schema already advertised.
                         return new {
                             module = "Write",
                             action = part,
+                            part = part,
+                            mode = "full",
                             target = target,
                             payload = args?["content"]?.ToString(),
+                            content = args?["content"]?.ToString(),
                             type = args?["type"]?.ToString(),
                             dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
-                            visualVerify = visualVerify
+                            visualVerify = visualVerify,
+                            validate = args?["validate"]?.ToString(),
+                            validationMode = args?["validationMode"]?.ToString(),
+                            rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
+                            baseVersion = args?["baseVersion"]?.ToString(),
+                            expectedVersion = args?["expectedVersion"]?.ToString(),
+                            autoDeclareVariables = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false
                         };
                     }
                 }
@@ -276,7 +433,11 @@ namespace GxMcp.Gateway.Routers
                         context = args?["context"]?.ToString(),
                         expectedCount = args?["expectedCount"]?.ToObject<int?>() ?? 1,
                         dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
-                        verifyRollback = args?["verifyRollback"]?.ToObject<bool?>() ?? false
+                        verifyRollback = args?["verifyRollback"]?.ToObject<bool?>() ?? false,
+                        verifyMode = args?["verifyMode"]?.ToString(),
+                        baseVersion = args?["baseVersion"]?.ToString(),
+                        rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
+                        requireObjectSave = args?["requireObjectSave"]?.ToObject<bool?>() ?? false
                     };
                 case "genexus_write_object":
                     return new { module = "Write", action = part, target = target, payload = args?["code"]?.ToString() };

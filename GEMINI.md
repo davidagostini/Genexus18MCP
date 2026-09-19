@@ -28,7 +28,7 @@ This repository is MCP-first. The official transport is MCP over stdio or HTTP a
   - `dryRun: true` — returns a preview envelope `{_meta:{dryRun,schemaVersion}, plan:{touchedObjects, xmlDiff, brokenRefs, warnings}}` without mutating the KB.
   - `idempotencyKey: '<token>'` (`[A-Za-z0-9_-]{1,128}`) — deduplicates retries; concurrent calls with the same key are coalesced; cache is per-KB, sliding TTL 15 min default. `dryRun` bypasses the cache.
 - `genexus_inspect`: get structured conversion or object context.
-- `genexus_analyze`: one tool with `mode`: `linter | navigation | hierarchy | impact | data_context | ui_context | pattern_metadata | summary | explain` (the last two replaced the standalone `genexus_summarize` and `genexus_explain_code` in v2.3.0; `explain` takes `code`).
+- `genexus_analyze`: one tool with `mode`: `linter | navigation | hierarchy | impact | data_context | ui_context | pattern_metadata | summary | explain`. `explain` is compatibility-only: it preserves the legacy envelope and returns `NotImplemented`; use `summary` for a concise object overview, `context` for 360° task context, or `genexus_read` for source. The standalone `genexus_summarize` and `genexus_explain_code` were replaced in v2.3.0.
 - `genexus_lifecycle`: build, validate, index, and KB lifecycle operations.
 - `genexus_sql`: `action=ddl` for Transaction/Table DDL or `action=navigation` for the SQL of a procedure's For Each (replaces `genexus_get_sql` and `genexus_get_sql_for_navigation` in v2.3.0).
 - `genexus_kb`: multi-KB pool management (`action`: `list | open | close | set_default`). Replaces `genexus_open_kb` in v2.3.0.
@@ -66,6 +66,19 @@ Prefer resources when the data is naturally browsable or cacheable:
 - `genexus://kb/index-status`
 - `genexus://kb/health`
 
+## Codebase discovery with ripwire (on PATH as `ripwire`)
+
+Reach for it BEFORE blind grep and whole-file reads:
+- Orient on a task: `ripwire <dir> --for="<task in words>"` — ranked, quality-annotated signatures.
+- Callers & blast radius: `ripwire <dir> --callers=SYM` and `--impact=SYM` (transitive callers before modifying contracts).
+- Pre-edit contract check: `ripwire <dir> --edit-check=SYM`.
+- Diff review: `ripwire . --pr-context` (enforced by `scripts/pr-preflight.ps1`).
+
+`ripwire` is optional for PR preflight and is not a runtime dependency. The
+agent discovery workflow uses it when available; the PR preflight reports it as
+skipped when unavailable; use
+`scripts/pr-preflight.ps1 -RequireRipwire` to make it mandatory for a local run.
+
 ## Operating rules
 
 - Do not design new features around non-MCP transport contracts.
@@ -77,7 +90,7 @@ Prefer resources when the data is naturally browsable or cacheable:
   - `genexus_get_sql` → `genexus_sql action=ddl` (v2.3.0).
   - `genexus_get_sql_for_navigation` → `genexus_sql action=navigation` (v2.3.0).
   - `genexus_summarize` → `genexus_analyze mode=summary` (v2.3.0).
-  - `genexus_explain_code` → `genexus_analyze mode=explain` (v2.3.0).
+  - `genexus_explain_code` → `genexus_analyze mode=explain` (v2.3.0; compatibility-only `NotImplemented` envelope). Use `genexus_analyze mode=summary|context` or `genexus_read` for supported analysis.
   Calls to removed tools return JSON-RPC `-32601` with `error.data.replacedBy` and `error.data.argHint`; `initialize` advertises `_meta.removedTools` for proactive detection.
 - Do not pass the legacy `changes` argument to `genexus_edit` — it was removed in v2.0.0; use `targets[]` instead.
 - Read first, then edit. Use paginated reads for large objects.

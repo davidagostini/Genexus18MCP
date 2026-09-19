@@ -27,16 +27,27 @@ namespace GxMcp.Worker.Helpers
 
         private static readonly ConcurrentDictionary<string, Entry> _tokens =
             new ConcurrentDictionary<string, Entry>();
+        // A cancel command can overtake the worker command on the pipe. Keep a
+        // short-lived tombstone so the subsequent Register() starts cancelled
+        // instead of executing a mutation after the gateway already cancelled it.
+        private static readonly ConcurrentDictionary<string, DateTime> _preCancelled =
+            new ConcurrentDictionary<string, DateTime>();
+        private static readonly TimeSpan PreCancellationRetention = TimeSpan.FromMinutes(10);
+        private static readonly IDisposable _noop = new NoopDisposable();
 
         public static IDisposable Register(string token, out CancellationToken ct)
         {
             if (string.IsNullOrEmpty(token))
             {
                 ct = CancellationToken.None;
-                return new NoopDisposable();
+                return _noop;
             }
             var entry = _tokens.GetOrAdd(token, _ => new Entry());
             Interlocked.Increment(ref entry.RefCount);
+            if (ConsumePreCancellation(token))
+            {
+                try { entry.Cts.Cancel(); } catch (ObjectDisposedException) { }
+            }
             ct = entry.Cts.Token;
             return new Scope(token);
         }
@@ -44,7 +55,11 @@ namespace GxMcp.Worker.Helpers
         public static bool Cancel(string token)
         {
             if (string.IsNullOrEmpty(token)) return false;
-            if (!_tokens.TryGetValue(token, out var entry)) return false;
+            if (!_tokens.TryGetValue(token, out var entry))
+            {
+                _preCancelled[token] = DateTime.UtcNow.Add(PreCancellationRetention);
+                return false;
+            }
             try { entry.Cts.Cancel(); return true; }
             catch (ObjectDisposedException) { return false; }
         }
@@ -59,6 +74,18 @@ namespace GxMcp.Worker.Helpers
                 try { kvp.Value.Cts.Dispose(); } catch { }
             }
             _tokens.Clear();
+            _preCancelled.Clear();
+        }
+
+        private static bool ConsumePreCancellation(string token)
+        {
+            if (!_preCancelled.TryGetValue(token, out var expiresAt)) return false;
+            if (expiresAt < DateTime.UtcNow)
+            {
+                _preCancelled.TryRemove(token, out _);
+                return false;
+            }
+            return _preCancelled.TryRemove(token, out _);
         }
 
         private sealed class Scope : IDisposable

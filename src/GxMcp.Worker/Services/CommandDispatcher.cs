@@ -5,6 +5,7 @@ using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
+using GxMcp.Worker.Utils;
 
 namespace GxMcp.Worker.Services
 {
@@ -13,6 +14,11 @@ namespace GxMcp.Worker.Services
         private static CommandDispatcher _instance;
         private static readonly object _lock = new object();
 
+        private readonly CommandHandlerRegistry _registry;
+        private readonly MutationEngine _mutationEngine;
+        private readonly ChangeSetService _changeSetService;
+        private readonly CompilationPipeline _compilationPipeline;
+        private readonly ObjectInspectionModule _objectInspectionModule;
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
         private readonly IndexCacheService _indexCacheService;
@@ -23,6 +29,7 @@ namespace GxMcp.Worker.Services
         private readonly RefactorService _refactorService;
         private readonly BatchService _batchService;
         private readonly ForgeService _forgeService;
+        private readonly VariableService _variableService;
         private readonly ValidationService _validationService;
         private readonly TestService _testService;
         private readonly SearchService _searchService;
@@ -35,6 +42,8 @@ namespace GxMcp.Worker.Services
         private readonly NavigationSqlService _navigationSqlService;
         // Wave-3 items 42 + 92: sample-data generator + translations CSV importer.
         private readonly SampleDataService _sampleDataService;
+        // Typed application-row access derived from GeneXus Transaction metadata.
+        private readonly TransactionRecordsService _transactionRecordsService;
         private readonly TranslationsService _translationsService;
         private readonly LinterService _linterService;
         private readonly PatternService _patternService;
@@ -45,11 +54,17 @@ namespace GxMcp.Worker.Services
         private readonly Structure.AuthoringService _authoringService;
         private readonly FormatService _formatService;
         private readonly PropertyService _propertyService;
+        // Issue #62 — atomic create/update (variables + rules + parms + properties + source in one validated op).
+        private readonly AtomicCreateService _atomicCreateService;
+        private readonly DataViewService _dataViewService;
+        private readonly GeneratorReferenceService _generatorReferenceService;
         private readonly AssetService _assetService;
         private readonly VersionControlService _versionControlService;
         private readonly ConversionService _conversionService;
         private readonly SelfTestService _selfTestService;
         private readonly PatternAnalysisService _patternAnalysisService;
+        private readonly WwpActionService _wwpActionService;
+        private readonly AtomicAuthoringService _atomicAuthoringService;
         private readonly DataInsightService _dataInsightService;
         private readonly DatabaseInfoService _databaseInfoService;
         private readonly SummarizeService _summarizeService;
@@ -59,6 +74,8 @@ namespace GxMcp.Worker.Services
         private readonly KbValidationService _kbValidationService;
         private readonly ValidatePayloadService _validatePayloadService;
         private readonly ExportObjectService _exportObjectService;
+        private readonly ObjectTextService _objectTextService;
+        private readonly TextMirrorService _textMirrorService;
         private readonly DiffService _diffService;
         private readonly ApplyTemplateService _applyTemplateService;
         private readonly EditAndBuildOrchestrator _editAndBuildOrchestrator;
@@ -152,6 +169,11 @@ namespace GxMcp.Worker.Services
         private readonly ApiIntrospectService _apiIntrospectService;
         // genexus_profile: runtime profiler XML bridge (file-only ingest v1).
         private readonly ProfileService _profileService;
+        private readonly SdkProbeService _sdkProbeService;
+        // issue #60 — save+specify in one call. Runs the inline Specify pass after a
+        // successful write when validationMode="specify", surfacing structured diagnostics
+        // and (optionally) rolling back on failure.
+        private readonly SaveSpecifyOrchestrator _saveSpecifyOrchestrator;
 
         private readonly Dictionary<string, CommandHandler> _commandTable;
 
@@ -161,14 +183,16 @@ namespace GxMcp.Worker.Services
             _indexCacheService = new IndexCacheService();
             _buildService = new BuildService();
             _kbService = new KbService(_indexCacheService);
-            _visualizerService = new VisualizerService();
-            _healthService = new HealthService();
+            var artifactPaths = new ArtifactPathResolver(_kbService.GetKbPath);
+            _visualizerService = new VisualizerService(_indexCacheService, artifactPaths);
+            _healthService = new HealthService(_indexCacheService);
             _formatService = new FormatService();
             _objectService = new ObjectService(_kbService, _buildService);
             _assetService = new AssetService(_buildService);
             _navigationService = new NavigationService(_kbService);
             _navigationSqlService = new NavigationSqlService(_navigationService, _kbService, _objectService);
             _sampleDataService = new SampleDataService(_objectService);
+            _transactionRecordsService = new TransactionRecordsService(_kbService, _objectService);
             _translationsService = new TranslationsService(null); // writeService linked in Phase 2
             _listService = new ListService(_kbService, _indexCacheService);
             _uiService = new UIService(_kbService, _objectService);
@@ -186,25 +210,35 @@ namespace GxMcp.Worker.Services
             _dataInsightService = new DataInsightService(_kbService, _objectService, _navigationService, _patternAnalysisService);
             _databaseInfoService = new DatabaseInfoService(_kbService);
             _writeService = new WriteService(_objectService);
+            _variableService = new VariableService(_objectService, _writeService);
+            _wwpActionService = new WwpActionService(_objectService, _patternAnalysisService, _writeService);
             _refactorService = new RefactorService(_kbService, _objectService, _indexCacheService, _writeService, _patternAnalysisService);
             _patchService = new PatchService(_objectService, _writeService, _patternAnalysisService);
             _batchService = new BatchService(_kbService, _writeService, _patchService, _objectService);
             _forgeService = new ForgeService(_kbService);
             _testService = new TestService(_kbService, _buildService);
-            _wikiService = new WikiService(_objectService, _searchService);
+            _wikiService = new WikiService(_objectService, _searchService, artifactPaths);
             _historyService = new HistoryService(_objectService, _writeService);
+            _saveSpecifyOrchestrator = new SaveSpecifyOrchestrator(_buildService, _historyService);
             _linterService = new LinterService(_objectService, _navigationService);
             _patternService = new PatternService(_indexCacheService, _objectService);
             _patternApplyService = new PatternApplyService(_objectService);
             _sdtService = new SDTService(_objectService);
             _structureService = new StructureService(_objectService);
+            _writeService.SetStructureService(_structureService);
             _authoringService = new Structure.AuthoringService(_objectService);
             _propertyService = new PropertyService(_objectService);
+            _atomicAuthoringService = new AtomicAuthoringService(_objectService, _writeService, _propertyService, _buildService);
+            _atomicCreateService = new AtomicCreateService(_objectService, _writeService, _propertyService, _saveSpecifyOrchestrator, _historyService);
+            _dataViewService = new DataViewService(_kbService, _objectService);
+            _generatorReferenceService = new GeneratorReferenceService(_kbService);
             _conversionService = new ConversionService(_objectService);
             _selfTestService = new SelfTestService(_kbService, _searchService, _linterService);
             _kbValidationService = new KbValidationService(_indexCacheService, _objectService, _patternAnalysisService);
             _validatePayloadService = new ValidatePayloadService(_objectService);
             _exportObjectService = new ExportObjectService(_objectService);
+            _objectTextService = new ObjectTextService(_objectService, _indexCacheService);
+            _textMirrorService = new TextMirrorService(_kbService, _objectTextService, _indexCacheService);
             _diffService = new DiffService(_objectService);
             _applyTemplateService = new ApplyTemplateService(_writeService);
             _editAndBuildOrchestrator = new EditAndBuildOrchestrator(_writeService, _analyzeService, _buildService);
@@ -234,9 +268,9 @@ namespace GxMcp.Worker.Services
             _gamService = new GamService(_kbService);
             _mergeToolService = new MergeToolService(_kbService, _objectService);
             _kbVersionService = new KbVersionService(_kbService);
-            _transferService = new TransferService(_kbService, _objectService);
+            _transferService = new TransferService(_kbService, _objectService, _indexCacheService, _writeService);
             _deployService = new DeployService(_kbService);
-            _reorgImpactService = new ReorgImpactService(_kbService);
+            _reorgImpactService = new ReorgImpactService(_kbService, _objectService);
             // B15: give drift_check the authoritative reorg-needed signal.
             _dbDriftService.SetReorgImpact(_reorgImpactService);
             _kbStatsService = new KbStatsService(_kbService);
@@ -273,6 +307,7 @@ namespace GxMcp.Worker.Services
             _apiIntrospectService = new ApiIntrospectService(_kbService, _objectService, _indexCacheService);
             _typeIntrospectService = new TypeIntrospectService(_kbService, _objectService);
             _profileService = new ProfileService();
+            _sdkProbeService = new SdkProbeService();
 
             // Phase 2: Late Linking
             _kbService.SetBuildService(_buildService);
@@ -281,13 +316,44 @@ namespace GxMcp.Worker.Services
             _indexCacheService.SetBuildService(_buildService);
             _validationService.SetObjectService(_objectService);
             _writeService.SetValidationService(_validationService);
+            _writeService.SetKbValidationService(_kbValidationService);
             _objectService.SetWriteService(_writeService);
             _objectService.SetDataInsightService(_dataInsightService);
             _objectService.SetUIService(_uiService);
             _objectService.SetPatternAnalysisService(_patternAnalysisService);
             _linterService.SetWriteService(_writeService);
 
+            _mutationEngine = new MutationEngine(_writeService, _patchService, _objectService);
+            _changeSetService = new ChangeSetService(_mutationEngine);
+            _compilationPipeline = new CompilationPipeline(_buildService, _kbService);
+            _objectInspectionModule = new ObjectInspectionModule(_objectService, _analyzeService, _kbService, _batchService);
             _commandTable = BuildCommandTable();
+            _registry = BuildCommandHandlerRegistry();
+        }
+
+        private CommandHandlerRegistry BuildCommandHandlerRegistry()
+        {
+            var registry = new CommandHandlerRegistry();
+
+            // Direct canonical tool registrations
+            registry.RegisterTool("genexus_read", ctx => _objectInspectionModule.Inspect(ctx.Target ?? ctx.ArgStr("name"), InspectionDepth.Source, ctx.Args));
+            registry.RegisterTool("genexus_edit", ctx => _mutationEngine.Mutate(ctx.ArgStr("mode", "xml"), ctx.Target ?? ctx.ArgStr("name"), ctx.Args, ctx.Payload ?? ctx.ArgStr("content")));
+            registry.RegisterTool("genexus_tutorial", ctx => _tutorialService.GetStep(ctx.ArgInt("step") ?? 1));
+            registry.RegisterTool("genexus_orient", ctx => _orientService.Welcome());
+            registry.RegisterTool("genexus_doctor", ctx => _doctorService.Diagnose());
+            registry.RegisterTool("genexus_what_if", ctx => _whatIfService.Simulate(ctx.Args?["change"] as JObject));
+            registry.RegisterTool("genexus_reverse_pattern", ctx => _reversePatternService.Infer(ctx.Args?["source"] as JArray));
+            registry.RegisterTool("genexus_time_travel", ctx => _timeTravelService.Recover(ctx.Target ?? ctx.ArgStr("name"), ctx.ArgStr("at")));
+            registry.RegisterTool("genexus_ai_complete", ctx => _aiCompleteService.Complete(ctx.ArgStr("name"), ctx.ArgStr("part"), ctx.ArgStr("context"), ctx.ArgInt("maxTokens") ?? 200).ToString(Newtonsoft.Json.Formatting.None));
+            registry.RegisterTool("genexus_voice", ctx => _voiceIntentService.Map(ctx.ArgStr("transcript")).ToString(Newtonsoft.Json.Formatting.None));
+            registry.RegisterTool("genexus_auto_test", ctx => _autoTestService.Generate(ctx.ArgStr("path")));
+            registry.RegisterTool("genexus_multi_agent_lock", ctx => Handle_MultiAgentLock(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_sd_panel", ctx => Handle_SdPanel(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_data_view", ctx => Handle_DataView(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_generator_reference", ctx => Handle_GeneratorReference(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+            registry.RegisterTool("genexus_wwp", ctx => Handle_WwpAction(ctx.Request, ctx.Method, ctx.Action, ctx.Target, ctx.Payload, ctx.Args));
+
+            return registry;
         }
 
         public static CommandDispatcher Instance
@@ -297,6 +363,35 @@ namespace GxMcp.Worker.Services
 
         public KbService GetKbService() { return _kbService; }
         public IndexCacheService GetIndexCacheService() { return _indexCacheService; }
+        public TextMirrorService GetTextMirrorService() { return _textMirrorService; }
+
+        /// <summary>
+        /// GXPublic exposes its own metadata catalogue and does not populate the
+        /// native SearchIndexService. Mark the gateway-facing index state usable
+        /// after a successful provider open so query/list reach the GXPublic
+        /// metadata path instead of being rejected as a cold native index.
+        /// </summary>
+        public void MarkLegacyMetadataIndexReady()
+        {
+            if (!GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver) return;
+
+            int objectCount = 0;
+            try
+            {
+                var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance
+                    .QueryObjects(null, null, out string metadataError);
+                if (metadataError == null && objects != null)
+                    objectCount = objects.Count;
+            }
+            catch
+            {
+                // The direct GXPublic operation will surface the provider error;
+                // the readiness flag only prevents the native-index gate from
+                // hiding that more useful error envelope.
+            }
+
+            _indexCacheService.MarkIndexComplete(objectCount);
+        }
 
         // Item 51 (Tier-S, EXPERIMENTAL) — capture IndexCacheService state to disk
         // before a warm reload. Returns a small JObject result the dispatcher
@@ -324,10 +419,19 @@ namespace GxMcp.Worker.Services
                 }
                 int objectCount = index.Objects?.Count ?? 0;
                 byte[] payload = System.Text.Encoding.UTF8.GetBytes(index.ToJson());
-                WarmIndexSnapshot.Save(path, payload, kbPath, objectCount);
+                DateTime hwm = _indexCacheService.CurrentHighWaterMark;
+                WarmIndexSnapshot.Save(
+                    path,
+                    payload,
+                    kbPath,
+                    objectCount,
+                    schemaVersion: IndexCacheService.CurrentSchemaVersion,
+                    highWaterMarkUtc: hwm == DateTime.MinValue ? null : hwm.ToString("o"));
                 result["saved"] = true;
                 result["path"] = path;
                 result["objectCount"] = objectCount;
+                result["schemaVersion"] = IndexCacheService.CurrentSchemaVersion;
+                if (hwm != DateTime.MinValue) result["highWaterMarkUtc"] = hwm.ToString("o");
                 result["experimental"] = true;
                 return result;
             }
@@ -341,14 +445,33 @@ namespace GxMcp.Worker.Services
 
         public bool IsThreadSafe(string line)
         {
+            JObject request;
+            try { request = JObject.Parse(line); }
+            catch { return false; }
+            return IsThreadSafe(request);
+        }
+
+        // P3 perf: overload que recebe o comando já parseado. O loop principal
+        // (Program.cs) parseia o JSON uma única vez e propaga o JObject pelos
+        // caminhos IsThreadSafe → Dispatch → DispatchInternal sem re-parsear.
+        public bool IsThreadSafe(JObject request)
+        {
             try
             {
-                var request = JObject.Parse(line);
                 string method = request["method"]?.ToString();
                 string action = request["action"]?.ToString();
 
                 if (string.IsNullOrEmpty(method)) return false;
-                method = method.ToLower();
+                // ToLower() é culture-aware: em culturas Turkish-I um método contendo
+                // "I" não bate com a whitelist e muda de thread de execução conforme
+                // a cultura do SO.
+                method = method.ToLowerInvariant();
+
+                // A configured fence may inspect KBVersion via the SDK. Unknown commands
+                // must therefore stay on STA even if legacy scheduling accepted the module.
+                if (WriteDestinationGuard.IsConfigured
+                    && !WriteDestinationGuard.IsObservation(method, action, request["params"] as JObject))
+                    return false;
 
                 // Only allow strictly non-SDK or pure read-cache operations to bypass STA thread
                 if (method == "ping" || method == "health")
@@ -376,6 +499,10 @@ namespace GxMcp.Worker.Services
                 // v2.3.8 Task 1.2: GetIndexState reads in-memory IndexCacheService snapshot only – no SDK access
                 if (method == "kb" && action == "GetIndexState")
                     return true;
+                // Root-cause fix (Table-shadow auto-injection): GetNameTypeMap scans the
+                // in-memory index only – no SDK access (see the action body below).
+                if (method == "kb" && action == "GetNameTypeMap")
+                    return true;
 
                 // D21: health/status polls must never be starved behind an in-flight
                 // long SDK op (build/index/edit) on the single STA queue.
@@ -397,25 +524,39 @@ namespace GxMcp.Worker.Services
 
         public string Dispatch(string line)
         {
+            JObject req0;
+            try { req0 = JObject.Parse(line); }
+            catch { req0 = null; }
+
+            if (req0 == null)
+            {
+                // Compatibilidade: com o parse falho, requestId/method0 seriam null ⇒
+                // nunca cacheável — o fluxo legado seguia direto para DispatchInternal,
+                // que parseava dentro do próprio try e convertia a exceção de parse em
+                // envelope DispatcherException. Reproduzir exatamente esse comportamento.
+                return DispatchInternal(line);
+            }
+            return Dispatch(req0, line);
+        }
+
+        // P3 perf: fluxo completo sem re-parsear. Idempotência e roteamento leem o
+        // request já parseado; rawLine é mantido apenas para o caminho de fallback
+        // (não é usado no corpo). Chamado pelo caminho MTA do Program.cs.
+        public string Dispatch(JObject request, string rawLine)
+        {
             // v2.8.0 — idempotency. When the caller threads a `clientRequestId`
             // through the RPC params, this dispatcher serves a cached response
             // for the same id within a 5-minute TTL. Lets LLM clients retry
             // safely after a socket drop / gateway timeout without double-
             // applying the underlying mutation. Excluded methods (ping, control)
             // skip the cache because they're meta operations.
-            string requestId = null;
-            string method0 = null;
-            try
-            {
-                var req0 = JObject.Parse(line);
-                method0 = req0["method"]?.ToString()?.ToLowerInvariant();
-                requestId = req0["params"]?["clientRequestId"]?.ToString()
-                    ?? (req0["params"]?["params"] as JObject)?["clientRequestId"]?.ToString();
-            }
-            catch { /* fall through to normal dispatch */ }
+            string requestId = request["params"]?["clientRequestId"]?.ToString()
+                ?? (request["params"]?["params"] as JObject)?["clientRequestId"]?.ToString();
+            string method0 = request["method"]?.ToString();
 
-            bool cacheable = !string.IsNullOrEmpty(requestId)
-                && method0 != "ping" && method0 != "control";
+            bool isMeta = string.Equals(method0, "ping", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(method0, "control", StringComparison.OrdinalIgnoreCase);
+            bool cacheable = !string.IsNullOrEmpty(requestId) && !isMeta;
             if (cacheable)
             {
                 // v2.8.0 (#37) — TryServe now waits for any in-flight call
@@ -431,7 +572,8 @@ namespace GxMcp.Worker.Services
             string result;
             try
             {
-                result = DispatchInternal(line);
+                result = GxMcp.Worker.Helpers.McpResponseNormalizer.Normalize(
+                    DispatchInternal(request));
             }
             catch
             {
@@ -439,27 +581,115 @@ namespace GxMcp.Worker.Services
                 throw;
             }
 
-            if (cacheable && !string.IsNullOrEmpty(result))
+            if (cacheable && !string.IsNullOrEmpty(result) && IsCacheableSuccessEnvelope(result))
             {
                 GxMcp.Worker.Helpers.IdempotencyCache.Store(requestId, result);
             }
             else if (cacheable)
             {
+                // A5: envelopes de erro (ou resultados não-parseáveis) NÃO são
+                // cacheados — cachear erro faz um retry com o mesmo clientRequestId
+                // reproduzir falhas transitórias (KB not open durante warm-up,
+                // busy-reject) em vez de re-executar.
                 GxMcp.Worker.Helpers.IdempotencyCache.AbortInflight(requestId);
             }
             return result;
+        }
+
+        // Statuses que indicam falha (ou estado não-conclusivo) e portanto nunca
+        // devem virar replay de idempotência.
+        private static readonly HashSet<string> NonCacheableStatuses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Error", "NotFound", "NotImplemented", "WorkerBusy", "Busy", "IndexNotReady",
+            "Reindexing", "IndexCold", "Timeout", "Cancelled", "Running"
+        };
+
+        // A5: retorna true somente para envelopes de sucesso cacheáveis — sem token
+        // top-level "error" e sem "status" em {Error, NotFound, NotImplemented,
+        // WorkerBusy, Busy, IndexNotReady, Reindexing, IndexCold, Timeout,
+        // Cancelled, Running}. JSON inválido ou vazio retorna false.
+        internal static bool IsCacheableSuccessEnvelope(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return false;
+
+            try
+            {
+                using (var sr = new System.IO.StringReader(json))
+                using (var reader = new Newtonsoft.Json.JsonTextReader(sr))
+                {
+                    if (!reader.Read() || reader.TokenType != Newtonsoft.Json.JsonToken.StartObject)
+                        return false;
+
+                    int depth = 1;
+                    while (reader.Read())
+                    {
+                        if (reader.TokenType == Newtonsoft.Json.JsonToken.StartObject || reader.TokenType == Newtonsoft.Json.JsonToken.StartArray)
+                        {
+                            depth++;
+                        }
+                        else if (reader.TokenType == Newtonsoft.Json.JsonToken.EndObject || reader.TokenType == Newtonsoft.Json.JsonToken.EndArray)
+                        {
+                            depth--;
+                            if (depth == 0) break;
+                        }
+                        else if (depth == 1 && reader.TokenType == Newtonsoft.Json.JsonToken.PropertyName)
+                        {
+                            string propName = reader.Value as string;
+                            if (string.Equals(propName, "error", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!reader.Read()) return false;
+                                if (reader.TokenType != Newtonsoft.Json.JsonToken.Null)
+                                    return false;
+                            }
+                            else if (string.Equals(propName, "status", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!reader.Read()) return false;
+                                string status = reader.Value as string;
+                                if (status != null && NonCacheableStatuses.Contains(status))
+                                    return false;
+                            }
+                            else
+                            {
+                                reader.Skip();
+                            }
+                        }
+                    }
+                    return depth == 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private string DispatchInternal(string line)
         {
             try
             {
-                var request = JObject.Parse(line);
+                return DispatchInternal(JObject.Parse(line));
+            }
+            catch (Exception ex)
+            {
+                // Compatibilidade: o parse legado acontecia dentro do try abaixo; um
+                // JSON malformado era convertido em envelope DispatcherException aqui.
+                return Models.McpResponse.Err(
+                    code: "DispatcherException",
+                    message: ex.Message,
+                    hint: "Inspect worker logs for the full exception chain; this is an unhandled dispatcher error.");
+            }
+        }
+
+        // P3 perf: recebe o comando já parseado (caminho MTA) — sem re-parse.
+        private string DispatchInternal(JObject request)
+        {
+            try
+            {
                 string method = request["method"]?.ToString();
                 string action = request["action"]?.ToString();
                 string target = request["target"]?.ToString();
                 var payload = request["payload"]?.ToString();
-                var args = request["params"] as JObject;
+                var args = (request["params"] as JObject) ?? request;
                 // OperationsRouter cases that pass-through original tool args via
                 // `@params = args` (apply_pattern, apply_template, bulk_edit, diff)
                 // produce a doubly-nested params shape on the RPC envelope:
@@ -470,14 +700,28 @@ namespace GxMcp.Worker.Services
                 // are preserved as top-level fallback.
                 if (args != null && args["params"] is JObject innerArgs)
                 {
-                    var merged = (JObject)innerArgs.DeepClone();
+                    var merged = new JObject();
+                    foreach (var prop in innerArgs.Properties())
+                    {
+                        merged[prop.Name] = prop.Value;
+                    }
                     foreach (var prop in args.Properties())
                     {
-                        if (prop.Name == "params") continue;
-                        if (merged[prop.Name] == null) merged[prop.Name] = prop.Value?.DeepClone();
+                        // These are worker-routing fields, not user arguments. In particular,
+                        // the router module is "Object" and must not become the Object Text
+                        // module filter when the caller omitted module altogether. The inner
+                        // tool args already win on collision, so keep only non-routing fallbacks.
+                        if (prop.Name == "params"
+                            || prop.Name == "module"
+                            || prop.Name == "action"
+                            || prop.Name == "target") continue;
+                        if (merged[prop.Name] == null) merged[prop.Name] = prop.Value;
                     }
                     args = merged;
                 }
+
+                var destinationError = WriteDestinationGuard.CheckCommand(_kbService, method, action, args);
+                if (destinationError != null) return destinationError;
 
                 string progressToken = request["_meta"] != null
                     ? request["_meta"]["progressToken"]?.ToString()
@@ -492,15 +736,33 @@ namespace GxMcp.Worker.Services
                 // builds/edits started by the gateway never registered their job_id and a
                 // matching lifecycle action=cancel returned NotFound on the worker side.
                 string commandCancelToken = args?["cancelToken"]?.ToString();
+                using (GxMcp.Worker.Helpers.WritePipeline.UseWriteContext(
+                    args?["_gxmcpOwnerId"]?.ToString(),
+                    args?["_gxmcpForce"]?.ToObject<bool?>() ?? false))
                 using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(commandCancelToken, out _))
                 using (GxMcp.Worker.Helpers.ProgressContext.Use(progressToken))
                 {
+                    string toolName = request["tool"]?.ToString()
+                        ?? request["name"]?.ToString()
+                        ?? (request["params"] as JObject)?["name"]?.ToString();
+
+                    if (!GxMcp.Worker.Compatibility.DynamicSdkBridge.CheckCapability(method, toolName, target, out string capError))
+                    {
+                        return capError;
+                    }
+
+                    var ctx = new CommandContext(request, method, action, target, payload, args, toolName);
+                    if (_registry != null && _registry.TryDispatch(ctx, out var regResult))
+                    {
+                        return regResult;
+                    }
+
                     // Dispatch-table lookup (Plan 005): replaces the former switch(method) with
                     // ~83 cases. Each entry routes to the exact same handler with the exact same
                     // args as before; a null result means "no matching action for this method"
                     // (equivalent to the old per-case `break;`) and falls through to the shared
                     // UnknownMethodOrAction response below.
-                    string methodKey = method?.ToLower() ?? string.Empty;
+                    string methodKey = method ?? string.Empty;
                     if (_commandTable.TryGetValue(methodKey, out var handler))
                     {
                         string handlerResult = handler(request, method, action, target, payload, args);
@@ -542,7 +804,11 @@ namespace GxMcp.Worker.Services
                 ["list"] = Handle_List,
                 ["read"] = Handle_Read,
                 ["object"] = Handle_Object,
+                ["atomiccreate"] = Handle_AtomicCreate,
+                ["dataview"] = Handle_DataView,
+                ["generatorreference"] = Handle_GeneratorReference,
                 ["write"] = Handle_Write,
+                ["mutation"] = Handle_Mutation,
                 ["editandbuild"] = Handle_EditAndBuild,
                 ["semanticops"] = Handle_SemanticOps,
                 ["jsonpatch"] = Handle_JsonPatch,
@@ -556,6 +822,7 @@ namespace GxMcp.Worker.Services
                 ["forge"] = Handle_Forge,
                 ["conversion"] = Handle_Conversion,
                 ["pattern"] = Handle_Pattern,
+                ["atomicauthoring"] = Handle_AtomicAuthoring,
                 ["sdkprobe"] = Handle_SdkProbe,
                 ["ui"] = Handle_Ui,
                 ["layout"] = Handle_Layout,
@@ -602,6 +869,7 @@ namespace GxMcp.Worker.Services
                 ["kbstats"] = Handle_KbStats,
                 ["tablerelations"] = Handle_TableRelations,
                 ["usercontrols"] = Handle_UserControls,
+                ["wwpaction"] = Handle_WwpAction,
                 ["curlproc"] = Handle_CurlProc,
                 ["designsystem"] = Handle_DesignSystem,
                 ["sdpanel"] = Handle_SdPanel,
@@ -668,28 +936,269 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
-        private string Handle_Kb(JObject request, string method, string action, string target, string payload, JObject args)
+        // Handle_Kb phases, extracted verbatim (YAGNI split — no behavior change).
+        // Handle_Kb stays the action dispatch table; each fat branch below owns
+        // exactly one action. Internal (not private) so routing tests can pin
+        // the no-KB contracts without standing up the SDK.
+
+        internal string HandleKbOpen(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "Open")
+            if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
             {
-                string result = _kbService.OpenKB(target);
-                try
+                if (GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.OpenKB(target, out string openErr))
                 {
-                    var openResult = JObject.Parse(result);
-                    // v2.8.0 — KbService.OpenKB now emits the canonical envelope
-                    // (status:"ok"). Recognize only the canonical shape; legacy
-                    // emissions were removed in this release.
-                    if (string.Equals(openResult["status"]?.ToString(), "ok", StringComparison.Ordinal))
+                    Environment.SetEnvironmentVariable("GX_KB_PATH", target);
+                    MarkLegacyMetadataIndexReady();
+                    return Models.McpResponse.Ok(
+                        target: target,
+                        code: "GXMCP_KB_OPENED",
+                        result: new JObject
+                        {
+                            ["kbPath"] = target,
+                            ["driver"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentDriver,
+                            ["major"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentMajor,
+                            ["progId"] = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ResolvedProgId,
+                            ["supportLevel"] = "basic-legacy",
+                            ["metadataOnly"] = true,
+                            ["capabilities"] = new JObject
+                            {
+                                ["metadataQuery"] = "supported",
+                                ["metadataList"] = "supported",
+                                ["sourceParts"] = "unsupported",
+                                ["objectMutation"] = "unsupported",
+                                ["xpzTransfer"] = "unsupported"
+                            }
+                        });
+                }
+                return openErr;
+            }
+
+            string result = _kbService.OpenKB(target);
+            try
+            {
+                var openResult = JObject.Parse(result);
+                // v2.8.0 — KbService.OpenKB now emits the canonical envelope
+                // (status:"ok"). Recognize only the canonical shape; legacy
+                // emissions were removed in this release.
+                if (string.Equals(openResult["status"]?.ToString(), "ok", StringComparison.Ordinal))
+                {
+                    Environment.SetEnvironmentVariable("GX_KB_PATH", target);
+                }
+            }
+            catch
+            {
+            }
+
+            return result;
+        }
+
+        internal string HandleKbIndexStatus(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // issue #25 #1: event-driven wait. When `wait` is given, block
+            // until the index state transitions away from `since` (or a walk
+            // progress tick lands, or the timeout fires) and return early —
+            // no more polling loops. Runs on the non-SDK parallel path so
+            // blocking here never stalls the STA thread.
+            int waitSec = args?["wait"]?.ToObject<int?>() ?? 0;
+            string since = args?["since"]?.ToString();
+            // Issue #209 (policy A): `freshness` makes the fail-closed gate awaitable.
+            // MarkIndexRestored publishes Status=Ready with Freshness=stale on a warm
+            // start, so a Status-only wait either returned immediately (no `since`) or
+            // could only time out (`since=Ready`) while the delta was still running.
+            string wantFreshness = args?["freshness"]?.ToString();
+            bool waitSatisfied = false;
+            if (waitSec > 0)
+            {
+                // Issue #27 item 3 (DX): two block modes.
+                //  - since given  → return the moment the state LEAVES `since`
+                //    (event-driven progress poll; legacy behaviour).
+                //  - since absent → block until the index reaches "Ready"
+                //    (or timeout), so an agent can just say "wait until usable"
+                //    without hand-rolling a since-chained poll loop. A Cold+idle
+                //    index simply times out at its current state — the caller
+                //    then knows to trigger an index build.
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                long budgetMs = waitSec * 1000L;
+                while (true)
+                {
+                    _indexCacheService.ArmStateSignal();
+                    if (Models.IndexWaitPolicy.IsSatisfied(_indexCacheService.GetState(), since, wantFreshness))
                     {
-                        Environment.SetEnvironmentVariable("GX_KB_PATH", target);
+                        waitSatisfied = true;
+                        break;
+                    }
+                    long remaining = budgetMs - sw.ElapsedMilliseconds;
+                    if (remaining <= 0) break;
+                    // Cap each wait so a missed signal still re-checks promptly.
+                    _indexCacheService.WaitStateSignal((int)Math.Min(remaining, 2000));
+                }
+            }
+            // Merge the state-machine status so callers have a stable field
+            // to pass back as `since` (the legacy `status` string is descriptive
+            // prose, not a stable enum).
+            var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus());
+            statusJson["indexStatus"] = _indexCacheService.GetState()?.Status ?? "Cold";
+            // Issue #209: a bounded wait reports whether its target was actually reached,
+            // so the caller can distinguish "index is current now" from "timed out".
+            if (waitSec > 0)
+            {
+                statusJson["waitSatisfied"] = waitSatisfied;
+                if (!string.IsNullOrEmpty(wantFreshness)) statusJson["waitFreshness"] = wantFreshness;
+                if (!waitSatisfied)
+                {
+                    statusJson["waitHint"] = "Wait budget elapsed before the target state. Re-issue action=status wait=<seconds> freshness=current, or force a rebuild with action=index force=true.";
+                }
+            }
+            // Issue #27 item 1: attach the most-recent terminal build outcome so
+            // this plain status call answers "did my last build pass?" without a jobId.
+            var lastBuild = BuildService.GetLatestBuildSummary();
+            if (lastBuild != null) statusJson["lastBuild"] = lastBuild;
+            // issue #42 (P2b) — surface in-flight builds so the client's isBusy
+            // view is correct while a background build runs (a background build
+            // does not hold the SDK-busy flag, so status alone looked idle).
+            var activeBuilds = BuildService.GetActiveBuildsSummary();
+            statusJson["activeBuilds"] = activeBuilds;
+            statusJson["buildBusy"] = activeBuilds.Count > 0;
+            // The STA single-flight tracker covers every SDK command, including Undo.
+            // Merge it into the public status instead of reporting isBusy=false while
+            // the worker is actively restoring snapshots.
+            Program.MergeSdkBusyStatus(statusJson, Program.GetSdkBusyStatus());
+            // issue #42 (P5) — objects edited via MCP but not yet successfully
+            // built this session (their generated .cs is stale relative to the KB).
+            try
+            {
+                var dirty = EditDirtyTracker.GetDirty(_kbService.GetKbPath());
+                if (dirty != null && dirty.Count > 0)
+                    statusJson["staleGenerated"] = new Newtonsoft.Json.Linq.JArray(dirty);
+            }
+            catch { }
+            return statusJson.ToString();
+        }
+
+        internal string HandleKbIndexState(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // v2.3.8 Task 1.2: surface unified IndexState from IndexCacheService.
+            // Gateway uses this to populate the `index` block in whoami.
+            //
+            // issue #28 item 4: hydrate the on-disk cache BEFORE reading the
+            // state. On a warm/reconnected worker _state starts "Cold" until
+            // something calls GetIndex() (lazy disk load → MarkIndexComplete →
+            // "Ready"). Because the gateway's SDK-bound short-circuit fast-fails
+            // edits on a Cold mirror BEFORE they reach the worker, GetIndex()
+            // never ran on the edit path and the state stayed Cold forever
+            // ("Index loaded. Objects: 1191" in the log, yet edits blocked with
+            // IndexNotReady). Triggering the lazy load here promotes the state to
+            // reflect the loaded cache on the first whoami/refresh after reconnect.
+            try { _indexCacheService.GetIndex(); } catch { /* load is best-effort; GetState still returns Cold/0 */ }
+            var st = _indexCacheService.GetState();
+            // v2.8.0 — index state shape is the tool's payload (not an envelope).
+            // Renamed top-level "status" to "indexStatus" to avoid colliding with
+            // the canonical envelope's "status" once wrapped in McpResponse.Ok.
+            var j = new JObject
+            {
+                ["indexStatus"] = st.Status ?? "Cold",
+                ["freshness"] = st.Freshness ?? "stale",
+                ["lastSuccessfulScanAt"] = st.LastSuccessfulScanAt.HasValue
+                    ? (JToken)st.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                    : JValue.CreateNull(),
+                ["totalObjects"] = st.TotalObjects,
+                ["lastIndexedAt"] = st.LastIndexedAt.HasValue
+                    ? (JToken)st.LastIndexedAt.Value.ToUniversalTime().ToString("o")
+                    : JValue.CreateNull(),
+                ["progress"] = st.Progress.HasValue ? (JToken)st.Progress.Value : JValue.CreateNull(),
+                ["etaMs"] = st.EtaMs.HasValue ? (JToken)st.EtaMs.Value : JValue.CreateNull(),
+                // PERFORMANCE (W-M2): expose flush-failure telemetry so a silently
+                // failing snapshot (disk full / permission) is visible via whoami.
+                ["flushFailuresConsecutive"] = IndexCacheService.ConsecutiveFlushFailures,
+                ["flushLastSuccessUtc"] = IndexCacheService.LastFlushSuccessUtc == DateTime.MinValue
+                    ? JValue.CreateNull()
+                    : (JToken)IndexCacheService.LastFlushSuccessUtc.ToString("o"),
+                ["flushLastError"] = IndexCacheService.LastFlushErrorMessage != null
+                    ? (JToken)IndexCacheService.LastFlushErrorMessage
+                    : JValue.CreateNull()
+            };
+
+            // v2.6.8: top-5 recently-changed projection. Cheap O(n) scan
+            // over the in-memory index; gateway forwards this into the
+            // `whoami.index.recentlyChanged` block so the agent gets a
+            // "what's hot" hint on the first call.
+            try
+            {
+                var idx = _indexCacheService.GetIndex();
+                if (idx != null && idx.Objects.Count > 0)
+                {
+                    var top = idx.Objects.Values
+                        .Where(e => e.LastUpdate > DateTime.MinValue)
+                        .OrderByDescending(e => e.LastUpdate)
+                        .Take(5)
+                        .ToList();
+                    if (top.Count > 0)
+                    {
+                        var arr = new JArray();
+                        foreach (var e in top)
+                        {
+                            arr.Add(new JObject
+                            {
+                                ["name"] = e.Name,
+                                ["type"] = e.Type,
+                                ["lastUpdate"] = e.LastUpdate.ToUniversalTime().ToString("o"),
+                                ["lastModifiedBy"] = e.LastModifiedBy ?? string.Empty
+                            });
+                        }
+                        j["recentlyChanged"] = arr;
                     }
                 }
-                catch
-                {
-                }
-
-                return result;
             }
+            catch (Exception ex) { Logger.Debug("[GetIndexState] recentlyChanged failed: " + ex.Message); }
+
+            return Models.McpResponse.Ok(code: "IndexState", result: j);
+        }
+
+        internal string HandleKbNameTypeMap(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // Root-cause fix for the gateway's auto-type-injection Table shadow: the
+            // gateway primed its name→type map from the top-5 RecentlyChanged window,
+            // which cannot establish real uniqueness — a Transaction's physical Table
+            // shadow can win that window without the sibling Transaction ever appearing
+            // (the design model indexes BOTH under the same name). Expose the FULL
+            // name→[distinct types] map from the in-memory index so the gateway can
+            // resolve Transaction+Table → Transaction deterministically.
+            // O(n) scan of the in-memory dictionary, no SDK access (STA-exempt).
+            try { _indexCacheService.GetIndex(); } catch { /* best-effort: empty map below */ }
+            var nameTypeMap = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var idx = _indexCacheService.GetIndex();
+                if (idx != null)
+                {
+                    foreach (var e in idx.Objects.Values)
+                    {
+                        if (string.IsNullOrWhiteSpace(e.Name) || string.IsNullOrWhiteSpace(e.Type)) continue;
+                        if (!nameTypeMap.TryGetValue(e.Name, out var types))
+                            nameTypeMap[e.Name] = types = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        types.Add(e.Type);
+                    }
+                }
+            }
+            catch (Exception ex) { Logger.Debug("[GetNameTypeMap] scan failed: " + ex.Message); }
+
+            var map = new JObject();
+            foreach (var kv in nameTypeMap)
+            {
+                var arr = new JArray();
+                foreach (var t in kv.Value) arr.Add(t);
+                map[kv.Key] = arr;
+            }
+            return Models.McpResponse.Ok(code: "NameTypeMap", result: new JObject
+            {
+                ["nameTypeMap"] = map,
+                ["totalNames"] = nameTypeMap.Count
+            });
+        }
+
+        private string Handle_Kb(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            if (action == "Open") return HandleKbOpen(request, method, action, target, payload, args);
             if (action == "BulkIndex")
             {
                 bool force = args?["force"]?.ToObject<bool?>() ?? false;
@@ -723,13 +1232,34 @@ namespace GxMcp.Worker.Services
             // cache miss. Pure SDK read, no side effects.
             if (action == "GetActiveEnvironment")
             {
-                string env = _kbService.GetActiveEnvironment();
-                string ver = _kbService.GetActiveEnvironmentVersion();
-                return new JObject
+                try
                 {
-                    ["environment"] = env,
-                    ["version"] = ver
-                }.ToString(Newtonsoft.Json.Formatting.None);
+                    string env = _kbService.GetActiveEnvironment();
+                    string ver = _kbService.GetActiveEnvironmentVersion();
+                    return new JObject
+                    {
+                        ["environment"] = env,
+                        ["version"] = ver,
+                        ["webPath"] = _kbService.GetActiveEnvironmentWebPath()
+                    }.ToString(Newtonsoft.Json.Formatting.None);
+                }
+                catch (Exception ex)
+                {
+                    return Models.McpResponse.Err(
+                        code: "EnvironmentReadFailed",
+                        message: "The active GeneXus environment could not be read: " + ex.Message,
+                        hint: "Retry after the KB finishes opening or inspect the Worker log for the SDK member that is unavailable on this GeneXus major.",
+                        extra: new JObject { ["operation"] = "get_environment", ["sdkType"] = ex.GetType().FullName });
+                }
+            }
+            if (action == "ListEnvironments")
+            {
+                return _kbService.ListEnvironments();
+            }
+            if (action == "SetActiveEnvironment")
+            {
+                string environment = target ?? args?["environment"]?.ToString();
+                return _kbService.SetActiveEnvironment(environment);
             }
             // v2.6.6 Stream H (FR#25) — F5 launcher resolver. Returns the KB's
             // configured startup object (or first IsMain-tagged WebPanel/SDPanel/Procedure).
@@ -747,142 +1277,10 @@ namespace GxMcp.Worker.Services
                 string startupName = target ?? args?["name"]?.ToString();
                 return _kbStartupService.SetStartup(startupName);
             }
-            if (action == "GetIndexStatus")
-            {
-                // issue #25 #1: event-driven wait. When `wait` is given, block
-                // until the index state transitions away from `since` (or a walk
-                // progress tick lands, or the timeout fires) and return early —
-                // no more polling loops. Runs on the non-SDK parallel path so
-                // blocking here never stalls the STA thread.
-                int waitSec = args?["wait"]?.ToObject<int?>() ?? 0;
-                string since = args?["since"]?.ToString();
-                if (waitSec > 0)
-                {
-                    // Issue #27 item 3 (DX): two block modes.
-                    //  - since given  → return the moment the state LEAVES `since`
-                    //    (event-driven progress poll; legacy behaviour).
-                    //  - since absent → block until the index reaches "Ready"
-                    //    (or timeout), so an agent can just say "wait until usable"
-                    //    without hand-rolling a since-chained poll loop. A Cold+idle
-                    //    index simply times out at its current state — the caller
-                    //    then knows to trigger an index build.
-                    bool waitForReady = string.IsNullOrEmpty(since);
-                    var sw = System.Diagnostics.Stopwatch.StartNew();
-                    long budgetMs = waitSec * 1000L;
-                    while (true)
-                    {
-                        _indexCacheService.ArmStateSignal();
-                        string cur = _indexCacheService.GetState()?.Status ?? "Cold";
-                        bool done = waitForReady
-                            ? string.Equals(cur, "Ready", StringComparison.OrdinalIgnoreCase)
-                            : !string.Equals(cur, since, StringComparison.OrdinalIgnoreCase);
-                        if (done) break;
-                        long remaining = budgetMs - sw.ElapsedMilliseconds;
-                        if (remaining <= 0) break;
-                        // Cap each wait so a missed signal still re-checks promptly.
-                        _indexCacheService.WaitStateSignal((int)Math.Min(remaining, 2000));
-                    }
-                }
-                // Merge the state-machine status so callers have a stable field
-                // to pass back as `since` (the legacy `status` string is descriptive
-                // prose, not a stable enum).
-                var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus());
-                statusJson["indexStatus"] = _indexCacheService.GetState()?.Status ?? "Cold";
-                // Issue #27 item 1: attach the most-recent terminal build outcome so
-                // this plain status call answers "did my last build pass?" without a jobId.
-                var lastBuild = BuildService.GetLatestBuildSummary();
-                if (lastBuild != null) statusJson["lastBuild"] = lastBuild;
-                // issue #42 (P2b) — surface in-flight builds so the client's isBusy
-                // view is correct while a background build runs (a background build
-                // does not hold the SDK-busy flag, so status alone looked idle).
-                var activeBuilds = BuildService.GetActiveBuildsSummary();
-                statusJson["activeBuilds"] = activeBuilds;
-                statusJson["buildBusy"] = activeBuilds.Count > 0;
-                // issue #42 (P5) — objects edited via MCP but not yet successfully
-                // built this session (their generated .cs is stale relative to the KB).
-                try
-                {
-                    var dirty = EditDirtyTracker.GetDirty(_kbService.GetKbPath());
-                    if (dirty != null && dirty.Count > 0)
-                        statusJson["staleGenerated"] = new Newtonsoft.Json.Linq.JArray(dirty);
-                }
-                catch { }
-                return statusJson.ToString();
-            }
-            if (action == "GetIndexState")
-            {
-                // v2.3.8 Task 1.2: surface unified IndexState from IndexCacheService.
-                // Gateway uses this to populate the `index` block in whoami.
-                //
-                // issue #28 item 4: hydrate the on-disk cache BEFORE reading the
-                // state. On a warm/reconnected worker _state starts "Cold" until
-                // something calls GetIndex() (lazy disk load → MarkIndexComplete →
-                // "Ready"). Because the gateway's SDK-bound short-circuit fast-fails
-                // edits on a Cold mirror BEFORE they reach the worker, GetIndex()
-                // never ran on the edit path and the state stayed Cold forever
-                // ("Index loaded. Objects: 1191" in the log, yet edits blocked with
-                // IndexNotReady). Triggering the lazy load here promotes the state to
-                // reflect the loaded cache on the first whoami/refresh after reconnect.
-                try { _indexCacheService.GetIndex(); } catch { /* load is best-effort; GetState still returns Cold/0 */ }
-                var st = _indexCacheService.GetState();
-                // v2.8.0 — index state shape is the tool's payload (not an envelope).
-                // Renamed top-level "status" to "indexStatus" to avoid colliding with
-                // the canonical envelope's "status" once wrapped in McpResponse.Ok.
-                var j = new JObject
-                {
-                    ["indexStatus"] = st.Status ?? "Cold",
-                    ["totalObjects"] = st.TotalObjects,
-                    ["lastIndexedAt"] = st.LastIndexedAt.HasValue
-                        ? (JToken)st.LastIndexedAt.Value.ToUniversalTime().ToString("o")
-                        : JValue.CreateNull(),
-                    ["progress"] = st.Progress.HasValue ? (JToken)st.Progress.Value : JValue.CreateNull(),
-                    ["etaMs"] = st.EtaMs.HasValue ? (JToken)st.EtaMs.Value : JValue.CreateNull(),
-                    // PERFORMANCE (W-M2): expose flush-failure telemetry so a silently
-                    // failing snapshot (disk full / permission) is visible via whoami.
-                    ["flushFailuresConsecutive"] = IndexCacheService.ConsecutiveFlushFailures,
-                    ["flushLastSuccessUtc"] = IndexCacheService.LastFlushSuccessUtc == DateTime.MinValue
-                        ? JValue.CreateNull()
-                        : (JToken)IndexCacheService.LastFlushSuccessUtc.ToString("o"),
-                    ["flushLastError"] = IndexCacheService.LastFlushErrorMessage != null
-                        ? (JToken)IndexCacheService.LastFlushErrorMessage
-                        : JValue.CreateNull()
-                };
+            if (action == "GetIndexStatus") return HandleKbIndexStatus(request, method, action, target, payload, args);
+            if (action == "GetIndexState") return HandleKbIndexState(request, method, action, target, payload, args);
 
-                // v2.6.8: top-5 recently-changed projection. Cheap O(n) scan
-                // over the in-memory index; gateway forwards this into the
-                // `whoami.index.recentlyChanged` block so the agent gets a
-                // "what's hot" hint on the first call.
-                try
-                {
-                    var idx = _indexCacheService.GetIndex();
-                    if (idx != null && idx.Objects.Count > 0)
-                    {
-                        var top = idx.Objects.Values
-                            .Where(e => e.LastUpdate > DateTime.MinValue)
-                            .OrderByDescending(e => e.LastUpdate)
-                            .Take(5)
-                            .ToList();
-                        if (top.Count > 0)
-                        {
-                            var arr = new JArray();
-                            foreach (var e in top)
-                            {
-                                arr.Add(new JObject
-                                {
-                                    ["name"] = e.Name,
-                                    ["type"] = e.Type,
-                                    ["lastUpdate"] = e.LastUpdate.ToUniversalTime().ToString("o"),
-                                    ["lastModifiedBy"] = e.LastModifiedBy ?? string.Empty
-                                });
-                            }
-                            j["recentlyChanged"] = arr;
-                        }
-                    }
-                }
-                catch (Exception ex) { Logger.Debug("[GetIndexState] recentlyChanged failed: " + ex.Message); }
-
-                return Models.McpResponse.Ok(code: "IndexState", result: j);
-            }
+            if (action == "GetNameTypeMap") return HandleKbNameTypeMap(request, method, action, target, payload, args);
             if (action == "ValidateConditions") return _kbValidationService.ValidateConditions(args?["limit"]?.ToObject<int?>() ?? 0);
             if (action == "ListPatternSnapshots") return _kbValidationService.ListPatternSnapshots(target);
             if (action == "RestorePatternSnapshot") return _kbValidationService.RestorePatternSnapshot(target, args?["snapshotPath"]?.ToString(), _writeService);
@@ -891,17 +1289,169 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Batch(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "BatchRead") return _batchService.BatchRead(args?["items"] as JArray, args?["part"]?.ToString() ?? "Source");
+            if (action == "BatchRead") return _batchService.BatchRead(
+                args?["items"] as JArray,
+                args?["part"]?.ToString() ?? "Source",
+                args?["parts"] as JArray);
             if (action == "BatchEdit") return _batchService.BatchEdit(target, args?["changes"] as JArray);
-            if (action == "MultiEdit") return _batchService.MultiEdit(args?["items"] as JArray);
+            if (action == "MultiEdit")
+            {
+                var items = args?["items"] as JArray;
+                if (items == null || items.Count == 0)
+                    return _batchService.MultiEdit(items);
+
+                // `genexus_edit.targets[]` is the public multi-target contract.
+                // Route it through the authoritative mutation engine so every
+                // target receives the same preflight version fence, persistence
+                // readback, and compensating rollback receipt as direct edits.
+                // The legacy MultiEdit code path remains available for callers
+                // that use the internal batch action with nested `changes`.
+                var mutationArgs = new JObject
+                {
+                    ["targets"] = items,
+                    ["dryRun"] = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                    ["rollbackOnFailure"] = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true
+                };
+                string mutationResponse = _mutationEngine.Mutate("xml", null, mutationArgs);
+                try
+                {
+                    var envelope = JObject.Parse(mutationResponse);
+                    if (string.Equals(envelope["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase))
+                    {
+                        envelope["code"] = "MultiEditCompleted";
+                        if (envelope["result"] is JObject result)
+                        {
+                            result["objectCount"] = items
+                                .OfType<JObject>()
+                                .Select(item => item["name"]?.ToString() ?? item["target"]?.ToString())
+                                .Where(name => !string.IsNullOrWhiteSpace(name))
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .Count();
+                            result["totalChanges"] = items.Count;
+                        }
+                    }
+                    return envelope.ToString(Newtonsoft.Json.Formatting.None);
+                }
+                catch
+                {
+                    return mutationResponse;
+                }
+            }
             if (action == "Process") return _batchService.ProcessBatch(args?["batchAction"]?.ToString(), target, payload);
             return null;
+        }
+
+        private static string ParseLegacyMetadataQuery(string query, ref string typeFilter)
+        {
+            if (string.IsNullOrWhiteSpace(query)) return null;
+
+            var nameParts = new List<string>();
+            var freeParts = new List<string>();
+            foreach (string rawPart in query.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string part = rawPart.Trim();
+                if (part.StartsWith("type:", StringComparison.OrdinalIgnoreCase))
+                {
+                    typeFilter = part.Substring("type:".Length).Trim('"');
+                }
+                else if (part.StartsWith("name:", StringComparison.OrdinalIgnoreCase))
+                {
+                    nameParts.Add(part.Substring("name:".Length));
+                }
+                else if (!part.Contains(":"))
+                {
+                    freeParts.Add(part);
+                }
+            }
+
+            if (nameParts.Count > 0) return string.Join(" ", nameParts);
+            if (freeParts.Count > 0) return string.Join(" ", freeParts);
+            return null;
+        }
+
+        private static JObject BuildLegacyMetadataPage(
+            IList<GxMcp.Worker.Drivers.GxPublicObjectMetadata> rows,
+            int total,
+            int offset,
+            int limit,
+            string operation)
+        {
+            int safeOffset = Math.Max(0, offset);
+            int pageSize = limit <= 0 ? int.MaxValue : limit;
+            var page = rows.Skip(safeOffset).Take(pageSize).ToList();
+            var results = new JArray();
+            var names = new JArray();
+            foreach (var row in page)
+            {
+                var item = new JObject
+                {
+                    ["guid"] = JValue.CreateNull(),
+                    ["id"] = row.Id,
+                    ["name"] = row.Name,
+                    ["type"] = row.Type,
+                    ["description"] = row.Description,
+                    ["path"] = JValue.CreateNull(),
+                    ["modelName"] = row.ModelName,
+                    ["lastUpdate"] = row.LastUpdate,
+                    ["modelId"] = row.ModelId,
+                    ["classGuid"] = row.ClassGuid
+                };
+                results.Add(item);
+                names.Add(row.Name);
+            }
+
+            bool hasMore = safeOffset + page.Count < total;
+            return new JObject
+            {
+                ["count"] = page.Count,
+                ["total"] = total,
+                ["offset"] = safeOffset,
+                ["hasMore"] = hasMore,
+                ["nextOffset"] = hasMore ? (JToken)(safeOffset + page.Count) : JValue.CreateNull(),
+                ["results"] = results,
+                // Preserve the pre-existing COM branch field while publishing
+                // the canonical list/query `results` projection as well.
+                ["objects"] = names,
+                ["pagination"] = new JObject
+                {
+                    ["offset"] = safeOffset,
+                    ["limit"] = pageSize,
+                    ["returned"] = page.Count,
+                    ["total"] = total,
+                    ["hasMore"] = hasMore,
+                    ["nextOffset"] = hasMore ? (JToken)(safeOffset + page.Count) : JValue.CreateNull()
+                },
+                ["_meta"] = new JObject
+                {
+                    ["supportLevel"] = "basic-legacy",
+                    ["metadataOnly"] = true,
+                    ["driver"] = "com-gxpublic",
+                    ["operation"] = operation,
+                    ["sourceParts"] = "unsupported"
+                }
+            };
         }
 
         private string Handle_Search(JObject request, string method, string action, string target, string payload, JObject args)
         {
             if (action == "Query")
             {
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    string typeFilter = args?["typeFilter"]?.ToString();
+                    string nameFilter = ParseLegacyMetadataQuery(target, ref typeFilter);
+                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjectMetadata(
+                        typeFilter,
+                        nameFilter,
+                        out string qErr,
+                        args?["exactMatch"]?.ToObject<bool?>() ?? false);
+                    if (qErr != null) return Models.McpResponse.Err(code: "ComQueryError", message: qErr, target: target);
+                    int limit = args?["limit"]?.ToObject<int?>() ?? 50;
+                    return Models.McpResponse.Ok(
+                        code: "QueryResults",
+                        result: BuildLegacyMetadataPage(objects, objects.Count, 0, limit, "query"));
+                }
+
                 DateTime sinceArgQ = default(DateTime);
                 DateTime modifiedBeforeArgQ = default(DateTime);
                 string sinceTokQ = args?["since"]?.ToString();
@@ -939,7 +1489,11 @@ namespace GxMcp.Worker.Services
                     MaxResults = args?["maxResults"]?.ToObject<int?>() ?? 50,
                     // Issue #27 item 4: object scope + tunable timeout + resume cursor.
                     ObjectName = args?["objectName"]?.ToString(),
+                    ObjectGuid = args?["guid"]?.ToString(),
+                    ObjectEntityKey = args?["entityKey"]?.ToString(),
+                    ObjectPath = args?["path"]?.ToString(),
                     StartIndex = args?["startIndex"]?.ToObject<int?>() ?? 0,
+                    Cursor = args?["cursor"]?.ToString(),
                     TimeoutMs = args?["timeoutMs"]?.ToObject<int?>() ?? 30000
                 };
                 if (args?["scope"] is JArray scopeArr)
@@ -977,6 +1531,28 @@ namespace GxMcp.Worker.Services
         {
             if (action == "Objects")
             {
+                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+                {
+                    string typeFilter = args?["typeFilter"]?.ToString();
+                    string nameFilter = args?["nameFilter"]?.ToString() ?? target;
+                    nameFilter = ParseLegacyMetadataQuery(nameFilter, ref typeFilter) ?? nameFilter;
+                    var objects = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.QueryObjectMetadata(typeFilter, nameFilter, out string listErr);
+                    if (listErr != null) return Models.McpResponse.Err(code: "ComListError", message: listErr, target: target);
+                    string descriptionFilter = args?["descriptionFilter"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(descriptionFilter))
+                    {
+                        objects = objects
+                            .Where(item => (item.Description ?? string.Empty).IndexOf(descriptionFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                            .ToList();
+                    }
+                    objects = objects.OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                    int offset = args?["offset"]?.ToObject<int?>() ?? 0;
+                    int limit = args?["limit"]?.ToObject<int?>() ?? 100;
+                    return Models.McpResponse.Ok(
+                        code: "ListObjects",
+                        result: BuildLegacyMetadataPage(objects, objects.Count, offset, limit, "list"));
+                }
+
                 DateTime sinceArg = default(DateTime);
                 DateTime modifiedBeforeArg = default(DateTime);
                 string sinceTok = args?["since"]?.ToString();
@@ -1012,10 +1588,61 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Read(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+            {
+                string partName = args?["part"]?.ToString() ?? "Source";
+                string partContent = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ReadObjectPart(target, partName, out string readErr);
+                if (readErr != null)
+                {
+                    if (readErr.StartsWith("GXPUBLIC_SOURCE_UNSUPPORTED:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Models.McpResponse.Err(
+                            code: "UNSUPPORTED_IN_GENEXUS_VERSION",
+                            message: readErr.Substring("GXPUBLIC_SOURCE_UNSUPPORTED:".Length).Trim(),
+                            hint: GxMcp.Worker.Compatibility.DynamicSdkBridge.GetComAlternativeGuidance("genexus_read"),
+                            target: target,
+                            errorExtra: new JObject
+                            {
+                                ["driver"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentDriver,
+                                ["currentMajor"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentMajor,
+                                ["capability"] = "source-parts"
+                            });
+                    }
+                    return Models.McpResponse.Err(code: "ComReadError", message: readErr, target: target);
+                }
+                return Models.McpResponse.Ok(target: target, code: "ObjectPart", result: new JObject
+                {
+                    ["name"] = target,
+                    ["part"] = partName,
+                    ["source"] = partContent ?? string.Empty
+                });
+            }
+
+            if (action == "ExtractFullObject")
+            {
+                string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
+                string fullJson = _objectService.ReadFullObject(target, typeFilter,
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
+                try
+                {
+                    string kbPath = _kbService?.GetKbPath();
+                    string objectType = typeFilter;
+                    if (string.IsNullOrEmpty(objectType))
+                    {
+                        try { objectType = _objectService?.FindObject(target, typeFilter)?.TypeDescriptor?.Name; } catch { }
+                    }
+                    return MemoryService.AttachRelevantMemory(kbPath, fullJson, target, objectType);
+                }
+                catch
+                {
+                    return fullJson;
+                }
+            }
             if (action == "ExtractSource")
             {
-                string typeFilter = args?["type"]?.ToString();
-                string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter);
+                string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
+                string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter,
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
                 // Phase 2: genexus_read piggyback. Attached here (the tool boundary),
                 // not inside ObjectService, so it (a) never pollutes the mcp read
                 // cache (which stores the pre-attach payload) and (b) doesn't burn
@@ -1041,23 +1668,50 @@ namespace GxMcp.Worker.Services
             {
                 var partsTok = args?["parts"] as JArray;
                 var requestedParts = partsTok?.Select(p => p.ToString()) ?? Enumerable.Empty<string>();
-                return _objectService.ReadObjectSourceParts(target, requestedParts, args?["type"]?.ToString());
+                return _objectService.ReadObjectSourceParts(target, requestedParts, args?["type"]?.ToString(),
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
             }
             if (action == "GetVariables") return _analyzeService.GetVariables(target);
             if (action == "GetAttribute") return _analyzeService.GetAttributeMetadata(target);
             return null;
         }
 
+        private string Handle_AtomicCreate(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // Issue #62 — genexus_create action=object_atomic (module AtomicCreate).
+            // The service validates the whole definition (variables/rules/parms/properties/source)
+            // before the first save, composes the SDK write primitives, and compensates on failure.
+            return _atomicCreateService.Run(args ?? new JObject());
+        }
+
+        private string Handle_DataView(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            return _dataViewService.Run(args ?? new JObject());
+        }
+
         private string Handle_Object(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString());
+            if (action == "Read") return _objectService.ReadObject(target, args?["type"]?.ToString(), args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
             if (action == "Create")
             {
                 // Item 21 (friction 2026-05-22): dryRun=true returns the planned
                 // shape without calling newObj.Save(). args carries the flag.
-                return _objectService.CreateObject(args?["type"]?.ToString(), target, args);
+                var createResp = _objectService.CreateObject(args?["type"]?.ToString(), target, args);
+                // issue #60 — validationMode="specify" runs the inline Specify pass against
+                // the created object and surfaces structured diagnostics (or rolls back).
+                // A new object has no pre-write snapshot, so rollbackOnFailure reports
+                // rolledBack=false with a note (delete the object via genexus_delete_object).
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(createResp, target, args, "Source");
             }
-            if (action == "Delete") return _objectService.DeleteObject(target, args?["type"]?.ToString(), args?["confirm"]?.ToObject<bool?>() ?? false, args?["dryRun"]?.ToObject<bool?>() ?? false);
+            if (action == "Delete")
+            {
+                bool dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
+                string type = args?["type"]?.ToString();
+                string response = _objectService.DeleteObject(target, type, args?["confirm"]?.ToObject<bool?>() ?? false, dryRun, args?["expectedVersion"]?.ToString());
+                if (!dryRun && IsSuccessfulMutation(response))
+                    NotifyMirrorDeleted(target, type);
+                return response;
+            }
             if (action == "SaveAs") return _saveAsService.SaveAs(args ?? new JObject());
             if (action == "WorkerReload")
             {
@@ -1118,7 +1772,87 @@ namespace GxMcp.Worker.Services
                     args?["type"]?.ToString(),
                     args?["overwrite"]?.ToObject<bool?>() ?? false);
             }
+            if (action == "ReadBlob")
+            {
+                return _objectService.ReadObjectBlob(
+                    target,
+                    args?["outputPath"]?.ToString() ?? args?["path"]?.ToString(),
+                    args?["part"]?.ToString(),
+                    args?["type"]?.ToString(),
+                    args?["maxBytes"]?.ToObject<int?>(),
+                    args?["includeBase64"]?.ToObject<bool?>() ?? false,
+                    args?["overwrite"]?.ToObject<bool?>() ?? false);
+            }
             if (action == "ImportText") return _objectService.ImportObjectFromText(target, args?["inputPath"]?.ToString() ?? args?["path"]?.ToString(), args?["part"]?.ToString(), args?["type"]?.ToString());
+            if (action.StartsWith("TextMirror", StringComparison.OrdinalIgnoreCase))
+            {
+                string mirrorAction = action.Substring("TextMirror".Length).ToLowerInvariant();
+                if (mirrorAction == "setreferences") mirrorAction = "set_reference_export_enabled";
+                return _textMirrorService.Run(mirrorAction, args ?? new JObject());
+            }
+            if (action == "ExportTextBatch" || action == "ImportTextBatch"
+                || action == "ValidateTextBatch" || action == "DeleteTextBatch"
+                || action == "ValidateTextInMemory" || action == "ListTextInMemory")
+            {
+                string cancelToken = args?["cancelToken"]?.ToString();
+                using (GxMcp.Worker.Helpers.WorkerCancellationRegistry.Register(cancelToken, out var objectTextCt))
+                {
+                    string response = _objectTextService.Execute(action, target, args, objectTextCt);
+                    if (action == "DeleteTextBatch") NotifyMirrorDeletesFromBatch(response, args);
+                    return response;
+                }
+            }
+            return null;
+        }
+
+        private void NotifyMirrorDeleted(string target, string type)
+        {
+            if (_textMirrorService == null || string.IsNullOrWhiteSpace(target)) return;
+            string name = target.Trim();
+            string resolvedType = type;
+            int separator = name.IndexOf(':');
+            if (separator > 0 && separator + 1 < name.Length)
+            {
+                if (string.IsNullOrWhiteSpace(resolvedType)) resolvedType = name.Substring(0, separator);
+                name = name.Substring(separator + 1);
+            }
+            _textMirrorService.NotifyObjectDeleted(name, resolvedType, DateTime.UtcNow);
+        }
+
+        private void NotifyMirrorDeletesFromBatch(string rawResponse, JObject args)
+        {
+            if (args?["dryRun"]?.ToObject<bool?>() ?? false) return;
+            try
+            {
+                JObject response = JObject.Parse(rawResponse ?? "{}");
+                JArray results = response["result"]?["results"] as JArray;
+                if (results == null) return;
+                foreach (JObject item in results.OfType<JObject>())
+                {
+                    string nested = item["response"]?.ToString();
+                    if (IsSuccessfulMutation(nested))
+                        NotifyMirrorDeleted(item["name"]?.ToString(), item["type"]?.ToString());
+                }
+            }
+            catch { }
+        }
+
+        private static bool IsSuccessfulMutation(string rawResponse)
+        {
+            try
+            {
+                JObject response = JObject.Parse(rawResponse ?? "{}");
+                string status = response["status"]?.ToString();
+                return string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "success", StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        private string Handle_Mutation(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            if (string.Equals(action, "ChangeSet", StringComparison.OrdinalIgnoreCase))
+                return _changeSetService.Run(args ?? new JObject());
             return null;
         }
 
@@ -1127,34 +1861,62 @@ namespace GxMcp.Worker.Services
             if (action == "AddVariable")
             {
                 bool varDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
+                if (!string.IsNullOrWhiteSpace(args?["objectType"]?.ToString()))
+                {
+                    if (!string.Equals(args?["objectType"]?.ToString(), "BusinessComponent", StringComparison.OrdinalIgnoreCase))
+                        return Models.McpResponse.Err(code: "UnsupportedObjectVariableType",
+                            message: "objectType currently supports BusinessComponent.", target: target);
+                    return _writeService.ChangeBusinessComponentVariable("add", target,
+                        args?["varName"]?.ToString(), args?["objectName"]?.ToString(),
+                        args?["objectModule"]?.ToString(), varDryRun,
+                        args?["expectedVersion"]?.ToString(),
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                        args?["collection"]?.ToObject<bool?>());
+                }
                 // issue #32 item 1: batch form — a `variables` array adds many in one call
                 // (one save/flush), avoiding N sequential round-trips + concurrent-write risk.
                 var varBatch = (args?["variables"] ?? request["variables"]) as JArray;
                 if (varBatch != null)
                 {
-                    return _writeService.AddVariables(target, varBatch, varDryRun);
+                    var batchResp = _writeService.AddVariables(target, varBatch, varDryRun);
+                    return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(batchResp, target, args, "Variables");
                 }
-                return _writeService.AddVariable(
+                var addResp = _writeService.AddVariable(
                     target,
                     args?["varName"]?.ToString(),
                     args?["typeName"]?.ToString(),
                     varDryRun,
                     args?["length"]?.ToObject<int?>(),
                     args?["decimals"]?.ToObject<int?>(),
-                    args?["collection"]?.ToObject<bool?>());
+                    args?["collection"]?.ToObject<bool?>(),
+                    args?["basedOn"]?.ToString());
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(addResp, target, args, "Variables");
             }
             if (action == "DeleteVariable")
             {
                 bool varDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
-                return _writeService.DeleteVariable(
+                var delResp = _writeService.DeleteVariable(
                     target,
                     args?["varName"]?.ToString(),
                     varDryRun);
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(delResp, target, args, "Variables");
             }
             if (action == "ModifyVariable")
             {
                 bool varDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
-                return _writeService.ModifyVariable(
+                if (!string.IsNullOrWhiteSpace(args?["objectType"]?.ToString()))
+                {
+                    if (!string.Equals(args?["objectType"]?.ToString(), "BusinessComponent", StringComparison.OrdinalIgnoreCase))
+                        return Models.McpResponse.Err(code: "UnsupportedObjectVariableType",
+                            message: "objectType currently supports BusinessComponent.", target: target);
+                    return _writeService.ChangeBusinessComponentVariable("modify", target,
+                        args?["varName"]?.ToString(), args?["objectName"]?.ToString(),
+                        args?["objectModule"]?.ToString(), varDryRun,
+                        args?["expectedVersion"]?.ToString(),
+                        args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                        args?["collection"]?.ToObject<bool?>());
+                }
+                var modResp = _writeService.ModifyVariable(
                     target,
                     args?["varName"]?.ToString(),
                     args?["typeName"]?.ToString(),
@@ -1163,6 +1925,7 @@ namespace GxMcp.Worker.Services
                     args?["length"]?.ToObject<int?>(),
                     args?["decimals"]?.ToObject<int?>(),
                     args?["collection"]?.ToObject<bool?>());
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(modResp, target, args, "Variables");
             }
             if (action == "ValidatePayload")
             {
@@ -1196,15 +1959,20 @@ namespace GxMcp.Worker.Services
                 string writeValidate = args?["validate"]?.ToString();
                 bool writeDryRun = (args?["dryRun"]?.ToObject<bool?>() ?? false)
                     || string.Equals(writeValidate, "only", StringComparison.OrdinalIgnoreCase);
-                var writeResp = _writeService.WriteObject(
-                    target,
-                    action,
-                    payload,
-                    args?["type"]?.ToString(),
-                    true,
-                    false,
-                    true,
-                    writeDryRun);
+                bool autoDeclareVars = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false;
+                // Keep the full-write facade intact. Besides dryRun, it owns optimistic
+                // concurrency aliases and rollback intent. The former positional call dropped
+                // baseVersion/expectedVersion and made full Source writes weaker than patches.
+                var fullWriteArgs = args != null ? (JObject)args.DeepClone() : new JObject();
+                fullWriteArgs["part"] = action;
+                fullWriteArgs["mode"] = "full";
+                fullWriteArgs["content"] = payload ?? fullWriteArgs["content"]?.ToString() ?? string.Empty;
+                fullWriteArgs["dryRun"] = writeDryRun;
+                fullWriteArgs["autoDeclareVariables"] = autoDeclareVars;
+                var writeResp = _writeService.WriteObject(target, fullWriteArgs);
+                // issue #60 — validationMode="specify" runs the inline Specify pass against
+                // the written object and surfaces structured diagnostics (or rolls back).
+                writeResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(writeResp, target, args, args?["part"]?.ToString());
                 return VisualVerifyResponseHook.MaybeAttach(args, writeResp, _visualVerifyService);
             }
         }
@@ -1224,6 +1992,9 @@ namespace GxMcp.Worker.Services
             if (action == "Apply")
             {
                 var soResp = _writeService.ApplySemanticOps(args ?? request);
+                // issue #60 — validationMode="specify" runs the inline Specify pass after the
+                // write and surfaces structured diagnostics (or rolls back).
+                soResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(soResp, target, args ?? request, args?["part"]?.ToString());
                 return VisualVerifyResponseHook.MaybeAttach(args ?? request, soResp, _visualVerifyService);
             }
             return null;
@@ -1234,6 +2005,9 @@ namespace GxMcp.Worker.Services
             if (action == "Apply")
             {
                 var jpResp = _writeService.ApplyJsonPatch(args ?? request);
+                // issue #60 — validationMode="specify" runs the inline Specify pass after the
+                // write and surfaces structured diagnostics (or rolls back).
+                jpResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(jpResp, target, args ?? request, args?["part"]?.ToString());
                 return VisualVerifyResponseHook.MaybeAttach(args ?? request, jpResp, _visualVerifyService);
             }
             return null;
@@ -1255,6 +2029,12 @@ namespace GxMcp.Worker.Services
                 // unsafe writes on NoMatch and surfaces the diagnostic
                 // envelope, so the two are observationally equivalent in
                 // mode=patch and we don't need a third branch.
+                // Issue #205/#206: a protection that arrives as a non-object would be dropped by
+                // the `as JObject` casts below and the patch applied UNBOUNDED — the gateway
+                // rejects that shape, and this keeps the same guarantee for a direct worker call.
+                string protectionTypeError = CheckPatchProtectionTokenTypes(args, target);
+                if (protectionTypeError != null) return protectionTypeError;
+
                 string validateMode = args?["validate"]?.ToString();
                 bool dryRunArg = args?["dryRun"]?.ToObject<bool?>() ?? false;
                 bool validateOnly = string.Equals(validateMode, "only", StringComparison.OrdinalIgnoreCase)
@@ -1271,8 +2051,40 @@ namespace GxMcp.Worker.Services
                     args?["verifyRollback"]?.ToObject<bool?>() ?? false,
                     args?["return_post_state"]?.ToObject<bool?>() ?? true,
                     args?["verbose"]?.ToObject<bool?>() ?? false,
-                    args?["replaceAll"]?.ToObject<bool?>() ?? false);
+                    args?["replaceAll"]?.ToObject<bool?>() ?? false,
+                    args?["verifyMode"]?.ToString(),
+                    args?["baseVersion"]?.ToString(),
+                    args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
+                    args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false,
+                    args?["requireObjectSave"]?.ToObject<bool?>() ?? false,
+                    // Issue #205/#206: opt-in protections for the textual replace path.
+                    args?["scope"] as JObject,
+                    args?["indentation"] as JObject,
+                    args?["patchShorthand"]?.ToObject<bool?>() ?? false);
+                // issue #60 — validationMode="specify" runs the inline Specify pass after the
+                // write and surfaces structured diagnostics (or rolls back).
+                patchResp = _saveSpecifyOrchestrator.MaybeValidateAfterWrite(patchResp, target, args, args?["part"]?.ToString());
                 return VisualVerifyResponseHook.MaybeAttach(args, patchResp, _visualVerifyService);
+            }
+            return null;
+        }
+
+        // Issue #205/#206: same codes the gateway uses, so one rejection reads the same on both
+        // surfaces. Returns null when the tokens are absent, null or objects (the only shapes the
+        // opt-in form accepts).
+        internal static string CheckPatchProtectionTokenTypes(JObject args, string target)
+        {
+            if (args == null) return null;
+            foreach (string name in new[] { "scope", "indentation" })
+            {
+                var token = args[name];
+                if (token == null || token.Type == JTokenType.Null || token is JObject) continue;
+                bool scopeForm = name == "scope";
+                return Models.McpResponse.Err(
+                    code: scopeForm ? "ScopeUnsupportedPatchForm" : "IndentationUnsupportedPatchForm",
+                    message: $"patch.{name} must be a JSON object; this value would be ignored and the patch applied without the protection. No write was attempted.",
+                    hint: $"Send patch.{{{(scopeForm ? "scope:{start,end}" : "indentation:{mode:'validate'}")}}} inside the abbreviated mode=patch form.",
+                    target: target);
             }
             return null;
         }
@@ -1294,11 +2106,18 @@ namespace GxMcp.Worker.Services
                 int rows = args?["rows"]?.ToObject<int?>() ?? 5;
                 return _sampleDataService.Generate(target, rows);
             }
+            if (action == "QueryRecords" || action == "InsertRecord" || action == "UpdateRecords")
+            {
+                return _transactionRecordsService.Execute(action, target, args);
+            }
             if (action == "TranslationsImport")
             {
                 return _translationsService.Import(payload);
             }
             if (action == "GetParameters") return _analyzeService.GetSignature(target, analyzeType);
+            if (action == "Get360Context" || action == "GetContext") return _analyzeService.Get360Context(target, analyzeType,
+                args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(),
+                args?["maxBytes"]?.ToObject<int?>(), args?["cursor"]?.ToString());
             if (action == "GetHierarchy") return _analyzeService.GetHierarchy(target, analyzeType);
             if (action == "GetDataContext") return _dataInsightService.GetDataContext(target);
             if (action == "GetConversionContext")
@@ -1306,7 +2125,8 @@ namespace GxMcp.Worker.Services
                 string projection = args?["projection"]?.ToString();
                 if (string.IsNullOrWhiteSpace(projection))
                     projection = (args?["verbose"]?.ToObject<bool?>() ?? false) ? "verbose" : "standard";
-                return _analyzeService.GetConversionContext(target, args?["include"] as JArray, analyzeType, projection);
+                return _analyzeService.GetConversionContext(target, args?["include"] as JArray, analyzeType, projection,
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
             }
             if (action == "GetPatternMetadata") return _patternAnalysisService.GetWWPStructure(target);
             if (action == "Summarize") return _summarizeService.Summarize(target, analyzeType);
@@ -1380,7 +2200,8 @@ namespace GxMcp.Worker.Services
         private string Handle_Linter(JObject request, string method, string action, string target, string payload, JObject args)
         {
             bool linterFix = args?["fix"]?.ToObject<bool?>() ?? false;
-            if (linterFix) return _linterService.LintAndFix(target);
+            bool dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false;
+            if (linterFix) return _linterService.LintAndFix(target, dryRun);
             return _linterService.Lint(target);
         }
 
@@ -1441,11 +2262,32 @@ namespace GxMcp.Worker.Services
                 string patKey = args?["pattern"]?.ToString();
                 return _patternApplyService.DiagnosePattern(target, patKey, patSettings);
             }
+            if (action == "ManageActions") return _wwpActionService.Run(target, args ?? new JObject());
+            return null;
+        }
+
+        private string Handle_AtomicAuthoring(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            if (action == "Run") return _atomicAuthoringService.Run(args ?? request ?? new JObject());
             return null;
         }
 
         private string Handle_SdkProbe(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            if (action == "Capabilities")
+            {
+                try
+                {
+                    return Models.McpResponse.Ok(
+                        code: "SdkCapabilitiesRead",
+                        result: JObject.Parse(_sdkProbeService.Capabilities()));
+                }
+                catch (Exception ex)
+                {
+                    return Models.McpResponse.Err(code: "SdkCapabilitiesError", message: ex.Message,
+                        hint: "The capability probe is read-only; inspect the worker SDK load diagnostics and retry.");
+                }
+            }
             if (action == "Run")
             {
                 try
@@ -1537,21 +2379,49 @@ namespace GxMcp.Worker.Services
                     args?["printBlockName"]?.ToString(),
                     args?["height"]?.ToObject<int?>());
             }
+            if (action == "DeletePrintBlock")
+            {
+                return _layoutService.DeletePrintBlock(
+                    target,
+                    args?["printBlockName"]?.ToString());
+            }
             return null;
         }
 
         private string Handle_Structure(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "GetVisualStructure") return _structureService.GetVisualStructure(target);
-            if (action == "UpdateVisualStructure") return _structureService.UpdateVisualStructure(target, payload);
+            if (action == "GetVisualStructure")
+            {
+                string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
+                return _structureService.GetVisualStructure(target, typeFilter);
+            }
+            if (action == "UpdateVisualStructure")
+            {
+                var structResp = _structureService.UpdateVisualStructure(target, payload,
+                    args?["dryRun"]?.ToObject<bool?>() ?? false,
+                    args?["expectedVersion"]?.ToString() ?? args?["baseVersion"]?.ToString(),
+                    args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
+                    args?["transactionModule"]?.ToString());
+                // issue #60 — validationMode="specify" runs the inline Specify pass against
+                // the edited object and surfaces structured diagnostics (or rolls back).
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(structResp, target, args, "Structure");
+            }
             if (action == "GetVisualIndexes") return _structureService.GetVisualIndexes(target);
-            if (action == "CreateIndex") return _structureService.CreateIndex(target, payload);
+            if (action == "CreateIndex") return _structureService.CreateIndex(target, payload, args);
             if (action == "DropIndex") return _structureService.DropIndex(target, payload);
             if (action == "SetAttributeProperties") return _structureService.SetAttributeProperties(target, payload);
             if (action == "SetLevelProperties") return _structureService.SetLevelProperties(target, payload);
             if (action == "SetDomainProperties") return _structureService.SetDomainProperties(target, payload);
             if (action == "GetLogicStructure") return _structureService.GetLogicStructure(target);
             if (action == "UpdateGroupStructure") return _structureService.UpdateGroupStructure(target, payload);
+            if (action == "MoveAttribute") return _structureService.MoveAttribute(target, args);
+            // Issue #97: native TransactionLevel.Items removal (preserves the KB-global
+            // Attribute and every SubtypeGroup membership) — lets agents remove a
+            // misclassified subtype attribute and re-add it to force re-derivation.
+            if (action == "RemoveAttribute") return _structureService.RemoveAttribute(target, args);
+            // Issue #97 guard-rail: detect subtype attributes classified as stored
+            // (SECONDARY) while their same-supertype siblings are derived (INFERRED).
+            if (action == "CheckSubtypes") return _structureService.CheckSubtypeClassification(target, args);
             return null;
         }
 
@@ -1566,57 +2436,7 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Build(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "Status")
-            {
-                // v2.6.6 Stream F: event-driven long-poll. When `wait` is 0/absent
-                // GetStatusWait short-circuits to the legacy GetStatus shape; >0
-                // blocks on the per-task StateChangeSignal up to 300s.
-                int wait = args?["wait"]?.ToObject<int?>() ?? 0;
-                string since = args?["since"]?.ToString();
-                return _buildService.GetStatusWait(
-                    target,
-                    wait,
-                    since,
-                    args?["page"]?.ToObject<int?>() ?? 1,
-                    args?["pageSize"]?.ToObject<int?>() ?? 50,
-                    args?["compact"]?.ToObject<bool?>() ?? false);
-            }
-            if (action == "Result") return _buildService.GetResult(
-                target,
-                args?["page"]?.ToObject<int?>() ?? 1,
-                args?["pageSize"]?.ToObject<int?>() ?? 50);
-            if (action == "Cancel") return _buildService.Cancel(target);
-            // issue #28 item 12: spec-check only (Spec+Gen, no Compile/deploy).
-            if (action == "Specify") return _buildService.Specify(target);
-            // mode=compile_check: spec+gen+compile the target(s) + transitive callers,
-            // skipping the KB-wide DeveloperMenu regen (the dominant build-all cost).
-            if (action == "CompileCheck") return _buildService.CompileCheck(
-                target,
-                args?["buildPlanCap"]?.ToObject<int?>() ?? 200,
-                // callers=false → target-only check (no caller expansion), so a base
-                // transaction doesn't drag its whole caller closure. Default true.
-                includeCallers: args?["callers"]?.ToObject<bool?>() ?? true,
-                callerCap: args?["callerCap"]?.ToObject<int?>() ?? 0);
-            // Item 43 (friction 2026-05-22) — DDL diff/preview pre-reorg.
-            if (action == "ReorgPreview") return _buildService.ReorgPreview(target);
-            {
-                // v2.3.8 (Task 5.2): forward includeCallees + buildPlanCap from gateway.
-                var includeCallees = args?["includeCallees"]?.ToString();
-                var cap = args?["buildPlanCap"]?.ToObject<int?>() ?? 200;
-                if (string.IsNullOrWhiteSpace(includeCallees)) includeCallees = "transitive";
-                bool skipFullDeploy = args?["skipFullDeploy"]?.ToObject<bool?>() ?? false;
-                // Item 72 (friction 2026-05-22) — failure-webhook URL plumbed through to BuildService.
-                string notifyOnFailure = args?["notifyOnFailure"]?.ToString();
-                // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental opt-in.
-                bool fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false;
-                // A2: deploy=true forces the full IdeWebBuildAndDeploy (copy to web/bin)
-                // so the built object is runnable, not just compiled.
-                bool fullDeploy = args?["deploy"]?.ToObject<bool?>() ?? false;
-                bool buildDryRun = request["dryRun"]?.ToObject<bool?>() ?? false;
-                if (buildDryRun)
-                    return _buildService.BuildDryRun(action, target, includeCallees, cap);
-                return _buildService.Build(action, target, includeCallees, cap, skipFullDeploy, notifyOnFailure, fastIncremental, fullDeploy);
-            }
+            return _compilationPipeline.ExecuteBuild(action, target, args, request);
         }
 
         private string Handle_Validation(JObject request, string method, string action, string target, string payload, JObject args)
@@ -1654,7 +2474,7 @@ namespace GxMcp.Worker.Services
                 int verId = args?["versionId"]?.ToObject<int?>() ?? 0;
                 // v2.6.6 Stream H (FR#28) — forward discard + snapshot + part
                 // so HistoryService can route restore through EditSnapshotStore.
-                string partName = args?["part"]?.ToString();
+                string partName = args?["part"]?.ToString() ?? args?["partName"]?.ToString();
                 string snapshotToken = args?["snapshot"]?.ToString();
                 bool discard = args?["discard"]?.ToObject<bool?>() ?? false;
                 // Item 21 (friction 2026-05-22): dryRun=true returns the
@@ -1722,24 +2542,72 @@ namespace GxMcp.Worker.Services
                 string destFolder = args?["folder"]?.ToString();
                 string destModule = args?["destModule"]?.ToString() ?? args?["module_"]?.ToString();
                 string destination = args?["destination"]?.ToString()
+                    ?? args?["targetModule"]?.ToString()
                     ?? (!string.IsNullOrWhiteSpace(destFolder) ? destFolder : destModule)
                     ?? args?["value"]?.ToString();
                 string destKind = args?["destKind"]?.ToString()
                     ?? (!string.IsNullOrWhiteSpace(destFolder) ? "Folder"
                         : !string.IsNullOrWhiteSpace(destModule) ? "Module" : null);
                 bool moveDry = args?["dryRun"]?.ToObject<bool?>() ?? false;
-                return _objectService.MoveObject(target, destination, propType, destKind, moveDry);
+                string baseVersion = args?["baseVersion"]?.ToString();
+                bool rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
+                return _objectService.MoveObject(target, destination, propType, destKind, moveDry, baseVersion, rollbackOnFailure);
             }
-            if (action == "Set")
+            if (action == "Set" || action == "SetMultiple" || (action == "set" && args?["properties"] != null))
             {
-                return _propertyService.SetProperty(
+                if (args?["properties"] is JObject propsObj && propsObj.Count > 0)
+                {
+                    var propResp = _propertyService.SetProperties(
+                        target,
+                        propsObj,
+                        args?["control"]?.ToString(),
+                        propType);
+                    return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(propResp, target, args);
+                }
+
+                var singleResp = _propertyService.SetProperty(
                     target,
                     args?["propertyName"]?.ToString(),
                     args?["value"]?.ToString(),
                     args?["control"]?.ToString(),
                     propType);
+                // issue #60 — validationMode="specify" runs the inline Specify pass against
+                // the edited object and surfaces structured diagnostics (or rolls back).
+                return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(singleResp, target, args);
             }
-            return _propertyService.GetProperties(target, args?["control"]?.ToString(), propType);
+            string propName = null;
+            List<string> propNames = null;
+            if (args?["propertyNames"] is JArray arrPropNames)
+            {
+                propNames = arrPropNames.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            }
+            else if (args?["propertyName"] is JArray arrPropName)
+            {
+                propNames = arrPropName.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            }
+            else if (args?["properties"] is JArray arrProps)
+            {
+                propNames = arrProps.Select(t => t?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            }
+            else
+            {
+                propName = args?["propertyName"]?.ToString();
+                if (string.IsNullOrWhiteSpace(propName) && args?["properties"]?.Type == JTokenType.String)
+                {
+                    propName = args["properties"].ToString();
+                }
+            }
+            string projection = args?["projection"]?.ToString();
+            string query = args?["query"]?.ToString();
+
+            return _propertyService.GetProperties(
+                target,
+                args?["control"]?.ToString(),
+                propType,
+                propName,
+                propNames,
+                projection,
+                query);
         }
 
         private string Handle_Asset(JObject request, string method, string action, string target, string payload, JObject args)
@@ -2009,6 +2877,55 @@ namespace GxMcp.Worker.Services
 
         private string Handle_Transfer(JObject request, string method, string action, string target, string payload, JObject args)
         {
+            if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+            {
+                string act = (args?["action"]?.ToString() ?? action ?? "").Trim().ToLowerInvariant();
+                if (act == "export")
+                {
+                    string outputFile = args?["outputFile"]?.ToString() ?? args?["filePath"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(outputFile))
+                        return Models.McpResponse.Err(code: "BadArgs", message: "action=export requires outputFile.", hint: "Pass outputFile=<absolute .xpz path>.");
+
+                    var targets = args?["targets"] as JArray;
+                    var list = new System.Collections.Generic.List<string>();
+                    if (targets != null)
+                    {
+                        foreach (var t in targets) if (t != null) list.Add(t.ToString());
+                    }
+
+                    if (!GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ExportXPZ(outputFile, list, out var err))
+                        return Models.McpResponse.Err(code: "TransferFailed", message: err ?? "Failed to export XPZ via GXPublic COM.", target: outputFile);
+
+                    var resp = new JObject
+                    {
+                        ["status"] = "ok",
+                        ["action"] = "export",
+                        ["outputFile"] = outputFile,
+                        ["driver"] = "com-gxpublic",
+                        ["objectCount"] = list.Count
+                    };
+                    return resp.ToString(Newtonsoft.Json.Formatting.None);
+                }
+                else if (act == "import")
+                {
+                    string inputFile = args?["inputFile"]?.ToString() ?? args?["filePath"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(inputFile))
+                        return Models.McpResponse.Err(code: "BadArgs", message: "action=import requires inputFile.", hint: "Pass inputFile=<absolute .xpz path>.");
+
+                    if (!GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ImportXPZ(inputFile, out var err))
+                        return Models.McpResponse.Err(code: "TransferFailed", message: err ?? "Failed to import XPZ via GXPublic COM.", target: inputFile);
+
+                    var resp = new JObject
+                    {
+                        ["status"] = "ok",
+                        ["action"] = "import",
+                        ["inputFile"] = inputFile,
+                        ["driver"] = "com-gxpublic"
+                    };
+                    return resp.ToString(Newtonsoft.Json.Formatting.None);
+                }
+            }
+
             // genexus_transfer — real XPZ export/import over IKnowledgeManagerService.
             // action=export|inspect|import (import destructive; see TransferService guards).
             return _transferService.Run(args ?? new JObject());
@@ -2023,8 +2940,11 @@ namespace GxMcp.Worker.Services
 
         private string Handle_ReorgImpact(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            // genexus_db action=reorg_impact — reorg/DDL impact preview.
-            // Cheap timestamp heuristic default; deep=true runs specification.
+            // genexus_db action=reorg_impact / action=reorg_preview (issue #61).
+            // reorg_impact: cheap timestamp heuristic default; deep=true runs specification.
+            // reorg_preview: model-level before/after diff + proposed DDL + warnings.
+            if (string.Equals(action, "Preview", StringComparison.OrdinalIgnoreCase))
+                return _reorgImpactService.Preview(args ?? new JObject());
             return _reorgImpactService.Run(args ?? new JObject());
         }
 
@@ -2044,6 +2964,19 @@ namespace GxMcp.Worker.Services
         {
             // genexus_layout action=list_controls — control/theme catalog (read-only).
             return _userControlsListService.Run(args ?? new JObject());
+        }
+
+        private string Handle_WwpAction(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // genexus_wwp — WorkWithPlus Action Group / grid-action editing (issue #58).
+            // list|add_action|add_user_action|update_action|move_action|remove_action over the host's
+            // PatternInstance XML; dryRun supported; no Security permissions created.
+            return _wwpActionService.Run(target, args ?? new JObject());
+        }
+
+        private string Handle_GeneratorReference(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            return _generatorReferenceService.Run(args ?? new JObject());
         }
 
         private string Handle_CurlProc(JObject request, string method, string action, string target, string payload, JObject args)
@@ -2069,7 +3002,9 @@ namespace GxMcp.Worker.Services
                 action,
                 target ?? args?["target"]?.ToString(),
                 args?["part"]?.ToString(),
-                args?["ownerId"]?.ToString(),
+                string.IsNullOrWhiteSpace(args?["ownerId"]?.ToString())
+                    ? GxMcp.Worker.Helpers.WritePipeline.CurrentOwnerId
+                    : args?["ownerId"]?.ToString(),
                 args?["ttlSec"]?.ToObject<int?>() ?? 300,
                 kbPathOverride: null,
                 dryRun: request["dryRun"]?.ToObject<bool?>() ?? false);
@@ -2317,12 +3252,12 @@ namespace GxMcp.Worker.Services
         private string AppendInlineReads(string responseJson, int n)
         {
             return AppendInlineReadsCore(responseJson, n,
-                (name, type) => _objectService.ReadObjectSourceParts(name, null, type));
+                (name, type) => _objectService.ReadFullObject(name, type));
         }
 
         private string AppendInlineReadsForSourceSearch(string responseJson, int n) =>
             AppendInlineReadsCore(responseJson, n,
-                (name, type) => _objectService.ReadObjectSourceParts(name, null, type),
+                (name, type) => _objectService.ReadFullObject(name, type),
                 arrayKey: "hits", nameField: "objectName", dedupe: true);
 
         /// <summary>
@@ -2337,7 +3272,7 @@ namespace GxMcp.Worker.Services
             try
             {
                 var responseObj = JObject.Parse(responseJson);
-                var items = responseObj[arrayKey] as JArray;
+                var items = (responseObj[arrayKey] as JArray) ?? (responseObj["items"] as JArray) ?? (responseObj["results"] as JArray);
                 if (items == null || items.Count == 0) return responseJson;
 
                 var reads = new JArray();
