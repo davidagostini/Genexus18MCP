@@ -261,7 +261,7 @@ namespace GxMcp.Gateway
             // short-circuits on TimeSpan.Zero). The previous Math.Max(1, …) floor forced 0 up
             // to 1 minute, making the documented disable path dead code AND turning the most
             // aggressive setting into the worst 90s-tax generator.
-            int idleMin = _config.Server?.WorkerIdleTimeoutMinutes ?? 60;
+            int idleMin = _config.Server?.WorkerIdleTimeoutMinutes ?? new ServerConfig().WorkerIdleTimeoutMinutes;
             _workerIdleTimeout = idleMin <= 0 ? TimeSpan.Zero : TimeSpan.FromMinutes(idleMin);
             _heapRecycleBytes = (long)Math.Max(0, _config.Server?.WorkerHeapRecycleMB ?? 1500) * 1024 * 1024;
             _wedgedCommandTimeout = TimeSpan.FromMinutes(Math.Max(1, _config.Server?.WedgedCommandTimeoutMinutes ?? 15));

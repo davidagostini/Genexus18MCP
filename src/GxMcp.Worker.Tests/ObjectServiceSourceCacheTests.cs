@@ -183,5 +183,59 @@ namespace GxMcp.Worker.Tests
             Assert.True(service.TryGetPartSourceRaw(guid.ToString(), "Source", out string source));
             Assert.Equal("parm(&CustomerId);", source);
         }
+
+        [Fact]
+        public void ReadCache_StaysBoundedPastCap()
+        {
+            // _readCache is TTL-bound but was count-free: 12 distinct keys under
+            // cap=8 must leave at most 8 survivors (evict-oldest-one per insert
+            // past the cap). GUID prefix + per-test cleanup keep parallel classes
+            // unaffected; count-only assertion is immune to concurrent inserts.
+            string prefix = "cap-" + Guid.NewGuid().ToString("N") + "|";
+            var setter = typeof(ObjectService).GetMethod(
+                "SetReadCache",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(setter);
+            var cache = (IDictionary)typeof(ObjectService)
+                .GetField("_readCache", BindingFlags.Static | BindingFlags.NonPublic)
+                .GetValue(null);
+            try
+            {
+                Environment.SetEnvironmentVariable("GXMCP_READ_CACHE_MAX", "20");
+                for (int i = 0; i < 30; i++)
+                {
+                    setter.Invoke(null, new object[] { prefix + i, "payload-" + i });
+                    System.Threading.Thread.Sleep(20);
+                }
+                int mine = cache.Keys.Cast<string>().Count(k => k.StartsWith(prefix));
+                Assert.True(mine <= 20);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_READ_CACHE_MAX", null);
+                foreach (var key in cache.Keys.Cast<string>().Where(k => k.StartsWith(prefix)).ToList())
+                    cache.Remove(key);
+            }
+        }
+
+        [Fact]
+        public void ResolveReadCacheMaxEntries_DefaultsFloorsAndOverrides()
+        {
+            try
+            {
+                Environment.SetEnvironmentVariable("GXMCP_READ_CACHE_MAX", null);
+                Assert.Equal(256, ObjectService.ResolveReadCacheMaxEntries());
+
+                Environment.SetEnvironmentVariable("GXMCP_READ_CACHE_MAX", "3"); // below floor
+                Assert.Equal(16, ObjectService.ResolveReadCacheMaxEntries());
+
+                Environment.SetEnvironmentVariable("GXMCP_READ_CACHE_MAX", "40");
+                Assert.Equal(40, ObjectService.ResolveReadCacheMaxEntries());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_READ_CACHE_MAX", null);
+            }
+        }
     }
 }

@@ -52,6 +52,36 @@ namespace GxMcp.Worker.Services
             return TimeSpan.FromMinutes(5);
         }
 
+        // _readCache is TTL-bound but count-free: distinct read keys accumulate
+        // until TTL/invalidation. Cap it like the large side cache below
+        // (evict-oldest-one past the cap) so a wide session can't grow it
+        // without bound. Resolved per call (not once) so tests can drive the
+        // cap deterministically; a process env read is noise next to COM/JSON work.
+        internal static int ResolveReadCacheMaxEntries()
+        {
+            string env = Environment.GetEnvironmentVariable("GXMCP_READ_CACHE_MAX");
+            if (!string.IsNullOrWhiteSpace(env) && int.TryParse(env.Trim(), out int max) && max > 0)
+            {
+                return Math.Max(16, max);
+            }
+            return 256;
+        }
+
+        private static void EvictOldestReadCacheEntry()
+        {
+            string oldestKey = null;
+            DateTime oldest = DateTime.MaxValue;
+            foreach (var kvp in _readCache)
+            {
+                if (kvp.Value == null || kvp.Value.UpdatedUtc < oldest)
+                {
+                    oldest = kvp.Value?.UpdatedUtc ?? DateTime.MinValue;
+                    oldestKey = kvp.Key;
+                }
+            }
+            if (oldestKey != null) _readCache.TryRemove(oldestKey, out _);
+        }
+
         // Records successful deletions so a follow-up DeleteObject call that arrives
         // after a gateway timeout (worker finished after the pipe died) is reported as
         // success-confirmed-after-timeout instead of the ambiguous "Object not found".
@@ -4765,6 +4795,7 @@ namespace GxMcp.Worker.Services
                 Payload = payload,
                 UpdatedUtc = DateTime.UtcNow
             };
+            if (_readCache.Count > ResolveReadCacheMaxEntries()) EvictOldestReadCacheEntry();
         }
 
         private static bool TryGetLargeRawSourceCache(string key, out string source)

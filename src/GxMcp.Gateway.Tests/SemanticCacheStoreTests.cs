@@ -89,5 +89,40 @@ namespace GxMcp.Gateway.Tests
             Assert.False(store.TryGet("missing", out var value));
             Assert.Null(value);
         }
+
+        [Fact]
+        public void Set_EvictsLruPastByteCap()
+        {
+            // {"a":"<400 x>"} serializes to 408 chars → 816 UTF-16 bytes each.
+            // No count pressure (cap 1000), but two entries breach the 1000-byte
+            // budget, so the first is evicted when the second lands. NextStamp
+            // keeps LRU order total even within one tick.
+            var store = new SemanticCacheStore(1000, TimeSpan.FromMinutes(30), () => Environment.TickCount64, maxBytes: 1000);
+            store.Set("k1", new JObject { ["a"] = new string('x', 400) });
+            store.Set("k2", new JObject { ["a"] = new string('y', 400) });
+
+            Assert.False(store.TryGet("k1", out _));
+            Assert.True(store.TryGet("k2", out _));
+        }
+
+        [Fact]
+        public void ResolveMaxBytes_DefaultsAndOverrides()
+        {
+            try
+            {
+                Environment.SetEnvironmentVariable("GXMCP_SEMANTIC_CACHE_MAX_BYTES", null);
+                Assert.Equal(SemanticCacheStore.DefaultMaxBytes, SemanticCacheStore.ResolveMaxBytesFromEnv());
+
+                Environment.SetEnvironmentVariable("GXMCP_SEMANTIC_CACHE_MAX_BYTES", "1048576");
+                Assert.Equal(1048576, SemanticCacheStore.ResolveMaxBytesFromEnv());
+
+                Environment.SetEnvironmentVariable("GXMCP_SEMANTIC_CACHE_MAX_BYTES", "bogus");
+                Assert.Equal(SemanticCacheStore.DefaultMaxBytes, SemanticCacheStore.ResolveMaxBytesFromEnv());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_SEMANTIC_CACHE_MAX_BYTES", null);
+            }
+        }
     }
 }

@@ -936,58 +936,269 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
+        // Handle_Kb phases, extracted verbatim (YAGNI split — no behavior change).
+        // Handle_Kb stays the action dispatch table; each fat branch below owns
+        // exactly one action. Internal (not private) so routing tests can pin
+        // the no-KB contracts without standing up the SDK.
+
+        internal string HandleKbOpen(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
+            {
+                if (GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.OpenKB(target, out string openErr))
+                {
+                    Environment.SetEnvironmentVariable("GX_KB_PATH", target);
+                    MarkLegacyMetadataIndexReady();
+                    return Models.McpResponse.Ok(
+                        target: target,
+                        code: "GXMCP_KB_OPENED",
+                        result: new JObject
+                        {
+                            ["kbPath"] = target,
+                            ["driver"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentDriver,
+                            ["major"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentMajor,
+                            ["progId"] = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ResolvedProgId,
+                            ["supportLevel"] = "basic-legacy",
+                            ["metadataOnly"] = true,
+                            ["capabilities"] = new JObject
+                            {
+                                ["metadataQuery"] = "supported",
+                                ["metadataList"] = "supported",
+                                ["sourceParts"] = "unsupported",
+                                ["objectMutation"] = "unsupported",
+                                ["xpzTransfer"] = "unsupported"
+                            }
+                        });
+                }
+                return openErr;
+            }
+
+            string result = _kbService.OpenKB(target);
+            try
+            {
+                var openResult = JObject.Parse(result);
+                // v2.8.0 — KbService.OpenKB now emits the canonical envelope
+                // (status:"ok"). Recognize only the canonical shape; legacy
+                // emissions were removed in this release.
+                if (string.Equals(openResult["status"]?.ToString(), "ok", StringComparison.Ordinal))
+                {
+                    Environment.SetEnvironmentVariable("GX_KB_PATH", target);
+                }
+            }
+            catch
+            {
+            }
+
+            return result;
+        }
+
+        internal string HandleKbIndexStatus(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // issue #25 #1: event-driven wait. When `wait` is given, block
+            // until the index state transitions away from `since` (or a walk
+            // progress tick lands, or the timeout fires) and return early —
+            // no more polling loops. Runs on the non-SDK parallel path so
+            // blocking here never stalls the STA thread.
+            int waitSec = args?["wait"]?.ToObject<int?>() ?? 0;
+            string since = args?["since"]?.ToString();
+            // Issue #209 (policy A): `freshness` makes the fail-closed gate awaitable.
+            // MarkIndexRestored publishes Status=Ready with Freshness=stale on a warm
+            // start, so a Status-only wait either returned immediately (no `since`) or
+            // could only time out (`since=Ready`) while the delta was still running.
+            string wantFreshness = args?["freshness"]?.ToString();
+            bool waitSatisfied = false;
+            if (waitSec > 0)
+            {
+                // Issue #27 item 3 (DX): two block modes.
+                //  - since given  → return the moment the state LEAVES `since`
+                //    (event-driven progress poll; legacy behaviour).
+                //  - since absent → block until the index reaches "Ready"
+                //    (or timeout), so an agent can just say "wait until usable"
+                //    without hand-rolling a since-chained poll loop. A Cold+idle
+                //    index simply times out at its current state — the caller
+                //    then knows to trigger an index build.
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                long budgetMs = waitSec * 1000L;
+                while (true)
+                {
+                    _indexCacheService.ArmStateSignal();
+                    if (Models.IndexWaitPolicy.IsSatisfied(_indexCacheService.GetState(), since, wantFreshness))
+                    {
+                        waitSatisfied = true;
+                        break;
+                    }
+                    long remaining = budgetMs - sw.ElapsedMilliseconds;
+                    if (remaining <= 0) break;
+                    // Cap each wait so a missed signal still re-checks promptly.
+                    _indexCacheService.WaitStateSignal((int)Math.Min(remaining, 2000));
+                }
+            }
+            // Merge the state-machine status so callers have a stable field
+            // to pass back as `since` (the legacy `status` string is descriptive
+            // prose, not a stable enum).
+            var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus());
+            statusJson["indexStatus"] = _indexCacheService.GetState()?.Status ?? "Cold";
+            // Issue #209: a bounded wait reports whether its target was actually reached,
+            // so the caller can distinguish "index is current now" from "timed out".
+            if (waitSec > 0)
+            {
+                statusJson["waitSatisfied"] = waitSatisfied;
+                if (!string.IsNullOrEmpty(wantFreshness)) statusJson["waitFreshness"] = wantFreshness;
+                if (!waitSatisfied)
+                {
+                    statusJson["waitHint"] = "Wait budget elapsed before the target state. Re-issue action=status wait=<seconds> freshness=current, or force a rebuild with action=index force=true.";
+                }
+            }
+            // Issue #27 item 1: attach the most-recent terminal build outcome so
+            // this plain status call answers "did my last build pass?" without a jobId.
+            var lastBuild = BuildService.GetLatestBuildSummary();
+            if (lastBuild != null) statusJson["lastBuild"] = lastBuild;
+            // issue #42 (P2b) — surface in-flight builds so the client's isBusy
+            // view is correct while a background build runs (a background build
+            // does not hold the SDK-busy flag, so status alone looked idle).
+            var activeBuilds = BuildService.GetActiveBuildsSummary();
+            statusJson["activeBuilds"] = activeBuilds;
+            statusJson["buildBusy"] = activeBuilds.Count > 0;
+            // The STA single-flight tracker covers every SDK command, including Undo.
+            // Merge it into the public status instead of reporting isBusy=false while
+            // the worker is actively restoring snapshots.
+            Program.MergeSdkBusyStatus(statusJson, Program.GetSdkBusyStatus());
+            // issue #42 (P5) — objects edited via MCP but not yet successfully
+            // built this session (their generated .cs is stale relative to the KB).
+            try
+            {
+                var dirty = EditDirtyTracker.GetDirty(_kbService.GetKbPath());
+                if (dirty != null && dirty.Count > 0)
+                    statusJson["staleGenerated"] = new Newtonsoft.Json.Linq.JArray(dirty);
+            }
+            catch { }
+            return statusJson.ToString();
+        }
+
+        internal string HandleKbIndexState(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // v2.3.8 Task 1.2: surface unified IndexState from IndexCacheService.
+            // Gateway uses this to populate the `index` block in whoami.
+            //
+            // issue #28 item 4: hydrate the on-disk cache BEFORE reading the
+            // state. On a warm/reconnected worker _state starts "Cold" until
+            // something calls GetIndex() (lazy disk load → MarkIndexComplete →
+            // "Ready"). Because the gateway's SDK-bound short-circuit fast-fails
+            // edits on a Cold mirror BEFORE they reach the worker, GetIndex()
+            // never ran on the edit path and the state stayed Cold forever
+            // ("Index loaded. Objects: 1191" in the log, yet edits blocked with
+            // IndexNotReady). Triggering the lazy load here promotes the state to
+            // reflect the loaded cache on the first whoami/refresh after reconnect.
+            try { _indexCacheService.GetIndex(); } catch { /* load is best-effort; GetState still returns Cold/0 */ }
+            var st = _indexCacheService.GetState();
+            // v2.8.0 — index state shape is the tool's payload (not an envelope).
+            // Renamed top-level "status" to "indexStatus" to avoid colliding with
+            // the canonical envelope's "status" once wrapped in McpResponse.Ok.
+            var j = new JObject
+            {
+                ["indexStatus"] = st.Status ?? "Cold",
+                ["freshness"] = st.Freshness ?? "stale",
+                ["lastSuccessfulScanAt"] = st.LastSuccessfulScanAt.HasValue
+                    ? (JToken)st.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                    : JValue.CreateNull(),
+                ["totalObjects"] = st.TotalObjects,
+                ["lastIndexedAt"] = st.LastIndexedAt.HasValue
+                    ? (JToken)st.LastIndexedAt.Value.ToUniversalTime().ToString("o")
+                    : JValue.CreateNull(),
+                ["progress"] = st.Progress.HasValue ? (JToken)st.Progress.Value : JValue.CreateNull(),
+                ["etaMs"] = st.EtaMs.HasValue ? (JToken)st.EtaMs.Value : JValue.CreateNull(),
+                // PERFORMANCE (W-M2): expose flush-failure telemetry so a silently
+                // failing snapshot (disk full / permission) is visible via whoami.
+                ["flushFailuresConsecutive"] = IndexCacheService.ConsecutiveFlushFailures,
+                ["flushLastSuccessUtc"] = IndexCacheService.LastFlushSuccessUtc == DateTime.MinValue
+                    ? JValue.CreateNull()
+                    : (JToken)IndexCacheService.LastFlushSuccessUtc.ToString("o"),
+                ["flushLastError"] = IndexCacheService.LastFlushErrorMessage != null
+                    ? (JToken)IndexCacheService.LastFlushErrorMessage
+                    : JValue.CreateNull()
+            };
+
+            // v2.6.8: top-5 recently-changed projection. Cheap O(n) scan
+            // over the in-memory index; gateway forwards this into the
+            // `whoami.index.recentlyChanged` block so the agent gets a
+            // "what's hot" hint on the first call.
+            try
+            {
+                var idx = _indexCacheService.GetIndex();
+                if (idx != null && idx.Objects.Count > 0)
+                {
+                    var top = idx.Objects.Values
+                        .Where(e => e.LastUpdate > DateTime.MinValue)
+                        .OrderByDescending(e => e.LastUpdate)
+                        .Take(5)
+                        .ToList();
+                    if (top.Count > 0)
+                    {
+                        var arr = new JArray();
+                        foreach (var e in top)
+                        {
+                            arr.Add(new JObject
+                            {
+                                ["name"] = e.Name,
+                                ["type"] = e.Type,
+                                ["lastUpdate"] = e.LastUpdate.ToUniversalTime().ToString("o"),
+                                ["lastModifiedBy"] = e.LastModifiedBy ?? string.Empty
+                            });
+                        }
+                        j["recentlyChanged"] = arr;
+                    }
+                }
+            }
+            catch (Exception ex) { Logger.Debug("[GetIndexState] recentlyChanged failed: " + ex.Message); }
+
+            return Models.McpResponse.Ok(code: "IndexState", result: j);
+        }
+
+        internal string HandleKbNameTypeMap(JObject request, string method, string action, string target, string payload, JObject args)
+        {
+            // Root-cause fix for the gateway's auto-type-injection Table shadow: the
+            // gateway primed its name→type map from the top-5 RecentlyChanged window,
+            // which cannot establish real uniqueness — a Transaction's physical Table
+            // shadow can win that window without the sibling Transaction ever appearing
+            // (the design model indexes BOTH under the same name). Expose the FULL
+            // name→[distinct types] map from the in-memory index so the gateway can
+            // resolve Transaction+Table → Transaction deterministically.
+            // O(n) scan of the in-memory dictionary, no SDK access (STA-exempt).
+            try { _indexCacheService.GetIndex(); } catch { /* best-effort: empty map below */ }
+            var nameTypeMap = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var idx = _indexCacheService.GetIndex();
+                if (idx != null)
+                {
+                    foreach (var e in idx.Objects.Values)
+                    {
+                        if (string.IsNullOrWhiteSpace(e.Name) || string.IsNullOrWhiteSpace(e.Type)) continue;
+                        if (!nameTypeMap.TryGetValue(e.Name, out var types))
+                            nameTypeMap[e.Name] = types = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        types.Add(e.Type);
+                    }
+                }
+            }
+            catch (Exception ex) { Logger.Debug("[GetNameTypeMap] scan failed: " + ex.Message); }
+
+            var map = new JObject();
+            foreach (var kv in nameTypeMap)
+            {
+                var arr = new JArray();
+                foreach (var t in kv.Value) arr.Add(t);
+                map[kv.Key] = arr;
+            }
+            return Models.McpResponse.Ok(code: "NameTypeMap", result: new JObject
+            {
+                ["nameTypeMap"] = map,
+                ["totalNames"] = nameTypeMap.Count
+            });
+        }
+
         private string Handle_Kb(JObject request, string method, string action, string target, string payload, JObject args)
         {
-            if (action == "Open")
-            {
-                if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
-                {
-                    if (GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.OpenKB(target, out string openErr))
-                    {
-                        Environment.SetEnvironmentVariable("GX_KB_PATH", target);
-                        MarkLegacyMetadataIndexReady();
-                        return Models.McpResponse.Ok(
-                            target: target,
-                            code: "GXMCP_KB_OPENED",
-                            result: new JObject
-                            {
-                                ["kbPath"] = target,
-                                ["driver"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentDriver,
-                                ["major"] = GxMcp.Worker.Compatibility.DynamicSdkBridge.CurrentMajor,
-                                ["progId"] = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ResolvedProgId,
-                                ["supportLevel"] = "basic-legacy",
-                                ["metadataOnly"] = true,
-                                ["capabilities"] = new JObject
-                                {
-                                    ["metadataQuery"] = "supported",
-                                    ["metadataList"] = "supported",
-                                    ["sourceParts"] = "unsupported",
-                                    ["objectMutation"] = "unsupported",
-                                    ["xpzTransfer"] = "unsupported"
-                                }
-                            });
-                    }
-                    return openErr;
-                }
-
-                string result = _kbService.OpenKB(target);
-                try
-                {
-                    var openResult = JObject.Parse(result);
-                    // v2.8.0 — KbService.OpenKB now emits the canonical envelope
-                    // (status:"ok"). Recognize only the canonical shape; legacy
-                    // emissions were removed in this release.
-                    if (string.Equals(openResult["status"]?.ToString(), "ok", StringComparison.Ordinal))
-                    {
-                        Environment.SetEnvironmentVariable("GX_KB_PATH", target);
-                    }
-                }
-                catch
-                {
-                }
-
-                return result;
-            }
+            if (action == "Open") return HandleKbOpen(request, method, action, target, payload, args);
             if (action == "BulkIndex")
             {
                 bool force = args?["force"]?.ToObject<bool?>() ?? false;
@@ -1066,208 +1277,10 @@ namespace GxMcp.Worker.Services
                 string startupName = target ?? args?["name"]?.ToString();
                 return _kbStartupService.SetStartup(startupName);
             }
-            if (action == "GetIndexStatus")
-            {
-                // issue #25 #1: event-driven wait. When `wait` is given, block
-                // until the index state transitions away from `since` (or a walk
-                // progress tick lands, or the timeout fires) and return early —
-                // no more polling loops. Runs on the non-SDK parallel path so
-                // blocking here never stalls the STA thread.
-                int waitSec = args?["wait"]?.ToObject<int?>() ?? 0;
-                string since = args?["since"]?.ToString();
-                // Issue #209 (policy A): `freshness` makes the fail-closed gate awaitable.
-                // MarkIndexRestored publishes Status=Ready with Freshness=stale on a warm
-                // start, so a Status-only wait either returned immediately (no `since`) or
-                // could only time out (`since=Ready`) while the delta was still running.
-                string wantFreshness = args?["freshness"]?.ToString();
-                bool waitSatisfied = false;
-                if (waitSec > 0)
-                {
-                    // Issue #27 item 3 (DX): two block modes.
-                    //  - since given  → return the moment the state LEAVES `since`
-                    //    (event-driven progress poll; legacy behaviour).
-                    //  - since absent → block until the index reaches "Ready"
-                    //    (or timeout), so an agent can just say "wait until usable"
-                    //    without hand-rolling a since-chained poll loop. A Cold+idle
-                    //    index simply times out at its current state — the caller
-                    //    then knows to trigger an index build.
-                    var sw = System.Diagnostics.Stopwatch.StartNew();
-                    long budgetMs = waitSec * 1000L;
-                    while (true)
-                    {
-                        _indexCacheService.ArmStateSignal();
-                        if (Models.IndexWaitPolicy.IsSatisfied(_indexCacheService.GetState(), since, wantFreshness))
-                        {
-                            waitSatisfied = true;
-                            break;
-                        }
-                        long remaining = budgetMs - sw.ElapsedMilliseconds;
-                        if (remaining <= 0) break;
-                        // Cap each wait so a missed signal still re-checks promptly.
-                        _indexCacheService.WaitStateSignal((int)Math.Min(remaining, 2000));
-                    }
-                }
-                // Merge the state-machine status so callers have a stable field
-                // to pass back as `since` (the legacy `status` string is descriptive
-                // prose, not a stable enum).
-                var statusJson = Newtonsoft.Json.Linq.JObject.Parse(_kbService.GetIndexStatus());
-                statusJson["indexStatus"] = _indexCacheService.GetState()?.Status ?? "Cold";
-                // Issue #209: a bounded wait reports whether its target was actually reached,
-                // so the caller can distinguish "index is current now" from "timed out".
-                if (waitSec > 0)
-                {
-                    statusJson["waitSatisfied"] = waitSatisfied;
-                    if (!string.IsNullOrEmpty(wantFreshness)) statusJson["waitFreshness"] = wantFreshness;
-                    if (!waitSatisfied)
-                    {
-                        statusJson["waitHint"] = "Wait budget elapsed before the target state. Re-issue action=status wait=<seconds> freshness=current, or force a rebuild with action=index force=true.";
-                    }
-                }
-                // Issue #27 item 1: attach the most-recent terminal build outcome so
-                // this plain status call answers "did my last build pass?" without a jobId.
-                var lastBuild = BuildService.GetLatestBuildSummary();
-                if (lastBuild != null) statusJson["lastBuild"] = lastBuild;
-                // issue #42 (P2b) — surface in-flight builds so the client's isBusy
-                // view is correct while a background build runs (a background build
-                // does not hold the SDK-busy flag, so status alone looked idle).
-                var activeBuilds = BuildService.GetActiveBuildsSummary();
-                statusJson["activeBuilds"] = activeBuilds;
-                statusJson["buildBusy"] = activeBuilds.Count > 0;
-                // The STA single-flight tracker covers every SDK command, including Undo.
-                // Merge it into the public status instead of reporting isBusy=false while
-                // the worker is actively restoring snapshots.
-                Program.MergeSdkBusyStatus(statusJson, Program.GetSdkBusyStatus());
-                // issue #42 (P5) — objects edited via MCP but not yet successfully
-                // built this session (their generated .cs is stale relative to the KB).
-                try
-                {
-                    var dirty = EditDirtyTracker.GetDirty(_kbService.GetKbPath());
-                    if (dirty != null && dirty.Count > 0)
-                        statusJson["staleGenerated"] = new Newtonsoft.Json.Linq.JArray(dirty);
-                }
-                catch { }
-                return statusJson.ToString();
-            }
-            if (action == "GetIndexState")
-            {
-                // v2.3.8 Task 1.2: surface unified IndexState from IndexCacheService.
-                // Gateway uses this to populate the `index` block in whoami.
-                //
-                // issue #28 item 4: hydrate the on-disk cache BEFORE reading the
-                // state. On a warm/reconnected worker _state starts "Cold" until
-                // something calls GetIndex() (lazy disk load → MarkIndexComplete →
-                // "Ready"). Because the gateway's SDK-bound short-circuit fast-fails
-                // edits on a Cold mirror BEFORE they reach the worker, GetIndex()
-                // never ran on the edit path and the state stayed Cold forever
-                // ("Index loaded. Objects: 1191" in the log, yet edits blocked with
-                // IndexNotReady). Triggering the lazy load here promotes the state to
-                // reflect the loaded cache on the first whoami/refresh after reconnect.
-                try { _indexCacheService.GetIndex(); } catch { /* load is best-effort; GetState still returns Cold/0 */ }
-                var st = _indexCacheService.GetState();
-                // v2.8.0 — index state shape is the tool's payload (not an envelope).
-                // Renamed top-level "status" to "indexStatus" to avoid colliding with
-                // the canonical envelope's "status" once wrapped in McpResponse.Ok.
-                var j = new JObject
-                {
-                    ["indexStatus"] = st.Status ?? "Cold",
-                    ["freshness"] = st.Freshness ?? "stale",
-                    ["lastSuccessfulScanAt"] = st.LastSuccessfulScanAt.HasValue
-                        ? (JToken)st.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
-                        : JValue.CreateNull(),
-                    ["totalObjects"] = st.TotalObjects,
-                    ["lastIndexedAt"] = st.LastIndexedAt.HasValue
-                        ? (JToken)st.LastIndexedAt.Value.ToUniversalTime().ToString("o")
-                        : JValue.CreateNull(),
-                    ["progress"] = st.Progress.HasValue ? (JToken)st.Progress.Value : JValue.CreateNull(),
-                    ["etaMs"] = st.EtaMs.HasValue ? (JToken)st.EtaMs.Value : JValue.CreateNull(),
-                    // PERFORMANCE (W-M2): expose flush-failure telemetry so a silently
-                    // failing snapshot (disk full / permission) is visible via whoami.
-                    ["flushFailuresConsecutive"] = IndexCacheService.ConsecutiveFlushFailures,
-                    ["flushLastSuccessUtc"] = IndexCacheService.LastFlushSuccessUtc == DateTime.MinValue
-                        ? JValue.CreateNull()
-                        : (JToken)IndexCacheService.LastFlushSuccessUtc.ToString("o"),
-                    ["flushLastError"] = IndexCacheService.LastFlushErrorMessage != null
-                        ? (JToken)IndexCacheService.LastFlushErrorMessage
-                        : JValue.CreateNull()
-                };
+            if (action == "GetIndexStatus") return HandleKbIndexStatus(request, method, action, target, payload, args);
+            if (action == "GetIndexState") return HandleKbIndexState(request, method, action, target, payload, args);
 
-                // v2.6.8: top-5 recently-changed projection. Cheap O(n) scan
-                // over the in-memory index; gateway forwards this into the
-                // `whoami.index.recentlyChanged` block so the agent gets a
-                // "what's hot" hint on the first call.
-                try
-                {
-                    var idx = _indexCacheService.GetIndex();
-                    if (idx != null && idx.Objects.Count > 0)
-                    {
-                        var top = idx.Objects.Values
-                            .Where(e => e.LastUpdate > DateTime.MinValue)
-                            .OrderByDescending(e => e.LastUpdate)
-                            .Take(5)
-                            .ToList();
-                        if (top.Count > 0)
-                        {
-                            var arr = new JArray();
-                            foreach (var e in top)
-                            {
-                                arr.Add(new JObject
-                                {
-                                    ["name"] = e.Name,
-                                    ["type"] = e.Type,
-                                    ["lastUpdate"] = e.LastUpdate.ToUniversalTime().ToString("o"),
-                                    ["lastModifiedBy"] = e.LastModifiedBy ?? string.Empty
-                                });
-                            }
-                            j["recentlyChanged"] = arr;
-                        }
-                    }
-                }
-                catch (Exception ex) { Logger.Debug("[GetIndexState] recentlyChanged failed: " + ex.Message); }
-
-                return Models.McpResponse.Ok(code: "IndexState", result: j);
-            }
-
-            if (action == "GetNameTypeMap")
-            {
-                // Root-cause fix for the gateway's auto-type-injection Table shadow: the
-                // gateway primed its name→type map from the top-5 RecentlyChanged window,
-                // which cannot establish real uniqueness — a Transaction's physical Table
-                // shadow can win that window without the sibling Transaction ever appearing
-                // (the design model indexes BOTH under the same name). Expose the FULL
-                // name→[distinct types] map from the in-memory index so the gateway can
-                // resolve Transaction+Table → Transaction deterministically.
-                // O(n) scan of the in-memory dictionary, no SDK access (STA-exempt).
-                try { _indexCacheService.GetIndex(); } catch { /* best-effort: empty map below */ }
-                var nameTypeMap = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-                try
-                {
-                    var idx = _indexCacheService.GetIndex();
-                    if (idx != null)
-                    {
-                        foreach (var e in idx.Objects.Values)
-                        {
-                            if (string.IsNullOrWhiteSpace(e.Name) || string.IsNullOrWhiteSpace(e.Type)) continue;
-                            if (!nameTypeMap.TryGetValue(e.Name, out var types))
-                                nameTypeMap[e.Name] = types = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                            types.Add(e.Type);
-                        }
-                    }
-                }
-                catch (Exception ex) { Logger.Debug("[GetNameTypeMap] scan failed: " + ex.Message); }
-
-                var map = new JObject();
-                foreach (var kv in nameTypeMap)
-                {
-                    var arr = new JArray();
-                    foreach (var t in kv.Value) arr.Add(t);
-                    map[kv.Key] = arr;
-                }
-                return Models.McpResponse.Ok(code: "NameTypeMap", result: new JObject
-                {
-                    ["nameTypeMap"] = map,
-                    ["totalNames"] = nameTypeMap.Count
-                });
-            }
+            if (action == "GetNameTypeMap") return HandleKbNameTypeMap(request, method, action, target, payload, args);
             if (action == "ValidateConditions") return _kbValidationService.ValidateConditions(args?["limit"]?.ToObject<int?>() ?? 0);
             if (action == "ListPatternSnapshots") return _kbValidationService.ListPatternSnapshots(target);
             if (action == "RestorePatternSnapshot") return _kbValidationService.RestorePatternSnapshot(target, args?["snapshotPath"]?.ToString(), _writeService);

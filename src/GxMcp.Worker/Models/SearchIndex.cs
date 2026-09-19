@@ -155,6 +155,57 @@ namespace GxMcp.Worker.Models
         public string ToJson() => JsonConvert.SerializeObject(this, Formatting.Indented);
         public static SearchIndex FromJson(string json) => JsonConvert.DeserializeObject<SearchIndex>(json);
 
+        // Pass-through for null/empty; otherwise the CLR interned instance. Used
+        // for shared-vocabulary fields only (Type/Module/edge names) — never for
+        // unique-per-object values (Name/Guid/Description/FullSource), which would
+        // pin unbounded distinct strings in the intern pool with zero sharing.
+        public static string InternShared(string value)
+            => string.IsNullOrEmpty(value) ? value : string.Intern(value);
+
+        // Memory weight: JSON deserialization mints a fresh string instance per
+        // occurrence, so the same callee name repeats once per referencing edge
+        // (thousands of copies for hub objects). Collapse each distinct shared-
+        // vocabulary value to one instance after load. New lists are assigned
+        // (never mutated in place) to honor the entry copy-on-write discipline.
+        // Call before publishing (both snapshot load paths); AddEdgeCow interns
+        // runtime additions, UpdateEntry interns creation-time scalars.
+        public static void InternSharedStrings(SearchIndex index)
+        {
+            if (index?.Objects == null) return;
+            foreach (var entry in index.Objects.Values)
+            {
+                if (entry == null) continue;
+                entry.Type = InternShared(entry.Type);
+                entry.Module = InternShared(entry.Module);
+                entry.Parent = InternShared(entry.Parent);
+                entry.ParentPath = InternShared(entry.ParentPath);
+                entry.ParentFolderPath = InternShared(entry.ParentFolderPath);
+                entry.Path = InternShared(entry.Path);
+                entry.RootTable = InternShared(entry.RootTable);
+                entry.DataType = InternShared(entry.DataType);
+                entry.Calls = InternEdgeList(entry.Calls);
+                entry.CalledBy = InternEdgeList(entry.CalledBy);
+                entry.Tables = InternEdgeList(entry.Tables);
+                entry.Rules = InternEdgeList(entry.Rules);
+                entry.Keywords = InternEdgeList(entry.Keywords);
+                entry.Tags = InternEdgeList(entry.Tags);
+            }
+        }
+
+        private static List<string> InternEdgeList(List<string> list)
+        {
+            if (list == null || list.Count == 0) return list;
+            bool changed = false;
+            var next = new List<string>(list.Count);
+            foreach (var item in list)
+            {
+                string interned = InternShared(item);
+                if (!changed && !ReferenceEquals(item, interned)) changed = true;
+                next.Add(interned);
+            }
+            return changed ? next : list;
+        }
+
         private List<IndexEntry> ResolveKeys(HashSet<string> keys)
         {
             if (keys == null || Objects == null) return new List<IndexEntry>(0);

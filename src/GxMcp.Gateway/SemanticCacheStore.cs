@@ -11,8 +11,10 @@ namespace GxMcp.Gateway
     /// Bounded, TTL-aware store backing the gateway's semantic cache.
     /// The gateway process is long-lived (stdio EOF keeps it alive via Task.Delay(-1)),
     /// so an unbounded ConcurrentDictionary grows forever across read-only sessions.
-    /// Entries expire after <see cref="TtlMinutes"/> without access (lazy sweep on Set)
-    /// and the store evicts least-recently-accessed entries beyond <see cref="MaxEntries"/>.
+    /// Entries expire after <see cref="TtlMinutes"/> without access (lazy sweep on Set);
+    /// the store evicts least-recently-accessed entries beyond <see cref="MaxEntries"/>
+    /// entries or <see cref="MaxBytes"/> total bytes (a single giant read envelope
+    /// must not crowd out hundreds of small ones).
     /// </summary>
     internal sealed class SemanticCacheStore
     {
@@ -21,6 +23,10 @@ namespace GxMcp.Gateway
         internal const int TtlMinutes = 30;
         private const int DefaultMaxEntries = 256;
         private const string MaxEntriesEnvVar = "GXMCP_SEMANTIC_CACHE_MAX";
+        // Total serialized payload ceiling (UTF-16 bytes). 256 compact envelopes sit
+        // far below this; only giant read envelopes (MBs) ever trip it.
+        internal const long DefaultMaxBytes = 64L * 1024 * 1024;
+        private const string MaxBytesEnvVar = "GXMCP_SEMANTIC_CACHE_MAX_BYTES";
 
         private readonly ConcurrentDictionary<string, JObject> _entries = new ConcurrentDictionary<string, JObject>();
         // Last-access timestamp per key, driven by NextStamp(). Kept separate so
@@ -33,6 +39,12 @@ namespace GxMcp.Gateway
         // A mutation advances only the affected KB generation. Reads that started
         // against an older generation cannot repopulate the cache after the write.
         private readonly ConcurrentDictionary<string, long> _scopeRevisions = new ConcurrentDictionary<string, long>(StringComparer.Ordinal);
+        // Approximate serialized bytes per key (UTF-16 chars × 2), summed into
+        // _totalBytes. Recomputed on Set (one extra serialization per distinct
+        // read — Gets stay allocation-free); RemoveEntry/Clear keep it exact.
+        private readonly ConcurrentDictionary<string, long> _entryBytes = new ConcurrentDictionary<string, long>();
+        private long _totalBytes;
+        private readonly long _maxBytes;
         private readonly Func<long> _clock;
         private readonly int _maxEntries;
         private readonly TimeSpan _ttl;
@@ -55,13 +67,21 @@ namespace GxMcp.Gateway
         // Test seam: inject a monotonic millisecond clock so absolute-expiry and
         // generation races can be asserted without sleeping.
         internal SemanticCacheStore(int maxEntries, TimeSpan ttl, Func<long> clock)
+            : this(maxEntries, ttl, clock, ResolveMaxBytesFromEnv())
+        {
+        }
+
+        // Test seam: byte ceiling override for eviction tests.
+        internal SemanticCacheStore(int maxEntries, TimeSpan ttl, Func<long> clock, long maxBytes)
         {
             _maxEntries = maxEntries > 0 ? maxEntries : DefaultMaxEntries;
+            _maxBytes = maxBytes > 0 ? maxBytes : DefaultMaxBytes;
             _ttl = ttl;
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         }
 
         public int MaxEntries => _maxEntries;
+        public long MaxBytes => _maxBytes;
 
         public bool TryGet(string key, out JObject value)
         {
@@ -93,6 +113,7 @@ namespace GxMcp.Gateway
             long now = _clock();
             _createdAt[key] = now;
             _lastAccess[key] = NextStamp();
+            TrackEntryBytes(key, value);
 
             EvictBeyondCap();
         }
@@ -105,6 +126,8 @@ namespace GxMcp.Gateway
             _entries.Clear();
             _lastAccess.Clear();
             _createdAt.Clear();
+            _entryBytes.Clear();
+            Interlocked.Exchange(ref _totalBytes, 0);
             _scopeRevisions.Clear();
         }
 
@@ -242,10 +265,13 @@ namespace GxMcp.Gateway
 
         private void EvictBeyondCap()
         {
-            while (_entries.Count > _maxEntries)
+            while (_entries.Count > _maxEntries
+                || Interlocked.Read(ref _totalBytes) > _maxBytes)
             {
                 // Least-recently-accessed victim. ToArray snapshot: concurrent writers
-                // may race, but the loop re-checks Count so we never over-evict.
+                // may race, but the loop re-checks both bounds so we never over-evict.
+                // A single entry bigger than the whole byte budget evicts everything
+                // else first, then itself — the next Get re-fetches (miss, not poison).
                 string? oldestKey = _lastAccess.ToArray()
                     .OrderBy(pair => pair.Value)
                     .Select(pair => pair.Key)
@@ -258,10 +284,30 @@ namespace GxMcp.Gateway
             }
         }
 
+        private static long MeasureEntryBytes(JObject value)
+        {
+            try
+            {
+                return (long)value.ToString(Newtonsoft.Json.Formatting.None).Length * 2L;
+            }
+            catch { return 0; }
+        }
+
+        private void TrackEntryBytes(string key, JObject value)
+        {
+            long next = MeasureEntryBytes(value);
+            long prev = 0;
+            if (_entryBytes.TryGetValue(key, out var old)) prev = old;
+            _entryBytes[key] = next;
+            Interlocked.Add(ref _totalBytes, next - prev);
+        }
+
         private bool RemoveEntry(string key)
         {
             _lastAccess.TryRemove(key, out _);
             _createdAt.TryRemove(key, out _);
+            if (_entryBytes.TryRemove(key, out var bytes))
+                Interlocked.Add(ref _totalBytes, -bytes);
             return _entries.TryRemove(key, out _);
         }
 
@@ -272,6 +318,13 @@ namespace GxMcp.Gateway
         {
             var raw = Environment.GetEnvironmentVariable(MaxEntriesEnvVar);
             if (!int.TryParse(raw, out int parsed) || parsed <= 0) return DefaultMaxEntries;
+            return parsed;
+        }
+
+        internal static long ResolveMaxBytesFromEnv()
+        {
+            var raw = Environment.GetEnvironmentVariable(MaxBytesEnvVar);
+            if (!long.TryParse(raw, out long parsed) || parsed <= 0) return DefaultMaxBytes;
             return parsed;
         }
     }

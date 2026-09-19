@@ -89,6 +89,10 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_BUILD_FULLOUTPUT_KEEP_MIN` | Age in minutes after which a terminal build's in-memory `FullOutput` buffer is released. The status envelope keeps answering (counts, shaped output, errors, `fullLogPath`) — only the raw buffer is dropped. | 15 |
 | `GXMCP_BUILD_LOG_RETAIN_COUNT` | Newest per-build `build-<taskId>.log` files kept in the worker `logs/` dir; older ones are deleted best-effort after each write. `0` (or negative) disables the sweep. Only `build-*.log` is ever touched. | 50 |
 | `GXMCP_READ_CACHE_TTL_SEC` | In-memory read cache TTL for `ObjectService` in seconds. Since writes perform deterministic cache invalidation, a longer TTL prevents redundant COM disk re-reads across multi-turn sessions. | 300 (5 min) |
+| `GXMCP_READ_CACHE_MAX` | Maximum entries in the worker `ObjectService` read cache; oldest evicted past the cap (floored at 16). Pairs with the TTL above: TTL bounds age, this bounds count. | 256 |
+| `GXMCP_SEMANTIC_CACHE_MAX_BYTES` | Total serialized-payload ceiling (bytes) for the gateway semantic cache, evicted LRU alongside the 256-entry count cap (`GXMCP_SEMANTIC_CACHE_MAX`). Caps worst-case memory when a few giant read envelopes would otherwise crowd out hundreds of small ones. | 67108864 (64MB) |
+| `GXMCP_FRICTION_LOG_MAX_LINES` | Newest lines kept in `<kb>/.gx/friction.jsonl`; older tail-trimmed best-effort after each append. `0` (or negative) disables rotation. | 5000 |
+| `GXMCP_SNAPSHOT_SWEEP` | Orphan index-snapshot sweep on worker boot: `index_<hash>` families whose meta names a KB path that no longer exists are deleted (current KB never touched). Set to `0` to disable. | on |
 | `GXMCP_COMMAND_QUEUE_CAPACITY` | Maximum number of input commands admitted before the worker returns `WorkerBusy`; protects the reader from unbounded memory growth. | 256 |
 | `GXMCP_SDK_COMMAND_QUEUE_CAPACITY` | Maximum number of SDK-bound commands waiting for the STA bridge before the worker returns `WorkerBusy`. | 64 |
 | `GXMCP_SDK_QUEUE_CAPACITY` | Maximum number of low-priority SDK actions (watcher/index callbacks) admitted by `SdkExecutor`. | 64 |
@@ -104,6 +108,7 @@ Precedence is: tool `auth` argument > these env vars > built-in default.
 | `GXMCP_LEGACY_TOOL_ALIASES` | Set to `0` to opt out of legacy tool-name aliases (de-advertised tools reachable by old names). | aliases on |
 | `GXMCP_RESILIENT_SPEC` | Set to `1` to opt into the resilient specifier path (slower; opt-in). | off |
 | `GXMCP_OCR_ENGINE` | Set to `tesseract` to select the Tesseract OCR engine (requires the Tesseract.NET dependency). | unset |
+| `DOTNET_gcServer` | .NET runtime switch (not GxMcp-owned): set to `0` to run the Gateway on Workstation GC instead of the built-in Server GC. Measured 2026-09 on 90 steady-state JSON calls: no memory win either way (WS ~99 vs ~105MB, within noise) with latency parity, so the Server default stays; use `0` only on hard memory-constrained hosts. No rebuild needed. | `1` (Server, via csproj) |
 
 ## Client registration / config location
 

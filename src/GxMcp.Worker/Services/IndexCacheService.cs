@@ -629,6 +629,14 @@ namespace GxMcp.Worker.Services
                 string hash = GetHash(kbPath);
                 _indexPath = Path.Combine(cacheDir, string.Format("index_{0}.json", hash));
                 _initialized = true;
+                // Orphan sweep: historical KB paths leave dead index_<hash> families
+                // behind. Once per boot, best-effort, never breaks initialization.
+                try
+                {
+                    int swept = SweepOrphanSnapshots(cacheDir, hash);
+                    if (swept > 0) Logger.Info(string.Format("[INDEX-CACHE-SWEEP] removed {0} orphan snapshot families", swept));
+                }
+                catch { }
                 // Fase 1 diagnostic: log the resolved cache paths so a sidecar-not-found on warm
                 // start (metaPresent=False) can be traced to a hash/path mismatch between runs.
                 Logger.Info(string.Format("[INDEX-CACHE-PATHS] kbPathIn={0} hash={1} gz={2} meta={3}", kbPath, hash, _indexPathGz, _metaPath));
@@ -641,6 +649,12 @@ namespace GxMcp.Worker.Services
         }
 
         private string GetHash(string input)
+        {
+            return ComputeKbHash(input);
+        }
+
+        // Static twin of GetHash for the orphan sweep (no instance needed).
+        internal static string ComputeKbHash(string input)
         {
             // Fase 1: canonicalize the KB path so the same KB always maps to the same cache
             // hash across worker runs — otherwise a sidecar written under one path-spelling
@@ -658,6 +672,62 @@ namespace GxMcp.Worker.Services
                 var bytes = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(canonical));
                 return BitConverter.ToString(bytes).Replace("-", "").Substring(0, 16);
             }
+        }
+
+        // Orphan snapshot sweep (cache disk weight). Every historical KB path leaves
+        // an index_<hash> family (meta/json/gz/shards/slots) under %LOCALAPPDATA%\GxMcp\Cache
+        // that nothing ever deletes. Runs once per worker boot from Initialize: for each
+        // meta file, delete the whole family ONLY when the meta names a KB path AND that
+        // path no longer exists (dir or file). Anything else — unreadable/corrupt meta,
+        // missing KbPath, live path, current KB hash — is left alone. Returns families
+        // removed. Total (never throws); disable with GXMCP_SNAPSHOT_SWEEP=0.
+        internal static int SweepOrphanSnapshots(string cacheDir, string keepHash)
+        {
+            int removed = 0;
+            try
+            {
+                if (string.IsNullOrEmpty(cacheDir) || !Directory.Exists(cacheDir)) return 0;
+                var raw = Environment.GetEnvironmentVariable("GXMCP_SNAPSHOT_SWEEP");
+                if (!string.IsNullOrWhiteSpace(raw) && raw.Trim() == "0") return 0;
+                foreach (var metaPath in Directory.GetFiles(cacheDir, "index_*.meta.json"))
+                {
+                    try
+                    {
+                        string file = Path.GetFileName(metaPath);
+                        if (!file.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase)) continue;
+                        string hash = file.Substring("index_".Length, file.Length - "index_".Length - ".meta.json".Length);
+                        if (hash.Length != 16) continue;
+                        if (!string.IsNullOrEmpty(keepHash) && string.Equals(hash, keepHash, StringComparison.OrdinalIgnoreCase)) continue;
+                        string kbPath = ReadSnapshotKbPath(metaPath);
+                        if (string.IsNullOrWhiteSpace(kbPath)) continue; // can't prove orphan — leave
+                        if (Directory.Exists(kbPath) || File.Exists(kbPath)) continue; // KB alive — leave
+                        DeleteSnapshotFamily(cacheDir, hash);
+                        removed++;
+                    }
+                    catch { /* per-family best-effort */ }
+                }
+            }
+            catch { }
+            return removed;
+        }
+
+        private static string ReadSnapshotKbPath(string metaPath)
+        {
+            try
+            {
+                var meta = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(metaPath));
+                return meta["KbPath"]?.ToString();
+            }
+            catch { return null; }
+        }
+
+        private static void DeleteSnapshotFamily(string cacheDir, string hash)
+        {
+            try { File.Delete(Path.Combine(cacheDir, "index_" + hash + ".meta.json")); } catch { }
+            try { File.Delete(Path.Combine(cacheDir, "index_" + hash + ".json")); } catch { }
+            try { File.Delete(Path.Combine(cacheDir, "index_" + hash + ".json.gz")); } catch { }
+            try { if (Directory.Exists(Path.Combine(cacheDir, "index_" + hash + ".json_shards"))) Directory.Delete(Path.Combine(cacheDir, "index_" + hash + ".json_shards"), true); } catch { }
+            try { if (Directory.Exists(Path.Combine(cacheDir, "index_" + hash + ".json_slots"))) Directory.Delete(Path.Combine(cacheDir, "index_" + hash + ".json_slots"), true); } catch { }
         }
 
         private void BuildParentIndex(SearchIndex index)
@@ -856,6 +926,10 @@ namespace GxMcp.Worker.Services
                     return WarmRestoreFallback(response, "object-count-mismatch");
                 if (restored.Objects.Count == 0)
                     return WarmRestoreFallback(response, "snapshot-empty");
+
+                // Deserialization minted one string instance per occurrence — collapse
+                // shared vocabulary before publishing (still thread-local here).
+                SearchIndex.InternSharedStrings(restored);
 
                 lock (_lock)
                 {
@@ -1444,6 +1518,7 @@ namespace GxMcp.Worker.Services
         private SearchIndex InstallLoadedIndex(SearchIndex loaded)
         {
             if (loaded == null) loaded = new SearchIndex();
+            SearchIndex.InternSharedStrings(loaded);
             NormalizeLegacyHierarchy(loaded);
             NormalizeLifecycleTimestamps(loaded);
             BuildParentIndex(loaded);
@@ -2159,13 +2234,17 @@ namespace GxMcp.Worker.Services
                 EntityTypeGuid = SafeEntityTypeGuid(obj),
                 EntityId = SafeEntityId(obj),
                 Name = obj.Name,
-                Type = obj.TypeDescriptor.Name,
+                // Low-cardinality shared vocabulary (~dozens of types/modules, not
+                // per-object uniques): intern at creation so 38k entries share one
+                // instance each instead of 38k copies. Name/Guid/Description stay
+                // plain — interning uniques would pin them forever with zero sharing.
+                Type = SearchIndex.InternShared(obj.TypeDescriptor.Name),
                 Description = obj.Description,
-                Parent = hierarchy.ParentName,
-                ParentPath = hierarchy.ParentPath,
-                ParentFolderPath = ComposeParentFolderPath(hierarchy.ParentPath),
-                Path = hierarchy.Path,
-                Module = hierarchy.ModuleName,
+                Parent = SearchIndex.InternShared(hierarchy.ParentName),
+                ParentPath = SearchIndex.InternShared(hierarchy.ParentPath),
+                ParentFolderPath = SearchIndex.InternShared(ComposeParentFolderPath(hierarchy.ParentPath)),
+                Path = SearchIndex.InternShared(hierarchy.Path),
+                Module = SearchIndex.InternShared(hierarchy.ModuleName),
                 LastUpdate = SafeReadDate(() => obj.LastUpdate),
                 CreatedAt = SafeReadDate(() => obj.VersionDate),
                 LastModifiedBy = SafeReadString(() => obj.UserName),
@@ -2183,14 +2262,14 @@ namespace GxMcp.Worker.Services
             long teStart = System.Diagnostics.Stopwatch.GetTimestamp();
             if (obj is global::Artech.Genexus.Common.Objects.Attribute attr)
             {
-                entry.DataType = attr.Type.ToString();
+                entry.DataType = SearchIndex.InternShared(attr.Type.ToString());
                 entry.Length = attr.Length;
                 entry.Decimals = attr.Decimals;
                 entry.IsFormula = attr.Formula != null;
             }
             else if (obj is global::Artech.Genexus.Common.Objects.Table tbl)
             {
-                entry.RootTable = tbl.Name;
+                entry.RootTable = SearchIndex.InternShared(tbl.Name);
                 try {
                     var children = new Newtonsoft.Json.Linq.JArray();
                     dynamic dStructure = ((dynamic)tbl).TableStructure;
@@ -2203,7 +2282,7 @@ namespace GxMcp.Worker.Services
             }
             else if (obj is global::Artech.Genexus.Common.Objects.Transaction trn)
             {
-                entry.RootTable = trn.Structure.Root.Name;
+                entry.RootTable = SearchIndex.InternShared(trn.Structure.Root.Name);
                 try { entry.ParmRule = trn.Rules.Source.Split('\n').FirstOrDefault(l => l.Trim().StartsWith("parm(", StringComparison.OrdinalIgnoreCase)); } catch { }
             }
             else if (obj is global::Artech.Genexus.Common.Objects.SDT sdt)
@@ -2387,6 +2466,12 @@ namespace GxMcp.Worker.Services
             string value)
         {
             if (entry == null || string.IsNullOrEmpty(value)) return false;
+            // Memory weight: the same callee/table name repeats in hundreds of
+            // callers' edge lists (one fresh instance per occurrence). The CLR
+            // intern pool collapses each distinct name to a single shared instance;
+            // the vocabulary is bounded by the KB's object names, so nothing
+            // unbounded is pinned. Value-equality semantics below are unaffected.
+            value = string.Intern(value);
             lock (entry)
             {
                 var current = get(entry);

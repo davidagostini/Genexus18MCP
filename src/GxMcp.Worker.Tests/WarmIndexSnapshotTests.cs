@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text;
 using GxMcp.Worker.Services;
@@ -234,6 +235,130 @@ namespace GxMcp.Worker.Tests
             {
                 WarmIndexSnapshot.SetStoreForTests(null);
             }
+        }
+
+        [Fact]
+        public void InternSharedStrings_CollapsesDuplicateEdgeAndScalarInstances()
+        {
+            // Concat defeats literal interning: distinct instances, equal content.
+            string typeA = string.Concat("Trans", "action");
+            string typeB = string.Concat("Trans", "action");
+            string edgeA = string.Concat("Cust", "omer");
+            string edgeB = string.Concat("Cust", "omer");
+            Assert.False(ReferenceEquals(typeA, typeB));
+            Assert.False(ReferenceEquals(edgeA, edgeB));
+
+            var index = new SearchIndex();
+            index.Objects["Transaction:A"] = new SearchIndex.IndexEntry { Name = "A", Type = typeA, Calls = new List<string> { edgeA } };
+            index.Objects["Transaction:B"] = new SearchIndex.IndexEntry { Name = "B", Type = typeB, Calls = new List<string> { edgeB } };
+
+            SearchIndex.InternSharedStrings(index);
+
+            var a = index.Objects["Transaction:A"];
+            var b = index.Objects["Transaction:B"];
+            Assert.True(ReferenceEquals(a.Type, b.Type));
+            Assert.True(ReferenceEquals(a.Calls[0], b.Calls[0]));
+            // Unique-per-object values are untouched.
+            Assert.Equal("A", a.Name);
+            // Serialized form is unchanged (value semantics preserved).
+            Assert.Equal("Transaction", a.Type);
+            Assert.Equal("Customer", a.Calls[0]);
+        }
+
+        [Fact]
+        public void AddCallCow_InternsEdgeValues()
+        {
+            var entry = new SearchIndex.IndexEntry();
+            string first = string.Concat("Pro", "c1");
+            string second = string.Concat("Pro", "c1");
+            Assert.True(IndexCacheService.AddCallCow(entry, first));
+            Assert.False(IndexCacheService.AddCallCow(entry, second)); // duplicate by value
+            Assert.True(ReferenceEquals(string.Intern(second), entry.Calls[0]));
+        }
+
+        private static string WriteOrphanMeta(string cacheDir, string hash, string kbPath, bool validJson = true)
+        {
+            string metaPath = System.IO.Path.Combine(cacheDir, "index_" + hash + ".meta.json");
+            System.IO.File.WriteAllText(metaPath, validJson
+                ? "{\"KbPath\":" + Newtonsoft.Json.JsonConvert.SerializeObject(kbPath) + "}"
+                : "{not-json");
+            return metaPath;
+        }
+
+        private static void WriteOrphanFamily(string cacheDir, string hash)
+        {
+            System.IO.File.WriteAllText(System.IO.Path.Combine(cacheDir, "index_" + hash + ".json"), "{}");
+            System.IO.File.WriteAllText(System.IO.Path.Combine(cacheDir, "index_" + hash + ".json.gz"), "gz");
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(cacheDir, "index_" + hash + ".json_shards"));
+            System.IO.Directory.CreateDirectory(System.IO.Path.Combine(cacheDir, "index_" + hash + ".json_slots"));
+        }
+
+        [Fact]
+        public void SweepOrphanSnapshots_RemovesOnlyDeadKbFamilies()
+        {
+            string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "gxmcp_sweep_" + Guid.NewGuid().ToString("N"));
+            string liveKb = System.IO.Path.Combine(tmp, "LiveKb");
+            System.IO.Directory.CreateDirectory(liveKb);
+            try
+            {
+                string deadHash = "AAAAAAAAAAAAAAAA";
+                string liveHash = "BBBBBBBBBBBBBBBB";
+                string corruptHash = "CCCCCCCCCCCCCCCC";
+                string keepHash = "DDDDDDDDDDDDDDDD";
+                string deadKb = System.IO.Path.Combine(tmp, "MissingKb");
+                WriteOrphanMeta(tmp, deadHash, deadKb);
+                WriteOrphanFamily(tmp, deadHash);
+                // Live KB + corrupt meta + keepHash guard: all stay.
+                WriteOrphanMeta(tmp, liveHash, liveKb);
+                WriteOrphanFamily(tmp, liveHash);
+                WriteOrphanMeta(tmp, corruptHash, null, validJson: false);
+                WriteOrphanFamily(tmp, corruptHash);
+                WriteOrphanMeta(tmp, keepHash, deadKb);
+                WriteOrphanFamily(tmp, keepHash);
+
+                int removed = IndexCacheService.SweepOrphanSnapshots(tmp, keepHash);
+
+                Assert.Equal(1, removed);
+                Assert.False(System.IO.File.Exists(System.IO.Path.Combine(tmp, "index_" + deadHash + ".meta.json")));
+                Assert.False(System.IO.Directory.Exists(System.IO.Path.Combine(tmp, "index_" + deadHash + ".json_shards")));
+                Assert.True(System.IO.File.Exists(System.IO.Path.Combine(tmp, "index_" + liveHash + ".meta.json")));
+                Assert.True(System.IO.File.Exists(System.IO.Path.Combine(tmp, "index_" + corruptHash + ".meta.json")));
+                Assert.True(System.IO.File.Exists(System.IO.Path.Combine(tmp, "index_" + keepHash + ".meta.json")));
+            }
+            finally
+            {
+                try { System.IO.Directory.Delete(tmp, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void SweepOrphanSnapshots_DisabledByEnv()
+        {
+            string tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "gxmcp_sweep_" + Guid.NewGuid().ToString("N"));
+            System.IO.Directory.CreateDirectory(tmp);
+            try
+            {
+                WriteOrphanMeta(tmp, "AAAAAAAAAAAAAAAA", System.IO.Path.Combine(tmp, "Missing"));
+                Environment.SetEnvironmentVariable("GXMCP_SNAPSHOT_SWEEP", "0");
+                Assert.Equal(0, IndexCacheService.SweepOrphanSnapshots(tmp, null));
+                Assert.True(System.IO.File.Exists(System.IO.Path.Combine(tmp, "index_AAAAAAAAAAAAAAAA.meta.json")));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_SNAPSHOT_SWEEP", null);
+                try { System.IO.Directory.Delete(tmp, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void ComputeKbHash_IsStableAcrossPathSpellings()
+        {
+            string a = IndexCacheService.ComputeKbHash(@"C:\KBs\KBTeste");
+            string b = IndexCacheService.ComputeKbHash(@"C:\KBs\KBTeste\");
+            string c = IndexCacheService.ComputeKbHash(@"c:\kbs\kbteste");
+            Assert.Equal(16, a.Length);
+            Assert.Equal(a, b);
+            Assert.Equal(a, c);
         }
     }
 }
