@@ -36,7 +36,7 @@ namespace GxMcp.Gateway.Tests
                 ?? foldersPayload?["result"]?["results"] as JArray
                 ?? foldersPayload?["objects"] as JArray
                 ?? foldersPayload?["results"] as JArray;
-            string folder = folders?.OfType<JObject>()
+            string? folder = folders?.OfType<JObject>()
                 .Select(item => item["name"]?.ToString())
                 .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
             if (string.IsNullOrWhiteSpace(folder))
