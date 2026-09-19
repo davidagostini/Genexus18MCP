@@ -127,6 +127,58 @@ namespace GxMcp.Worker.Tests
             finally { Directory.Delete(kb, true); }
         }
 
+        [Fact]
+        public void WriteContext_RestoresPreviousOwnerAndForceState()
+        {
+            Assert.Null(WritePipeline.CurrentOwnerId);
+            Assert.False(WritePipeline.CurrentForce);
+            using (WritePipeline.UseWriteContext("gateway-a", true))
+            {
+                Assert.Equal("gateway-a", WritePipeline.CurrentOwnerId);
+                Assert.True(WritePipeline.CurrentForce);
+                using (WritePipeline.UseWriteContext("gateway-b", false))
+                {
+                    Assert.Equal("gateway-b", WritePipeline.CurrentOwnerId);
+                    Assert.False(WritePipeline.CurrentForce);
+                }
+                Assert.Equal("gateway-a", WritePipeline.CurrentOwnerId);
+                Assert.True(WritePipeline.CurrentForce);
+            }
+            Assert.Null(WritePipeline.CurrentOwnerId);
+            Assert.False(WritePipeline.CurrentForce);
+        }
+
+        [Fact]
+        public void AdvisoryLockCheck_CorruptLock_FailsClosed()
+        {
+            string kb = NewKbDir();
+            try
+            {
+                string locksDir = Path.Combine(kb, ".gx", "locks");
+                Directory.CreateDirectory(locksDir);
+                File.WriteAllText(Path.Combine(locksDir, "Invoice__Source.lock"), "{not-json");
+
+                var result = WritePipeline.AdvisoryLockCheck(kb, "Invoice", "Source", "gateway-a", false);
+                Assert.NotNull(result);
+                Assert.Equal("LockCheckFailed", (string)result["code"]);
+            }
+            finally { Directory.Delete(kb, true); }
+        }
+
+        [Fact]
+        public void HasActiveOwnedLock_DistinguishesOwnerAndExpiry()
+        {
+            string kb = NewKbDir();
+            try
+            {
+                MultiAgentLockService.DispatchCore(kb, "acquire", "Invoice", "Source", "agent-A", 300);
+
+                Assert.True(WritePipeline.HasActiveOwnedLock(kb, "Invoice", "Source", "agent-A"));
+                Assert.False(WritePipeline.HasActiveOwnedLock(kb, "Invoice", "Source", "agent-B"));
+            }
+            finally { Directory.Delete(kb, true); }
+        }
+
         // ----- NoteWrite -------------------------------------------------------
 
         [Fact]

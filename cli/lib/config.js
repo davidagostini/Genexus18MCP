@@ -33,6 +33,7 @@ function generateNeutralConfig(gxPath, { workerPath, gatewayMode = 'stdio-isolat
         Server: {
             HttpPort: 0,
             McpStdio: true,
+            WorkerSharingMode: 'isolated',
             SessionIdleTimeoutMinutes: 10,
             WorkerIdleTimeoutMinutes: 5,
             EmitStructuredContent: false,

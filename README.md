@@ -112,6 +112,65 @@ does not claim the same feature parity as the native SDK contract for GeneXus
 
 ---
 
+## Sharing one Worker between MCP clients
+
+The Gateway and the GeneXus SDK Worker have different responsibilities. By
+default, `Server.WorkerSharingMode` is `"isolated"`: each Gateway owns its own
+Worker process. Keep that mode when an agent intentionally needs multiple
+independent Workers.
+
+When two or more independent MCP clients need to work on the same physical KB,
+set `WorkerSharingMode` to `"shared-host"` in a `stdio-isolated` configuration:
+
+```json
+{
+  "ConfigSchemaVersion": 2,
+  "GatewayMode": "stdio-isolated",
+  "GeneXus": {
+    "InstallationPath": "C:\\Program Files (x86)\\GeneXus\\GeneXus18",
+    "WorkerExecutable": "C:\\path\\to\\GxMcp.Worker.exe"
+  },
+  "Server": {
+    "HttpPort": 0,
+    "McpStdio": true,
+    "WorkerSharingMode": "shared-host"
+  },
+  "Environment": {
+    "ResolutionPolicy": "strict",
+    "KBs": [
+      { "alias": "main", "path": "C:\\KBs\\YourKB" }
+    ]
+  }
+}
+```
+
+`shared-host` shares only the per-KB broker-owned SDK Worker through bounded
+local named-pipe attachments. The Gateways remain independent: MCP sessions,
+authorization, KB selection, caches, request tracking, cancellation, progress,
+notifications, and generated artifacts do not cross the process boundary.
+Sharing is accepted only when the physical KB, Worker executable, GeneXus
+installation, driver, and target major are compatible; a mismatch fails closed
+instead of attaching to the wrong SDK process.
+
+Writes carry a Gateway-local owner into the Worker. The same object/part cannot
+be written concurrently by two attached clients, while writes to distinct
+objects may proceed independently through the shared SDK boundary. The Worker
+itself remains a single STA process, so calls that reach the same SDK are still
+serialized as required by GeneXus.
+
+For a healthy shared attachment, `genexus_whoami` and `genexus_doctor` report the
+mode, identity key, pipe, host/Worker PIDs, generation, attachment ID, connection
+state, and the latest startup/failure diagnostic. When something fails, inspect
+`worker.diagnostics` and `workerHealth` before restarting or deleting local
+state; these fields distinguish configuration/identity, mutex or registry,
+pipe/handshake, startup, child exit/respawn, TTL, and frame failures.
+
+See [Worker ownership](docs/worker-ownership.md) for the lifecycle contract and
+[the shared-Worker benchmark](docs/benchmarks/2026-09-18-shared-worker.md) for
+the measured two-client smoke and backpressure results.
+
+---
+
 ## What you can do with it
 
 A quick map of what the agent can do against your real KB through the **50 tools** (details in [Tool Surface](#tool-surface)):
@@ -351,7 +410,18 @@ same path when a previous failure is present. Read it before changing the instal
 using a global npm install; if the Antigravity launcher is stale, re-register it with
 `npx genexus-mcp@latest clients add --clients antigravity`.
 
-Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) with the output of `npx genexus-mcp doctor --mcp-smoke`.
+### Diagnosing a shared Worker failure
+
+If `shared-host` does not attach or a Worker is restarted, run
+`genexus_whoami` and `genexus_doctor` from the affected client and preserve the
+structured `worker.diagnostics`/`workerHealth` block. The useful evidence is the
+mode, identity, host/Worker PID, generation, attachment state, connection error,
+and failure diagnostic â€” not only the final `no_worker` or `startup_failed`
+summary. Do not remove a shared-worker registry file while a matching host is
+still running; the broker owns that lifecycle and stale records are recovered
+after PID/start-time validation.
+
+Still stuck? [Open an issue](https://github.com/lennix1337/Genexus18MCP/issues) with the output of `npx genexus-mcp doctor --mcp-smoke` and the bounded diagnostic fields above. Redact credentials, tokens, connection strings, and other sensitive values.
 
 ---
 
@@ -615,13 +685,16 @@ When the pool is full and no Worker is idle, the server returns `KB_POOL_FULL` â
 
 ```mermaid
 graph LR
-    A[AI Client / Nexus-IDE] -->|MCP stdio or HTTP /mcp| B[Gateway .NET 10]
-    B -->|JSON-RPC over process boundary| C[Worker .NET Framework 4.8]
+    A[AI Client / Nexus-IDE] -->|MCP stdio or HTTP /mcp| B[Independent Gateway .NET 10]
+    B -->|isolated stdio: direct child| C[Worker .NET Framework 4.8]
+    B -->|shared-host: named-pipe attachment| H[Per-KB WorkerHost broker]
+    H -->|one compatible child| C
     C -->|Native SDK| D[GeneXus KB]
 ```
 
-- **Worker pool (v2.3.0+)**: one .NET 4.8 Worker process per open KB, capped by `MaxOpenKbs` (default 3). Workers are spawned lazily, recycled by `WorkerIdleTimeoutMinutes`, and evicted LRU when the pool is full.
+- **Worker pool (v2.3.0+)**: in isolated mode, one .NET 4.8 Worker process per open KB in each Gateway, capped by `MaxOpenKbs` (default 3). With `shared-host`, compatible Gateways attach to one broker-owned Worker per physical KB instead of starting duplicate SDK processes. Workers are spawned lazily, recycled by `WorkerIdleTimeoutMinutes`, and evicted LRU when the pool is full.
 - **Cross-KB parallelism**: tool calls to different KBs run on different Worker processes and never block each other. Calls to the same KB are still serialized by the GeneXus SDK's STA requirement.
+- **Gateway isolation**: `shared-host` does not turn one Gateway into a master or proxy for another; each client keeps its own MCP state and only the SDK Worker is shared.
 - **Gateway reuse**: multiple IDE instances share one gateway via lease files at `%LOCALAPPDATA%\GenexusMCP\gateway-leases`.
 - **HTTP mode**: also available at `http://127.0.0.1:5000/mcp` with SSE. Header: `MCP-Protocol-Version: 2025-11-25`.
 

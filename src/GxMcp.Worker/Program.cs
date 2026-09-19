@@ -159,6 +159,15 @@ namespace GxMcp.Worker
         [STAThread]
         static void Main(string[] args)
         {
+            // Shared-host mode is a broker process, not an SDK Worker. It must
+            // start before output capture, SDK validation, or SingleInstanceLock;
+            // the broker owns only the child process and never initializes GX.
+            if (SharedWorkerHost.IsRequested(args))
+            {
+                Environment.ExitCode = SharedWorkerHost.Run(args);
+                return;
+            }
+
             try {
                 // Force UTF-8 on worker stdio before capturing the original writers.
                 Console.InputEncoding = System.Text.Encoding.UTF8;
@@ -465,7 +474,8 @@ namespace GxMcp.Worker
                     while (true) {
                         string line = Console.ReadLine();
                         if (line == null) break;
-                        if (line.Trim().Equals("ping", StringComparison.OrdinalIgnoreCase) || line.Contains("\"method\":\"ping\"") || line.Contains("\"action\":\"Ping\""))
+                        bool sharedChild = string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_CHILD"), "1", StringComparison.Ordinal);
+                        if (!sharedChild && (line.Trim().Equals("ping", StringComparison.OrdinalIgnoreCase) || line.Contains("\"method\":\"ping\"") || line.Contains("\"action\":\"Ping\"")))
                         {
                             WriteLine("{\"jsonrpc\":\"2.0\",\"result\":{\"status\":\"Ready\"},\"id\":\"heartbeat\"}");
                             if (!line.Contains("\"method\"")) continue;

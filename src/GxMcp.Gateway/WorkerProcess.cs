@@ -48,6 +48,9 @@ namespace GxMcp.Gateway
         public KbHandle Kb { get; }
         private Process? _process;
         private readonly Configuration _config;
+        private SharedWorkerConnection? _sharedConnection;
+        private SharedWorkerIdentity? _sharedIdentity;
+        private bool IsSharedHostMode => string.Equals(_config.Server?.WorkerSharingMode, "shared-host", StringComparison.OrdinalIgnoreCase);
         // PERFORMANCE (perf-review): queue item carries the id/method the consumer
         // needs, so it doesn't re-parse the command we just serialized (every large
         // genexus_edit / import command used to be JObject.Parse'd a second time on
@@ -123,6 +126,7 @@ namespace GxMcp.Gateway
         private long _lastWorkingSetBytes = -1;
         private int _lastPid;
         private string? _startupDiagnostic;
+        private string? _lastFailureDiagnostic;
         private WorkerOwnershipLease? _ownershipLease;
         private DateTime _lastOwnershipReconcileUtc = DateTime.MinValue;
 
@@ -130,6 +134,7 @@ namespace GxMcp.Gateway
         public long? SdkInitMs { get { var v = System.Threading.Interlocked.Read(ref _sdkInitMs); return v < 0 ? (long?)null : v; } }
         public int? LastExitCode => _lastExitCode == int.MinValue ? (int?)null : _lastExitCode;
         public string? StartupDiagnostic => _startupDiagnostic;
+        public string? LastFailureDiagnostic => _lastFailureDiagnostic;
 
         // PERFORMANCE (perf-review): carries the raw string (needed for stdio/http
         // forwarding) together with the already-parsed JObject (WorkerProcess parses
@@ -152,13 +157,31 @@ namespace GxMcp.Gateway
         {
             get
             {
+                if (IsSharedHostMode)
+                    return _sharedConnection?.WorkerPid;
                 try { return _process?.HasExited == false ? _process.Id : (int?)null; }
                 catch { return null; }
             }
         }
 
+        public int? HostPid => IsSharedHostMode ? _sharedConnection?.HostPid : null;
+        public string? AttachmentId => IsSharedHostMode ? _sharedConnection?.AttachId : null;
+        public long? WorkerGeneration => IsSharedHostMode ? _sharedConnection?.Generation : null;
+        public bool IsSharedWorker => IsSharedHostMode;
+        public bool SharedConnectionIsConnected => IsSharedHostMode && _sharedConnection?.IsConnected == true;
+        public string? SharedIdentityKey => IsSharedHostMode ? _sharedIdentity?.Key : null;
+        public string? SharedPipeName => IsSharedHostMode && _sharedIdentity != null
+            ? SharedWorkerRegistry.PipeName(_sharedIdentity)
+            : null;
+        public string? SharedConnectionError => IsSharedHostMode ? _sharedConnection?.LastError : null;
+        public string? SharedWorkerExecutable => IsSharedHostMode ? _sharedIdentity?.WorkerExecutable : null;
+        public string? SharedKbPath => IsSharedHostMode ? _sharedIdentity?.KbPath : null;
+        public string? SharedInstallationPath => IsSharedHostMode ? _sharedIdentity?.InstallationPath : null;
+        public string? SharedDriver => IsSharedHostMode ? _sharedIdentity?.Driver : null;
+        public string? SharedMajor => IsSharedHostMode ? _sharedIdentity?.Major : null;
+
         internal bool ExitConfirmed => _exitConfirmedForTest ?? Volatile.Read(ref _exitConfirmed) != 0;
-        internal bool IsProcessAliveForPool => _processAliveForTest ?? (_process == null || IsProcessRunning(_process));
+        internal bool IsProcessAliveForPool => _processAliveForTest ?? (IsSharedHostMode ? _sharedConnection?.IsConnected == true : (_process == null || IsProcessRunning(_process)));
 
         // Friction 2026-05-22: surface the exe path the worker was actually
         // spawned from so whoami can show it. Worker can come from publish/worker/
@@ -376,7 +399,7 @@ namespace GxMcp.Gateway
                             // orphaned worker) and bypassed the respawn-suppression path in Program.cs.
                             // If the process is not running, fail this command with a typed error
                             // so the gateway returns a clean JSON-RPC error instead of silently dropping it.
-                            if (!IsProcessRunning(_process))
+                            if (!IsTransportRunning())
                             {
                                 string failId = cmd.Id ?? (cmd.Rpc?["id"]?.ToString()) ?? "unknown";
                                 // PERF: id rides on the queue item (JObject overload); fall
@@ -441,7 +464,13 @@ namespace GxMcp.Gateway
                                     writer = _pipeWriter;
                                 }
 
-                                if (writer != null)
+                                if (_sharedConnection != null)
+                                {
+                                    JObject sharedRpc = cmd.Rpc ?? JObject.Parse(cmd.Json ?? string.Empty);
+                                    await _sharedConnection.SendAsync(sharedRpc, _cts.Token).ConfigureAwait(false);
+                                    Program.Log($"[Gateway] Shared Worker command written to attachment: {id}");
+                                }
+                                else if (writer != null)
                                 {
                                     if (cmd.Rpc != null)
                                     {
@@ -535,6 +564,12 @@ namespace GxMcp.Gateway
             }
         }
 
+        private bool IsTransportRunning()
+        {
+            if (IsSharedHostMode) return _sharedConnection?.IsConnected == true;
+            return IsProcessRunning(_process);
+        }
+
         // C5 fix: a send failure (pipe never became ready within the wait window — including
         // the TimeoutException from WaitForPipeReadyAsync — or any IPC exception while
         // writing) must surface as a JSON-RPC error response; otherwise the pending MCP
@@ -552,6 +587,11 @@ namespace GxMcp.Gateway
 
         private async Task WaitForPipeReadyAsync(string id, CancellationToken cancellationToken)
         {
+            if (IsSharedHostMode)
+            {
+                if (_sharedConnection?.IsConnected == true) return;
+                throw new IOException($"Shared Worker attachment is not connected for command {id}.");
+            }
             Task pipeReadyTask;
             lock (_processLock)
             {
@@ -725,11 +765,65 @@ namespace GxMcp.Gateway
             return string.Empty;
         }
 
+        private void StartShared(string workerPath, string workerInstallationPath, string workerDriver, string workerMajor, string? legacyProvider)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            SpawnedExePath = workerPath;
+            try { SpawnedExeBuiltAtUtc = File.GetLastWriteTimeUtc(workerPath); } catch { SpawnedExeBuiltAtUtc = null; }
+            SharedWorkerConnection? connection = null;
+            try
+            {
+                connection = SharedWorkerHostLauncher.Connect(_config, Kb, workerPath,
+                    workerInstallationPath ?? string.Empty, workerDriver, workerMajor, legacyProvider);
+                _sharedIdentity = SharedWorkerIdentity.Create(workerPath, Kb.Path, workerInstallationPath, workerDriver, workerMajor);
+                _sharedConnection = connection;
+                connection.LineReceived += line =>
+                {
+                    _lastResponse = DateTime.UtcNow;
+                    try
+                    {
+                        HandleWorkerRpcResponse(line, out JObject? parsed);
+                        if (parsed != null) RaiseRpcResponse(line, parsed);
+                    }
+                    catch (Exception ex) { Program.Log("[Gateway] shared Worker response handling failed: " + ex.Message); }
+                };
+                connection.Disconnected += failure =>
+                {
+                    if (_cts.IsCancellationRequested) return;
+                    ObserveFailureDiagnostic(failure?.ToString());
+                    ObserveStartupDiagnostic(failure?.Message);
+                    Volatile.Write(ref _exitConfirmed, 1);
+                    FireWorkerExitedOnce(WorkerStopReason.None);
+                };
+                connection.WorkerRestarted += diagnostic =>
+                {
+                    ObserveFailureDiagnostic("shared Worker child restarted: " + (string.IsNullOrWhiteSpace(diagnostic) ? "no failure detail" : diagnostic));
+                };
+                if (connection.AttachInfo?.SdkReady == true)
+                    _sdkReady.TrySetResult(true);
+                _lastPid = connection.WorkerPid ?? 0;
+                SpawnedAtUtc = DateTime.UtcNow;
+                watch.Stop();
+                Interlocked.Exchange(ref _spawnMs, watch.ElapsedMilliseconds);
+                _pipeReady.TrySetResult(true);
+                Program.Log($"[Gateway] shared_worker_attached hostPid={connection.HostPid} workerPid={connection.WorkerPid} attachId={connection.AttachId} generation={connection.Generation} attachMs={watch.ElapsedMilliseconds}");
+            }
+            catch (Exception ex)
+            {
+                ObserveFailureDiagnostic(ex.ToString());
+                try { connection?.Dispose(); } catch { }
+                _sharedConnection = null;
+                _sharedIdentity = null;
+                _pipeReady.TrySetException(new IOException("Shared Worker attachment failed."));
+                throw;
+            }
+        }
+
         public void Start()
         {
             lock (_processLock)
             {
-                if (_isStarting || IsProcessRunning(_process))
+                if (_isStarting || IsProcessRunning(_process) || (_sharedConnection?.IsConnected == true))
                 {
                     return;
                 }
@@ -741,6 +835,7 @@ namespace GxMcp.Gateway
             {
                 _stopReason = WorkerStopReason.None;
                 _startupDiagnostic = null;
+                _lastFailureDiagnostic = null;
                 Volatile.Write(ref _exitConfirmed, 0);
                 MarkActivity();
                 // Publish the readiness sources under the lock: StopProcess /
@@ -815,6 +910,12 @@ namespace GxMcp.Gateway
                     string diagnostic = $"GXMCP_GXPUBLIC_PROVIDER_NOT_REGISTERED kb={Kb.Alias} major={workerMajor}. Register a matching 32-bit GXPublic provider before opening this legacy KB.";
                     ObserveStartupDiagnostic(diagnostic);
                     throw new InvalidOperationException(diagnostic);
+                }
+
+                if (IsSharedHostMode)
+                {
+                    StartShared(workerPath, workerInstallationPath ?? string.Empty, workerDriver, workerMajor, legacyProvider);
+                    return;
                 }
 
                 _ownershipLease = WorkerOwnershipRegistry.Acquire(workerPath, Kb.Path);
@@ -1041,6 +1142,7 @@ namespace GxMcp.Gateway
             }
             catch (Exception ex)
             {
+                ObserveFailureDiagnostic(ex.ToString());
                 ObserveStartupDiagnostic(ex.Message);
                 try
                 {
@@ -1130,6 +1232,24 @@ namespace GxMcp.Gateway
             }
         }
 
+        private void ObserveFailureDiagnostic(string? line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            string candidate = line.Trim();
+            if (candidate.Length > 4096)
+                candidate = candidate.Substring(0, 4096) + "…";
+            if (string.IsNullOrWhiteSpace(_lastFailureDiagnostic))
+            {
+                _lastFailureDiagnostic = candidate;
+                return;
+            }
+            if (_lastFailureDiagnostic.IndexOf(candidate, StringComparison.OrdinalIgnoreCase) >= 0) return;
+            string combined = _lastFailureDiagnostic + Environment.NewLine + candidate;
+            _lastFailureDiagnostic = combined.Length <= 8192
+                ? combined
+                : combined.Substring(0, 8192) + "…";
+        }
+
         private static bool IsSdkCompatibilityFailure(string? diagnostic)
             => SdkDiagnosticClassifier.IsFatalDiagnostic(diagnostic);
 
@@ -1167,6 +1287,11 @@ namespace GxMcp.Gateway
 
         private void StopProcess(WorkerStopReason reason)
         {
+            if (IsSharedHostMode && _sharedConnection != null)
+            {
+                StopSharedConnection(reason);
+                return;
+            }
             // Every stop path (idle/heap/wedged reap from the health loop, and
             // StopWithReason for gateway shutdown / pool teardown) funnels here.
             // Cancel _cts so the writer loop (ProcessQueueAsync) and health loop
@@ -1240,6 +1365,26 @@ namespace GxMcp.Gateway
                 Volatile.Write(ref _exitConfirmed, 1);
             if (ExitConfirmed)
                 FireWorkerExitedOnce(reason);
+        }
+
+        private void StopSharedConnection(WorkerStopReason reason)
+        {
+            try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+            SharedWorkerConnection? connection;
+            lock (_processLock)
+            {
+                _stopReason = reason;
+                connection = _sharedConnection;
+                _sharedConnection = null;
+                _sharedIdentity = null;
+                _pipeReady.TrySetCanceled();
+                Interlocked.Exchange(ref _queuedCommands, 0);
+                Interlocked.Exchange(ref _inFlightCommands, 0);
+                _inFlightStartTimes.Clear();
+            }
+            try { connection?.Dispose(); } catch { }
+            Volatile.Write(ref _exitConfirmed, 1);
+            FireWorkerExitedOnce(reason);
         }
 
         private void MarkActivity()

@@ -297,6 +297,60 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ParseConfig_StrictV2_AcceptsOptInSharedWorkerHost()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                File.WriteAllText(configPath, @"{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""stdio-isolated"",
+  ""GeneXus"": { ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" },
+  ""Server"": { ""HttpPort"": 0, ""McpStdio"": true, ""WorkerSharingMode"": ""shared-host"" },
+  ""Environment"": { ""ResolutionPolicy"": ""strict"" }
+}");
+
+                var cfg = ParseConfig(configPath);
+
+                Assert.Equal("shared-host", cfg.Server!.WorkerSharingMode);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Theory]
+        [InlineData("invalid")]
+        [InlineData("shared-host", "http-shared")]
+        public void ParseConfig_StrictV2_RejectsInvalidSharedWorkerMode(string workerSharingMode, string gatewayMode = "stdio-isolated")
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            string configPath = Path.Combine(tempDir, "config.json");
+            try
+            {
+                File.WriteAllText(configPath, $@"{{
+  ""ConfigSchemaVersion"": 2,
+  ""GatewayMode"": ""{gatewayMode}"",
+  ""GeneXus"": {{ ""InstallationPath"": ""C:\\GeneXus18"", ""WorkerExecutable"": ""C:\\worker.exe"" }},
+  ""Server"": {{ ""HttpPort"": {(gatewayMode == "http-shared" ? 5000 : 0)}, ""McpStdio"": {(gatewayMode == "http-shared" ? "false" : "true")}, ""WorkerSharingMode"": ""{workerSharingMode}"" }},
+  ""Environment"": {{ ""ResolutionPolicy"": ""strict"" }}
+}}");
+
+                var error = Assert.Throws<InvalidDataException>(() => ParseConfig(configPath));
+
+                Assert.Contains("WorkerSharingMode", error.Message);
+            }
+            finally
+            {
+                TryDeleteDirectory(tempDir);
+            }
+        }
+
+        [Fact]
         public void ParseConfig_StrictV2_AcceptsExplicitKbPathFields()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), "gxmcp-gw-tests-" + Guid.NewGuid().ToString("N"));
