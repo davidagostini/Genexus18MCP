@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## v3.7.0 - 2026-09-19
+
+
+### Tracked issues
+
+- [#228](https://github.com/lennix1337/Genexus18MCP/issues/228) — Desenho: compartilhar o Worker entre clientes em vez do Gateway, para duas sessões usarem a mesma KB
+- [#234](https://github.com/lennix1337/Genexus18MCP/issues/234) — [Melhoria] Preservar contexto sanitizado nas falhas de banco de records_query
+- [#235](https://github.com/lennix1337/Genexus18MCP/issues/235) — [Follow-up da #212] O diagnóstico de datastore ainda pode consultar o DesignModel em vez do environment ativo
+- [#236](https://github.com/lennix1337/Genexus18MCP/issues/236) — [Bug] records_query retorna DataStoreProviderUnsupported para um datastore PostgreSQL ativo
+- [#237](https://github.com/lennix1337/Genexus18MCP/issues/237) — Legacy KBs (GX 8.0/9.0) can't be routed to the com-gxpublic driver: no per-KB install path/driver, and major 8 defaultInstallPath doesn't match real installs
+- [#238](https://github.com/lennix1337/Genexus18MCP/issues/238) — move into a Folder always fails with MoveFailed (Properties/Property[2]/Value[1]); move into a Module works
+- [#239](https://github.com/lennix1337/Genexus18MCP/issues/239) — [Bug] Install/init gravam `EmitStructuredContent: false` enquanto o `tools/list` continua anunciando `outputSchema` (sucesso sem `structuredContent` ⇒ `-32600`)
+- [#240](https://github.com/lennix1337/Genexus18MCP/issues/240) — [Bug] No-progress e wall-clock watchdogs sobrescrevem Phase antes da mensagem; no-progress ainda reusa a baseline de ETag (ignora CurrentObject/LineCount)
+- [#241](https://github.com/lennix1337/Genexus18MCP/issues/241) — [Melhoria] Adicionar inventário read-only de delta entre Design e version frozen
+- [#242](https://github.com/lennix1337/Genexus18MCP/issues/242) — [Docs/UX] doctor client_config_sync: mensagem de sucesso diz npm-package mesmo com GENEXUS_MCP_GATEWAY_EXE (checkout)
+
+
 ### Added
 
 - [#228](https://github.com/lennix1337/Genexus18MCP/issues/228) **A supported shared Worker host option for independent Gateways.** `Server.WorkerSharingMode="shared-host"` brokers one compatible GeneXus SDK Worker per physical KB through bounded named-pipe attachments with identity validation, heartbeat, detach/idle lifetime, per-attachment correlation/backpressure and in-place child respawn; `WorkerSharingMode="isolated"` remains available when an agent intentionally needs multiple Workers. Shared writes now carry a Gateway-local owner identity, take a short operation-scoped per-object lock, preserve explicit same-owner locks, and fail closed on a foreign or corrupt lock. `genexus_whoami` and `genexus_doctor` now expose the resolved mode, identity, pipe, host/Worker PIDs, generation, attachment and failure diagnostics; shared-host also bounds handshake reads, drains stale requests during respawn, routes only explicit shared notifications, preserves child-exit diagnostics, and propagates the legacy GXPublic provider.
