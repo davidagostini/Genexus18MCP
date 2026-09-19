@@ -261,372 +261,15 @@ namespace GxMcp.Gateway
                 }
             }
 
-            // Gateway-served tools (no worker involvement)
-            if (string.Equals(tName, "genexus_whoami", StringComparison.OrdinalIgnoreCase))
-            {
-                bool whoamiVerbose = tArgs?["verbose"]?.ToObject<bool>() ?? false;
-                JObject whoami = await BuildWhoamiPayloadAsync(
-                    whoamiVerbose,
-                    sessionContextEnabled ? sessionId : null);
-                return BuildToolResultContent(whoami, false, tName, tArgs);
-            }
+            // Gateway-served tools (factored method below; null = fall through).
+            JObject? gatewayResult = await TryDispatchGatewayToolAsync(tName, tArgs, sessionId, sessionContextEnabled);
+            if (gatewayResult != null) return gatewayResult;
 
-            // Doctor is a Gateway-owned health snapshot. Calling the Worker
-            // version here made the result stale after a reload because the
-            // health payload was tied to the old process and its counters.
-            // The Gateway already has the current pool PID, index mirror and
-            // operation tracker, and can answer even when startup failed.
-            if (string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase))
-            {
-                JObject doctor = BuildGatewayDoctorEnvelope(
-                    sessionContextEnabled ? sessionId : null);
-                return BuildToolResultContent(doctor, false, tName, tArgs);
-            }
-
-            if (string.Equals(tName, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
-            {
-                string action = tArgs?["action"]?.ToString()?.ToLowerInvariant();
-                JObject payload;
-                bool isErr;
-
-                if (string.Equals(action, "suggest_macro", StringComparison.OrdinalIgnoreCase))
-                {
-                    int windowMinutes = tArgs?["windowMinutes"]?.ToObject<int?>() ?? 30;
-                    int minReps = tArgs?["minRepetitions"]?.ToObject<int?>() ?? 3;
-                    var svc = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
-                    payload = svc.Suggest(windowMinutes, minReps);
-                    isErr = string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
-                }
-                else if (string.Equals(action, "crystallize", StringComparison.OrdinalIgnoreCase))
-                {
-                    string macroName = tArgs?["macroName"]?.ToString();
-                    string description = tArgs?["description"]?.ToString();
-                    var steps = tArgs?["steps"] as JArray;
-
-                    // If steps were not supplied, try to re-derive from current history
-                    // using the proposedName as the discriminator.
-                    if (steps == null || steps.Count == 0)
-                    {
-                        var svc = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
-                        JObject sugg = svc.Suggest(60, 2);
-                        if (sugg["candidateMacros"] is JArray arr)
-                        {
-                            foreach (var c in arr)
-                            {
-                                if (string.Equals(c?["proposedName"]?.ToString(), macroName, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    steps = c["steps"] as JArray;
-                                    if (string.IsNullOrWhiteSpace(description))
-                                        description = c["suggestedDescription"]?.ToString();
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    var svc2 = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
-                    payload = svc2.Crystallize(macroName, description, steps);
-                    isErr = string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
-                }
-                else
-                {
-                    // Default: legacy behavior. action=list/describe via RecipeCatalog.Get.
-                    // If action is provided and is list/describe, route via Dispatch.
-                    string recipeName = tArgs?["name"]?.ToString();
-                    if (string.Equals(action, "list", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(action, "describe", StringComparison.OrdinalIgnoreCase))
-                    {
-                        payload = RecipeCatalog.Dispatch(action, recipeName);
-                    }
-                    else if (!string.IsNullOrEmpty(action))
-                    {
-                        payload = new JObject
-                        {
-                            ["status"] = "Error",
-                            ["error"] = $"Unknown action '{action}'.",
-                            ["hint"] = "Supported: list, describe, suggest_macro, crystallize."
-                        };
-                    }
-                    else
-                    {
-                        payload = RecipeCatalog.Get(recipeName);
-                    }
-                    isErr = payload?["error"] != null || string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
-                }
-
-                return BuildToolResultContent(payload, isErr, tName, tArgs);
-            }
-
-            // Async build intercept (Tasks 4.3 + 4.4):
-            // build / rebuild actions go through path selection:
-            //   - estimated_seconds < BuildSyncThresholdSeconds  → sync fast-path (fall through)
-            //   - estimated_seconds >= BuildSyncThresholdSeconds  → async Task.Run, return job_id immediately
-            if (string.Equals(tName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
-                && (string.Equals(lcAction, "build", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(lcAction, "build_all", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase))
-                && !IsLifecycleBuildDryRun(tArgs))
-            {
-                // Issue #27 item 2: prefer a data-driven estimate (median of recent
-                // build wall-clocks for this action) over the flat 60/120 the reporter
-                // saw. Routing still keys on an EXPLICIT caller estimate only, so the
-                // sync/async split is unchanged for callers that don't pass one — the
-                // historical value only makes the reported estimated_seconds realistic
-                // (history is recorded on async builds; letting it force the sync path
-                // would create an oscillation the caller never asked for).
-                int? callerEstimate = tArgs?["estimated_seconds"]?.ToObject<int?>();
-                int estimatedSeconds = callerEstimate
-                                       ?? JobRegistry.EstimateBuildSeconds($"lifecycle/{lcAction}")
-                                       ?? (string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase) ? 120 : 60);
-                int threshold = _activeConfig?.Server?.BuildSyncThresholdSeconds ?? 20;
-
-                bool useSync = callerEstimate.HasValue && BuildPathSelector.UseSync(callerEstimate.Value, threshold);
-                if (!useSync)
-                {
-                    // --- ASYNC PATH (Task 4.3) ---
-                    // Register the job first, then fire-and-forget the actual build.
-                    // The worker call is synchronous over the JSON-RPC pipe, so we wrap
-                    // it in Task.Run so the gateway thread returns to the caller immediately.
-                    var job = JobRegistry.Start(sessionId, $"lifecycle/{lcAction}", estimatedSeconds, GetCurrentOwnership(sessionId));
-                    Log($"[AsyncBuild] Dispatching job={job.Id} action={lcAction} target={tArgs?["target"]?.ToString() ?? "(all)"} estimated={estimatedSeconds}s");
-
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            // Step 1: Kick off the build on the worker — returns {status:"Accepted", taskId:...}
-                            // v2.3.8 (Task 5.2) — forward callee-expansion knobs through the async path.
-                            // Keep dryRun out of this branch entirely; the condition above routes
-                            // previews through the normal worker command, where BuildDryRun runs.
-                            var buildCmd = BuildAsyncLifecycleCommand(lcAction, tArgs, job.Id);
-
-                            JObject? ackEnvelope = await SendWorkerCommandAsync(
-                                buildCmd,
-                                60000,
-                                $"Timeout starting async build (job={job.Id})",
-                                env => env,
-                                (_, correlationId) => new JObject { ["error"] = "Gateway timeout starting build.", ["correlationId"] = correlationId },
-                                toolName: tName, toolArgs: tArgs, trackOperation: false);
-
-                            JObject? ack = (ackEnvelope?["result"] as JObject) ?? ackEnvelope;
-                            if (ack == null || ack["error"] != null)
-                            {
-                                JobRegistry.Complete(job.Id, false,
-                                    $"Build start failed: {ack?["error"]?.ToString() ?? "unknown error"}", ack);
-                                return;
-                            }
-
-                            string? taskId = ack["taskId"]?.ToString();
-                            // Issue #27 item 1: record the worker task id on the job so a
-                            // later status/result poll can reconcile against the worker's
-                            // live build-task state if this background poller wedges.
-                            if (!string.IsNullOrEmpty(taskId)) job.WorkerTaskId = taskId;
-                            if (string.IsNullOrEmpty(taskId))
-                            {
-                                // No taskId means the worker returned a synchronous result already
-                                // (or an error response). Complete with what we have.
-                                bool syncSuccess = !string.Equals(ack["status"]?.ToString(), "Error",
-                                    StringComparison.OrdinalIgnoreCase) && ack["error"] == null;
-                                JobRegistry.Complete(job.Id, syncSuccess,
-                                    syncSuccess ? "Build completed (sync)" : $"Build error: {ack["error"]?.ToString() ?? "unknown"}",
-                                    ack);
-                                return;
-                            }
-
-                            Log($"[AsyncBuild] job={job.Id} taskId={taskId} — polling status until terminal");
-
-                            // v2.3.8 (Task 7.2) — register a CTS so lifecycle action=cancel
-                            // with this job_id can short-circuit the polling loop.
-                            var pollCt = JobRegistry.RegisterCancellation(job.Id);
-
-                            // Step 2: Poll worker Build/Status until status is terminal.
-                            // Terminal states from BuildTaskStatus: Succeeded | Failed | Error | Cancelled | ReorgRequired.
-                            JObject? finalStatus = null;
-                            int failedPolls = 0;
-                            int pollCount = 0;
-                            int hardCapSeconds = ResolveAsyncBuildHardCapSeconds(lcAction);
-                            var hardCap = DateTime.UtcNow.AddSeconds(hardCapSeconds);
-                            Log($"[AsyncBuild] job={job.Id} hard cap={hardCapSeconds}s");
-                            while (DateTime.UtcNow < hardCap)
-                            {
-                                if (pollCt.IsCancellationRequested)
-                                {
-                                    // Best-effort: tell the worker to kill the MSBuild child if any.
-                                    try
-                                    {
-                                        _ = SendWorkerCommandAsync(
-                                            new JObject { ["module"] = "Build", ["action"] = "Cancel", ["target"] = taskId },
-                                            5000, "cancel-fanout",
-                                            env => env,
-                                            (_, __) => new JObject(),
-                                            toolName: tName, toolArgs: tArgs, trackOperation: false);
-                                    }
-                                    catch { /* fire-and-forget */ }
-                                    finalStatus = new JObject { ["status"] = "Cancelled", ["taskId"] = taskId };
-                                    break;
-                                }
-                                // Adaptive poll: builds take minutes, so the 2s
-                                // interval only matters at the tail — but a fast
-                                // first probe (500ms) catches sync-fast builds that
-                                // finish between Start and the first Status call.
-                                await Task.Delay(pollCount == 0 ? 500 : 2000).ConfigureAwait(false);
-                                pollCount++;
-
-                                var statusCmd = new JObject
-                                {
-                                    ["module"] = "Build",
-                                    ["action"] = "Status",
-                                    ["target"] = taskId
-                                };
-                                JObject? statusEnv = await SendWorkerCommandAsync(
-                                    statusCmd,
-                                    30000,
-                                    $"Timeout polling build status (job={job.Id})",
-                                    env => env,
-                                    (_, correlationId) => new JObject { ["error"] = "Status poll timeout", ["correlationId"] = correlationId },
-                                    toolName: tName, toolArgs: tArgs, trackOperation: false);
-
-                                // issue #113 — a dead worker must fail the job fast instead of
-                                // looping until hardCap with the caller still waiting
-                                // on wait_until_done / transport. Any error envelope here means
-                                // the poll didn't reach the worker (crashed/exited/pipe gone);
-                                // a single miss is tolerated, consecutive misses are terminal.
-                                if (statusEnv == null || statusEnv["error"] != null)
-                                {
-                                    failedPolls++;
-                                    Log($"[AsyncBuild] job={job.Id} status poll failed ({failedPolls}/{BuildStatusPollPolicy.MaxConsecutiveFailures})"
-                                        + (statusEnv?["error"] != null ? $": {statusEnv["error"]}" : ": empty response"));
-                                    if (BuildStatusPollPolicy.ShouldAbort(failedPolls))
-                                    {
-                                        string abortMsg = "Worker process exited mid-build (no response to " + failedPolls
-                                            + " consecutive status polls). The build did NOT complete — check the crash ledger via "
-                                            + "genexus_whoami diagnostics, then re-run genexus_lifecycle action=build.";
-                                        finalStatus = new JObject { ["status"] = "Failed", ["taskId"] = taskId, ["error"] = abortMsg };
-                                        JobRegistry.Complete(job.Id, false, abortMsg, finalStatus);
-                                        Log($"[AsyncBuild] job={job.Id} aborted: worker exited mid-build after {failedPolls} failed status polls.");
-                                        return;
-                                    }
-                                    continue;
-                                }
-                                failedPolls = 0;
-
-                                finalStatus = (statusEnv?["result"] as JObject) ?? statusEnv;
-                                string? s = finalStatus?["status"]?.ToString() ?? finalStatus?["Status"]?.ToString();
-                                if (string.Equals(s, "Succeeded", StringComparison.OrdinalIgnoreCase)
-                                     || string.Equals(s, "Failed", StringComparison.OrdinalIgnoreCase)
-                                     || string.Equals(s, "Error", StringComparison.OrdinalIgnoreCase)
-                                     || string.Equals(s, "Cancelled", StringComparison.OrdinalIgnoreCase)
-                                     || string.Equals(s, "ReorgRequired", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    break;
-                                }
-                            }
-
-                            // Step 3: Complete the JobRegistry entry with the real final status.
-                            string? finalState = finalStatus?["status"]?.ToString() ?? finalStatus?["Status"]?.ToString() ?? "Timeout";
-                            var finalOutcome = finalStatus != null
-                                ? LifecycleResponseShaper.ClassifyBuildOutcome(finalStatus)
-                                : LifecycleResponseShaper.BuildOutcome.Error;
-                            bool success = finalOutcome == LifecycleResponseShaper.BuildOutcome.Success;
-                            int errs = finalStatus?["errorCount"]?.ToObject<int?>() ?? finalStatus?["ErrorCount"]?.ToObject<int?>() ?? 0;
-                            int warns = finalStatus?["warningCount"]?.ToObject<int?>() ?? finalStatus?["WarningCount"]?.ToObject<int?>() ?? 0;
-                            string summary = string.Equals(finalState, "ReorgRequired", StringComparison.OrdinalIgnoreCase)
-                                ? "Build All stopped because the KB requires reorganization; run action=reorg explicitly and retry."
-                                : success
-                                ? $"Build succeeded: {warns} warnings, {errs} errors"
-                                : $"Build {finalState}: {errs} errors, {warns} warnings";
-                            JobRegistry.Complete(job.Id, success, summary, finalStatus);
-                            Log($"[AsyncBuild] Completed job={job.Id} status={finalState} errors={errs} warnings={warns}");
-                        }
-                        catch (Exception ex)
-                        {
-                            JobRegistry.Complete(job.Id, false, $"Build exception: {ex.Message}");
-                            Log($"[AsyncBuild] Exception in job={job.Id}: {ex.Message}");
-                        }
-                    });
-
-                    // Friction 2026-05-22: wait_until_done=true blocks in a single turn
-                    // up to MaxLongPollSeconds instead of forcing the caller to poll. Falls
-                    // back to job_id+running if the build outruns the cap.
-                    bool waitUntilDone = tArgs?["wait_until_done"]?.ToObject<bool?>() ?? false;
-                    if (waitUntilDone)
-                    {
-                        int blockingCap = tArgs?["wait_seconds"]?.ToObject<int?>() ?? McpRouter.MaxLongPollSeconds;
-                        var clientProgressToken = (request["params"] as JObject)?["_meta"]?["progressToken"];
-                        bool hasProgressToken = clientProgressToken != null && clientProgressToken.Type != JTokenType.Null;
-                        string pendingLongPollKey = RegisterPendingLongPoll(
-                            sessionId,
-                            idToken,
-                            transportCancellation,
-                            out var longPollCancellationToken);
-                        JObject pollResult;
-                        try
-                        {
-                            pollResult = await McpRouter.LongPollJob(
-                                JobRegistry, job.Id, blockingCap,
-                                progressToken: clientProgressToken,
-                                heartbeat: hasProgressToken ? TryWriteStdout : null,
-                                cancellationToken: longPollCancellationToken);
-                        }
-                        finally
-                        {
-                            UnregisterPendingLongPoll(pendingLongPollKey);
-                        }
-                        // Classify the terminal status so the MCP envelope's isError
-                        // matches the build outcome. LongPollJob surfaces JobEntry.Status
-                        // which is one of: running, succeeded, failed, cancelled.
-                        // running == we hit the long-poll cap without termination — not an
-                        // error per se, the caller can re-poll.
-                        //
-                        // Friction 2026-05-22 item 10: this used to compare against
-                        // "completed" (which the registry never emits — it stamps
-                        // "succeeded"/"failed"). Result: every successful build wrapped
-                        // in an error envelope. Fix routes the inner BuildTaskStatus
-                        // through ClassifyBuildOutcome so 0/0/exit=0 = success and
-                        // partial_success surfaces as a warning marker, not an error.
-                        string terminalStatus = pollResult["status"]?.ToString();
-                        bool stillRunning = string.Equals(terminalStatus, "running", StringComparison.OrdinalIgnoreCase);
-                        bool isErr;
-                        if (stillRunning) isErr = false;
-                        else if (pollResult["result"] is JObject buildPayloadFinal)
-                        {
-                            var outcome = LifecycleResponseShaper.ClassifyBuildOutcome(buildPayloadFinal);
-                            isErr = outcome == LifecycleResponseShaper.BuildOutcome.Error;
-                            if (outcome == LifecycleResponseShaper.BuildOutcome.PartialSuccess)
-                            {
-                                pollResult["partial_success"] = true;
-                                if (pollResult["envelope"] == null) pollResult["envelope"] = "warning";
-                            }
-                        }
-                        else
-                        {
-                            // No structured result — trust the registry summary string.
-                            bool succeeded = string.Equals(terminalStatus, "succeeded", StringComparison.OrdinalIgnoreCase);
-                            isErr = !succeeded;
-                        }
-                        if (!isErr
-                            && LifecycleResponseShaper.ShouldCompact(tArgs)
-                            && pollResult["result"] is JObject innerResult2)
-                        {
-                            try { pollResult["result"] = LifecycleResponseShaper.CompactObject(innerResult2); } // perf: no serialize→parse round-trip
-                            catch { /* shaper passthrough on non-JSON */ }
-                        }
-                        return BuildToolResultContent(pollResult, isErr, tName, tArgs);
-                    }
-
-                    // Return immediately with job_id
-                    var asyncResponse = BuildAsyncLifecycleAcceptedPayload(job, lcAction);
-                    if (McpTasksProtocol.SupportsTasks(request))
-                    {
-                        return McpTasksProtocol.BuildCreateTaskResult(
-                            job,
-                            asyncResponse["hint"]?.ToString() ?? "Build accepted; poll tasks/get for completion.");
-                    }
-                    return BuildToolResultContent(asyncResponse, false, tName, tArgs);
-                }
-                // else: UseSync == true → fall through to the normal synchronous dispatch below
-                Log($"[AsyncBuild] Short build (estimated={estimatedSeconds}s < threshold={threshold}s): using sync fast-path");
-            }
+            // Async lifecycle build (factored TryDispatchAsyncLifecycleBuildAsync below).
+            // build / rebuild actions go through path selection (see factored method below):
+            // null = not an async-eligible build, or sync fast-path → fall through.
+            JObject? asyncBuildResult = await TryDispatchAsyncLifecycleBuildAsync(tName, lcAction, tArgs, request, sessionId, idToken, transportCancellation);
+            if (asyncBuildResult != null) return asyncBuildResult;
 
             object? rawWorkerCmd = null;
             if (string.Equals(tName, "genexus_export_object", StringComparison.OrdinalIgnoreCase))
@@ -685,156 +328,14 @@ namespace GxMcp.Gateway
             workerCmd["client"] = "mcp";
             AttachClientRequestIdentity(workerCmd, tArgs);
             int timeoutMs = GetToolTimeoutMs(tName, tArgs);
-
-            // async=true on edit/variable tools → fire-and-forget; result piggybacks via _meta.background_jobs.
+            // Still needed by the timeout handler below (recovery hints for
+            // gxserver writes); the async-edit intercept recomputes its own copy.
             bool isAsyncGxServer = (tArgs?["async"]?.ToObject<bool?>() ?? false)
                                    && IsAsyncGxServerAction(tName, tArgs);
-            // A preview is deliberately synchronous: it must never be represented as
-            // a background mutation job, acquire a second operation identity, or outlive
-            // the caller. The worker's dry-run branch performs no Save.
-            bool editAsync = ShouldRunMutationAsync(tName, tArgs) || isAsyncGxServer;
-            if (editAsync)
-            {
-                // gxserver update on a stale KB runs many minutes; give it a longer
-                // default estimate so the poll cadence is sensible.
-                int estEdit = tArgs?["estimated_seconds"]?.ToObject<int?>() ?? (isAsyncGxServer ? 120 : 30);
-                string jobLabel = isAsyncGxServer ? $"gxserver/{tArgs?["action"]?.ToString()}" : $"edit/{tName}";
-                var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit, GetCurrentOwnership(sessionId));
-                editJob.WorkerAlias = _currentKb.Value?.NormalizedAlias;
-                editJob.Target = GetAsyncMutationTarget(tName, tArgs);
-                string ioAction = tArgs?["action"]?.ToString()?.ToLowerInvariant() ?? string.Empty;
-                if (string.Equals(tName, "genexus_io", StringComparison.OrdinalIgnoreCase))
-                    editJob.Part = ioAction == "export_kb_to_text" ? "ObjectTextExport" : "ObjectText";
-                else
-                    editJob.Part = tArgs?["part"]?.ToString() ?? "Source";
-                editJob.ObjectType = tArgs?["type"]?.ToString();
-                Log($"[AsyncEdit] Dispatching job={editJob.Id} tool={tName} estimated={estEdit}s");
-                // v2.6.2 (Item B): inject cancelToken=jobId so the worker's
-                // blanket-register at dispatch entry makes lifecycle cancel resolvable.
-                if (workerCmd?["params"] is JObject capturedParams)
-                    capturedParams["cancelToken"] = editJob.Id;
-                var capturedCmd = workerCmd;
-                var capturedName = tName;
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        // Issue #79: SendWorkerCommandAsync is called with timeoutMs=0
-                        // (wait forever) because a legitimately slow SDK save must not be
-                        // cut off — but that means a BLOCKED SDK call (IDE modal dialog
-                        // holding the model, or the SDK retrying a failing validation
-                        // internally) left the job 'running' indefinitely with no
-                        // actionable signal. Race the worker wait against a generous
-                        // watchdog bound; on fire, mark the job terminal 'stalled' with
-                        // recovery steps instead of hanging forever. gxserver update/commit
-                        // is excluded (a server apply can legitimately run arbitrarily
-                        // long — an 850-object changelist exceeded the 10 min sync
-                        // ceiling), so its jobs wait without a stall bound.
-                        int watchdogMs = isAsyncGxServer ? int.MaxValue : AsyncEditWatchdogMs(estEdit);
-                        var cancelToken = JobRegistry.RegisterCancellation(editJob.Id);
-                        var watchdogDelay = Task.Delay(watchdogMs, cancelToken);
-                        var workerTask = SendWorkerCommandAsync(
-                            capturedCmd, 0,
-                            $"Timeout waiting for async edit: {capturedName}",
-                            r => r, (_, __) => new JObject { ["status"] = "Running" },
-                            operationIdentity: editJob.Id);
-                        var completed = await Task.WhenAny(workerTask, watchdogDelay).ConfigureAwait(false);
-                        if (completed != workerTask)
-                        {
-                            // Cancelled (delay faulted via the CTS) or deadline hit. A
-                            // cancel already flipped the job to 'cancelled'; only stall
-                            // when it is genuinely still running.
-                            var now = JobRegistry.Get(editJob.Id);
-                            if (now != null && string.Equals(now.Status, "running", StringComparison.OrdinalIgnoreCase))
-                            {
-                                int boundSeconds = watchdogMs == int.MaxValue ? -1 : watchdogMs / 1000;
-                                string boundText = boundSeconds > 0 ? boundSeconds + "s" : "unbounded (watchdog disabled)";
-                                // Plan 069: a genuinely stalled job means the worker's STA
-                                // thread is stuck inside a blocked SDK call that will never
-                                // answer the in-flight command. Marking the job 'stalled'
-                                // alone left the KB wedged until the 15-min health-loop
-                                // detector killed the process. Recycle the worker NOW
-                                // (force-kill + Wedged → eager respawn) so the KB is usable
-                                // again right away instead of ~15 minutes later. _currentKb
-                                // is an AsyncLocal, so it still resolves the KB this job
-                                // was dispatched against from inside this Task.Run.
-                                bool workerRecycled = false;
-                                var stalledKb = _currentKb.Value;
-                                // A microsecond race: the worker may have answered between
-                                // WhenAny returning the watchdog and this branch. Never
-                                // force-kill a worker that just completed its save — only
-                                // recycle when the command is genuinely still in flight.
-                                if (stalledKb == null)
-                                {
-                                    Log($"[AsyncEdit] No KB resolved for job={editJob.Id}; skipping stalled-worker recycle (health loop will reap the wedged process).");
-                                }
-                                else if (workerTask.IsCompleted)
-                                {
-                                    Log($"[AsyncEdit] Job={editJob.Id} worker answered just after the watchdog fired — skipping recycle.");
-                                }
-                                else if (_workerPool == null)
-                                {
-                                    Log($"[AsyncEdit] No worker pool available for job={editJob.Id}; skipping stalled-worker recycle (health loop will reap the wedged process).");
-                                }
-                                else
-                                {
-                                    try { workerRecycled = _workerPool.RecycleStalledWorker(stalledKb.NormalizedAlias); }
-                                    catch (Exception recycleEx)
-                                    {
-                                        Log($"[AsyncEdit] Stalled-worker recycle failed for KB '{stalledKb.Alias}': {recycleEx.Message}");
-                                    }
-                                }
-                                JobRegistry.Stall(
-                                    editJob.Id,
-                                    capturedName + " did not return within the " + boundText
-                                        + " time bound; SDK call likely blocked (IDE modal dialog or retrying validation) — see result for recovery steps.",
-                                    BuildStalledAsyncMutationEnvelope(editJob.Id, capturedName, estEdit, boundSeconds, workerRecycled));
-                                if (RequiresAsyncMutationRecovery(editJob))
-                                {
-                                    _mutationRecovery.RequireRead(
-                                        editJob.WorkerAlias,
-                                        editJob.Target,
-                                        editJob.Part,
-                                        editJob.Id);
-                                }
-                                foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(capturedName, tArgs))
-                                    _mutationRecovery.RequireRead(editJob.WorkerAlias, recoveryTarget.Target, recoveryTarget.Part, editJob.Id);
-                                Log($"[AsyncEdit] Watchdog fired for job={editJob.Id} tool={capturedName} after {watchdogMs}ms — marked stalled (workerRecycled={workerRecycled}).");
-                            }
-                            return;
-                        }
-                        var inner = await workerTask;
-                        bool ok = IsSuccessfulBackgroundToolCompletion(inner);
-                        JobRegistry.Complete(editJob.Id, ok, BuildAsyncMutationCompletionSummary(capturedName, ok), inner);
-                    }
-                    catch (Exception ex)
-                    {
-                        string failurePrefix = string.Equals(capturedName, "genexus_variable", StringComparison.OrdinalIgnoreCase)
-                                               || string.Equals(capturedName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
-                                               || string.Equals(capturedName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)
-                                               || string.Equals(capturedName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase)
-                            ? "Variable update exception"
-                            : "Edit exception";
-                        JobRegistry.Complete(editJob.Id, false, $"{failurePrefix}: {ex.Message}");
-                        Log($"[AsyncEdit] Exception in job={editJob.Id}: {ex.Message}");
-                    }
-                });
-                var asyncEditResponse = isAsyncGxServer
-                    ? BuildAsyncAcceptedPayload(editJob, $"GXserver {tArgs?["action"]?.ToString()} accepted;")
-                    : (string.Equals(tName, "genexus_variable", StringComparison.OrdinalIgnoreCase)
-                                        || string.Equals(tName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
-                                        || string.Equals(tName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)
-                                        || string.Equals(tName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase)
-                    ? BuildAsyncVariableAcceptedPayload(editJob)
-                    : BuildAsyncEditAcceptedPayload(editJob));
-                if (McpTasksProtocol.SupportsTasks(request))
-                {
-                    return McpTasksProtocol.BuildCreateTaskResult(
-                        editJob,
-                        asyncEditResponse["hint"]?.ToString() ?? "Operation accepted; poll tasks/get for completion.");
-                }
-                return BuildToolResultContent(asyncEditResponse, false, tName, tArgs);
-            }
+
+            // Async edit/variable/gxserver (factored method below; null = run synchronously).
+            JObject? asyncEditResult = TryDispatchAsyncEdit(workerCmd, tName, tArgs, sessionId, request);
+            if (asyncEditResult != null) return asyncEditResult;
 
             JObject? innerResult = null;
             // MCP keepalive: when the client supplied a progressToken, emit
@@ -1209,6 +710,567 @@ namespace GxMcp.Gateway
                 isError: true,
                 toolName: tName,
                 toolArgs: tArgs);
+        }
+
+        /// <summary>
+        /// Gateway-served tools (no worker involvement). Returns null when tName is
+        /// not gateway-owned so the caller falls through to worker dispatch.
+        /// Extracted from DispatchToolCallCoreAsync (phase: gateway tools).
+        /// </summary>
+        private static async Task<JObject?> TryDispatchGatewayToolAsync(
+            string tName,
+            JObject? tArgs,
+            string sessionId,
+            bool sessionContextEnabled)
+        {
+            // Gateway-served tools (no worker involvement)
+            if (string.Equals(tName, "genexus_whoami", StringComparison.OrdinalIgnoreCase))
+            {
+                bool whoamiVerbose = tArgs?["verbose"]?.ToObject<bool>() ?? false;
+                JObject whoami = await BuildWhoamiPayloadAsync(
+                    whoamiVerbose,
+                    sessionContextEnabled ? sessionId : null);
+                return BuildToolResultContent(whoami, false, tName, tArgs);
+            }
+
+            // Doctor is a Gateway-owned health snapshot. Calling the Worker
+            // version here made the result stale after a reload because the
+            // health payload was tied to the old process and its counters.
+            // The Gateway already has the current pool PID, index mirror and
+            // operation tracker, and can answer even when startup failed.
+            if (string.Equals(tName, "genexus_doctor", StringComparison.OrdinalIgnoreCase))
+            {
+                JObject doctor = BuildGatewayDoctorEnvelope(
+                    sessionContextEnabled ? sessionId : null);
+                return BuildToolResultContent(doctor, false, tName, tArgs);
+            }
+
+            if (string.Equals(tName, "genexus_recipe", StringComparison.OrdinalIgnoreCase))
+            {
+                string action = tArgs?["action"]?.ToString()?.ToLowerInvariant();
+                JObject payload;
+                bool isErr;
+
+                if (string.Equals(action, "suggest_macro", StringComparison.OrdinalIgnoreCase))
+                {
+                    int windowMinutes = tArgs?["windowMinutes"]?.ToObject<int?>() ?? 30;
+                    int minReps = tArgs?["minRepetitions"]?.ToObject<int?>() ?? 3;
+                    var svc = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
+                    payload = svc.Suggest(windowMinutes, minReps);
+                    isErr = string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+                }
+                else if (string.Equals(action, "crystallize", StringComparison.OrdinalIgnoreCase))
+                {
+                    string macroName = tArgs?["macroName"]?.ToString();
+                    string description = tArgs?["description"]?.ToString();
+                    var steps = tArgs?["steps"] as JArray;
+
+                    // If steps were not supplied, try to re-derive from current history
+                    // using the proposedName as the discriminator.
+                    if (steps == null || steps.Count == 0)
+                    {
+                        var svc = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
+                        JObject sugg = svc.Suggest(60, 2);
+                        if (sugg["candidateMacros"] is JArray arr)
+                        {
+                            foreach (var c in arr)
+                            {
+                                if (string.Equals(c?["proposedName"]?.ToString(), macroName, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    steps = c["steps"] as JArray;
+                                    if (string.IsNullOrWhiteSpace(description))
+                                        description = c["suggestedDescription"]?.ToString();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    var svc2 = new MacroSuggestionService(_operationTracker, GetUserMacroDir());
+                    payload = svc2.Crystallize(macroName, description, steps);
+                    isErr = string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+                }
+                else
+                {
+                    // Default: legacy behavior. action=list/describe via RecipeCatalog.Get.
+                    // If action is provided and is list/describe, route via Dispatch.
+                    string recipeName = tArgs?["name"]?.ToString();
+                    if (string.Equals(action, "list", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(action, "describe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        payload = RecipeCatalog.Dispatch(action, recipeName);
+                    }
+                    else if (!string.IsNullOrEmpty(action))
+                    {
+                        payload = new JObject
+                        {
+                            ["status"] = "Error",
+                            ["error"] = $"Unknown action '{action}'.",
+                            ["hint"] = "Supported: list, describe, suggest_macro, crystallize."
+                        };
+                    }
+                    else
+                    {
+                        payload = RecipeCatalog.Get(recipeName);
+                    }
+                    isErr = payload?["error"] != null || string.Equals(payload?["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase);
+                }
+
+                return BuildToolResultContent(payload, isErr, tName, tArgs);
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Async lifecycle build intercept (Tasks 4.3 + 4.4). Returns null when the
+        /// call is not an async-eligible lifecycle build, or when the caller estimate
+        /// selects the sync fast-path — the caller then falls through to normal
+        /// synchronous dispatch. Extracted from DispatchToolCallCoreAsync.
+        /// </summary>
+        private static async Task<JObject?> TryDispatchAsyncLifecycleBuildAsync(
+            string tName,
+            string? lcAction,
+            JObject? tArgs,
+            JObject request,
+            string sessionId,
+            JToken? idToken,
+            CancellationToken transportCancellation)
+        {
+            // build / rebuild actions go through path selection:
+            //   - estimated_seconds &lt; BuildSyncThresholdSeconds  → sync fast-path (null)
+            //   - estimated_seconds &gt;= BuildSyncThresholdSeconds  → async Task.Run, return job_id immediately
+            if (!(string.Equals(tName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(lcAction, "build", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(lcAction, "build_all", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase))
+                && !IsLifecycleBuildDryRun(tArgs)))
+                return null;
+
+            // Issue #27 item 2: prefer a data-driven estimate (median of recent
+            // build wall-clocks for this action) over the flat 60/120 the reporter
+            // saw. Routing still keys on an EXPLICIT caller estimate only, so the
+            // sync/async split is unchanged for callers that don't pass one — the
+            // historical value only makes the reported estimated_seconds realistic
+            // (history is recorded on async builds; letting it force the sync path
+            // would create an oscillation the caller never asked for).
+            int? callerEstimate = tArgs?["estimated_seconds"]?.ToObject<int?>();
+            int estimatedSeconds = callerEstimate
+                                   ?? JobRegistry.EstimateBuildSeconds($"lifecycle/{lcAction}")
+                                   ?? (string.Equals(lcAction, "rebuild", StringComparison.OrdinalIgnoreCase) ? 120 : 60);
+            int threshold = _activeConfig?.Server?.BuildSyncThresholdSeconds ?? 20;
+
+            bool useSync = callerEstimate.HasValue && BuildPathSelector.UseSync(callerEstimate.Value, threshold);
+            if (useSync)
+            {
+                // UseSync == true → fall through to the normal synchronous dispatch below
+                Log($"[AsyncBuild] Short build (estimated={estimatedSeconds}s < threshold={threshold}s): using sync fast-path");
+                return null;
+            }
+
+            // --- ASYNC PATH (Task 4.3) ---
+            // Register the job first, then fire-and-forget the actual build.
+            // The worker call is synchronous over the JSON-RPC pipe, so we wrap
+            // it in Task.Run so the gateway thread returns to the caller immediately.
+            var job = JobRegistry.Start(sessionId, $"lifecycle/{lcAction}", estimatedSeconds, GetCurrentOwnership(sessionId));
+            Log($"[AsyncBuild] Dispatching job={job.Id} action={lcAction} target={tArgs?["target"]?.ToString() ?? "(all)"} estimated={estimatedSeconds}s");
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // Step 1: Kick off the build on the worker — returns {status:"Accepted", taskId:...}
+                    // v2.3.8 (Task 5.2) — forward callee-expansion knobs through the async path.
+                    // Keep dryRun out of this branch entirely; the condition above routes
+                    // previews through the normal worker command, where BuildDryRun runs.
+                    var buildCmd = BuildAsyncLifecycleCommand(lcAction, tArgs, job.Id);
+
+                    JObject? ackEnvelope = await SendWorkerCommandAsync(
+                        buildCmd,
+                        60000,
+                        $"Timeout starting async build (job={job.Id})",
+                        env => env,
+                        (_, correlationId) => new JObject { ["error"] = "Gateway timeout starting build.", ["correlationId"] = correlationId },
+                        toolName: tName, toolArgs: tArgs, trackOperation: false);
+
+                    JObject? ack = (ackEnvelope?["result"] as JObject) ?? ackEnvelope;
+                    if (ack == null || ack["error"] != null)
+                    {
+                        JobRegistry.Complete(job.Id, false,
+                            $"Build start failed: {ack?["error"]?.ToString() ?? "unknown error"}", ack);
+                        return;
+                    }
+
+                    string? taskId = ack["taskId"]?.ToString();
+                    // Issue #27 item 1: record the worker task id on the job so a
+                    // later status/result poll can reconcile against the worker's
+                    // live build-task state if this background poller wedges.
+                    if (!string.IsNullOrEmpty(taskId)) job.WorkerTaskId = taskId;
+                    if (string.IsNullOrEmpty(taskId))
+                    {
+                        // No taskId means the worker returned a synchronous result already
+                        // (or an error response). Complete with what we have.
+                        bool syncSuccess = !string.Equals(ack["status"]?.ToString(), "Error",
+                            StringComparison.OrdinalIgnoreCase) && ack["error"] == null;
+                        JobRegistry.Complete(job.Id, syncSuccess,
+                                    syncSuccess ? "Build completed (sync)" : $"Build error: {ack["error"]?.ToString() ?? "unknown"}",
+                            ack);
+                        return;
+                    }
+
+                    Log($"[AsyncBuild] job={job.Id} taskId={taskId} — polling status until terminal");
+
+                    // v2.3.8 (Task 7.2) — register a CTS so lifecycle action=cancel
+                    // with this job_id can short-circuit the polling loop.
+                    var pollCt = JobRegistry.RegisterCancellation(job.Id);
+
+                    // Step 2: Poll worker Build/Status until status is terminal.
+                    // Terminal states from BuildTaskStatus: Succeeded | Failed | Error | Cancelled | ReorgRequired.
+                    JObject? finalStatus = null;
+                    int failedPolls = 0;
+                    int pollCount = 0;
+                    int hardCapSeconds = ResolveAsyncBuildHardCapSeconds(lcAction);
+                    var hardCap = DateTime.UtcNow.AddSeconds(hardCapSeconds);
+                    Log($"[AsyncBuild] job={job.Id} hard cap={hardCapSeconds}s");
+                    while (DateTime.UtcNow < hardCap)
+                    {
+                        if (pollCt.IsCancellationRequested)
+                        {
+                            // Best-effort: tell the worker to kill the MSBuild child if any.
+                            try
+                            {
+                                _ = SendWorkerCommandAsync(
+                                    new JObject { ["module"] = "Build", ["action"] = "Cancel", ["target"] = taskId },
+                                    5000, "cancel-fanout",
+                                    env => env,
+                                    (_, __) => new JObject(),
+                                    toolName: tName, toolArgs: tArgs, trackOperation: false);
+                            }
+                            catch { /* fire-and-forget */ }
+                            finalStatus = new JObject { ["status"] = "Cancelled", ["taskId"] = taskId };
+                            break;
+                        }
+                        // Adaptive poll: builds take minutes, so the 2s
+                        // interval only matters at the tail — but a fast
+                        // first probe (500ms) catches sync-fast builds that
+                        // finish between Start and the first Status call.
+                        await Task.Delay(pollCount == 0 ? 500 : 2000).ConfigureAwait(false);
+                        pollCount++;
+
+                        var statusCmd = new JObject
+                        {
+                            ["module"] = "Build",
+                            ["action"] = "Status",
+                            ["target"] = taskId
+                        };
+                        JObject? statusEnv = await SendWorkerCommandAsync(
+                            statusCmd,
+                            30000,
+                            $"Timeout polling build status (job={job.Id})",
+                            env => env,
+                            (_, correlationId) => new JObject { ["error"] = "Status poll timeout", ["correlationId"] = correlationId },
+                            toolName: tName, toolArgs: tArgs, trackOperation: false);
+
+                        // issue #113 — a dead worker must fail the job fast instead of
+                        // looping until hardCap with the caller still waiting
+                        // on wait_until_done / transport. Any error envelope here means
+                        // the poll didn't reach the worker (crashed/exited/pipe gone);
+                        // a single miss is tolerated, consecutive misses are terminal.
+                        if (statusEnv == null || statusEnv["error"] != null)
+                        {
+                            failedPolls++;
+                            Log($"[AsyncBuild] job={job.Id} status poll failed ({failedPolls}/{BuildStatusPollPolicy.MaxConsecutiveFailures})"
+                                + (statusEnv?["error"] != null ? $": {statusEnv["error"]}" : ": empty response"));
+                            if (BuildStatusPollPolicy.ShouldAbort(failedPolls))
+                            {
+                                string abortMsg = "Worker process exited mid-build (no response to " + failedPolls
+                                    + " consecutive status polls). The build did NOT complete — check the crash ledger via "
+                                    + "genexus_whoami diagnostics, then re-run genexus_lifecycle action=build.";
+                                finalStatus = new JObject { ["status"] = "Failed", ["taskId"] = taskId, ["error"] = abortMsg };
+                                JobRegistry.Complete(job.Id, false, abortMsg, finalStatus);
+                                Log($"[AsyncBuild] job={job.Id} aborted: worker exited mid-build after {failedPolls} failed status polls.");
+                                return;
+                            }
+                            continue;
+                        }
+                        failedPolls = 0;
+
+                        finalStatus = (statusEnv?["result"] as JObject) ?? statusEnv;
+                        string? s = finalStatus?["status"]?.ToString() ?? finalStatus?["Status"]?.ToString();
+                        if (string.Equals(s, "Succeeded", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(s, "Failed", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(s, "Error", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(s, "Cancelled", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(s, "ReorgRequired", StringComparison.OrdinalIgnoreCase))
+                        {
+                            break;
+                        }
+                    }
+
+                    // Step 3: Complete the JobRegistry entry with the real final status.
+                    string? finalState = finalStatus?["status"]?.ToString() ?? finalStatus?["Status"]?.ToString() ?? "Timeout";
+                    var finalOutcome = finalStatus != null
+                        ? LifecycleResponseShaper.ClassifyBuildOutcome(finalStatus)
+                        : LifecycleResponseShaper.BuildOutcome.Error;
+                    bool success = finalOutcome == LifecycleResponseShaper.BuildOutcome.Success;
+                    int errs = finalStatus?["errorCount"]?.ToObject<int?>() ?? finalStatus?["ErrorCount"]?.ToObject<int?>() ?? 0;
+                    int warns = finalStatus?["warningCount"]?.ToObject<int?>() ?? finalStatus?["WarningCount"]?.ToObject<int?>() ?? 0;
+                    string summary = string.Equals(finalState, "ReorgRequired", StringComparison.OrdinalIgnoreCase)
+                        ? "Build All stopped because the KB requires reorganization; run action=reorg explicitly and retry."
+                        : success
+                        ? $"Build succeeded: {warns} warnings, {errs} errors"
+                        : $"Build {finalState}: {errs} errors, {warns} warnings";
+                    JobRegistry.Complete(job.Id, success, summary, finalStatus);
+                    Log($"[AsyncBuild] Completed job={job.Id} status={finalState} errors={errs} warnings={warns}");
+                }
+                catch (Exception ex)
+                {
+                    JobRegistry.Complete(job.Id, false, $"Build exception: {ex.Message}");
+                    Log($"[AsyncBuild] Exception in job={job.Id}: {ex.Message}");
+                }
+            });
+
+            // Friction 2026-05-22: wait_until_done=true blocks in a single turn
+            // up to MaxLongPollSeconds instead of forcing the caller to poll. Falls
+            // back to job_id+running if the build outruns the cap.
+            bool waitUntilDone = tArgs?["wait_until_done"]?.ToObject<bool?>() ?? false;
+            if (waitUntilDone)
+            {
+                int blockingCap = tArgs?["wait_seconds"]?.ToObject<int?>() ?? McpRouter.MaxLongPollSeconds;
+                var clientProgressToken = (request["params"] as JObject)?["_meta"]?["progressToken"];
+                bool hasProgressToken = clientProgressToken != null && clientProgressToken.Type != JTokenType.Null;
+                string pendingLongPollKey = RegisterPendingLongPoll(
+                    sessionId,
+                    idToken,
+                    transportCancellation,
+                    out var longPollCancellationToken);
+                JObject pollResult;
+                try
+                {
+                    pollResult = await McpRouter.LongPollJob(
+                        JobRegistry, job.Id, blockingCap,
+                        progressToken: clientProgressToken,
+                        heartbeat: hasProgressToken ? TryWriteStdout : null,
+                        cancellationToken: longPollCancellationToken);
+                }
+                finally
+                {
+                    UnregisterPendingLongPoll(pendingLongPollKey);
+                }
+                // Classify the terminal status so the MCP envelope's isError
+                // matches the build outcome. LongPollJob surfaces JobEntry.Status
+                // which is one of: running, succeeded, failed, cancelled.
+                // running == we hit the long-poll cap without termination — not an
+                // error per se, the caller can re-poll.
+                //
+                // Friction 2026-05-22 item 10: this used to compare against
+                // "completed" (which the registry never emits — it stamps
+                // "succeeded"/"failed"). Result: every successful build wrapped
+                // in an error envelope. Fix routes the inner BuildTaskStatus
+                // through ClassifyBuildOutcome so 0/0/exit=0 = success and
+                // partial_success surfaces as a warning marker, not an error.
+                string terminalStatus = pollResult["status"]?.ToString();
+                bool stillRunning = string.Equals(terminalStatus, "running", StringComparison.OrdinalIgnoreCase);
+                bool isErr;
+                if (stillRunning) isErr = false;
+                else if (pollResult["result"] is JObject buildPayloadFinal)
+                {
+                    var outcome = LifecycleResponseShaper.ClassifyBuildOutcome(buildPayloadFinal);
+                    isErr = outcome == LifecycleResponseShaper.BuildOutcome.Error;
+                    if (outcome == LifecycleResponseShaper.BuildOutcome.PartialSuccess)
+                    {
+                        pollResult["partial_success"] = true;
+                        if (pollResult["envelope"] == null) pollResult["envelope"] = "warning";
+                    }
+                }
+                else
+                {
+                    // No structured result — trust the registry summary string.
+                    bool succeeded = string.Equals(terminalStatus, "succeeded", StringComparison.OrdinalIgnoreCase);
+                    isErr = !succeeded;
+                }
+                if (!isErr
+                    && LifecycleResponseShaper.ShouldCompact(tArgs)
+                    && pollResult["result"] is JObject innerResult2)
+                {
+                    try { pollResult["result"] = LifecycleResponseShaper.CompactObject(innerResult2); } // perf: no serialize→parse round-trip
+                    catch { /* shaper passthrough on non-JSON */ }
+                }
+                return BuildToolResultContent(pollResult, isErr, tName, tArgs);
+            }
+
+            // Return immediately with job_id
+            var asyncResponse = BuildAsyncLifecycleAcceptedPayload(job, lcAction);
+            if (McpTasksProtocol.SupportsTasks(request))
+            {
+                return McpTasksProtocol.BuildCreateTaskResult(
+                    job,
+                    asyncResponse["hint"]?.ToString() ?? "Build accepted; poll tasks/get for completion.");
+            }
+            return BuildToolResultContent(asyncResponse, false, tName, tArgs);
+        }
+
+        /// <summary>
+        /// Async edit/variable/gxserver intercept. Returns null when the call is
+        /// synchronous (no async=true on an async-eligible mutation) so the caller
+        /// falls through to the normal worker dispatch.
+        /// Extracted from DispatchToolCallCoreAsync.
+        /// </summary>
+        private static JObject? TryDispatchAsyncEdit(
+            JObject workerCmd,
+            string tName,
+            JObject? tArgs,
+            string sessionId,
+            JObject request)
+        {
+            // async=true on edit/variable tools → fire-and-forget; result piggybacks via _meta.background_jobs.
+            bool isAsyncGxServer = (tArgs?["async"]?.ToObject<bool?>() ?? false)
+                                   && IsAsyncGxServerAction(tName, tArgs);
+            // A preview is deliberately synchronous: it must never be represented as
+            // a background mutation job, acquire a second operation identity, or outlive
+            // the caller. The worker's dry-run branch performs no Save.
+            bool editAsync = ShouldRunMutationAsync(tName, tArgs) || isAsyncGxServer;
+            if (!editAsync) return null;
+
+            // gxserver update on a stale KB runs many minutes; give it a longer
+            // default estimate so the poll cadence is sensible.
+            int estEdit = tArgs?["estimated_seconds"]?.ToObject<int?>() ?? (isAsyncGxServer ? 120 : 30);
+            string jobLabel = isAsyncGxServer ? $"gxserver/{tArgs?["action"]?.ToString()}" : $"edit/{tName}";
+            var editJob = JobRegistry.Start(sessionId, jobLabel, estEdit, GetCurrentOwnership(sessionId));
+            editJob.WorkerAlias = _currentKb.Value?.NormalizedAlias;
+            editJob.Target = GetAsyncMutationTarget(tName, tArgs);
+            string ioAction = tArgs?["action"]?.ToString()?.ToLowerInvariant() ?? string.Empty;
+            if (string.Equals(tName, "genexus_io", StringComparison.OrdinalIgnoreCase))
+                editJob.Part = ioAction == "export_kb_to_text" ? "ObjectTextExport" : "ObjectText";
+            else
+                editJob.Part = tArgs?["part"]?.ToString() ?? "Source";
+            editJob.ObjectType = tArgs?["type"]?.ToString();
+            Log($"[AsyncEdit] Dispatching job={editJob.Id} tool={tName} estimated={estEdit}s");
+            // v2.6.2 (Item B): inject cancelToken=jobId so the worker's
+            // blanket-register at dispatch entry makes lifecycle cancel resolvable.
+            if (workerCmd?["params"] is JObject capturedParams)
+                capturedParams["cancelToken"] = editJob.Id;
+            var capturedCmd = workerCmd;
+            var capturedName = tName;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // Issue #79: SendWorkerCommandAsync is called with timeoutMs=0
+                    // (wait forever) because a legitimately slow SDK save must not be
+                    // cut off — but that means a BLOCKED SDK call (IDE modal dialog
+                    // holding the model, or the SDK retrying a failing validation
+                    // internally) left the job 'running' indefinitely with no
+                    // actionable signal. Race the worker wait against a generous
+                    // watchdog bound; on fire, mark the job terminal 'stalled' with
+                    // recovery steps instead of hanging forever. gxserver update/commit
+                    // is excluded (a server apply can legitimately run arbitrarily
+                    // long — an 850-object changelist exceeded the 10 min sync
+                    // ceiling), so its jobs wait without a stall bound.
+                    int watchdogMs = isAsyncGxServer ? int.MaxValue : AsyncEditWatchdogMs(estEdit);
+                    var cancelToken = JobRegistry.RegisterCancellation(editJob.Id);
+                    var watchdogDelay = Task.Delay(watchdogMs, cancelToken);
+                    var workerTask = SendWorkerCommandAsync(
+                        capturedCmd, 0,
+                        $"Timeout waiting for async edit: {capturedName}",
+                        r => r, (_, __) => new JObject { ["status"] = "Running" },
+                        operationIdentity: editJob.Id);
+                    var completed = await Task.WhenAny(workerTask, watchdogDelay).ConfigureAwait(false);
+                    if (completed != workerTask)
+                    {
+                        // Cancelled (delay faulted via the CTS) or deadline hit. A
+                        // cancel already flipped the job to 'cancelled'; only stall
+                        // when it is genuinely still running.
+                        var now = JobRegistry.Get(editJob.Id);
+                        if (now != null && string.Equals(now.Status, "running", StringComparison.OrdinalIgnoreCase))
+                        {
+                            int boundSeconds = watchdogMs == int.MaxValue ? -1 : watchdogMs / 1000;
+                            string boundText = boundSeconds > 0 ? boundSeconds + "s" : "unbounded (watchdog disabled)";
+                            // Plan 069: a genuinely stalled job means the worker's STA
+                            // thread is stuck inside a blocked SDK call that will never
+                            // answer the in-flight command. Marking the job 'stalled'
+                            // alone left the KB wedged until the 15-min health-loop
+                            // detector killed the process. Recycle the worker NOW
+                            // (force-kill + Wedged → eager respawn) so the KB is usable
+                            // again right away instead of ~15 minutes later. _currentKb
+                            // is an AsyncLocal, so it still resolves the KB this job
+                            // was dispatched against from inside this Task.Run.
+                            bool workerRecycled = false;
+                            var stalledKb = _currentKb.Value;
+                            // A microsecond race: the worker may have answered between
+                            // WhenAny returning the watchdog and this branch. Never
+                            // force-kill a worker that just completed its save — only
+                            // recycle when the command is genuinely still in flight.
+                            if (stalledKb == null)
+                            {
+                                Log($"[AsyncEdit] No KB resolved for job={editJob.Id}; skipping stalled-worker recycle (health loop will reap the wedged process).");
+                            }
+                            else if (workerTask.IsCompleted)
+                            {
+                                Log($"[AsyncEdit] Job={editJob.Id} worker answered just after the watchdog fired — skipping recycle.");
+                            }
+                            else if (_workerPool == null)
+                            {
+                                Log($"[AsyncEdit] No worker pool available for job={editJob.Id}; skipping stalled-worker recycle (health loop will reap the wedged process).");
+                            }
+                            else
+                            {
+                                try { workerRecycled = _workerPool.RecycleStalledWorker(stalledKb.NormalizedAlias); }
+                                catch (Exception recycleEx)
+                                {
+                                    Log($"[AsyncEdit] Stalled-worker recycle failed for KB '{stalledKb.Alias}': {recycleEx.Message}");
+                                }
+                            }
+                            JobRegistry.Stall(
+                                editJob.Id,
+                                capturedName + " did not return within the " + boundText
+                                    + " time bound; SDK call likely blocked (IDE modal dialog or retrying validation) — see result for recovery steps.",
+                                BuildStalledAsyncMutationEnvelope(editJob.Id, capturedName, estEdit, boundSeconds, workerRecycled));
+                            if (RequiresAsyncMutationRecovery(editJob))
+                            {
+                                _mutationRecovery.RequireRead(
+                                    editJob.WorkerAlias,
+                                    editJob.Target,
+                                    editJob.Part,
+                                    editJob.Id);
+                            }
+                            foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(capturedName, tArgs))
+                                _mutationRecovery.RequireRead(editJob.WorkerAlias, recoveryTarget.Target, recoveryTarget.Part, editJob.Id);
+                            Log($"[AsyncEdit] Watchdog fired for job={editJob.Id} tool={capturedName} after {watchdogMs}ms — marked stalled (workerRecycled={workerRecycled}).");
+                        }
+                        return;
+                    }
+                    var inner = await workerTask;
+                    bool ok = IsSuccessfulBackgroundToolCompletion(inner);
+                    JobRegistry.Complete(editJob.Id, ok, BuildAsyncMutationCompletionSummary(capturedName, ok), inner);
+                }
+                catch (Exception ex)
+                {
+                    string failurePrefix = string.Equals(capturedName, "genexus_variable", StringComparison.OrdinalIgnoreCase)
+                                           || string.Equals(capturedName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
+                                           || string.Equals(capturedName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)
+                                           || string.Equals(capturedName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase)
+                        ? "Variable update exception"
+                        : "Edit exception";
+                    JobRegistry.Complete(editJob.Id, false, $"{failurePrefix}: {ex.Message}");
+                    Log($"[AsyncEdit] Exception in job={editJob.Id}: {ex.Message}");
+                }
+            });
+            var asyncEditResponse = isAsyncGxServer
+                ? BuildAsyncAcceptedPayload(editJob, $"GXserver {tArgs?["action"]?.ToString()} accepted;")
+                : (string.Equals(tName, "genexus_variable", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(tName, "genexus_add_variable", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(tName, "genexus_delete_variable", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(tName, "genexus_modify_variable", StringComparison.OrdinalIgnoreCase)
+                ? BuildAsyncVariableAcceptedPayload(editJob)
+                : BuildAsyncEditAcceptedPayload(editJob));
+            if (McpTasksProtocol.SupportsTasks(request))
+            {
+                return McpTasksProtocol.BuildCreateTaskResult(
+                    editJob,
+                    asyncEditResponse["hint"]?.ToString() ?? "Operation accepted; poll tasks/get for completion.");
+            }
+            return BuildToolResultContent(asyncEditResponse, false, tName, tArgs);
         }
     }
 }

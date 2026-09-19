@@ -77,10 +77,15 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(new[] { "Regular", "Responsive" },
                 ((JArray)schema["properties"]!["tableType"]!["enum"]!).Select(value => value.ToString()));
 
-            JObject control = (JObject)schema["$defs"]!["wwpControl"]!;
-            Assert.Equal("type", control["required"]![0]!.ToString());
+            // The WWP control shape is inlined into children.items (bounded depth-2)
+            // instead of a $defs/$ref cycle: providers that reject recursive JSON
+            // schemas refused the whole tools/list with invalid_request_error.
+            JObject childrenItems = (JObject)schema["properties"]!["children"]!["items"]!;
+            Assert.Equal("object", childrenItems["type"]!.ToString());
+            Assert.Equal("type", childrenItems["required"]![0]!.ToString());
             Assert.Equal(new[] { "variable", "userAction", "table" },
-                ((JArray)control["properties"]!["type"]!["enum"]!).Select(value => value.ToString()));
+                ((JArray)childrenItems["properties"]!["type"]!["enum"]!).Select(value => value.ToString()));
+            Assert.Null(schema["$defs"]);
         }
 
         [Theory]

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The `genexus_wwp` tool schema is no longer self-referential, so providers that reject recursive JSON schemas can list tools again.** The `wwpControl` `$defs`/$ref cycle (tab/`add_tab` `children` items pointing back at their own definition) was refused upstream with `invalid_request_error: Recursive JSON schemas are not currently supported`, failing every tools/list of the session; the control shape is now inlined into `children.items` at a bounded depth (nested table children accept generic objects), with a `ToolSchemaShapeTests.NoSchemaContainsRecursiveRefs` regression test covering input and output schemas.
+
 ### Changed
 
 - **Doctor now fails closed on diagnostic inputs and validates the runtime preflight.** An explicit missing `GX_CONFIG_PATH` no longer falls through to an unrelated cwd config, malformed `tool_definitions.json` is reported as a failure instead of a presence-only pass, strict `Environment.KBs` ambiguity/missing paths are surfaced, explicit Gateway overrides validate the sibling tool definitions the runtime actually loads, support-dump metadata redacts the paths it reports, and the default Gateway probe now invokes the supported `--self-test` contract against the same resolved config instead of launching the Gateway with the obsolete probe flag.
@@ -24,6 +28,11 @@
 - [#234](https://github.com/lennix1337/Genexus18MCP/issues/234) **`records_query` now preserves safe database-failure context.** Provider errors retain the active environment/datastore, provider family, phase, exception type, provider code/state and sanitized message, while persistence flags and diagnostic context survive the canonical error envelope without exposing credentials, connection strings, parameters or record values.
 - [#235](https://github.com/lennix1337/Genexus18MCP/issues/235) **Datastore diagnostics now resolve the active environment only.** `db_info`, `whoami`'s database block and the KB-open datastore probe share the TargetModel-only resolver, so a DesignModel datastore cannot shadow the selected environment; unresolved metadata is reported explicitly.
 - [#236](https://github.com/lennix1337/Genexus18MCP/issues/236) **`records_query` now supports PostgreSQL datastores.** PostgreSQL/Npgsql detection accepts provider and DBMS descriptors, builds safe Host/Database/Search Path connection metadata when needed, resolves the bundled Npgsql factory and emits PostgreSQL identifier/limit SQL.
+
+### Internal
+
+- **Split `BuildService.RunBuild` into phase methods with no behavior change.** Watchdog/heartbeat setup (`StartBuildHeartbeatTimer`, `StartWallClockWatchdogTimer`, `StartNoProgressWatchdogTimer`), pre-build evidence snapshots (`SnapshotPreBuildEvidence`), the in-process pipeline (`RunInProcessBuildPhase`) and the external MSBuild.exe fallback (`RunExternalMsBuildPhase`) are now independently testable units; `RunBuild` only orchestrates timers → snapshots → phases → the existing finally cleanup. Locked by new characterization tests in `BuildTimeoutAndReorgModeTests`.
+- **Split `DispatchToolCallCoreAsync` into phase dispatches with no behavior change.** Gateway-owned tools (`TryDispatchGatewayToolAsync`: whoami/doctor/recipe), the async lifecycle-build intercept (`TryDispatchAsyncLifecycleBuildAsync`) and the async edit/variable/gxserver intercept (`TryDispatchAsyncEdit`) moved out of the core method, which now reads as guards → gateway tools → async intercepts → worker dispatch. The existing async/dispatch suites plus both full test suites pass unmodified.
 
 ## v3.6.1 - 2026-09-18
 

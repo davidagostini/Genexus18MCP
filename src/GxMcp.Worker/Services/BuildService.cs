@@ -2881,6 +2881,421 @@ namespace GxMcp.Worker.Services
             return "/nologo " + msbuildParallelism + " /v:n /nodeReuse:false /target:Execute \"" + projectPath + "\"";
         }
 
+        // RunBuild phases, extracted verbatim (YAGNI split — no behavior change).
+        // RunBuild stays the orchestrator: timers → snapshots → in-process phase →
+        // external-MSBuild phase → finally cleanup. Each phase below owns exactly
+        // one of those blocks.
+
+        // issue #42 (P3a) — emit a build-active heartbeat so the gateway keeps
+        // the worker alive during a long background build. A background build
+        // is NOT an in-flight RPC, so without this the gateway's idle-reap /
+        // heap-recycle timer could kill the worker mid-build. The gateway bumps
+        // _lastActivityUtc on each notification (see HandleWorkerRpcResponse).
+        internal static System.Threading.Timer StartBuildHeartbeatTimer(BuildTaskStatus status)
+        {
+            return new System.Threading.Timer(_ =>
+            {
+                try
+                {
+                    if (IsTerminalStatus(status.Status)) return;
+                    Program.SendNotification("notifications/worker/build_active",
+                        new { taskId = status.TaskId, phase = status.Phase, action = status.Action });
+                }
+                catch { }
+            }, null, 5000, 20000);
+        }
+
+        // issue #37 items 2/3: wall-clock watchdog. Terminalizes the task (and kills any
+        // external MSBuild tree) if it exceeds the cap, so a wedged SDK build/deploy step
+        // doesn't leave the status stuck at "Running". The underlying thread may still be
+        // blocked inside the SDK, but the agent gets a terminal Failed/TimedOut it can act on.
+        internal static System.Threading.Timer StartWallClockWatchdogTimer(BuildTaskStatus status, int timeoutSec)
+        {
+            return new System.Threading.Timer(_ =>
+            {
+                try
+                {
+                    if (IsTerminalStatus(status.Status)) return;
+                    Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " exceeded " + timeoutSec
+                                + "s (phase=" + status.Phase + ") — force-failing and killing any MSBuild tree.");
+                    try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
+                    lock (status._lock)
+                    {
+                        if (IsTerminalStatus(status.Status)) return;
+                        if (!TrySetWatchdogFailure(status, phase =>
+                            "Build timed out after " + timeoutSec + "s at phase '" + phase
+                            + "' and was terminated. If this was a full deploy/reorg step (WebAppConfig, CheckAndInstallDatabase), it may still be running in the SDK; check the KB in the IDE. Raise the cap with GXMCP_BUILD_TIMEOUT_SEC if the KB legitimately needs longer."))
+                            return;
+                    }
+                    MaybeNotifyOnFailure(status);
+                    try { status.StateChangeSignal.Set(); } catch { }
+                }
+                catch (Exception ex) { Logger.Warn("[BUILD-TIMEOUT] watchdog threw: " + ex.Message); }
+            }, null, timeoutSec * 1000, System.Threading.Timeout.Infinite);
+        }
+
+        // issue #42 — no-progress watchdog. The wall-clock cap above only
+        // fires after the FULL timeout (900s/2400s); a build that wedges early
+        // (phase + counts frozen) would otherwise sit "Running" for the whole
+        // cap. This lighter timer force-fails once no observable progress
+        // (phase / object / output-line / error / warning / targetsDone) has been seen for
+        // noProgressSec. Null when disabled (noProgressSec <= 0).
+        internal static System.Threading.Timer StartNoProgressWatchdogTimer(BuildTaskStatus status)
+        {
+            int noProgressSec = ResolveBuildNoProgressSeconds();
+            if (noProgressSec <= 0) return null;
+            string lastBaseline = status.ComputeLivenessBaseline();
+            DateTime lastProgressUtc = DateTime.UtcNow;
+            int tickMs = Math.Max(5000, Math.Min(30000, noProgressSec * 1000 / 4));
+            return new System.Threading.Timer(_ =>
+            {
+                try
+                {
+                    if (IsTerminalStatus(status.Status)) return;
+                    string cur = status.ComputeLivenessBaseline();
+                    if (!string.Equals(cur, lastBaseline, StringComparison.Ordinal))
+                    {
+                        lastBaseline = cur;
+                        lastProgressUtc = DateTime.UtcNow;
+                        return;
+                    }
+                    if ((DateTime.UtcNow - lastProgressUtc).TotalSeconds < noProgressSec) return;
+                    Logger.Warn("[BUILD-NOPROGRESS] taskId=" + status.TaskId + " no progress for "
+                                + noProgressSec + "s (phase=" + status.Phase + ") — force-failing.");
+                    try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
+                    lock (status._lock)
+                    {
+                        if (IsTerminalStatus(status.Status)) return;
+                        if (!TrySetWatchdogFailure(status, phase =>
+                            "Build made no observable progress for " + noProgressSec + "s at phase '"
+                            + phase + "' and was terminated (no-progress watchdog). The SDK build step "
+                            + "may be wedged; check the KB in the IDE. Tune with GXMCP_BUILD_NOPROGRESS_SEC (0 disables)."))
+                            return;
+                    }
+                    MaybeNotifyOnFailure(status);
+                    try { status.StateChangeSignal.Set(); } catch { }
+                }
+                catch (Exception ex) { Logger.Warn("[BUILD-NOPROGRESS] watchdog threw: " + ex.Message); }
+            }, null, tickMs, tickMs);
+        }
+
+        // issue #42 — snapshot the dirty set BEFORE the pipeline runs, since
+        // InProcessBuildRunner calls EditDirtyTracker.MarkClean as it builds,
+        // plus the pre-build .cs mtimes for the evidence gate. Best-effort:
+        // every probe is guarded so a snapshot failure never fails the build.
+        internal void SnapshotPreBuildEvidence(BuildTaskStatus status, string action, List<string> targets, string kbPath)
+        {
+            // The evidence gate in the finally uses this to know which targets were
+            // expected to regenerate their .cs.
+            try { status.DirtyAtStart = EditDirtyTracker.GetDirty(kbPath); } catch { status.DirtyAtStart = null; }
+
+            // issue #42 hardening (C) — snapshot the current freshest .cs mtime for
+            // each target we'll later gate, BEFORE the generator can touch it. Cheap
+            // best-effort; failure just falls the gate back to wall-clock comparison.
+            try
+            {
+                if (IsCodeEmittingAction(action) && !status.SpecifyOnly)
+                {
+                    var gateList = (targets != null && targets.Count > 0)
+                        ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase)
+                        : (status.DirtyAtStart ?? new List<string>()).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase);
+                    var snap = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+                    string activeEnvironmentWebPath = null;
+                    try { activeEnvironmentWebPath = _kbService?.GetActiveEnvironmentWebPath(); } catch { }
+                    foreach (var bare in gateList)
+                    {
+                        if (string.IsNullOrEmpty(bare)) continue;
+                        var ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, DateTime.MinValue, null, activeEnvironmentWebPath);
+                        if (ev.Found && ev.FreshestWriteUtc != null) snap[bare] = ev.FreshestWriteUtc.Value;
+                    }
+                    status.PreBuildMtimes = snap;
+                }
+            }
+            catch { status.PreBuildMtimes = null; }
+        }
+
+        // v2.6.6 Stream D — in-process build phase. Reuses the already-open
+        // KbService._kb instance + invokes GeneXus MSBuild tasks directly
+        // instead of spawning MSBuild.exe (which re-opens the KB out of
+        // process, the dominant cost in targeted builds).
+        //
+        // 2026-05-21 LIVE-TEST FINDING + FIX: ArtechTask's static ctor
+        // activates the GxServiceManager process-singleton and throws
+        // `GxException: O Service Manager já foi ativado` if another
+        // path (KbService.OpenKB → InitializeSdk) activated SM first.
+        // Worker boot now warms the ArtechTask cctor BEFORE
+        // InitializeSdk (Program.TryWarmupArtechTaskCctor) so the IDE
+        // ordering holds and subsequent in-process builds succeed.
+        // ON by default; opt-out with GXMCP_INPROCESS_BUILD=0.
+        //
+        // Returns true when the pipeline terminalized the build (success or
+        // failure with diagnostics, including the specifyOnly refusal); false
+        // when it could not run, so the caller falls through to the external
+        // MSBuild.exe phase.
+        internal bool RunInProcessBuildPhase(BuildTaskStatus status, string action, List<string> targets)
+        {
+            bool useInProcess =
+                !string.Equals(Environment.GetEnvironmentVariable("GXMCP_INPROCESS_BUILD"), "0", StringComparison.OrdinalIgnoreCase)
+                && _kbService != null && _kbService.IsOpen;
+            if (!useInProcess) return false;
+            status.Phase = "InProcess-Specifying";
+            EmitPhaseProgress(status.Phase);
+            Logger.Info("[BUILD-INPROCESS] taskId=" + status.TaskId
+                        + " kb=" + _kbService.GetKbPath()
+                        + " targets=" + (targets != null ? string.Join(";", targets) : "<all>"));
+            var sw = Stopwatch.StartNew();
+            InProcessBuildOutcome outcome = InProcessBuildOutcome.CouldNotRun;
+            try
+            {
+                outcome = InProcessBuildRunner.Run(
+                    status, action, targets,
+                    (s, l, err) => HandleLine(s, l, err),
+                    _kbService.KbObject, _kbService.KbLock,
+                    skipFullDeploy: status.SkipFullDeploy,
+                    kbPath: _kbService.GetKbPath(),
+                    specifyOnly: status.SpecifyOnly,
+                    fullDeploy: status.FullDeploy,
+                    forceFullBuild: status.FastIncrementalForceFullBuild,
+                    skipSpecifyTargets: status.FastIncrementalCanSkipSpecify);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("[BUILD-INPROCESS] orchestrator threw: " + ex.Message);
+                outcome = InProcessBuildOutcome.CouldNotRun;
+            }
+            sw.Stop();
+            Logger.Info("[BUILD-INPROCESS-DONE] taskId=" + status.TaskId
+                        + " outcome=" + outcome + " elapsedMs=" + sw.ElapsedMilliseconds);
+            // The in-process pipeline actually ran — either it succeeded, or it
+            // failed with diagnostics. In both cases we terminalize from the
+            // captured output. A full MSBuild.exe rebuild would only reproduce a
+            // failure at many times the wall-clock (the "build never returns" the
+            // reporter saw), so it is NOT attempted here. The external fallback is
+            // reserved for outcome == CouldNotRun below.
+            if (outcome == InProcessBuildOutcome.Succeeded
+                || outcome == InProcessBuildOutcome.FailedWithDiagnostics)
+            {
+                status.BuildPath = "inproc";
+                // FR#22: still emit shaped output envelope from FullOutput.
+                string fullText = status.FullOutput.ToString();
+                try
+                {
+                    string fullLogPath;
+                    BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out fullLogPath);
+                    status.FullLogPath = fullLogPath;
+                    status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
+                }
+                catch { }
+
+                bool failed = outcome == InProcessBuildOutcome.FailedWithDiagnostics
+                              || status.ErrorCount > 0;
+                status.Status = failed ? "Failed" : "Succeeded";
+                status.ExitCode = failed ? 1 : 0;
+                status.MsBuildExitCode = status.ExitCode;
+                FinalizeBuildAllStatus(status, fullText);
+                // A1 (parity with the MSBuild.exe branch below): when the
+                // in-process pipeline reports failure but emitted zero code
+                // errors AND the captured output shows Generation + Compilation
+                // both succeeded, the failure is a downstream/late step
+                // (WebAppConfig, a standalone-module deploy like GAMUser) —
+                // the target's .cs/.dll are already written. Flag it as a
+                // partial success so the gateway renders effective_status=
+                // PartialSuccess (isError=false) instead of a contradictory
+                // "Failed with 0 errors".
+                if (failed && status.ErrorCount == 0
+                    && DidGenerationAndCompilationSucceed(fullText))
+                {
+                    status.PartialSuccess = true;
+                }
+                status.Phase = "Done";
+                EmitPhaseProgress(status.Phase);
+
+                // When the pipeline reported failure but emitted no itemized
+                // error line (the build-all IdeWebBuildAndDeploy case — the SDK
+                // signals failure through >E0 section markers, not "error CS####:"
+                // text), leave the agent something actionable: the failed section
+                // and a pointer to the per-object spec check that DOES itemize.
+                if (outcome == InProcessBuildOutcome.FailedWithDiagnostics && status.ErrorCount == 0)
+                {
+                    if (status.PhaseFailure == null)
+                        status.PhaseFailure = ExtractPhaseFailure(fullText)
+                            ?? new PhaseFailureInfo
+                            {
+                                Name = status.Phase ?? "Build",
+                                Message = "The in-process GeneXus build reported failure without an itemized error line."
+                            };
+                    status.Hint = "Build failed in-process with no itemized error list (the SDK signalled failure at the section level). "
+                        + "Run genexus_lifecycle action=specify target=<object> for spc*/gen* diagnostics on a specific object, or open the KB in the IDE to see the full build output.";
+                }
+
+                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                // Attach the evidence before publishing the terminal signal. The
+                // gateway's async poller stops at the first Succeeded status; if the
+                // signal fires first, it can persist a terminal result without the
+                // evidence that is added in RunBuild's finally block (#103).
+                try { AttachGenerateEvidence(status, action, targets); }
+                catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
+                Logger.Info("Background Build " + status.TaskId + " " + status.Status
+                            + " (inproc, errors=" + status.ErrorCount + ", warnings=" + status.WarningCount
+                            + ", " + status.ElapsedSeconds + "s)");
+                // Wake any event-driven status wait callers on the terminal edge.
+                try { status.StateChangeSignal.Set(); } catch { }
+                // Item 72 (friction 2026-05-22) — POST webhook on terminal Failed (not PartialSuccess).
+                MaybeNotifyOnFailure(status);
+                return true;
+            }
+            // outcome == CouldNotRun — the in-process path never executed a build.
+            // issue #28 item 12: never fall back to a full MSBuild.exe spawn for a
+            // spec-check request — that would compile + deploy, the opposite of what
+            // specifyOnly asked for. Report spec-unavailable instead.
+            if (status.SpecifyOnly)
+            {
+                status.Status = "Failed";
+                status.ExitCode = 1;
+                status.MsBuildExitCode = status.ExitCode;
+                status.Phase = "Done";
+                EmitPhaseProgress(status.Phase);
+                status.Error = "Spec-check (specifyOnly) could not run in-process (GeneXus MSBuild tasks unavailable in this worker). Not falling back to a full build. Run a normal build to see diagnostics.";
+                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+                try { status.StateChangeSignal.Set(); } catch { }
+                return true;
+            }
+            Logger.Warn("[BUILD-INPROCESS-FALLBACK] taskId=" + status.TaskId + " falling back to MSBuild.exe spawn");
+            return false;
+        }
+
+        // External MSBuild.exe fallback phase. Spawns MSBuild.exe against a generated
+        // project (Build All stays single-node so cancellation and evidence capture do
+        // not depend on implicit MSBuild worker-node interleaving), waits bounded by
+        // timeoutSec, and terminalizes the status. tempFile/reapPid/reapStart flow out
+        // for RunBuild's finally-block cleanup, exactly as the inline code assigned them.
+        internal void RunExternalMsBuildPhase(BuildTaskStatus status, string action, List<string> targets, string kbPath, int timeoutSec, out string tempFile, out int reapPid, out DateTime reapStart)
+        {
+            tempFile = null;
+            reapPid = 0;
+            reapStart = DateTime.MinValue;
+            status.BuildPath = "msbuild-exe";
+
+            tempFile = Path.Combine(Path.GetTempPath(), "GxBuild_" + Guid.NewGuid().ToString().Substring(0, 8) + ".msbuild");
+            string projectXml = BuildExternalProjectXml(
+                Path.Combine(_gxDir, "Genexus.Tasks.targets"), kbPath, action, targets, status);
+            File.WriteAllText(tempFile, projectXml);
+
+            // Use /v:n (normal) so we get per-object progress lines, not /v:q.
+            // Build All stays single-node so cancellation and evidence capture do
+            // not depend on implicit MSBuild worker-node interleaving.
+            var psi = new ProcessStartInfo
+            {
+                FileName = _msbuildPath,
+                Arguments = BuildMsBuildArguments(action, tempFile),
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WorkingDirectory = _gxDir,
+                // MSBuild on Windows writes via the system OEM/ANSI code page (PT-BR usually
+                // 850/1252). Reading the streams as UTF-8 mangles accented characters
+                // ("Compila��o", "n�", etc.) which is unreadable for LLM consumers. Pin
+                // both streams to the console's actual output encoding so TailLines/Output
+                // stay legible. Fall back to UTF-8 only when CodePagesEncodingProvider
+                // isn't registered.
+                StandardOutputEncoding = ResolveMsbuildEncoding(),
+                StandardErrorEncoding = ResolveMsbuildEncoding()
+            };
+
+            if (!string.IsNullOrEmpty(_gxDir))
+            {
+                try
+                {
+                    psi.EnvironmentVariables["GX_PATH"] = _gxDir;
+                    psi.EnvironmentVariables["GX_PROGRAM_DIR"] = _gxDir;
+                    psi.EnvironmentVariables["GeneXusPath"] = _gxDir;
+                }
+                catch { }
+            }
+
+            using (var process = new Process { StartInfo = psi, EnableRaisingEvents = true })
+            {
+                status.Process = process;
+                process.OutputDataReceived += (s, e) => HandleLine(status, e.Data, false);
+                process.ErrorDataReceived  += (s, e) => HandleLine(status, e.Data, true);
+
+                process.Start();
+                reapPid = process.Id;
+                try { reapStart = process.StartTime; } catch { reapStart = DateTime.MinValue; }
+                status.Phase = "OpeningKB";
+                EmitPhaseProgress(status.Phase);
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                // issue #37 items 2/3: bound the wait so a wedged MSBuild step doesn't
+                // block this thread forever. The watchdog also fires at the same cap;
+                // killing here lets us record ExitCode and terminalize cleanly.
+                if (!process.WaitForExit(timeoutSec * 1000))
+                {
+                    Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " MSBuild.exe exceeded "
+                                + timeoutSec + "s — killing process tree.");
+                    KillProcessTree(process);
+                    try { process.WaitForExit(5000); } catch { }
+                }
+
+                status.ExitCode = process.HasExited ? process.ExitCode : -1;
+                status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
+
+                // FR#22 (v2.6.6 Stream C): full log → disk, shaped envelope → status.
+                string fullText = status.FullOutput.ToString();
+                string fullLogPath;
+                BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out fullLogPath);
+                status.FullLogPath = fullLogPath;
+                status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
+
+                status.Phase = "Done";
+                Helpers.Logger.CurrentPhase = "Done";
+                EmitPhaseProgress(status.Phase);
+
+                // Don't clobber a terminal state the watchdog already set on timeout.
+                if (!IsTerminalStatus(status.Status))
+                {
+                    if (status.ExitCode == 0 && status.ErrorCount == 0)
+                        status.Status = "Succeeded";
+                    else
+                        status.Status = "Failed";
+                }
+                FinalizeBuildAllStatus(status, fullText);
+
+                // Friction 2026-05-22: when ErrorCount==0 and ExitCode!=0, the
+                // failure is a late MSBuild step (WebAppConfig, deploy task,
+                // file-missing) that doesn't emit a proper "error <code>:" line.
+                // Parse the raw output for >RO/>E0 markers so the agent gets a
+                // named phase_failure instead of "Failed: 0 errors, 0 warnings".
+                if (status.ErrorCount == 0 && status.ExitCode != 0)
+                {
+                    status.PhaseFailure = ExtractPhaseFailure(fullText);
+                    if (DidGenerationAndCompilationSucceed(fullText))
+                    {
+                        status.PartialSuccess = true;
+                    }
+                }
+
+                // Publish GenerateEvidence before the terminal signal. The gateway's
+                // async poller stops at the first terminal status and otherwise races
+                // the finally block below, losing the evidence in the stored result.
+                try { AttachGenerateEvidence(status, action, targets); }
+                catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
+
+                // Stream F: wake any pending status wait callers.
+                try { status.StateChangeSignal.Set(); } catch { }
+
+                Logger.Info("Background Build " + status.TaskId + " " + status.Status +
+                            " (errors=" + status.ErrorCount + ", warnings=" + status.WarningCount +
+                            ", " + status.ElapsedSeconds + "s)");
+                // Item 72 (friction 2026-05-22) — POST webhook on terminal Failed (not PartialSuccess).
+                MaybeNotifyOnFailure(status);
+            }
+        }
+
         private void RunBuild(BuildTaskStatus status, string action, List<string> targets)
         {
             string tempFile = null;
@@ -2908,86 +3323,10 @@ namespace GxMcp.Worker.Services
             }
             try
             {
-                // issue #42 (P3a) — emit a build-active heartbeat so the gateway keeps
-                // the worker alive during a long background build. A background build
-                // is NOT an in-flight RPC, so without this the gateway's idle-reap /
-                // heap-recycle timer could kill the worker mid-build. The gateway bumps
-                // _lastActivityUtc on each notification (see HandleWorkerRpcResponse).
-                buildHeartbeat = new System.Threading.Timer(_ =>
-                {
-                    try
-                    {
-                        if (IsTerminalStatus(status.Status)) return;
-                        Program.SendNotification("notifications/worker/build_active",
-                            new { taskId = status.TaskId, phase = status.Phase, action = status.Action });
-                    }
-                    catch { }
-                }, null, 5000, 20000);
-                watchdog = new System.Threading.Timer(_ =>
-                {
-                    try
-                    {
-                        if (IsTerminalStatus(status.Status)) return;
-                        Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " exceeded " + timeoutSec
-                                    + "s (phase=" + status.Phase + ") — force-failing and killing any MSBuild tree.");
-                        try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
-                        lock (status._lock)
-                        {
-                            if (IsTerminalStatus(status.Status)) return;
-                            if (!TrySetWatchdogFailure(status, phase =>
-                                "Build timed out after " + timeoutSec + "s at phase '" + phase
-                                + "' and was terminated. If this was a full deploy/reorg step (WebAppConfig, CheckAndInstallDatabase), it may still be running in the SDK; check the KB in the IDE. Raise the cap with GXMCP_BUILD_TIMEOUT_SEC if the KB legitimately needs longer."))
-                                return;
-                        }
-                        MaybeNotifyOnFailure(status);
-                        try { status.StateChangeSignal.Set(); } catch { }
-                    }
-                    catch (Exception ex) { Logger.Warn("[BUILD-TIMEOUT] watchdog threw: " + ex.Message); }
-                }, null, timeoutSec * 1000, System.Threading.Timeout.Infinite);
-
-                // issue #42 — no-progress watchdog. The wall-clock cap above only
-                // fires after the FULL timeout (900s/2400s); a build that wedges early
-                // (phase + counts frozen) would otherwise sit "Running" for the whole
-                // cap. This lighter timer force-fails once no observable progress
-                // (phase / object / output-line / error / warning / targetsDone) has been seen for
-                // noProgressSec. Disabled when noProgressSec <= 0.
-                int noProgressSec = ResolveBuildNoProgressSeconds();
-                if (noProgressSec > 0)
-                {
-                    string lastBaseline = status.ComputeLivenessBaseline();
-                    DateTime lastProgressUtc = DateTime.UtcNow;
-                    int tickMs = Math.Max(5000, Math.Min(30000, noProgressSec * 1000 / 4));
-                    noProgressWatchdog = new System.Threading.Timer(_ =>
-                    {
-                        try
-                        {
-                            if (IsTerminalStatus(status.Status)) return;
-                            string cur = status.ComputeLivenessBaseline();
-                            if (!string.Equals(cur, lastBaseline, StringComparison.Ordinal))
-                            {
-                                lastBaseline = cur;
-                                lastProgressUtc = DateTime.UtcNow;
-                                return;
-                            }
-                            if ((DateTime.UtcNow - lastProgressUtc).TotalSeconds < noProgressSec) return;
-                            Logger.Warn("[BUILD-NOPROGRESS] taskId=" + status.TaskId + " no progress for "
-                                        + noProgressSec + "s (phase=" + status.Phase + ") — force-failing.");
-                            try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
-                            lock (status._lock)
-                            {
-                                if (IsTerminalStatus(status.Status)) return;
-                                if (!TrySetWatchdogFailure(status, phase =>
-                                    "Build made no observable progress for " + noProgressSec + "s at phase '"
-                                    + phase + "' and was terminated (no-progress watchdog). The SDK build step "
-                                    + "may be wedged; check the KB in the IDE. Tune with GXMCP_BUILD_NOPROGRESS_SEC (0 disables)."))
-                                    return;
-                            }
-                            MaybeNotifyOnFailure(status);
-                            try { status.StateChangeSignal.Set(); } catch { }
-                        }
-                        catch (Exception ex) { Logger.Warn("[BUILD-NOPROGRESS] watchdog threw: " + ex.Message); }
-                    }, null, tickMs, tickMs);
-                }
+                // Watchdog/heartbeat timers (factored Start*Timer methods above).
+                buildHeartbeat = StartBuildHeartbeatTimer(status);
+                watchdog = StartWallClockWatchdogTimer(status, timeoutSec);
+                noProgressWatchdog = StartNoProgressWatchdogTimer(status);
                 if (_kbService != null)
                 {
                     int waits = 0;
@@ -3001,299 +3340,14 @@ namespace GxMcp.Worker.Services
                     return;
                 }
 
-                // issue #42 — snapshot the dirty set BEFORE the pipeline runs, since
-                // InProcessBuildRunner calls EditDirtyTracker.MarkClean as it builds.
-                // The evidence gate in the finally uses this to know which targets were
-                // expected to regenerate their .cs.
-                try { status.DirtyAtStart = EditDirtyTracker.GetDirty(kbPath); } catch { status.DirtyAtStart = null; }
+                // Pre-build evidence snapshots (factored method above).
+                SnapshotPreBuildEvidence(status, action, targets, kbPath);
 
-                // issue #42 hardening (C) — snapshot the current freshest .cs mtime for
-                // each target we'll later gate, BEFORE the generator can touch it. Cheap
-                // best-effort; failure just falls the gate back to wall-clock comparison.
-                try
-                {
-                    if (IsCodeEmittingAction(action) && !status.SpecifyOnly)
-                    {
-                        var gateList = (targets != null && targets.Count > 0)
-                            ? targets.Where(t => !string.IsNullOrWhiteSpace(t)).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase)
-                            : (status.DirtyAtStart ?? new List<string>()).Select(BareName).Distinct(StringComparer.OrdinalIgnoreCase);
-                        var snap = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-                        string activeEnvironmentWebPath = null;
-                        try { activeEnvironmentWebPath = _kbService?.GetActiveEnvironmentWebPath(); } catch { }
-                        foreach (var bare in gateList)
-                        {
-                            if (string.IsNullOrEmpty(bare)) continue;
-                            var ev = GeneratedDiffService.ProbeGeneratedFreshness(kbPath, bare, DateTime.MinValue, null, activeEnvironmentWebPath);
-                            if (ev.Found && ev.FreshestWriteUtc != null) snap[bare] = ev.FreshestWriteUtc.Value;
-                        }
-                        status.PreBuildMtimes = snap;
-                    }
-                }
-                catch { status.PreBuildMtimes = null; }
-
-                // v2.6.6 Stream D — in-process build path. Reuse the already-open
-                // KbService._kb instance + invoke GeneXus MSBuild tasks directly
-                // instead of spawning MSBuild.exe (which re-opens the KB out of
-                // process, the dominant cost in targeted builds).
-                //
-                // 2026-05-21 LIVE-TEST FINDING + FIX: ArtechTask's static ctor
-                // activates the GxServiceManager process-singleton and throws
-                // `GxException: O Service Manager já foi ativado` if another
-                // path (KbService.OpenKB → InitializeSdk) activated SM first.
-                // Worker boot now warms the ArtechTask cctor BEFORE
-                // InitializeSdk (Program.TryWarmupArtechTaskCctor) so the IDE
-                // ordering holds and subsequent in-process builds succeed.
-                // ON by default; opt-out with GXMCP_INPROCESS_BUILD=0.
-                bool useInProcess =
-                    !string.Equals(Environment.GetEnvironmentVariable("GXMCP_INPROCESS_BUILD"), "0", StringComparison.OrdinalIgnoreCase)
-                    && _kbService != null && _kbService.IsOpen;
-                if (useInProcess)
-                {
-                    status.Phase = "InProcess-Specifying";
-                    EmitPhaseProgress(status.Phase);
-                    Logger.Info("[BUILD-INPROCESS] taskId=" + status.TaskId
-                                + " kb=" + _kbService.GetKbPath()
-                                + " targets=" + (targets != null ? string.Join(";", targets) : "<all>"));
-                    var sw = Stopwatch.StartNew();
-                    InProcessBuildOutcome outcome = InProcessBuildOutcome.CouldNotRun;
-                    try
-                    {
-                        outcome = InProcessBuildRunner.Run(
-                            status, action, targets,
-                            (s, l, err) => HandleLine(s, l, err),
-                            _kbService.KbObject, _kbService.KbLock,
-                            skipFullDeploy: status.SkipFullDeploy,
-                            kbPath: _kbService.GetKbPath(),
-                            specifyOnly: status.SpecifyOnly,
-                            fullDeploy: status.FullDeploy,
-                            forceFullBuild: status.FastIncrementalForceFullBuild,
-                            skipSpecifyTargets: status.FastIncrementalCanSkipSpecify);
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error("[BUILD-INPROCESS] orchestrator threw: " + ex.Message);
-                        outcome = InProcessBuildOutcome.CouldNotRun;
-                    }
-                    sw.Stop();
-                    Logger.Info("[BUILD-INPROCESS-DONE] taskId=" + status.TaskId
-                                + " outcome=" + outcome + " elapsedMs=" + sw.ElapsedMilliseconds);
-                    // The in-process pipeline actually ran — either it succeeded, or it
-                    // failed with diagnostics. In both cases we terminalize from the
-                    // captured output. A full MSBuild.exe rebuild would only reproduce a
-                    // failure at many times the wall-clock (the "build never returns" the
-                    // reporter saw), so it is NOT attempted here. The external fallback is
-                    // reserved for outcome == CouldNotRun below.
-                    if (outcome == InProcessBuildOutcome.Succeeded
-                        || outcome == InProcessBuildOutcome.FailedWithDiagnostics)
-                    {
-                        status.BuildPath = "inproc";
-                        // FR#22: still emit shaped output envelope from FullOutput.
-                        string fullText = status.FullOutput.ToString();
-                        try
-                        {
-                            string fullLogPath;
-                            BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out fullLogPath);
-                            status.FullLogPath = fullLogPath;
-                            status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
-                        }
-                        catch { }
-
-                        bool failed = outcome == InProcessBuildOutcome.FailedWithDiagnostics
-                                      || status.ErrorCount > 0;
-                        status.Status = failed ? "Failed" : "Succeeded";
-                        status.ExitCode = failed ? 1 : 0;
-                        status.MsBuildExitCode = status.ExitCode;
-                        FinalizeBuildAllStatus(status, fullText);
-                        // A1 (parity with the MSBuild.exe branch below): when the
-                        // in-process pipeline reports failure but emitted zero code
-                        // errors AND the captured output shows Generation + Compilation
-                        // both succeeded, the failure is a downstream/late step
-                        // (WebAppConfig, a standalone-module deploy like GAMUser) —
-                        // the target's .cs/.dll are already written. Flag it as a
-                        // partial success so the gateway renders effective_status=
-                        // PartialSuccess (isError=false) instead of a contradictory
-                        // "Failed with 0 errors".
-                        if (failed && status.ErrorCount == 0
-                            && DidGenerationAndCompilationSucceed(fullText))
-                        {
-                            status.PartialSuccess = true;
-                        }
-                        status.Phase = "Done";
-                        EmitPhaseProgress(status.Phase);
-
-                        // When the pipeline reported failure but emitted no itemized
-                        // error line (the build-all IdeWebBuildAndDeploy case — the SDK
-                        // signals failure through >E0 section markers, not "error CS####:"
-                        // text), leave the agent something actionable: the failed section
-                        // and a pointer to the per-object spec check that DOES itemize.
-                        if (outcome == InProcessBuildOutcome.FailedWithDiagnostics && status.ErrorCount == 0)
-                        {
-                            if (status.PhaseFailure == null)
-                                status.PhaseFailure = ExtractPhaseFailure(fullText)
-                                    ?? new PhaseFailureInfo
-                                    {
-                                        Name = status.Phase ?? "Build",
-                                        Message = "The in-process GeneXus build reported failure without an itemized error line."
-                                    };
-                            status.Hint = "Build failed in-process with no itemized error list (the SDK signalled failure at the section level). "
-                                + "Run genexus_lifecycle action=specify target=<object> for spc*/gen* diagnostics on a specific object, or open the KB in the IDE to see the full build output.";
-                        }
-
-                        status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                        status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-                        // Attach the evidence before publishing the terminal signal. The
-                        // gateway's async poller stops at the first Succeeded status; if the
-                        // signal fires first, it can persist a terminal result without the
-                        // evidence that is added in RunBuild's finally block (#103).
-                        try { AttachGenerateEvidence(status, action, targets); }
-                        catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
-                        Logger.Info("Background Build " + status.TaskId + " " + status.Status
-                                    + " (inproc, errors=" + status.ErrorCount + ", warnings=" + status.WarningCount
-                                    + ", " + status.ElapsedSeconds + "s)");
-                        // Wake any event-driven status wait callers on the terminal edge.
-                        try { status.StateChangeSignal.Set(); } catch { }
-                        // Item 72 (friction 2026-05-22) — POST webhook on terminal Failed (not PartialSuccess).
-                        MaybeNotifyOnFailure(status);
-                        return;
-                    }
-                    // outcome == CouldNotRun — the in-process path never executed a build.
-                    // issue #28 item 12: never fall back to a full MSBuild.exe spawn for a
-                    // spec-check request — that would compile + deploy, the opposite of what
-                    // specifyOnly asked for. Report spec-unavailable instead.
-                    if (status.SpecifyOnly)
-                    {
-                        status.Status = "Failed";
-                        status.ExitCode = 1;
-                        status.MsBuildExitCode = status.ExitCode;
-                        status.Phase = "Done";
-                        EmitPhaseProgress(status.Phase);
-                        status.Error = "Spec-check (specifyOnly) could not run in-process (GeneXus MSBuild tasks unavailable in this worker). Not falling back to a full build. Run a normal build to see diagnostics.";
-                        status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                        status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-                        try { status.StateChangeSignal.Set(); } catch { }
-                        return;
-                    }
-                    Logger.Warn("[BUILD-INPROCESS-FALLBACK] taskId=" + status.TaskId + " falling back to MSBuild.exe spawn");
-                }
-
-                status.BuildPath = "msbuild-exe";
-
-                tempFile = Path.Combine(Path.GetTempPath(), "GxBuild_" + Guid.NewGuid().ToString().Substring(0, 8) + ".msbuild");
-                string projectXml = BuildExternalProjectXml(
-                    Path.Combine(_gxDir, "Genexus.Tasks.targets"), kbPath, action, targets, status);
-                File.WriteAllText(tempFile, projectXml);
-
-                // Use /v:n (normal) so we get per-object progress lines, not /v:q.
-                // Build All stays single-node so cancellation and evidence capture do
-                // not depend on implicit MSBuild worker-node interleaving.
-                var psi = new ProcessStartInfo
-                {
-                    FileName = _msbuildPath,
-                    Arguments = BuildMsBuildArguments(action, tempFile),
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                    WorkingDirectory = _gxDir,
-                    // MSBuild on Windows writes via the system OEM/ANSI code page (PT-BR usually
-                    // 850/1252). Reading the streams as UTF-8 mangles accented characters
-                    // ("Compila��o", "n�", etc.) which is unreadable for LLM consumers. Pin
-                    // both streams to the console's actual output encoding so TailLines/Output
-                    // stay legible. Fall back to UTF-8 only when CodePagesEncodingProvider
-                    // isn't registered.
-                    StandardOutputEncoding = ResolveMsbuildEncoding(),
-                    StandardErrorEncoding = ResolveMsbuildEncoding()
-                };
-
-                if (!string.IsNullOrEmpty(_gxDir))
-                {
-                    try
-                    {
-                        psi.EnvironmentVariables["GX_PATH"] = _gxDir;
-                        psi.EnvironmentVariables["GX_PROGRAM_DIR"] = _gxDir;
-                        psi.EnvironmentVariables["GeneXusPath"] = _gxDir;
-                    }
-                    catch { }
-                }
-
-                using (var process = new Process { StartInfo = psi, EnableRaisingEvents = true })
-                {
-                    status.Process = process;
-                    process.OutputDataReceived += (s, e) => HandleLine(status, e.Data, false);
-                    process.ErrorDataReceived  += (s, e) => HandleLine(status, e.Data, true);
-
-                    process.Start();
-                    reapPid = process.Id;
-                    try { reapStart = process.StartTime; } catch { reapStart = DateTime.MinValue; }
-                    status.Phase = "OpeningKB";
-                    EmitPhaseProgress(status.Phase);
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-                    // issue #37 items 2/3: bound the wait so a wedged MSBuild step doesn't
-                    // block this thread forever. The watchdog also fires at the same cap;
-                    // killing here lets us record ExitCode and terminalize cleanly.
-                    if (!process.WaitForExit(timeoutSec * 1000))
-                    {
-                        Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " MSBuild.exe exceeded "
-                                    + timeoutSec + "s — killing process tree.");
-                        KillProcessTree(process);
-                        try { process.WaitForExit(5000); } catch { }
-                    }
-
-                    status.ExitCode = process.HasExited ? process.ExitCode : -1;
-                    status.EndTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                    status.ElapsedSeconds = Math.Round((DateTime.UtcNow - status.StartedAt).TotalSeconds, 1);
-
-                    // FR#22 (v2.6.6 Stream C): full log → disk, shaped envelope → status.
-                    string fullText = status.FullOutput.ToString();
-                    string fullLogPath;
-                    BuildOutputShaper.TryWriteFullLog(fullText, status.TaskId, out fullLogPath);
-                    status.FullLogPath = fullLogPath;
-                    status.Output = BuildOutputShaper.Shape(fullText, status.LineCount, fullLogPath);
-
-                    status.Phase = "Done";
-                    Helpers.Logger.CurrentPhase = "Done";
-                    EmitPhaseProgress(status.Phase);
-
-                    // Don't clobber a terminal state the watchdog already set on timeout.
-                    if (!IsTerminalStatus(status.Status))
-                    {
-                        if (status.ExitCode == 0 && status.ErrorCount == 0)
-                            status.Status = "Succeeded";
-                        else
-                            status.Status = "Failed";
-                    }
-                    FinalizeBuildAllStatus(status, fullText);
-
-                    // Friction 2026-05-22: when ErrorCount==0 and ExitCode!=0, the
-                    // failure is a late MSBuild step (WebAppConfig, deploy task,
-                    // file-missing) that doesn't emit a proper "error <code>:" line.
-                    // Parse the raw output for >RO/>E0 markers so the agent gets a
-                    // named phase_failure instead of "Failed: 0 errors, 0 warnings".
-                    if (status.ErrorCount == 0 && status.ExitCode != 0)
-                    {
-                        status.PhaseFailure = ExtractPhaseFailure(fullText);
-                        if (DidGenerationAndCompilationSucceed(fullText))
-                        {
-                            status.PartialSuccess = true;
-                        }
-                    }
-
-                    // Publish GenerateEvidence before the terminal signal. The gateway's
-                    // async poller stops at the first terminal status and otherwise races
-                    // the finally block below, losing the evidence in the stored result.
-                    try { AttachGenerateEvidence(status, action, targets); }
-                    catch (Exception ex) { Logger.Warn("[GENERATE-EVIDENCE] gate threw: " + ex.Message); }
-
-                    // Stream F: wake any pending status wait callers.
-                    try { status.StateChangeSignal.Set(); } catch { }
-
-                    Logger.Info("Background Build " + status.TaskId + " " + status.Status +
-                                " (errors=" + status.ErrorCount + ", warnings=" + status.WarningCount +
-                                ", " + status.ElapsedSeconds + "s)");
-                    // Item 72 (friction 2026-05-22) — POST webhook on terminal Failed (not PartialSuccess).
-                    MaybeNotifyOnFailure(status);
-                }
+                // Build phases (factored methods above): in-process first, external
+                // MSBuild.exe only when the in-process pipeline could not run.
+                bool handledInProcess = RunInProcessBuildPhase(status, action, targets);
+                if (!handledInProcess)
+                    RunExternalMsBuildPhase(status, action, targets, kbPath, timeoutSec, out tempFile, out reapPid, out reapStart);
             }
             catch (Exception ex)
             {

@@ -5272,70 +5272,6 @@
       },
       "description": "Typed WorkWithPlus action, form-level action, tab, grid, native table-type, and structural edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. set_table_type mutates only an existing table type through the native PatternInstance SDK and preserves children, bindings, events, names, classes, defaultType, and childrenOrderedList. No lifecycle operation is implicit. Settings: embedded and separate WWP templates, paged reads and exact table-class dryRun; saves remain blocked.",
       "inputSchema": {
-        "$defs": {
-          "wwpControl": {
-            "additionalProperties": false,
-            "properties": {
-              "basicType": {
-                "type": "string"
-              },
-              "caption": {
-                "type": "string"
-              },
-              "children": {
-                "items": {
-                  "$ref": "#/$defs/wwpControl"
-                },
-                "type": "array"
-              },
-              "columns": {
-                "minimum": 1,
-                "type": "integer"
-              },
-              "controlEmptyItem": {
-                "type": "boolean"
-              },
-              "controlEmptyItemText": {
-                "type": "string"
-              },
-              "controlType": {
-                "type": "string"
-              },
-              "controlValues": {
-                "type": "string"
-              },
-              "decimals": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "description": {
-                "type": "string"
-              },
-              "length": {
-                "minimum": 1,
-                "type": "integer"
-              },
-              "name": {
-                "type": "string"
-              },
-              "themeClass": {
-                "type": "string"
-              },
-              "type": {
-                "enum": [
-                  "variable",
-                  "userAction",
-                  "table"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          }
-        },
         "examples": [
           {
             "action": "list",
@@ -5450,9 +5386,68 @@
             "type": "string"
           },
           "children": {
-            "description": "add_tab controls; flat children are wrapped in a responsive table.",
+            "description": "add_tab controls; flat children are wrapped in a responsive table. Nested table children accept the same control shape.",
             "items": {
-              "$ref": "#/$defs/wwpControl"
+              "additionalProperties": false,
+              "properties": {
+                "basicType": {
+                  "type": "string"
+                },
+                "caption": {
+                  "type": "string"
+                },
+                "children": {
+                  "items": {
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "columns": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "controlEmptyItem": {
+                  "type": "boolean"
+                },
+                "controlEmptyItemText": {
+                  "type": "string"
+                },
+                "controlType": {
+                  "type": "string"
+                },
+                "controlValues": {
+                  "type": "string"
+                },
+                "decimals": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "length": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "themeClass": {
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "variable",
+                    "userAction",
+                    "table"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
             },
             "type": "array"
           },
