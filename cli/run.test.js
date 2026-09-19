@@ -1174,6 +1174,146 @@ test('--fields validation returns usage error for invalid doctor field', () => {
     assert.equal(parsed.error.code, 'usage_error');
 });
 
+test('doctor client_config_sync describes the effective gateway and its source', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-gateway-source-'));
+    try {
+        const env = sandboxHomeEnv(tempRoot);
+        const configuredGateway = path.join(tempRoot, 'checkout', 'publish', 'GxMcp.Gateway.exe');
+        const mismatchedGateway = path.join(tempRoot, 'other', 'GxMcp.Gateway.exe');
+        const clientConfig = path.join(tempRoot, '.gemini', 'settings.json');
+        fs.mkdirSync(path.dirname(configuredGateway), { recursive: true });
+        fs.mkdirSync(path.dirname(clientConfig), { recursive: true });
+        fs.writeFileSync(configuredGateway, '');
+        fs.writeFileSync(clientConfig, JSON.stringify({
+            mcpServers: {
+                genexus18mcp: { command: configuredGateway, args: [] }
+            }
+        }));
+
+        const overrideEnv = { ...env, GENEXUS_MCP_GATEWAY_EXE: configuredGateway };
+        const matching = runCli(['doctor', '--format', 'json'], { env: overrideEnv });
+        assert.equal(matching.status, 0);
+        const matchingCheck = JSON.parse(matching.stdout).ok.checks.find((c) => c.id === 'client_config_sync');
+        assert.ok(matchingCheck);
+        assert.equal(matchingCheck.status, 'pass');
+        assert.ok(matchingCheck.detail.includes(`Configured Gateway: ${configuredGateway} (source: GENEXUS_MCP_GATEWAY_EXE)`));
+        assert.doesNotMatch(matchingCheck.detail, /npm-package gateway exe/);
+
+        fs.writeFileSync(clientConfig, JSON.stringify({
+            mcpServers: {
+                genexus18mcp: { command: mismatchedGateway, args: [] }
+            }
+        }));
+        const mismatching = runCli(['doctor', '--format', 'json'], { env: overrideEnv });
+        assert.equal(mismatching.status, 0);
+        const mismatchingCheck = JSON.parse(mismatching.stdout).ok.checks.find((c) => c.id === 'client_config_sync');
+        assert.ok(mismatchingCheck);
+        assert.equal(mismatchingCheck.status, 'warn');
+        assert.ok(mismatchingCheck.detail.includes(`Configured Gateway: ${configuredGateway} (source: GENEXUS_MCP_GATEWAY_EXE)`));
+        assert.doesNotMatch(mismatchingCheck.detail, /this npm package's bundled exe/);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('doctor fails closed when GX_CONFIG_PATH points at a missing file', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-config-selection-'));
+    try {
+        const cwdConfig = path.join(tempRoot, 'config.json');
+        const missingConfig = path.join(tempRoot, 'missing.json');
+        fs.writeFileSync(cwdConfig, JSON.stringify({ Environment: { KBPath: 'C:\\wrong-context' } }));
+
+        const result = runCli(['doctor', '--mcp-smoke', '--format', 'json'], {
+            cwd: tempRoot,
+            env: {
+                ...sandboxHomeEnv(tempRoot),
+                GX_CONFIG_PATH: missingConfig,
+                GENEXUS_MCP_GATEWAY_EXE: process.execPath
+            }
+        });
+        assert.equal(result.status, 0);
+        const checks = JSON.parse(result.stdout).ok.checks;
+        const configCheck = checks.find((c) => c.id === 'config_file');
+        const probeCheck = checks.find((c) => c.id === 'gateway_spawn_probe');
+        const smokeCheck = checks.find((c) => c.id === 'mcp_smoke');
+        assert.ok(configCheck);
+        assert.equal(configCheck.status, 'fail');
+        assert.ok(configCheck.detail.includes(missingConfig));
+        assert.ok(probeCheck);
+        assert.equal(probeCheck.status, 'not_applicable');
+        assert.ok(smokeCheck);
+        assert.equal(smokeCheck.status, 'not_applicable');
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('doctor rejects malformed tool definitions instead of reporting only file presence', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-tool-defs-'));
+    try {
+        const configPath = path.join(tempRoot, 'config.json');
+        const toolDefinitionsPath = path.join(tempRoot, 'tool_definitions.json');
+        fs.writeFileSync(configPath, JSON.stringify({}));
+        fs.writeFileSync(toolDefinitionsPath, '{ invalid json');
+
+        const result = runCli(['doctor', '--format', 'json'], {
+            cwd: tempRoot,
+            env: {
+                ...sandboxHomeEnv(tempRoot),
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: path.join(tempRoot, 'missing', 'GxMcp.Gateway.exe'),
+                GENEXUS_MCP_TOOL_DEFINITIONS: toolDefinitionsPath
+            }
+        });
+        assert.equal(result.status, 0);
+        const check = JSON.parse(result.stdout).ok.checks.find((c) => c.id === 'tool_definitions');
+        assert.ok(check);
+        assert.equal(check.status, 'fail');
+        assert.ok(check.detail.includes(toolDefinitionsPath));
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('doctor reports strict KB catalog ambiguity instead of ignoring Environment.KBs', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-doctor-kb-catalog-'));
+    try {
+        const kbOne = path.join(tempRoot, 'kb-one');
+        const kbTwo = path.join(tempRoot, 'kb-two');
+        const configPath = path.join(tempRoot, 'config.json');
+        fs.mkdirSync(kbOne, { recursive: true });
+        fs.mkdirSync(kbTwo, { recursive: true });
+        fs.writeFileSync(path.join(kbOne, 'model.gxw'), '');
+        fs.writeFileSync(path.join(kbTwo, 'model.gxw'), '');
+        fs.writeFileSync(configPath, JSON.stringify({
+            GatewayMode: 'stdio-isolated',
+            Environment: {
+                ResolutionPolicy: 'strict',
+                KBs: {
+                    one: { Path: kbOne },
+                    two: { Path: kbTwo }
+                }
+            }
+        }));
+
+        const result = runCli(['doctor', '--format', 'json'], {
+            cwd: tempRoot,
+            env: {
+                ...sandboxHomeEnv(tempRoot),
+                GX_CONFIG_PATH: configPath,
+                GENEXUS_MCP_GATEWAY_EXE: path.join(tempRoot, 'missing', 'GxMcp.Gateway.exe')
+            }
+        });
+        assert.equal(result.status, 0);
+        const check = JSON.parse(result.stdout).ok.checks.find((c) => c.id === 'kb_catalog');
+        assert.ok(check);
+        assert.equal(check.status, 'warn');
+        assert.match(check.detail, /neither ActiveKb nor DefaultKb/);
+    } finally {
+        removeTempPath(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('doctor finds tool_definitions.json next to the gateway exe (not just dev-tree)', () => {
     // Regression for v2.6.6 bug: getToolDefinitionsPath() hard-coded the dev-tree
     // location, so every installed copy reported "tool_definitions.json is missing"

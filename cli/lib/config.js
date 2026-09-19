@@ -70,6 +70,10 @@ function getToolDefinitionsPath() {
         // 3. Fallback alongside the CLI itself (defensive — for unusual layouts).
         path.join(__dirname, '..', '..', 'publish', 'tool_definitions.json')
     ];
+    // An explicit gateway override is usually a fixed-path or checkout install.
+    // Do not hide a missing sibling artifact with this source tree's copy: the
+    // Gateway loads the file next to its own executable at runtime.
+    if (process.env.GENEXUS_MCP_GATEWAY_EXE) return candidates[0];
     for (const candidate of candidates) {
         if (fs.existsSync(candidate)) return candidate;
     }
@@ -623,8 +627,11 @@ function migrateLegacyConfig(sourcePath, targetPath, { rejectNonMigratable = fal
 
 function resolveConfigPathNoMutate(cwd) {
     const cwdConfigPath = path.join(cwd, 'config.json');
-    if (process.env.GX_CONFIG_PATH && fs.existsSync(process.env.GX_CONFIG_PATH)) {
-        return process.env.GX_CONFIG_PATH;
+    // Match the Gateway: an explicit GX_CONFIG_PATH is authoritative even when
+    // the file is missing, so diagnostics do not silently inspect an unrelated
+    // cwd config while the runtime fails on the explicit path.
+    if (process.env.GX_CONFIG_PATH) {
+        return path.resolve(process.env.GX_CONFIG_PATH);
     }
     if (fs.existsSync(cwdConfigPath)) {
         return cwdConfigPath;
@@ -2134,9 +2141,9 @@ function normalizeKbCatalog(raw) {
     return normalized;
 }
 
-function readKbCatalog(configPath) {
-    if (!configPath) return { kbs: {}, activeKb: null, kbPath: null };
-    const cfg = readJsonFileSafe(configPath);
+function readKbCatalog(configPath, configOverride = undefined) {
+    if (!configPath && configOverride === undefined) return { kbs: {}, activeKb: null, kbPath: null };
+    const cfg = configOverride === undefined ? readJsonFileSafe(configPath) : configOverride;
     if (!cfg) return { kbs: {}, activeKb: null, kbPath: null };
     const env = cfg.Environment || {};
     const activeKb = typeof env.ActiveKb === 'string' && env.ActiveKb

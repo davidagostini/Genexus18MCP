@@ -152,30 +152,51 @@ function buildStatusData(cwd) {
     const configPath = resolveConfigPathNoMutate(cwd);
     const gatewayExePath = getGatewayExePath();
     const gatewayExeFound = fs.existsSync(gatewayExePath);
-    const configFound = !!configPath;
+    const configFound = !!(configPath && fs.existsSync(configPath));
 
     let kbLooksValid = false;
     let kbPath = null;
+    let kbCatalog = { kbs: {}, activeKb: null, kbPath: null };
     let gxPath = null;
     let configSource = null;
+    let configReadable = false;
+    let configError = null;
 
-    if (process.env.GX_CONFIG_PATH && fs.existsSync(process.env.GX_CONFIG_PATH)) {
+    if (process.env.GX_CONFIG_PATH) {
         configSource = 'env';
-    } else if (configPath) {
+    } else if (configFound) {
         configSource = 'cwd';
     }
 
-    if (configPath) {
+    if (configFound) {
         const cfg = readJsonFileSafe(configPath);
-        if (cfg) {
-            kbPath = cfg.Environment && cfg.Environment.KBPath ? cfg.Environment.KBPath : null;
-            gxPath = cfg.GeneXus && cfg.GeneXus.InstallationPath ? cfg.GeneXus.InstallationPath : null;
+        if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+            configReadable = true;
+            const environment = cfg.Environment && typeof cfg.Environment === 'object' ? cfg.Environment : {};
+            kbCatalog = readKbCatalog(configPath, cfg);
+            const declaredKbs = Object.entries(kbCatalog.kbs || {});
+            const catalogPath = kbCatalog.activeKb
+                ? kbCatalog.kbs[kbCatalog.activeKb] || null
+                : (declaredKbs.length === 1 ? declaredKbs[0][1] : null);
+            const legacyKbPath = typeof environment.KBPath === 'string' && environment.KBPath.trim()
+                ? environment.KBPath
+                : null;
+            kbPath = legacyKbPath || catalogPath || null;
+            gxPath = cfg.GeneXus && typeof cfg.GeneXus.InstallationPath === 'string'
+                ? cfg.GeneXus.InstallationPath
+                : null;
             if (kbPath) kbLooksValid = directoryLooksLikeKnowledgeBase(kbPath);
+        } else {
+            configError = 'Configuration file is not a readable JSON object.';
         }
+    } else if (configPath) {
+        configError = process.env.GX_CONFIG_PATH
+            ? 'GX_CONFIG_PATH points to a missing configuration file.'
+            : 'Configuration file does not exist.';
     }
 
     const ready = configFound && gatewayExeFound;
-    return { ready, configFound, gatewayExeFound, kbLooksValid, configPath, gatewayExePath, kbPath, gxPath, configSource };
+    return { ready, configFound, configReadable, configError, gatewayExeFound, kbLooksValid, kbCatalog, configPath, gatewayExePath, kbPath, gxPath, configSource };
 }
 
 const PROBE_EXIT_GRACE_MS = 2000;
@@ -209,19 +230,116 @@ function stopProbeChild(child, graceMs = PROBE_EXIT_GRACE_MS) {
     });
 }
 
+async function runGatewaySelfTest({ env = process.env, timeoutMs = 5000 }) {
+    const gatewayExePath = getGatewayExePath();
+    const maxOutputChars = 32 * 1024;
+
+    const appendOutput = (current, chunk) => {
+        const next = current + chunk.toString();
+        return next.length > maxOutputChars ? next.slice(-maxOutputChars) : next;
+    };
+
+    const summarize = (code, stdout, stderr) => {
+        let payload = null;
+        const lines = stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+        for (let i = lines.length - 1; i >= 0; i -= 1) {
+            try {
+                payload = JSON.parse(lines[i]);
+                break;
+            } catch {
+                // Keep looking: a diagnostic line may precede the JSON envelope.
+            }
+        }
+
+        if (payload && payload.schemaVersion === 'gateway-selftest/1' && Array.isArray(payload.checks)) {
+            const failed = payload.checks.find((check) => check.status === 'fail');
+            if (code === 0 && payload.ok !== false && !failed) {
+                return {
+                    status: 'pass',
+                    detail: `Gateway self-test passed (${payload.summary?.total || payload.checks.length} checks).`
+                };
+            }
+            const reason = failed && failed.detail
+                ? `: ${failed.id}: ${sanitizeOperationalMessage(failed.detail)}`
+                : ` (exit ${code === null ? 'unknown' : code})`;
+            return { status: 'fail', detail: `Gateway self-test failed${reason}.` };
+        }
+
+        const preview = sanitizeOperationalMessage((stderr || stdout).trim(), '');
+        return {
+            status: code === 0 ? 'warn' : 'fail',
+            detail: code === 0
+                ? (preview ? `Gateway self-test returned no recognized result: ${preview}` : 'Gateway self-test returned no recognized result.')
+                : (preview
+                    ? `Gateway self-test failed (exit ${code === null ? 'unknown' : code}): ${preview}`
+                    : `Gateway self-test failed (exit ${code === null ? 'unknown' : code}) with no diagnostic output.`)
+        };
+    };
+
+    return await new Promise((resolve) => {
+        let child;
+        let timer = null;
+        let settled = false;
+        let timedOut = false;
+        let stdout = '';
+        let stderr = '';
+        const finish = (result) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            resolve(result);
+        };
+
+        try {
+            child = spawn(gatewayExePath, ['--self-test'], {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                windowsHide: true,
+                env
+            });
+            child.stdout.on('data', (chunk) => { stdout = appendOutput(stdout, chunk); });
+            child.stderr.on('data', (chunk) => { stderr = appendOutput(stderr, chunk); });
+            child.once('error', (err) => {
+                finish({ status: 'fail', detail: `Gateway self-test could not start: ${sanitizeOperationalMessage(err.message)}` });
+            });
+            child.once('exit', (code) => {
+                if (timedOut) {
+                    finish({ status: 'warn', detail: `Gateway self-test timed out after ${timeoutMs}ms.` });
+                    return;
+                }
+                finish(summarize(code, stdout, stderr));
+            });
+            timer = setTimeout(async () => {
+                if (settled) return;
+                timedOut = true;
+                const exited = await stopProbeChild(child);
+                finish({
+                    status: 'warn',
+                    detail: exited
+                        ? `Gateway self-test timed out after ${timeoutMs}ms; process was stopped.`
+                        : `Gateway self-test timed out after ${timeoutMs}ms and did not exit after the stop signal.`
+                });
+            }, timeoutMs);
+        } catch (err) {
+            finish({ status: 'fail', detail: `Gateway self-test could not start: ${sanitizeOperationalMessage(err.message)}` });
+        }
+    });
+}
+
 async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, label, successDetail }) {
     const gatewayExePath = getGatewayExePath();
 
     return await new Promise((resolve) => {
         let done = false;
+        let timer = null;
         const finish = (result) => {
             if (done) return;
             done = true;
+            if (timer) clearTimeout(timer);
             resolve(result);
         };
 
         try {
-            const child = spawn(gatewayExePath, ['--axi-spawn-probe'], {
+            const child = spawn(gatewayExePath, [], {
                 stdio: 'ignore',
                 windowsHide: true,
                 env
@@ -241,6 +359,16 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
                 }
             });
 
+            child.once('exit', (code, signal) => {
+                if (done) return;
+                finish({
+                    status: code === 0 ? 'warn' : 'fail',
+                    detail: code === 0
+                        ? `${label} exited before the observation window (signal: ${signal || 'none'}).`
+                        : `${label} exited with code ${code === null ? 'unknown' : code}${signal ? ` (signal: ${signal})` : ''}.`
+                });
+            });
+
             child.once('spawn', () => {
                 setTimeout(async () => {
                     const exited = await stopProbeChild(child);
@@ -252,7 +380,7 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
                 }, spawnHoldMs);
             });
 
-            setTimeout(async () => {
+            timer = setTimeout(async () => {
                 if (done) return;
                 const exited = await stopProbeChild(child);
                 finish({
@@ -268,13 +396,11 @@ async function spawnGatewayProbe({ env = process.env, spawnHoldMs, timeoutMs, la
     });
 }
 
-async function probeGatewaySpawn() {
-    return spawnGatewayProbe({
-        spawnHoldMs: 180,
-        timeoutMs: 900,
-        label: 'Spawn probe',
-        successDetail: 'Gateway process can be spawned (probe launched and terminated).'
-    });
+async function probeGatewaySpawn({ configPath = null } = {}) {
+    const env = configPath
+        ? { ...process.env, GX_CONFIG_PATH: configPath }
+        : process.env;
+    return runGatewaySelfTest({ env });
 }
 
 function resolveMcpSmokeTarget(cwd) {
@@ -284,9 +410,23 @@ function resolveMcpSmokeTarget(cwd) {
         return { applicable: true, status: null, detail: null, baseUrl: fallback };
     }
 
+    if (!fs.existsSync(configPath)) {
+        return {
+            applicable: false,
+            status: 'not_applicable',
+            detail: `MCP HTTP smoke skipped: resolved config file does not exist at ${configPath}.`,
+            baseUrl: null
+        };
+    }
+
     const cfg = readJsonFileSafe(configPath);
-    if (!cfg || typeof cfg !== 'object') {
-        return { applicable: true, status: null, detail: null, baseUrl: fallback };
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+        return {
+            applicable: false,
+            status: 'not_applicable',
+            detail: `MCP HTTP smoke skipped: resolved config file is not a readable JSON object at ${configPath}.`,
+            baseUrl: null
+        };
     }
 
     const server = cfg.Server && typeof cfg.Server === 'object' ? cfg.Server : {};
@@ -437,9 +577,15 @@ async function handleStatus(options, ctx) {
     };
 }
 
-function buildClientExeCrossCheck(packageExePath) {
+function buildClientExeCrossCheck(packageExePath, clientRows = null) {
     const packageNorm = normalizeExePath(packageExePath);
-    const targets = filterClientTargets(getClientConfigTargets(), { platform: process.platform });
+    const gatewaySource = process.env.GENEXUS_MCP_GATEWAY_EXE
+        ? 'GENEXUS_MCP_GATEWAY_EXE'
+        : 'packaged gateway (default)';
+    const gatewayTarget = `Configured Gateway: ${packageExePath} (source: ${gatewaySource})`;
+    const targets = clientRows
+        ? clientRows.map((row) => ({ name: row.name, path: row.configPath, entry: row.command ? { command: row.command } : null }))
+        : filterClientTargets(getClientConfigTargets(), { platform: process.platform });
 
     const mismatches = [];
     const matches = [];
@@ -447,13 +593,17 @@ function buildClientExeCrossCheck(packageExePath) {
     let inspected = 0;
 
     for (const client of targets) {
-        if (!fs.existsSync(client.path)) continue;
         let entry;
-        try {
-            entry = readClientCommandEntry(client);
-        } catch (err) {
-            errors.push(`${client.name}: ${err.message || 'read failed'}`);
-            continue;
+        if (clientRows) {
+            entry = client.entry;
+        } else {
+            if (!fs.existsSync(client.path)) continue;
+            try {
+                entry = readClientCommandEntry(client);
+            } catch (err) {
+                errors.push(`${client.name}: ${err.message || 'read failed'}`);
+                continue;
+            }
         }
         if (!entry || !entry.command) continue;
         inspected += 1;
@@ -489,14 +639,14 @@ function buildClientExeCrossCheck(packageExePath) {
     if (mismatches.length === 0) {
         return {
             status: 'pass',
-            detail: `All inspected client configs (${matches.join(', ')}) point at the npm-package gateway exe.`
+            detail: `All inspected client configs (${matches.join(', ')}) match the configured gateway target. ${gatewayTarget}.`
         };
     }
 
     const detailParts = mismatches.map((m) => `${m.client} -> ${m.configured}${m.exists ? '' : ' (missing)'}`);
     return {
         status: 'warn',
-        detail: `Client(s) reference a gateway exe that is NOT this npm package's bundled exe. \`npm install -g genexus-mcp@latest\` will NOT update those instances. Bundled: ${packageExePath}. Mismatches: ${detailParts.join('; ')}. Re-run scripts/install.ps1 (or genexus-mcp init --write-clients) to resync.`
+        detail: `Client(s) reference a gateway exe that is not the configured target. ${gatewayTarget}. \`npm install -g genexus-mcp@latest\` will NOT update those instances. Mismatches: ${detailParts.join('; ')}. Re-run scripts/install.ps1 (or genexus-mcp init --write-clients) to resync.`
     };
 }
 
@@ -681,7 +831,21 @@ function redactConfig(cfg) {
     return walk(cfg);
 }
 
-async function buildSupportDump({ checks, summary, data, gatewayExePath, ctx }) {
+function redactDiagnosticText(value, paths) {
+    let text = String(value ?? '');
+    const candidates = [...new Set((paths || []).filter((candidate) => typeof candidate === 'string' && candidate.length > 0))]
+        .sort((a, b) => b.length - a.length);
+    for (const candidate of candidates) {
+        const token = `<redacted:${require('crypto').createHash('sha256').update(candidate).digest('hex').slice(0, 8)}>`;
+        for (const variant of new Set([candidate, candidate.replace(/\\/g, '/')])) {
+            const escaped = variant.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            text = text.replace(new RegExp(escaped, 'gi'), token);
+        }
+    }
+    return text;
+}
+
+async function buildSupportDump({ checks, summary, data, gatewayExePath, clientRows = [], toolDefPath, stdioErrorLogPath, ctx }) {
     const os = require('os');
     const crypto = require('crypto');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -697,7 +861,23 @@ async function buildSupportDump({ checks, summary, data, gatewayExePath, ctx }) 
         entries.push(relPath);
     };
 
-    writeEntry('doctor.json', { summary, checks, generatedAt: new Date().toISOString() });
+    const redactionPaths = [
+        gatewayExePath,
+        data.configPath,
+        data.kbPath,
+        data.gxPath,
+        toolDefPath,
+        stdioErrorLogPath,
+        ...Object.values(data.kbCatalog?.kbs || {}),
+        ...clientRows.flatMap((row) => [row.configPath, row.command])
+    ];
+    const redactedChecks = checks.map((check) => ({
+        ...check,
+        detail: redactDiagnosticText(check.detail, redactionPaths)
+    }));
+    const redactPath = (value) => redactDiagnosticText(value, redactionPaths);
+
+    writeEntry('doctor.json', { summary, checks: redactedChecks, generatedAt: new Date().toISOString() });
 
     if (data.configPath && fs.existsSync(data.configPath)) {
         const cfg = readJsonFileSafe(data.configPath);
@@ -713,7 +893,7 @@ async function buildSupportDump({ checks, summary, data, gatewayExePath, ctx }) 
         nodeVersion: process.version,
         osRelease: os.release(),
         cwdHash: crypto.createHash('sha256').update(ctx.cwd || '').digest('hex').slice(0, 8),
-        gatewayExePath,
+        gatewayExePath: redactPath(gatewayExePath),
         gatewayExeExists: fs.existsSync(gatewayExePath),
         configSource: data.configSource,
         kbConfigured: !!data.kbPath,
@@ -795,12 +975,19 @@ async function handleDoctor(options, ctx) {
     const stdioErrorLogExists = !!(stdioErrorLogPath && fs.existsSync(stdioErrorLogPath));
 
     let toolCount = 0;
+    let toolDefinitionsValid = false;
+    let toolDefinitionsError = null;
     if (toolDefsExists) {
         try {
             const parsed = JSON.parse(fs.readFileSync(toolDefPath, 'utf8'));
-            if (Array.isArray(parsed)) toolCount = parsed.length;
-        } catch {
-            toolCount = 0;
+            if (Array.isArray(parsed)) {
+                toolDefinitionsValid = true;
+                toolCount = parsed.length;
+            } else {
+                toolDefinitionsError = 'tool_definitions.json is not an array.';
+            }
+        } catch (err) {
+            toolDefinitionsError = sanitizeOperationalMessage(err && err.message ? err.message : 'invalid JSON');
         }
     }
 
@@ -816,8 +1003,10 @@ async function handleDoctor(options, ctx) {
     const catalog = getGeneXusVersionCatalog();
 
     let unsupportedCompatibilityMajor = null;
-    let compatibilityStatus = 'warn';
-    let compatibilityDetail = 'KB/SDK major compatibility check was skipped until both configured paths exist.';
+    let compatibilityStatus = kbPath && gxPath ? 'warn' : 'not_applicable';
+    let compatibilityDetail = kbPath && gxPath
+        ? 'KB/SDK major compatibility check was skipped until both configured paths exist.'
+        : 'KB/SDK major compatibility check is not applicable until both paths are configured.';
     if (kbSdkCompatibility) {
         if (!isSupportedCatalogMajor(catalog, kbSdkCompatibility.kb.major)) {
             unsupportedCompatibilityMajor = `KB major ${kbSdkCompatibility.kb.major}`;
@@ -843,10 +1032,48 @@ async function handleDoctor(options, ctx) {
     const gxVersionLabel = gxIdent && gxIdent.version ? ` (GeneXus ${gxIdent.major || ''} version ${gxIdent.version})` : (gxIdent && gxIdent.major ? ` (GeneXus ${gxIdent.major})` : '');
 
     const riskyZone = isPathLikelyAppLockerBlocked(gatewayExePath);
-    const clientCrossCheck = buildClientExeCrossCheck(gatewayExePath);
+    const clientRows = clientsStatus();
+    const clientCrossCheck = buildClientExeCrossCheck(gatewayExePath, clientRows);
+    const configCheck = data.configFound
+        ? (data.configReadable
+            ? { status: 'pass', detail: `GX config file was found at ${data.configPath} (source: ${data.configSource}).` }
+            : { status: 'fail', detail: `GX config file could not be parsed as a JSON object: ${data.configPath}.` })
+        : {
+            status: 'fail',
+            detail: data.configPath
+                ? `${data.configError || 'GX config file is missing.'} ${data.configPath}`
+                : 'GX config file is missing.'
+        };
+    const toolDefinitionsCheck = !toolDefsExists
+        ? {
+            status: 'warn',
+            detail: process.env.GENEXUS_MCP_TOOL_DEFINITIONS
+                ? `tool_definitions.json missing at GENEXUS_MCP_TOOL_DEFINITIONS=${toolDefPath}. Unset the env var or point it at a valid file.`
+                : `tool_definitions.json missing. Expected at ${toolDefPath} (next to the gateway exe). The csproj should copy it on publish — reinstall via scripts/install.ps1, or set GENEXUS_MCP_TOOL_DEFINITIONS to override.`
+        }
+        : toolDefinitionsValid
+            ? { status: 'pass', detail: `Tool definition file found (${toolCount} tools) at ${toolDefPath}.` }
+            : { status: 'fail', detail: `tool_definitions.json is invalid at ${toolDefPath}${toolDefinitionsError ? `: ${toolDefinitionsError}` : '.'}` };
+    const gxEnvCheck = process.env.GX_CONFIG_PATH
+        ? { status: 'pass', detail: 'GX_CONFIG_PATH env var is set.' }
+        : data.configFound
+            ? { status: 'not_applicable', detail: `GX_CONFIG_PATH is not set; using ${data.configPath} from the current directory.` }
+            : { status: 'warn', detail: 'GX_CONFIG_PATH env var is not set and no config file was found.' };
+    const kbCatalogEntries = Object.entries(data.kbCatalog?.kbs || {});
+    const missingCatalogKbs = kbCatalogEntries.filter(([, declaredPath]) => !fs.existsSync(declaredPath));
+    const selectedCatalogAlias = data.kbCatalog?.activeKb || (kbCatalogEntries.length === 1 ? kbCatalogEntries[0][0] : null);
+    const kbCatalogCheck = kbCatalogEntries.length === 0
+        ? { status: 'not_applicable', detail: 'No KB aliases are declared in Environment.KBs.' }
+        : missingCatalogKbs.length > 0
+            ? { status: 'fail', detail: `Declared KB path(s) missing: ${missingCatalogKbs.map(([alias, declaredPath]) => `${alias} -> ${declaredPath}`).join('; ')}.` }
+            : data.kbCatalog.activeKb && !data.kbCatalog.kbs[data.kbCatalog.activeKb]
+                ? { status: 'fail', detail: `Active/Default KB alias '${data.kbCatalog.activeKb}' is not declared in Environment.KBs.` }
+                : kbCatalogEntries.length > 1 && !data.kbCatalog.activeKb
+                    ? { status: 'warn', detail: `${kbCatalogEntries.length} KB aliases are declared but neither ActiveKb nor DefaultKb selects one. Strict sessions must use an explicit kb.` }
+                    : { status: 'pass', detail: `${kbCatalogEntries.length} declared KB alias(es) are present${selectedCatalogAlias ? `; diagnostic target: ${selectedCatalogAlias}` : ''}.` };
 
     const checks = [
-        { id: 'config_file', status: data.configFound ? 'pass' : 'fail', detail: data.configFound ? 'GX config file was found.' : 'GX config file is missing.' },
+        { id: 'config_file', status: configCheck.status, detail: configCheck.detail },
         { id: 'gateway_exe', status: data.gatewayExeFound ? 'pass' : 'fail', detail: data.gatewayExeFound ? 'Gateway executable is available.' : 'Gateway executable is missing.' },
         {
             id: 'stdio_error_log',
@@ -865,6 +1092,7 @@ async function handleDoctor(options, ctx) {
         // A KB path configured but absent on disk is fatal — the worker can't open a KB
         // that doesn't exist. Only when no KB is configured at all do we soften to warn.
         { id: 'kb_path_exists', status: kbExists ? 'pass' : (kbPath ? 'fail' : 'warn'), detail: kbExists ? 'Configured KB path exists.' : (kbPath ? `Configured KB path does not exist: ${kbPath}` : 'No KB path is configured.') },
+        { id: 'kb_catalog', status: kbCatalogCheck.status, detail: kbCatalogCheck.detail },
         { id: 'kb_shape', status: data.kbLooksValid ? 'pass' : 'warn', detail: data.kbLooksValid ? 'KB folder shape looks valid.' : 'KB markers were not found in configured KB path.' },
         // Same logic for the GeneXus install: missing the configured executable at a path
         // guarantees a worker crash on first MCP call. Promote from warn to fail so init
@@ -875,8 +1103,8 @@ async function handleDoctor(options, ctx) {
             status: compatibilityStatus,
             detail: compatibilityDetail
         },
-        { id: 'tool_definitions', status: toolDefsExists ? 'pass' : 'warn', detail: toolDefsExists ? `Tool definition file found (${toolCount} tools) at ${toolDefPath}.` : (process.env.GENEXUS_MCP_TOOL_DEFINITIONS ? `tool_definitions.json missing at GENEXUS_MCP_TOOL_DEFINITIONS=${toolDefPath}. Unset the env var or point it at a valid file.` : `tool_definitions.json missing. Expected at ${toolDefPath} (next to the gateway exe). The csproj should copy it on publish — reinstall via scripts/install.ps1, or set GENEXUS_MCP_TOOL_DEFINITIONS to override.`) },
-        { id: 'gx_env', status: process.env.GX_CONFIG_PATH ? 'pass' : 'warn', detail: process.env.GX_CONFIG_PATH ? 'GX_CONFIG_PATH env var is set.' : 'GX_CONFIG_PATH env var is not set for this process.' },
+        { id: 'tool_definitions', status: toolDefinitionsCheck.status, detail: toolDefinitionsCheck.detail },
+        { id: 'gx_env', status: gxEnvCheck.status, detail: gxEnvCheck.detail },
         { id: 'client_config_sync', status: clientCrossCheck.status, detail: clientCrossCheck.detail }
     ];
 
@@ -894,7 +1122,6 @@ async function handleDoctor(options, ctx) {
     checks.push({ id: 'legacy_ide_lock', status: ideLockCheck.status, detail: ideLockCheck.detail });
 
     // Client registration summary — one line answering "are my AI agents wired up?".
-    const clientRows = clientsStatus();
     const installedRows = clientRows.filter((r) => r.installed);
     const staleRows = clientRows.filter((r) => r.commandStale);
     const installedUnregistered = installedRows.filter((r) => !r.registered && r.writeSupported);
@@ -912,11 +1139,13 @@ async function handleDoctor(options, ctx) {
     }
     checks.push({ id: 'clients_registered', status: clientsStatusLevel, detail: clientsDetail });
 
-    if (data.gatewayExeFound) {
-        const probe = await probeGatewaySpawn();
+    if (data.gatewayExeFound && data.configFound && data.configReadable) {
+        const probe = await probeGatewaySpawn({ configPath: data.configPath });
         checks.push({ id: 'gateway_spawn_probe', status: probe.status, detail: probe.detail });
-    } else {
+    } else if (!data.gatewayExeFound) {
         checks.push({ id: 'gateway_spawn_probe', status: 'warn', detail: 'Spawn probe skipped: gateway exe not found.' });
+    } else {
+        checks.push({ id: 'gateway_spawn_probe', status: 'not_applicable', detail: 'Gateway self-test skipped: no usable configuration was resolved.' });
     }
 
     if (options.mcpSmoke) {
@@ -935,7 +1164,7 @@ async function handleDoctor(options, ctx) {
     // to send 5 separate things over chat.
     if (options.dump) {
         try {
-            const dumpResult = await buildSupportDump({ checks, summary, data, gatewayExePath, ctx });
+            const dumpResult = await buildSupportDump({ checks, summary, data, gatewayExePath, clientRows, toolDefPath, stdioErrorLogPath, ctx });
             return {
                 exitCode: ctx.EXIT_CODES.OK,
                 envelope: {
@@ -946,7 +1175,7 @@ async function handleDoctor(options, ctx) {
                         entries: dumpResult.entries,
                         summary
                     },
-                    help: ['Attach the zip to your support ticket. Paths inside config.json have been redacted; sensitive values may still appear in worker logs — review before sharing if needed.']
+                    help: ['Attach the zip to your support ticket. Paths in config.json and doctor metadata have been redacted; sensitive values may still appear in worker logs — review before sharing if needed.']
                 }
             };
         } catch (err) {
