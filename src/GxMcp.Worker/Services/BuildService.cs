@@ -1652,6 +1652,8 @@ namespace GxMcp.Worker.Services
             }
 
             _tasks[taskId] = status;
+            // Retention sweep (never breaks registration — SweepBuildTasks is total).
+            SweepBuildTasks();
 
             // issue #42 (P3c): register the in-flight build here — synchronously, before the
             // background task is scheduled — so a second Build() call cannot slip through the
@@ -3295,6 +3297,108 @@ namespace GxMcp.Worker.Services
                 MaybeNotifyOnFailure(status);
             }
         }
+
+        // _tasks retention (worker weight). Completed build statuses accumulated
+        // forever (FullOutput buffers included): _tasks is write-only, so long
+        // sessions grew the worker without bound until the blunt 1500MB idle heap
+        // recycle. Sweep on every registration: drop terminal entries past cap/TTL
+        // (oldest-completed first, never non-terminal, never anything completed
+        // <60s ago so a just-terminal build can't vanish mid-poll), and release
+        // the FullOutput buffer of older terminal entries (the status envelope
+        // keeps answering — FullOutput is JsonIgnore; the full text lives on disk
+        // via FullLogPath when shaping succeeded).
+        internal static int ResolveBuildTaskCap()
+        {
+            int def = 50;
+            var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_TASK_CAP");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v) && v > 0)
+                def = v;
+            if (def < 10) def = 10; // gateway lists Take(10) — flooring keeps that envelope intact
+            return def;
+        }
+
+        internal static int ResolveBuildTaskTtlMinutes()
+        {
+            int def = 180;
+            var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_TASK_TTL_MIN");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v) && v > 0)
+                def = v;
+            if (def < 60) def = 60; // async pollers run up to 45min — flooring keeps their taskId resolvable
+            return def;
+        }
+
+        internal static int ResolveBuildFullOutputKeepMinutes()
+        {
+            int def = 15;
+            var raw = Environment.GetEnvironmentVariable("GXMCP_BUILD_FULLOUTPUT_KEEP_MIN");
+            if (!string.IsNullOrWhiteSpace(raw) && int.TryParse(raw.Trim(), out var v) && v > 0)
+                def = v;
+            if (def < 1) def = 1;
+            return def;
+        }
+
+        internal static DateTime BuildTaskCompletedAtUtc(BuildTaskStatus status)
+        {
+            try
+            {
+                if (status != null && status.ElapsedSeconds != null)
+                    return status.StartedAt.ToUniversalTime().AddSeconds(status.ElapsedSeconds.Value);
+            }
+            catch { }
+            try { return status.StartedAt.ToUniversalTime(); } catch { return DateTime.MinValue; }
+        }
+
+        internal static int SweepBuildTasks()
+        {
+            try
+            {
+                return SweepBuildTasks(DateTime.UtcNow, ResolveBuildTaskCap(), ResolveBuildTaskTtlMinutes(), ResolveBuildFullOutputKeepMinutes());
+            }
+            catch { return 0; }
+        }
+
+        internal static int SweepBuildTasks(DateTime nowUtc, int taskCap, int taskTtlMinutes, int fullOutputKeepMinutes)
+        {
+            int evicted = 0;
+            try
+            {
+                var terminal = new List<KeyValuePair<string, BuildTaskStatus>>();
+                foreach (var kv in _tasks.ToArray())
+                {
+                    var st = kv.Value;
+                    if (st == null) { if (_tasks.TryRemove(kv.Key, out _)) evicted++; continue; }
+                    if (!IsTerminalStatus(st.Status)) continue;
+                    DateTime completed = BuildTaskCompletedAtUtc(st);
+                    double ageMin = (nowUtc - completed).TotalMinutes;
+                    // Release the big buffer early; the envelope (Output/Errors/Warnings/
+                    // counts/fullLogPath) keeps answering status/result reads.
+                    if (ageMin > fullOutputKeepMinutes && st.FullOutput != null && st.FullOutput.Length > 0)
+                    {
+                        try { lock (st._lock) { st.FullOutput.Clear(); } } catch { }
+                    }
+                    terminal.Add(kv);
+                }
+                // Oldest-completed first so cap pressure lands on the stalest entries.
+                terminal.Sort((a, b) => DateTime.Compare(BuildTaskCompletedAtUtc(a.Value), BuildTaskCompletedAtUtc(b.Value)));
+                int over = terminal.Count - Math.Max(0, taskCap);
+                foreach (var kv in terminal)
+                {
+                    DateTime completed = BuildTaskCompletedAtUtc(kv.Value);
+                    double ageMin = (nowUtc - completed).TotalMinutes;
+                    if (ageMin < 1) continue; // just-terminal grace: never vanish a build mid-poll
+                    if (ageMin > taskTtlMinutes || over > 0)
+                    {
+                        if (_tasks.TryRemove(kv.Key, out _)) { evicted++; over--; }
+                    }
+                }
+            }
+            catch { }
+            return evicted;
+        }
+
+        internal static void InjectBuildTaskForTest(string taskId, BuildTaskStatus status) { _tasks[taskId] = status; }
+        internal static bool RemoveBuildTaskForTest(string taskId) { return _tasks.TryRemove(taskId, out _); }
+        internal static bool TryGetBuildTaskForTest(string taskId, out BuildTaskStatus status) { return _tasks.TryGetValue(taskId, out status); }
 
         private void RunBuild(BuildTaskStatus status, string action, List<string> targets)
         {

@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Linq;
 using System.Text;
 using GxMcp.Worker.Helpers;
@@ -116,6 +118,80 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(path, shapedSmall.full_log_path);
             Assert.Equal(path, shapedLarge.full_log_path);
             Assert.Contains(path, shapedSmall.hint);
+        }
+
+        // Log retention: only build-*.log files past the retain count are deleted
+        // (newest kept); anything else in the dir and missing dirs are untouched.
+        [Fact]
+        public void SweepOldBuildLogs_KeepsNewestDeletesRest()
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "GxLogSweep_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                DateTime baseTime = DateTime.UtcNow.AddHours(-5);
+                for (int i = 0; i < 5; i++)
+                {
+                    string p = Path.Combine(dir, "build-task" + i + ".log");
+                    File.WriteAllText(p, "log" + i);
+                    File.SetLastWriteTimeUtc(p, baseTime.AddHours(i));
+                }
+                File.WriteAllText(Path.Combine(dir, "keepme.txt"), "not-a-build-log");
+                File.WriteAllText(Path.Combine(dir, "other.log"), "not-matching-prefix");
+
+                int deleted = BuildOutputShaper.SweepOldBuildLogs(dir, retainCount: 2);
+
+                Assert.Equal(3, deleted);
+                Assert.True(File.Exists(Path.Combine(dir, "build-task4.log")));
+                Assert.True(File.Exists(Path.Combine(dir, "build-task3.log")));
+                Assert.False(File.Exists(Path.Combine(dir, "build-task2.log")));
+                Assert.True(File.Exists(Path.Combine(dir, "keepme.txt")));
+                Assert.True(File.Exists(Path.Combine(dir, "other.log")));
+            }
+            finally
+            {
+                try { Directory.Delete(dir, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void SweepOldBuildLogs_MissingDirAndDisabledAreNoOps()
+        {
+            Assert.Equal(0, BuildOutputShaper.SweepOldBuildLogs(
+                Path.Combine(Path.GetTempPath(), "GxNoSuchDir_" + Guid.NewGuid().ToString("N")), 2));
+            Assert.Equal(0, BuildOutputShaper.SweepOldBuildLogs(null, 2));
+            string dir = Path.Combine(Path.GetTempPath(), "GxLogSweep_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                File.WriteAllText(Path.Combine(dir, "build-x.log"), "x");
+                Assert.Equal(0, BuildOutputShaper.SweepOldBuildLogs(dir, 0));
+                Assert.True(File.Exists(Path.Combine(dir, "build-x.log")));
+            }
+            finally
+            {
+                try { Directory.Delete(dir, true); } catch { }
+            }
+        }
+
+        [Fact]
+        public void ResolveBuildLogRetainCount_DefaultsAndDisables()
+        {
+            try
+            {
+                Environment.SetEnvironmentVariable("GXMCP_BUILD_LOG_RETAIN_COUNT", null);
+                Assert.Equal(50, BuildOutputShaper.ResolveBuildLogRetainCount());
+
+                Environment.SetEnvironmentVariable("GXMCP_BUILD_LOG_RETAIN_COUNT", "7");
+                Assert.Equal(7, BuildOutputShaper.ResolveBuildLogRetainCount());
+
+                Environment.SetEnvironmentVariable("GXMCP_BUILD_LOG_RETAIN_COUNT", "0");
+                Assert.Equal(int.MaxValue, BuildOutputShaper.ResolveBuildLogRetainCount());
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_BUILD_LOG_RETAIN_COUNT", null);
+            }
         }
     }
 }

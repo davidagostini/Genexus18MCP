@@ -34,6 +34,10 @@
 - **Split `BuildService.RunBuild` into phase methods with no behavior change.** Watchdog/heartbeat setup (`StartBuildHeartbeatTimer`, `StartWallClockWatchdogTimer`, `StartNoProgressWatchdogTimer`), pre-build evidence snapshots (`SnapshotPreBuildEvidence`), the in-process pipeline (`RunInProcessBuildPhase`) and the external MSBuild.exe fallback (`RunExternalMsBuildPhase`) are now independently testable units; `RunBuild` only orchestrates timers → snapshots → phases → the existing finally cleanup. Locked by new characterization tests in `BuildTimeoutAndReorgModeTests`.
 - **Split `DispatchToolCallCoreAsync` into phase dispatches with no behavior change.** Gateway-owned tools (`TryDispatchGatewayToolAsync`: whoami/doctor/recipe), the async lifecycle-build intercept (`TryDispatchAsyncLifecycleBuildAsync`) and the async edit/variable/gxserver intercept (`TryDispatchAsyncEdit`) moved out of the core method, which now reads as guards → gateway tools → async intercepts → worker dispatch. The existing async/dispatch suites plus both full test suites pass unmodified.
 
+### Fixed
+
+- **Build-task registry and per-build logs are now bounded instead of accumulating forever.** `_tasks` is swept on every new build: terminal entries past `GXMCP_BUILD_TASK_CAP` (default 50, floor 10) or `GXMCP_BUILD_TASK_TTL_MIN` (default 180, floor 60) are evicted oldest-completed first — never non-terminal, never anything completed under 60s ago — and the in-memory `FullOutput` buffer of terminal builds older than `GXMCP_BUILD_FULLOUTPUT_KEEP_MIN` (default 15) is released while the status envelope keeps answering. Per-build `build-<taskId>.log` files are swept to the newest `GXMCP_BUILD_LOG_RETAIN_COUNT` (default 50, `0` disables). See `docs/environment_variables.md`.
+
 ## v3.6.1 - 2026-09-18
 
 
