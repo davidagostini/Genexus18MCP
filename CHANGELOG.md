@@ -9,7 +9,7 @@
 
 ### Fixed
 
-- **`records_query` profile aliases now escape provider-specific identifier delimiters and preserve string-path KB catalog entries during alias scoping.**
+- **`records_query` profile aliases now escape provider-specific identifier delimiters, preserve string-path KB catalog entries during alias scoping, and isolate shared Worker hosts by profile configuration path.**
 
 ## v3.7.0 - 2026-09-19
 

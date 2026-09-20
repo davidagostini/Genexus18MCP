@@ -18,7 +18,7 @@ namespace GxMcp.Gateway
             string? legacyProvider = null,
             int timeoutMs = 30000)
         {
-            var identity = SharedWorkerIdentity.Create(workerPath, kb.Path, installationPath, driver, major);
+            var identity = SharedWorkerIdentity.Create(workerPath, kb.Path, installationPath, driver, major, Configuration.CurrentConfigPath);
             SharedWorkerRecord record = WaitForLiveRecord(identity, timeoutMs, config, kb, workerPath, installationPath, driver, major, legacyProvider);
             var connection = new SharedWorkerConnection(identity, record, "gateway-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N"));
             connection.Connect(Math.Min(timeoutMs, 30000));

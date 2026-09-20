@@ -9,8 +9,8 @@ namespace GxMcp.Gateway
 {
     /// <summary>
     /// Physical compatibility identity for a shared Worker host. A KB path alone
-    /// is not sufficient: different SDK majors, drivers, installations, or
-    /// checkouts must never attach to the same SDK process.
+    /// is not sufficient: different SDK majors, drivers, installations, checkouts,
+    /// or profile configuration files must never attach to the same SDK process.
     /// </summary>
     internal sealed class SharedWorkerIdentity
     {
@@ -19,6 +19,7 @@ namespace GxMcp.Gateway
         public string InstallationPath { get; init; } = string.Empty;
         public string Driver { get; init; } = string.Empty;
         public string Major { get; init; } = string.Empty;
+        public string ProfileConfigPath { get; init; } = string.Empty;
         public string Key { get; init; } = string.Empty;
 
         internal static SharedWorkerIdentity Create(
@@ -26,14 +27,16 @@ namespace GxMcp.Gateway
             string? kbPath,
             string? installationPath,
             string? driver,
-            string? major)
+            string? major,
+            string? profileConfigPath = null)
         {
             string executable = NormalizePath(workerExecutable);
             string kb = NormalizePath(kbPath);
             string installation = NormalizePath(installationPath);
             string normalizedDriver = NormalizeToken(driver);
             string normalizedMajor = NormalizeToken(major);
-            string material = string.Join("\n", executable, kb, installation, normalizedDriver, normalizedMajor);
+            string profile = NormalizePath(profileConfigPath);
+            string material = string.Join("\n", executable, kb, installation, normalizedDriver, normalizedMajor, profile);
 
             using var sha = SHA256.Create();
             byte[] digest = sha.ComputeHash(Encoding.UTF8.GetBytes(material));
@@ -48,6 +51,7 @@ namespace GxMcp.Gateway
                 InstallationPath = installation,
                 Driver = normalizedDriver,
                 Major = normalizedMajor,
+                ProfileConfigPath = profile,
                 Key = key.ToString()
             };
         }
