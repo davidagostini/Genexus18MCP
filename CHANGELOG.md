@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- [#249](https://github.com/lennix1337/Genexus18MCP/issues/249) **Recognize GeneXus PostgreSQL datastores reported with `dbmsCode=15`.** The shared resolver now keeps datastore inventory, `records_query`, and execution-plan diagnostics aligned when the SDK leaves the textual provider empty, while still failing clearly when connection metadata is unavailable. See [`docs/issues/249-postgresql-dbms-code-15.md`](docs/issues/249-postgresql-dbms-code-15.md).
+
 - [#244](https://github.com/lennix1337/Genexus18MCP/issues/244) **Text patches now fail closed when persistence cannot be independently confirmed.** Write snapshots always use the uncached verification path, post-save reads reject error/truncated/incomplete envelopes, cache invalidation failures and same-instance SDK reads return `FreshReadUnavailable`, and unverified writes no longer expose `saved:true`. Confirmed responses expose the complete source returned by the fresh read; indeterminate writes return `WriteVerificationUnavailable` with `saveAttempted:true`, `saved:false`, and no implicit lifecycle action. Explicit rollback is version-fenced and PatternInstance verification refreshes the resolved WorkWithPlus child.
 
 - **Reads recover after an idle Worker is reopened.** Index bootstrap is re-armed when a new Worker is registered, including lazy respawn and explicit reopen, instead of retaining the previous process's one-shot latch. A restored `Ready/stale/Idle` snapshot now offers a non-forced refresh hint; healthy active operations are not cancelled and reads still require `freshness=current`.

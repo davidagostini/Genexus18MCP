@@ -58,9 +58,9 @@ namespace GxMcp.Worker.Services
                 // planUnavailable=true here — the worker has no DB connection.
                 if (includeExecutionPlan)
                 {
-                    int dbmsType = TryGetDbmsType();
-                    ExecutionPlanFetcher.AttachExecutionPlans(queries, dbmsType);
-                    result["dbmsFamily"] = ExecutionPlanFetcher.ResolveDbmsFamily(dbmsType);
+                    string dbmsFamily = TryGetDbmsFamily();
+                    ExecutionPlanFetcher.AttachExecutionPlans(queries, dbmsFamily);
+                    result["dbmsFamily"] = dbmsFamily;
                 }
 
                 // Item 44: heuristic index advisor.
@@ -78,18 +78,35 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private int TryGetDbmsType()
+        private string TryGetDbmsFamily()
+        {
+            return ResolveActiveDataStoreFamily(_kbService?.GetKB());
+        }
+
+        internal static string ResolveActiveDataStoreFamily(dynamic kb)
         {
             try
             {
-                if (_kbService == null) return 0;
-                dynamic kb = _kbService.GetKB();
-                if (kb == null) return 0;
-                dynamic ds = ((dynamic)kb.DesignModel.Environment.TargetModel).DataStore;
-                if (ds != null && ds.Dbms != 0) return (int)ds.Dbms;
+                if (kb == null) return "unknown";
+                dynamic first = null;
+                dynamic selected = null;
+                string family = "unknown";
+                using (SdkGate.Enter())
+                {
+                    foreach (dynamic ds in DatabaseInfoService.EnumerateActiveEnvironmentDataStores(kb))
+                    {
+                        if (ds == null) continue;
+                        if (first == null) first = ds;
+                        bool isDefault = false;
+                        try { isDefault = (bool)ds.IsDefault; } catch { }
+                        if (isDefault) { selected = ds; break; }
+                    }
+                    selected = selected ?? first;
+                    if (selected != null) family = DatabaseProviderResolver.ResolveFamily(selected);
+                }
+                return family;
             }
-            catch { }
-            return 0;
+            catch { return "unknown"; }
         }
 
         private IDictionary<string, JArray> CollectExistingIndexes(JArray queries)

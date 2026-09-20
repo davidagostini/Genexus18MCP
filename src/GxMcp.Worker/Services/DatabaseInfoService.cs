@@ -374,11 +374,6 @@ namespace GxMcp.Worker.Services
             try { return f(); } catch { return default(T); }
         }
 
-        private static int TryGetInt(Func<int> f)
-        {
-            try { return f(); } catch { return 0; }
-        }
-
         public static string DbmsTypeLabel(int dbmsType)
         {
             switch (dbmsType)
@@ -388,7 +383,7 @@ namespace GxMcp.Worker.Services
                 case 3: return "Informix";
                 case 4: return "Oracle";
                 case 5: return "MySQL";
-                case 6: return "PostgreSQL";
+                case 6: case 15: return "PostgreSQL";
                 case 7: return "Oracle";
                 case 8: return "Db2/AS400";
                 case 9: return "Db2Universal";

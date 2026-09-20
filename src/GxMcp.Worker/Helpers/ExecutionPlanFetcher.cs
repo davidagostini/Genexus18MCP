@@ -1,4 +1,5 @@
 using System;
+using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Helpers
@@ -15,21 +16,13 @@ namespace GxMcp.Worker.Helpers
     {
         public static string ResolveDbmsFamily(int dbmsType)
         {
-            // GeneXus eDBMS values (subset): 0=None, 1=SqlServer, 2=Db2, 3=Informix,
-            // 4=Oracle (legacy), 5=MySQL, 6=PostgreSQL, 7=Oracle, 8=Db2/AS400,
-            // 9=Db2Universal, 10=SAPHana, 11=DynamoDB.
-            switch (dbmsType)
-            {
-                case 1: return "sqlserver";
-                case 2: case 8: case 9: return "db2";
-                case 3: return "informix";
-                case 4: case 7: return "oracle";
-                case 5: return "mysql";
-                case 6: return "postgres";
-                case 10: return "saphana";
-                default: return "unknown";
-            }
+            // Keep navigation diagnostics aligned with records_query and the
+            // datastore inventory, including the modern PostgreSQL code 15.
+            return DatabaseProviderResolver.DetectFamily(null, dbmsType);
         }
+
+        internal static string ResolveDbmsFamily(string provider, object dbms)
+            => DatabaseProviderResolver.DetectFamily(provider, dbms);
 
         public static string BuildExplainSyntax(string family, string sql)
         {
@@ -70,7 +63,12 @@ namespace GxMcp.Worker.Helpers
         public static void AttachExecutionPlans(JArray queries, int dbmsType)
         {
             if (queries == null) return;
-            string family = ResolveDbmsFamily(dbmsType);
+            AttachExecutionPlans(queries, ResolveDbmsFamily(dbmsType));
+        }
+
+        public static void AttachExecutionPlans(JArray queries, string family)
+        {
+            if (queries == null) return;
             foreach (var q in queries)
             {
                 if (!(q is JObject qo)) continue;
