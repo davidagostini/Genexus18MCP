@@ -64,6 +64,7 @@ namespace GxMcp.Gateway
         public event Action<string, JObject>? OnRpcResponse;
         public event Action<string, JObject, string?>? OnRpcResponseWithContext;
         public event Action<KbHandle, WorkerStopReason>? OnWorkerExited;
+        internal event Action<KbHandle>? OnWorkerStarted;
 
         // Plan 031: test-only seam. When set, SpawnWorkerAsync uses this instead of
         // constructing + Start()-ing a real WorkerProcess, so concurrency tests can
@@ -234,6 +235,7 @@ namespace GxMcp.Gateway
         // _entries in the meantime).
         private async Task<WorkerProcess> SpawnWorkerAsync(KbHandle handle, Entry entry, CancellationToken ct)
         {
+            WorkerProcess? startedWorker = null;
             // PERFORMANCE (G-A1): per-KB gate. Two concurrent acquires for the SAME KB
             // serialise here, but concurrent acquires for DIFFERENT KBs are now parallel.
             await entry.SpawnGate.WaitAsync(ct).ConfigureAwait(false);
@@ -334,6 +336,7 @@ namespace GxMcp.Gateway
                     throw new InvalidOperationException($"Worker for KB '{handle.Alias}' exited during startup.");
                 }
                 entry.LastActivityUtc = DateTime.UtcNow;
+                startedWorker = worker;
                 return worker;
                 }
                 catch (Exception ex)
@@ -351,6 +354,16 @@ namespace GxMcp.Gateway
             finally
             {
                 entry.SpawnGate.Release();
+                if (startedWorker != null && ReferenceEquals(TryGet(handle.NormalizedAlias), startedWorker))
+                {
+                    // Observers must not turn a registered Worker into a failed
+                    // acquire or poison the reload's DrainFailed state.
+                    try { OnWorkerStarted?.Invoke(handle); }
+                    catch (Exception ex)
+                    {
+                        Program.Log($"[WorkerPool] OnWorkerStarted failed for '{handle.Alias}': {ex.Message}");
+                    }
+                }
             }
         }
 

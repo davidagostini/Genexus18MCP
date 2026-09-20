@@ -68,6 +68,39 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(0.25, indexing["progress"]?.ToObject<double>());
         }
 
+        [Fact]
+        public void IndexNotReadyEnvelope_ExposesRecoverableStalledOperation()
+        {
+            JObject stalled = Program.BuildIndexNotReadyEnvelopeForTest(
+                status: "Reindexing", freshness: "refreshing", totalObjects: 1200,
+                progress: 0.25, etaMs: null, operationId: "idx-123",
+                operationState: "Stalled", workerAlive: true);
+
+            Assert.Equal("idx-123", stalled["operationId"]?.ToString());
+            Assert.Equal("Stalled", stalled["operationState"]?.ToString());
+            Assert.True((bool)stalled["workerAlive"]);
+            Assert.True((bool)stalled["recoverable"]);
+            Assert.Contains("action=index force=true", stalled["hint"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData("Starting", false, false)]
+        [InlineData("Building", true, false)]
+        [InlineData("Building", false, true)]
+        [InlineData("WorkerExited", false, true)]
+        public void IndexNotReadyEnvelope_OnlySuggestsForceForRecoverableActivity(
+            string operationState, bool workerAlive, bool expectRecoveryHint)
+        {
+            JObject envelope = Program.BuildIndexNotReadyEnvelopeForTest(
+                status: "Cold", freshness: "stale", totalObjects: 0,
+                progress: null, etaMs: null, operationId: "idx-active",
+                operationState: operationState, workerAlive: workerAlive);
+
+            Assert.Equal(expectRecoveryHint, (bool)envelope["recoverable"]);
+            Assert.Equal(expectRecoveryHint,
+                envelope["hint"]?.ToString()?.Contains("action=index force=true") == true);
+        }
+
         [Theory]
         [InlineData("Cold", true)]
         [InlineData(null, true)]
@@ -82,6 +115,22 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal(expectRecoveryHint, hinted);
             // Either way the awaitable half stays the first instruction.
             Assert.Contains("freshness=current", envelope["hint"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData("stale", "Idle", false, true)]
+        [InlineData("current", "Idle", false, false)]
+        [InlineData("refreshing", "Building", true, false)]
+        [InlineData("stale", "Starting", false, false)]
+        public void ReadyIndex_RecoveryDistinguishesIdleStaleFromCompletedOrStarting(
+            string freshness, string operationState, bool workerAlive, bool recoverable)
+        {
+            var envelope = Program.BuildIndexNotReadyEnvelopeForTest(
+                "Ready", freshness, 1200, null, null,
+                operationState: operationState, workerAlive: workerAlive);
+            Assert.Equal(recoverable, envelope["recoverable"]!.Value<bool>());
+            Assert.Equal(recoverable, envelope["hint"]!.Value<string>()!.Contains("action=index force=false"));
+            Assert.DoesNotContain("force=true", envelope["hint"]!.Value<string>()!);
         }
 
         [Theory]

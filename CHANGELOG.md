@@ -9,6 +9,8 @@
 
 ### Fixed
 
+- **Reads recover after an idle Worker is reopened.** Index bootstrap is re-armed when a new Worker is registered, including lazy respawn and explicit reopen, instead of retaining the previous process's one-shot latch. A restored `Ready/stale/Idle` snapshot now offers a non-forced refresh hint; healthy active operations are not cancelled and reads still require `freshness=current`.
+- **Index recovery now distinguishes a live build from a stalled or exited worker.** Status polling no longer cancels a slow index build. Concurrent `action=index` requests are idempotent, return the active `operationId`, and `force=true` starts a new generation only after the old STA worker has stopped; if that bounded stop cannot complete, recovery remains pending instead of running two SDK generations concurrently. Read tools expose the recoverable state and the exact recovery hint without running any GeneXus lifecycle action.
 - **`records_query` profile aliases now escape provider-specific identifier delimiters, preserve string-path KB catalog entries during alias scoping, and isolate shared Worker hosts by profile configuration path.**
 
 ## v3.7.0 - 2026-09-19

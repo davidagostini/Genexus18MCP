@@ -9,17 +9,22 @@ namespace GxMcp.Gateway
 {
     partial class Program
     {
-        // Proactively kick off the KB search index on first MCP initialize so the
-        // first `genexus_query` doesn't pay the full cold-start cost. Worker side
-        // short-circuits to "AlreadyIndexed" if cache is warm, so this is cheap on
-        // warm starts. When a real cold-start kicks in, an upfront
-        // notifications/message tells the agent that search/analyze return partial
-        // results while indexing runs in the background — read/edit/build are
-        // immediate regardless.
+        // Bootstrap each registered Worker, including lazy replacements after an
+        // idle exit. A restored cache still needs its delta scan before reads.
         private static void TriggerIndexBootstrapOnce(string? kbAlias = null)
         {
-            string bootstrapKey = NormalizeKbAlias(kbAlias) ?? NormalizeKbAlias(_currentKb.Value?.NormalizedAlias)
-                ?? "__default__";
+            string? bootstrapKey = NormalizeKbAlias(kbAlias) ?? NormalizeKbAlias(_currentKb.Value?.NormalizedAlias);
+            if (bootstrapKey == null)
+            {
+                // Startup may run before the default Worker is registered. Its
+                // OnWorkerStarted event will bootstrap the concrete alias.
+                var open = _workerPool?.ListOpen();
+                if (open?.Count == 1) bootstrapKey = open[0].NormalizedAlias;
+            }
+            if (bootstrapKey == null) return;
+            var bootstrapPool = _workerPool;
+            var bootstrapWorker = bootstrapPool?.TryGet(bootstrapKey);
+            if (bootstrapWorker == null) return;
             if (!_indexBootstrapStartedByKb.TryAdd(bootstrapKey, 0)) return;
 
             if (IndexBootstrapTriggerForTest != null)
@@ -28,7 +33,7 @@ namespace GxMcp.Gateway
                 return;
             }
 
-            Log("[IndexBootstrap] firing on initialize");
+            Log($"[IndexBootstrap] firing for KB '{bootstrapKey}'");
 
             _ = Task.Run(async () =>
             {
@@ -38,21 +43,22 @@ namespace GxMcp.Gateway
                 {
                     if (_workerPool == null) { Log("[IndexBootstrap] worker pool null"); return; }
 
-                    if (bootstrapKey != "__default__")
+                    _currentKb.Value = _workerPool.ListOpen()
+                        .FirstOrDefault(h => string.Equals(h.NormalizedAlias, bootstrapKey, StringComparison.OrdinalIgnoreCase));
+                    if (_currentKb.Value == null)
                     {
-                        _currentKb.Value = _workerPool.ListOpen()
-                            .FirstOrDefault(h => string.Equals(h.NormalizedAlias, bootstrapKey, StringComparison.OrdinalIgnoreCase));
-                        if (_currentKb.Value == null)
-                        {
-                            Log($"[IndexBootstrap] KB '{bootstrapKey}' is no longer open");
-                            return;
-                        }
+                        Log($"[IndexBootstrap] KB '{bootstrapKey}' is no longer open");
+                        return;
                     }
 
                     // Warmup and index bootstrap both acquire the default KB. Serialize
                     // them so initialize cannot create two Workers for the same KB and
                     // leave the gateway holding the BusyRejecting process.
                     await WorkerWarmupCompleted.Task.ConfigureAwait(false);
+                    // A queued bootstrap from a retired Worker must not initialize
+                    // its replacement a second time or reopen a closed KB.
+                    if (!ReferenceEquals(_workerPool, bootstrapPool)
+                        || !ReferenceEquals(bootstrapPool!.TryGet(bootstrapKey), bootstrapWorker)) return;
 
                     var indexCommand = new JObject
                     {
@@ -95,8 +101,7 @@ namespace GxMcp.Gateway
                             level = "info",
                             logger = "indexing",
                             data = "First-time indexing of this KB has started in the background. "
-                                + "Search and analyze tools will return partial results while it runs; "
-                                + "read, edit, build, and list tools are immediate and unaffected. "
+                                + "Index-dependent reads wait until freshness=current. "
                                 + "Watch notifications/progress for live progress."
                         });
                     }

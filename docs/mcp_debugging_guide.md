@@ -66,6 +66,45 @@ If initialization fails, verify `MCP-Protocol-Version: 2025-11-25`.
 
 If discovery works but `tools/call` fails, inspect worker startup and GeneXus SDK loading. The gateway can initialize without a healthy worker, but execution calls cannot succeed.
 
+### Native index recovery
+
+After an idle timeout, the Gateway starts a warm-cache refresh when the Worker
+is acquired again. It does not eagerly respawn an intentionally idle Worker.
+`Ready` alone does not mean reads are available: wait for `freshness=current`.
+If `Ready/stale/Idle` persists with no index thread active, use `action=index
+force=false` to refresh the existing snapshot rather than discard it.
+`index.workerAlive` describes the indexing thread, not the SDK process;
+`Ready/current/Idle` with `index.workerAlive=false` is a normal completed scan.
+
+The native index reports build activity separately from index availability. A
+status of `Building` means the worker is alive and making progress; `Stalled`
+means the worker is alive but has exceeded the no-progress window; `Starting`
+means startup or a bounded retry backoff is still pending; `WorkerExited`
+means a worker that had started is no longer alive. `Recovering` means an
+explicit force recovery is still waiting for the previous STA index thread to
+exit; no new generation is started while it remains alive. If the bounded stop
+window expires, the response is `IndexRecoveryPending`; retry the explicit
+force after `workerAlive=false`. Stalled or exited operations are reported as
+`recoverable=true` with an `operationId`.
+
+Use the read-only status call first:
+
+```json
+{"action":"status","wait":30,"freshness":"current"}
+```
+
+Only an explicit recovery request may stop a stalled generation:
+
+```json
+{"action":"index","force":true}
+```
+
+Repeated `index` requests while a healthy operation is active reuse its
+`operationId`; they do not cancel or start a second worker. Recovery only
+rebuilds the MCP index cache. It does not invoke Specify, Generate, Build,
+Rebuild, Reorg, publication, or execution, and it does not write GeneXus
+objects.
+
 ### Long-running tool timeout with operation tracking
 
 When a tool exceeds the gateway timeout budget, the request may continue in the worker.
