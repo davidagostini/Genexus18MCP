@@ -35,12 +35,12 @@ namespace GxMcp.Worker.Services
             if (dataStore == null) return null;
 
             object direct = ReadMember(dataStore, "Dbms");
-            if (IsMeaningful(direct)) return direct;
+            if (IsUsableDbmsValue(direct)) return direct;
 
             foreach (string name in DbmsProperties)
             {
                 object value = ReadPropertyBagValue(dataStore, name);
-                if (IsMeaningful(value)) return value;
+                if (IsUsableDbmsValue(value)) return value;
             }
 
             return direct;
@@ -48,7 +48,22 @@ namespace GxMcp.Worker.Services
 
         internal static string DetectFamily(string provider, object dbms)
         {
-            string text = ((provider ?? string.Empty) + " " + (dbms?.ToString() ?? string.Empty)).Trim();
+            string providerFamily = DetectProviderFamily(provider);
+            string dbmsFamily = DetectDbmsFamily(dbms);
+            if (providerFamily != "unknown" && dbmsFamily != "unknown")
+            {
+                // Conflicting SDK descriptors are ambiguous. Do not let a stale
+                // provider name select a connection factory over a recognized code.
+                return string.Equals(providerFamily, dbmsFamily, StringComparison.Ordinal)
+                    ? dbmsFamily
+                    : "unknown";
+            }
+            return dbmsFamily != "unknown" ? dbmsFamily : providerFamily;
+        }
+
+        private static string DetectProviderFamily(string provider)
+        {
+            string text = provider ?? string.Empty;
             if (ContainsAny(text, "npgsql", "postgresql", "postgres", "pgsql")) return "postgres";
             if (ContainsAny(text, "oracle")) return "oracle";
             if (ContainsAny(text, "sqlclient", "sql server", "sqlserver", "mssql")) return "sqlserver";
@@ -56,7 +71,11 @@ namespace GxMcp.Worker.Services
             if (ContainsAny(text, "db2", "as400")) return "db2";
             if (ContainsAny(text, "informix")) return "informix";
             if (ContainsAny(text, "saphana", "sap hana", "hana")) return "saphana";
+            return "unknown";
+        }
 
+        private static string DetectDbmsFamily(object dbms)
+        {
             switch (TryInt(dbms))
             {
                 case 1: case 12: return "sqlserver";
@@ -66,7 +85,7 @@ namespace GxMcp.Worker.Services
                 case 2: case 8: case 9: return "db2";
                 case 3: return "informix";
                 case 10: return "saphana";
-                default: return "unknown";
+                default: return DetectProviderFamily(dbms?.ToString());
             }
         }
 
@@ -116,6 +135,18 @@ namespace GxMcp.Worker.Services
             if (value == null) return false;
             string text = value.ToString();
             return !string.IsNullOrWhiteSpace(text) && !string.Equals(text, "0", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsUsableDbmsValue(object value)
+        {
+            if (!IsMeaningful(value)) return false;
+            string text = value.ToString().Trim();
+            if (text.Equals("none", StringComparison.OrdinalIgnoreCase)
+                || text.Equals("unknown", StringComparison.OrdinalIgnoreCase)
+                || text.Equals("notset", StringComparison.OrdinalIgnoreCase)
+                || text.Equals("not set", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return !int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int code) || code != 0;
         }
 
         private static int TryInt(object value)

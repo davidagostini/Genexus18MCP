@@ -374,11 +374,6 @@ namespace GxMcp.Worker.Services
             try { return f(); } catch { return default(T); }
         }
 
-        private static int TryGetInt(Func<int> f)
-        {
-            try { return f(); } catch { return 0; }
-        }
-
         public static string DbmsTypeLabel(int dbmsType)
         {
             switch (dbmsType)

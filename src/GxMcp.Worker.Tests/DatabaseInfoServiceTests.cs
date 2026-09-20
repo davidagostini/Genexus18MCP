@@ -108,7 +108,9 @@ namespace GxMcp.Worker.Tests
         public void DefaultDataStoreInfo_RecognizesModernPostgresCodeWithoutProvider()
         {
             var targetPart = new DataStoresPart();
-            targetPart.DataStores.Add(new DataStore { Name = "TargetPostgres", Dbms = 15, IsDefault = true });
+            var targetStore = new DataStore { Name = "TargetPostgres", Dbms = 0, IsDefault = true };
+            targetStore.Properties.Set("DBMS", 15);
+            targetPart.DataStores.Add(targetStore);
             var target = new Model();
             target.Parts.Add(targetPart);
             var kb = new FakeKb

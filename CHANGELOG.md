@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- [#249](https://github.com/lennix1337/Genexus18MCP/issues/249) **Recognize GeneXus PostgreSQL datastores reported with `dbmsCode=15`.** The shared resolver now keeps datastore inventory, `records_query`, and execution-plan diagnostics aligned when the SDK leaves the textual provider empty, while still failing clearly when connection metadata is unavailable.
+- [#249](https://github.com/lennix1337/Genexus18MCP/issues/249) **Recognize GeneXus PostgreSQL datastores reported with `dbmsCode=15`.** The shared resolver now keeps datastore inventory, `records_query`, and execution-plan diagnostics aligned when the SDK leaves the textual provider empty, while still failing clearly when connection metadata is unavailable. See [`docs/issues/249-postgresql-dbms-code-15.md`](docs/issues/249-postgresql-dbms-code-15.md).
 
 ## v3.7.0 - 2026-09-19
 

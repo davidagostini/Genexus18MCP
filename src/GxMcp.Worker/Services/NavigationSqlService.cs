@@ -80,26 +80,33 @@ namespace GxMcp.Worker.Services
 
         private string TryGetDbmsFamily()
         {
+            return ResolveActiveDataStoreFamily(_kbService?.GetKB());
+        }
+
+        internal static string ResolveActiveDataStoreFamily(dynamic kb)
+        {
             try
             {
-                if (_kbService == null) return "unknown";
-                dynamic kb = _kbService.GetKB();
                 if (kb == null) return "unknown";
                 dynamic first = null;
                 dynamic selected = null;
-                foreach (dynamic ds in DatabaseInfoService.EnumerateActiveEnvironmentDataStores(kb))
+                string family = "unknown";
+                using (SdkGate.Enter())
                 {
-                    if (ds == null) continue;
-                    if (first == null) first = ds;
-                    bool isDefault = false;
-                    try { isDefault = (bool)ds.IsDefault; } catch { }
-                    if (isDefault) { selected = ds; break; }
+                    foreach (dynamic ds in DatabaseInfoService.EnumerateActiveEnvironmentDataStores(kb))
+                    {
+                        if (ds == null) continue;
+                        if (first == null) first = ds;
+                        bool isDefault = false;
+                        try { isDefault = (bool)ds.IsDefault; } catch { }
+                        if (isDefault) { selected = ds; break; }
+                    }
+                    selected = selected ?? first;
+                    if (selected != null) family = DatabaseProviderResolver.ResolveFamily(selected);
                 }
-                selected = selected ?? first;
-                return selected == null ? "unknown" : DatabaseProviderResolver.ResolveFamily(selected);
+                return family;
             }
-            catch { }
-            return "unknown";
+            catch { return "unknown"; }
         }
 
         private IDictionary<string, JArray> CollectExistingIndexes(JArray queries)

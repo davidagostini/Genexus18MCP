@@ -216,5 +216,37 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal("Error", (string)result["status"]);
         }
+
+        [Fact]
+        public void NavigationSqlService_ResolvesDefaultActiveDatastore()
+        {
+            var targetPart = new DatabaseInfoServiceTests.DataStoresPart();
+            targetPart.DataStores.Add(new DatabaseInfoServiceTests.DataStore { Name = "TargetPostgres", Dbms = 15, IsDefault = true });
+            var target = new DatabaseInfoServiceTests.Model();
+            target.Parts.Add(targetPart);
+            var kb = new DatabaseInfoServiceTests.FakeKb
+            {
+                DesignModel = new DatabaseInfoServiceTests.Model(),
+                Environment = new DatabaseInfoServiceTests.EnvironmentModel { TargetModel = target }
+            };
+
+            Assert.Equal("postgres", NavigationSqlService.ResolveActiveDataStoreFamily(kb));
+        }
+
+        [Fact]
+        public void NavigationSqlService_UsesFirstStoreWhenNoDefaultIsMarked()
+        {
+            var targetPart = new DatabaseInfoServiceTests.DataStoresPart();
+            targetPart.DataStores.Add(new DatabaseInfoServiceTests.DataStore { Name = "TargetPostgres", Dbms = 15 });
+            var target = new DatabaseInfoServiceTests.Model();
+            target.Parts.Add(targetPart);
+            var kb = new DatabaseInfoServiceTests.FakeKb
+            {
+                DesignModel = new DatabaseInfoServiceTests.Model(),
+                Environment = new DatabaseInfoServiceTests.EnvironmentModel { TargetModel = target }
+            };
+
+            Assert.Equal("postgres", NavigationSqlService.ResolveActiveDataStoreFamily(kb));
+        }
     }
 }
