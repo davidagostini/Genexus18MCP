@@ -51,6 +51,35 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void TrimErrorEnvelope_PatchSafetyEvidencePreservesAttemptAndReadFailure()
+        {
+            var input = JObject.Parse(@"
+            {
+                ""code"":""WriteVerificationUnavailable"",
+                ""message"":""post-save read unavailable"",
+                ""saveAttempted"":true,
+                ""saved"":false,
+                ""verified"":false,
+                ""persisted"":false,
+                ""verificationUnavailable"":true,
+                ""postSaveVerification"":{""reReadConfirmed"":false,""reason"":""FreshReadUnavailable""},
+                ""readCode"":""FreshReadUnavailable"",
+                ""readCompleted"":false,
+                ""readError"":""same in-memory object""
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            Assert.True(trimmed["saveAttempted"]!.ToObject<bool>());
+            Assert.False(trimmed["saved"]!.ToObject<bool>());
+            Assert.True(trimmed["verificationUnavailable"]!.ToObject<bool>());
+            Assert.Equal("FreshReadUnavailable", trimmed["postSaveVerification"]!["reason"]!.ToString());
+            Assert.Equal("FreshReadUnavailable", trimmed["readCode"]!.ToString());
+            Assert.False(trimmed["readCompleted"]!.ToObject<bool>());
+            Assert.Equal("same in-memory object", trimmed["readError"]!.ToString());
+        }
+
+        [Fact]
         public void TrimErrorEnvelope_CommentOnlyFailure_PreservesTypedReceipt()
         {
             var input = JObject.Parse(@"{
