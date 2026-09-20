@@ -258,14 +258,16 @@ namespace GxMcp.Worker.Services
             var kb = KbService;
             if (kb != null)
             {
-                snapshot.OperationId = kb.IndexOperationId;
-                snapshot.OperationState = kb.IndexBuildState;
-                snapshot.WorkerAlive = kb.IndexWorkerAlive;
-                snapshot.Recoverable = kb.IndexRecoveryAvailable
-                    || string.Equals(snapshot.Status, "Cold", StringComparison.OrdinalIgnoreCase);
-                snapshot.Stalled = string.Equals(snapshot.OperationState, "Stalled", StringComparison.OrdinalIgnoreCase);
+                var activity = kb.GetIndexOperationSnapshot();
+                snapshot.OperationId = activity.OperationId;
+                snapshot.OperationState = activity.State;
+                snapshot.WorkerAlive = activity.WorkerAlive;
+                snapshot.Recoverable = activity.Recoverable
+                    || (string.Equals(snapshot.Status, "Cold", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(activity.State, "Idle", StringComparison.OrdinalIgnoreCase));
+                snapshot.Stalled = activity.Stalled;
                 snapshot.LastProgressAtUtc = kb.IndexLastProgressAtUtc;
-                snapshot.StalledAtUtc = kb.IndexStalledAtUtc;
+                snapshot.StalledAtUtc = activity.StalledAtUtc;
             }
             return snapshot;
         }

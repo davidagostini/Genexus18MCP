@@ -80,8 +80,12 @@ The native index reports build activity separately from index availability. A
 status of `Building` means the worker is alive and making progress; `Stalled`
 means the worker is alive but has exceeded the no-progress window; `Starting`
 means startup or a bounded retry backoff is still pending; `WorkerExited`
-means a worker that had started is no longer alive. Stalled or exited
-operations are reported as `recoverable=true` with an `operationId`.
+means a worker that had started is no longer alive. `Recovering` means an
+explicit force recovery is still waiting for the previous STA index thread to
+exit; no new generation is started while it remains alive. If the bounded stop
+window expires, the response is `IndexRecoveryPending`; retry the explicit
+force after `workerAlive=false`. Stalled or exited operations are reported as
+`recoverable=true` with an `operationId`.
 
 Use the read-only status call first:
 

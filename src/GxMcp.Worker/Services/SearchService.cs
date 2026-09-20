@@ -762,7 +762,8 @@ namespace GxMcp.Worker.Services
             meta["progress_token"] = "genexus-mcp-bulk-index";
             var state = _indexCacheService.GetState();
             bool recoverable = state?.Recoverable == true
-                || string.Equals(state?.Status, "Cold", StringComparison.OrdinalIgnoreCase);
+                || (string.Equals(state?.Status, "Cold", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(state?.OperationState, "Idle", StringComparison.OrdinalIgnoreCase));
             meta["operationId"] = state?.OperationId != null ? (JToken)state.OperationId : JValue.CreateNull();
             meta["operationState"] = state?.OperationState ?? "Unknown";
             meta["workerAlive"] = state?.WorkerAlive ?? false;

@@ -248,7 +248,8 @@ namespace GxMcp.Worker.Services
             if (cold)
             {
                 bool recoverable = state?.Recoverable == true
-                    || string.Equals(state?.Status, "Cold", StringComparison.OrdinalIgnoreCase);
+                    || (string.Equals(state?.Status, "Cold", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(state?.OperationState, "Idle", StringComparison.OrdinalIgnoreCase));
                 string indexCode = string.Equals(status, "Reindexing", StringComparison.OrdinalIgnoreCase)
                     ? "Reindexing" : "IndexCold";
                 var indexResult = new JObject

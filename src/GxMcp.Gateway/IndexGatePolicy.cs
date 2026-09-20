@@ -97,13 +97,23 @@ namespace GxMcp.Gateway
         // Cold is the index state machine's "not built / failed" value (MarkIndexFailed publishes
         // it), and Unknown is the default the gateway uses before any state is known.
         private static bool IsStalledIndexStatus(string? status, string? operationState = null, bool? workerAlive = null)
-            => string.IsNullOrWhiteSpace(status)
-               || string.Equals(status, "Cold", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(status, "Unknown", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(operationState, "Stalled", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(operationState, "WorkerExited", StringComparison.OrdinalIgnoreCase)
-               || (workerAlive.HasValue && !workerAlive.Value
-                   && string.Equals(operationState, "Building", StringComparison.OrdinalIgnoreCase));
+        {
+            if (string.Equals(operationState, "Stalled", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(operationState, "WorkerExited", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // Cold can coexist with a healthy operation before the worker
+            // publishes Reindexing. Force recovery is only valid for an
+            // observed stall, an exited worker, or an idle cold index.
+            if (string.Equals(operationState, "Starting", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (string.Equals(operationState, "Building", StringComparison.OrdinalIgnoreCase))
+                return workerAlive == false;
+
+            return string.IsNullOrWhiteSpace(status)
+                || string.Equals(status, "Cold", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "Unknown", StringComparison.OrdinalIgnoreCase);
+        }
 
         internal static bool IsTransientResponseForCacheForTest(JObject? response)
             => IsTransientResponseForCache(response);

@@ -48,25 +48,48 @@ namespace GxMcp.Worker.Services
             Logger.Warn("[INDEX-STALLED] worker remains alive without observable progress; recovery requires action=index force=true.");
         }
 
-        private void CancelStalledIndexBuild()
+        private bool CancelStalledIndexBuild()
         {
+            const int recoveryJoinTimeoutMs = 5000;
             int processed = _processedCount;
             DateTime last = _indexWatchdog?.LastProgressUtc ?? DateTime.UtcNow;
             _indexWatchdog?.Stop();
             try { _indexCacheService.EndLiteWalk(); } catch { }
+
+            bool workersStopped = true;
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(recoveryJoinTimeoutMs);
             foreach (var thread in new[] { _liteIndexThread, _enrichIndexThread, _deltaIndexThread })
             {
+                if (thread == null || !thread.IsAlive) continue;
                 try
                 {
-                    if (thread != null && thread.IsAlive) thread.Abort();
+                    thread.Abort();
+                    int remainingMs = (int)Math.Max(0, (deadline - DateTime.UtcNow).TotalMilliseconds);
+                    if (remainingMs == 0 || !thread.Join(remainingMs))
+                        workersStopped = false;
                 }
-                catch (Exception ex) { Logger.Warn("Index recovery could not stop thread: " + ex.Message); }
+                catch (Exception ex)
+                {
+                    workersStopped = false;
+                    Logger.Warn("Index recovery could not stop thread: " + ex.Message);
+                }
             }
+
+            // Never start a new SDK generation while an old STA worker remains
+            // alive. A pending recovery can be retried explicitly after the
+            // bounded join window expires.
+            foreach (var thread in new[] { _liteIndexThread, _enrichIndexThread, _deltaIndexThread })
+                if (thread != null && thread.IsAlive) workersStopped = false;
+
             try { _indexCacheService.MarkIndexFailed(); } catch { }
-            _currentStatus = "Error: index build cancelled after no progress";
-            _isIndexing = false;
+            _currentStatus = workersStopped
+                ? "Error: index build cancelled after no progress"
+                : "Index recovery pending: previous worker did not stop";
+            if (workersStopped) _isIndexing = false;
             Logger.Info("[INDEX-RECOVERY] cancelled stalled operation; processed=" + processed
-                + " lastProgressAtUtc=" + last.ToString("o"));
+                + " lastProgressAtUtc=" + last.ToString("o")
+                + " workersStopped=" + workersStopped);
+            return workersStopped;
         }
 
         private void StartIndexWatchdog(int generation)
@@ -189,6 +212,13 @@ namespace GxMcp.Worker.Services
         public int IndexTotal => _totalCount;
         public string IndexStatus => _currentStatus;
         public bool IsOpen { get { lock (_kbLock) { return _kb != null; } } }
+
+        // Read the coordinator once so public index telemetry cannot mix an
+        // old operationId with a new generation's state during recovery.
+        internal IndexOperationCoordinator.Snapshot GetIndexOperationSnapshot()
+        {
+            return _indexOperations.GetSnapshot(IsIndexWorkerAlive());
+        }
 
         // v2.6.6 Stream D — expose the open KB handle + lock so BuildService can
         // run GeneXus MSBuild tasks in-process against the same KB instance
@@ -641,6 +671,15 @@ namespace GxMcp.Worker.Services
             var lease = _indexOperations.Acquire(force, IsIndexWorkerAlive(), CancelStalledIndexBuild);
             string operationId = lease.OperationId;
             int operationGeneration = lease.Generation;
+            if (lease.RecoveryPending)
+            {
+                return Models.McpResponse.Ok(
+                    code: "IndexRecoveryPending",
+                    result: BuildIndexOperationResult(
+                        operationId,
+                        "The previous index worker is still stopping; retry genexus_lifecycle action=index force=true after workerAlive=false.",
+                        reused: true));
+            }
             if (lease.Reused)
             {
                 return Models.McpResponse.Ok(
@@ -993,8 +1032,8 @@ namespace GxMcp.Worker.Services
             liteThread.SetApartmentState(ApartmentState.STA);
             _liteIndexThread = liteThread;
             _indexOperations.MarkWorkerStarted(operationGeneration);
-            liteThread.Start();
             StartIndexWatchdog(operationGeneration);
+            liteThread.Start();
 
             return Models.McpResponse.Ok(
                 code: "LiteStarted",
@@ -1284,6 +1323,15 @@ namespace GxMcp.Worker.Services
             var lease = _indexOperations.Acquire(force, IsIndexWorkerAlive(), CancelStalledIndexBuild);
             string operationId = lease.OperationId;
             int operationGeneration = lease.Generation;
+            if (lease.RecoveryPending)
+            {
+                return Models.McpResponse.Ok(
+                    code: "IndexRecoveryPending",
+                    result: BuildIndexOperationResult(
+                        operationId,
+                        "The previous index worker is still stopping; retry genexus_lifecycle action=index force=true after workerAlive=false.",
+                        reused: true));
+            }
             if (lease.Reused)
             {
                 return Models.McpResponse.Ok(
@@ -1454,8 +1502,8 @@ namespace GxMcp.Worker.Services
             indexThread.SetApartmentState(ApartmentState.STA);
             _liteIndexThread = indexThread;
             _indexOperations.MarkWorkerStarted(operationGeneration);
-            indexThread.Start();
             StartIndexWatchdog(operationGeneration);
+            indexThread.Start();
 
             return Models.McpResponse.Ok(
                 code: "Started",
@@ -1483,7 +1531,8 @@ namespace GxMcp.Worker.Services
             json["operationState"] = operation.State;
             json["workerAlive"] = operation.WorkerAlive;
             json["recoverable"] = operation.Recoverable
-                || string.Equals(_indexCacheService?.GetState()?.Status, "Cold", StringComparison.OrdinalIgnoreCase);
+                || (string.Equals(_indexCacheService?.GetState()?.Status, "Cold", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(operation.State, "Idle", StringComparison.OrdinalIgnoreCase));
             if (operation.StalledAtUtc.HasValue)
                 json["stalledAtUtc"] = operation.StalledAtUtc.Value.ToUniversalTime().ToString("o");
             DateTime? lastProgress = IndexLastProgressAtUtc;

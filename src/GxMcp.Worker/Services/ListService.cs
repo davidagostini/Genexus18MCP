@@ -154,7 +154,8 @@ namespace GxMcp.Worker.Services
                 {
                     _indexCacheService.EnsureLoadStarted();
                     bool recoverable = indexState?.Recoverable == true
-                        || string.Equals(indexState?.Status, "Cold", StringComparison.OrdinalIgnoreCase);
+                        || (string.Equals(indexState?.Status, "Cold", StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(indexState?.OperationState, "Idle", StringComparison.OrdinalIgnoreCase));
                     var envelope = new JObject
                     {
                         ["status"] = "Indexing",

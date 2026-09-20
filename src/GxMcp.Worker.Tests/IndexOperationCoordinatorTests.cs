@@ -28,7 +28,7 @@ namespace GxMcp.Worker.Tests
             coordinator.MarkWorkerStarted(first.Generation);
             int recoveries = 0;
 
-            var repeated = coordinator.Acquire(true, workerAlive: true, recoverStalled: () => recoveries++);
+            var repeated = coordinator.Acquire(true, workerAlive: true, recoverStalled: () => { recoveries++; return true; });
 
             Assert.True(repeated.Reused);
             Assert.Equal(first.OperationId, repeated.OperationId);
@@ -44,7 +44,7 @@ namespace GxMcp.Worker.Tests
             Assert.True(coordinator.MarkStalled(first.Generation));
             int recoveries = 0;
 
-            var recovered = coordinator.Acquire(true, workerAlive: true, recoverStalled: () => recoveries++);
+            var recovered = coordinator.Acquire(true, workerAlive: true, recoverStalled: () => { recoveries++; return true; });
 
             Assert.False(recovered.Reused);
             Assert.NotEqual(first.OperationId, recovered.OperationId);
@@ -76,7 +76,7 @@ namespace GxMcp.Worker.Tests
             var first = coordinator.Acquire(false, workerAlive: false, recoverStalled: null);
             int recoveries = 0;
 
-            var repeated = coordinator.Acquire(true, workerAlive: false, recoverStalled: () => recoveries++);
+            var repeated = coordinator.Acquire(true, workerAlive: false, recoverStalled: () => { recoveries++; return true; });
             var snapshot = coordinator.GetSnapshot(workerAlive: false);
 
             Assert.True(repeated.Reused);
@@ -97,6 +97,30 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal("WorkerExited", snapshot.State);
             Assert.True(snapshot.Recoverable);
+        }
+
+        [Fact]
+        public void RecoveryDoesNotPublishNewGenerationUntilWorkersStop()
+        {
+            var coordinator = new IndexOperationCoordinator();
+            var first = coordinator.Acquire(false, workerAlive: true, recoverStalled: null);
+            coordinator.MarkWorkerStarted(first.Generation);
+            coordinator.MarkStalled(first.Generation);
+
+            var pending = coordinator.Acquire(true, workerAlive: true, recoverStalled: () => false);
+            var pendingSnapshot = coordinator.GetSnapshot(workerAlive: true);
+
+            Assert.True(pending.Reused);
+            Assert.True(pending.RecoveryPending);
+            Assert.Equal(first.OperationId, pending.OperationId);
+            Assert.Equal("Recovering", pendingSnapshot.State);
+            Assert.True(pendingSnapshot.Recoverable);
+            Assert.False(coordinator.Complete(first.Generation));
+
+            var recovered = coordinator.Acquire(true, workerAlive: true, recoverStalled: () => true);
+            Assert.False(recovered.Reused);
+            Assert.NotEqual(first.Generation, recovered.Generation);
+            Assert.True(coordinator.IsCurrent(recovered.Generation));
         }
 
         [Fact]

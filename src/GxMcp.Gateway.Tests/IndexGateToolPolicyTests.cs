@@ -84,6 +84,24 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
+        [InlineData("Starting", false, false)]
+        [InlineData("Building", true, false)]
+        [InlineData("Building", false, true)]
+        [InlineData("WorkerExited", false, true)]
+        public void IndexNotReadyEnvelope_OnlySuggestsForceForRecoverableActivity(
+            string operationState, bool workerAlive, bool expectRecoveryHint)
+        {
+            JObject envelope = Program.BuildIndexNotReadyEnvelopeForTest(
+                status: "Cold", freshness: "stale", totalObjects: 0,
+                progress: null, etaMs: null, operationId: "idx-active",
+                operationState: operationState, workerAlive: workerAlive);
+
+            Assert.Equal(expectRecoveryHint, (bool)envelope["recoverable"]);
+            Assert.Equal(expectRecoveryHint,
+                envelope["hint"]?.ToString()?.Contains("action=index force=true") == true);
+        }
+
+        [Theory]
         [InlineData("Cold", true)]
         [InlineData(null, true)]
         [InlineData("Ready", false)]
