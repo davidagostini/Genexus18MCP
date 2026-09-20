@@ -31,6 +31,13 @@ namespace GxMcp.Gateway.Tests
                 @"c:\genexus17",
                 "native-sdk",
                 "18").Key);
+            Assert.NotEqual(first.Key, SharedWorkerIdentity.Create(
+                @"c:\worker\GxMcp.Worker.exe",
+                @"c:\kbs\shared",
+                @"c:\genexus18",
+                "native-sdk",
+                "18",
+                @"c:\profiles\other.json").Key);
         }
 
         [Fact]

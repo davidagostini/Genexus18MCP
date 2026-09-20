@@ -29,7 +29,8 @@ namespace GxMcp.Worker.Tests
                     new AttributeMetadata { Name = "Stamp", Type = "INT" } });
                 Metadata.Keys.Add(key);
                 Database = new DatabaseMetadata { KbIdentity = "synthetic-kb", EnvironmentIdentity = "synthetic-env",
-                    Name = "Default", Family = "sqlserver", Provider = "System.Data.SqlClient", Schema = "dbo", Factory = Db, ConnectionString = "synthetic" };
+                    Alias = "production", Name = "Default", Family = "sqlserver", Provider = "System.Data.SqlClient", Schema = "dbo",
+                    Server = "synthetic-server", Database = "synthetic-db", Factory = Db, ConnectionString = "synthetic" };
                 Service = new TransactionRecordsService(_ => Metadata, _ => Database);
                 Db.Rows.AddRange(Enumerable.Range(1, count).Select(i => TransactionRecordsFakeDatabase.Row(i)));
             }
@@ -73,6 +74,22 @@ namespace GxMcp.Worker.Tests
         [InlineData("oracle", "\"sales\".\"Order\"")]
         public void IdentifiersAreQuotedByProvider(string family, string expected)
             => Assert.Equal(expected, QuoteIdentifier("sales.Order", family));
+
+        [Fact]
+        public void IdentifiersEscapeProviderClosingDelimiters()
+            => Assert.Equal("[dbo]]; DROP TABLE Users;--].[Order]",
+                QuoteIdentifier("dbo]; DROP TABLE Users;--.Order", "sqlserver"));
+
+        [Fact]
+        public void ProfileAliasKbCatalogMapPreservesStringPathScope()
+        {
+            var entries = TransactionRecordsService.ReadProfileKbEntries(
+                JObject.Parse(@"{ ""production"": ""C:\\KBs\\Production"" }")).ToList();
+
+            var entry = Assert.Single(entries);
+            Assert.Equal("production", entry["Alias"]?.Value<string>());
+            Assert.Equal(@"C:\KBs\Production", entry["Path"]?.Value<string>());
+        }
 
         [Theory]
         [InlineData("Npgsql", 0, "postgres")]
@@ -150,6 +167,40 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("TransactionRecordsRead", response["code"]?.Value<string>());
             Assert.Empty((JArray)response["result"]["records"]);
             Assert.Equal(0, response["result"]["matchedCount"]?.Value<int>());
+        }
+
+        [Fact]
+        public void QueryReturnsMaskedConnectionHealthTimingAndRows()
+        {
+            var f = new Fixture();
+            var response = f.Execute("QueryRecords", new JObject { ["limit"] = 5, ["timeoutSeconds"] = 20 });
+            Assert.Equal("ok", response["status"]?.Value<string>());
+            var result = (JObject)response["result"];
+            Assert.Equal("production", result["connection"]["alias"]?.Value<string>());
+            Assert.EndsWith("***", result["connection"]["server"]?.Value<string>());
+            Assert.EndsWith("***", result["connection"]["database"]?.Value<string>());
+            Assert.Equal("confirmed", result["healthCheck"]?.Value<string>());
+            Assert.Equal(1, result["rowCount"]?.Value<int>());
+            Assert.True(result["elapsedMs"]?.Value<long>() >= 0);
+            Assert.Single((JArray)result["rows"]);
+            Assert.DoesNotContain("synthetic-server", result.ToString());
+            Assert.DoesNotContain("synthetic-db", result.ToString());
+            Assert.DoesNotContain("ConnectionString", result.ToString());
+        }
+
+        [Theory]
+        [InlineData("InsertRecord")]
+        [InlineData("UpdateRecords")]
+        public void ProfileConnectionAliasesAreRejectedForWrites(string action)
+        {
+            var f = new Fixture();
+            var args = action == "InsertRecord" ? Insert() : Update();
+            args["dataStoreAlias"] = "production";
+
+            var response = f.Execute(action, args);
+
+            Error(response, "DataStoreAliasReadOnly");
+            Assert.Equal(0, f.Db.Writes);
         }
 
         [Theory]
