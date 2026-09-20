@@ -62,6 +62,23 @@ namespace GxMcp.Worker.Tests
                     if (string.IsNullOrEmpty(err["code"]?.ToString())) r.Violations.Add("error.code missing");
                     if (string.IsNullOrEmpty(err["message"]?.ToString())) r.Violations.Add("error.message missing");
                     if (obj["result"] != null) r.Violations.Add("error must not carry 'result'");
+                    ValidateOptionalBoolean(err, "retryable", r);
+                    ValidateOptionalBoolean(err, "reconciliationRequired", r);
+                    if (err["nextSteps"] != null)
+                    {
+                        if (!(err["nextSteps"] is JArray steps))
+                        {
+                            r.Violations.Add("error.nextSteps must be an array");
+                        }
+                        else
+                        {
+                            for (int i = 0; i < steps.Count; i++)
+                            {
+                                if (!(steps[i] is JObject step) || string.IsNullOrWhiteSpace(step["tool"]?.ToString()))
+                                    r.Violations.Add($"error.nextSteps[{i}] requires a tool");
+                            }
+                        }
+                    }
                     break;
                 case "accepted":
                     if (string.IsNullOrEmpty(obj["operationId"]?.ToString()))
@@ -71,6 +88,12 @@ namespace GxMcp.Worker.Tests
 
             r.Ok = r.Violations.Count == 0;
             return r;
+        }
+
+        private static void ValidateOptionalBoolean(JObject obj, string name, Result result)
+        {
+            if (obj[name] != null && obj[name].Type != JTokenType.Boolean)
+                result.Violations.Add($"error.{name} must be boolean");
         }
     }
 }

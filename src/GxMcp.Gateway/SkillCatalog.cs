@@ -3,12 +3,9 @@ using System.Collections.Generic;
 namespace GxMcp.Gateway
 {
     /// <summary>
-    /// v2.8.0 — curated, source-verified GeneXus development reference
-    /// material exposed as MCP `resources/` content. Each skill below was
-    /// fact-checked against docs.genexus.com (linked at the bottom of each
-    /// entry). When the wiki didn't confirm a fact, it was omitted rather
-    /// than guessed — the goal is to be a TRUSTABLE reference for LLM
-    /// clients that lack reliable GeneXus training data.
+    /// Curated and official GeneXus development reference material exposed as
+    /// MCP `resources/` content. Hand-authored entries are fact-checked against
+    /// docs.genexus.com; the Nexa entry is the official packaged reference.
     ///
     /// Exposed via:
     ///   - `resources/list` advertises every entry below.
@@ -299,6 +296,14 @@ Applicable to:
 - Panel objects (Smart Devices) — same Refresh→Load order
 
 > Source: docs.genexus.com — Refresh event (8195)."
+            },
+
+            new Entry
+            {
+                Key = "nexa",
+                Title = "Nexa — official GeneXus modeling and KB reference",
+                Description = "Official Nexa skill for Knowledge Base management, object modeling, properties, commands, artifact generation, build workflows, and gxnext guidance.",
+                Body = NexaSkillPack.ReadRoot()
             },
         };
 

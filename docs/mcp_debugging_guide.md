@@ -17,6 +17,8 @@ Validate against `/mcp`.
 Required baseline:
 
 - `MCP-Protocol-Version: 2025-11-25`
+- POST `Content-Type: application/json` and `Accept: application/json, text/event-stream`
+- SSE `GET` requests must include `Accept: text/event-stream`
 - `initialize` before other MCP requests
 - `MCP-Session-Id` reused after initialization
 
@@ -34,6 +36,17 @@ When launching the gateway as a stdio MCP server:
 - stdout must remain reserved for protocol messages
 - logs belong on stderr
 - the process must stay idle without printing banner text
+- the npm wrapper persists failed stdio launches at `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt`
+
+### Recover after a closed client transport
+
+If a client-owned STDIO process exits, the agent can self-heal without any
+script or client restart: call `genexus_connection_recover`. It probes every
+open worker, kills and respawns only the unhealthy ones (force=true targets
+all), confirms each replacement is SDK-ready, and clears the semantic cache.
+For out-of-band HTTP access from a terminal, any MCP client pointed at
+`http://127.0.0.1:5000/mcp` works — the gateway must already be running;
+process supervision remains the deployment's responsibility.
 
 ## Common failure modes
 
@@ -53,6 +66,45 @@ If initialization fails, verify `MCP-Protocol-Version: 2025-11-25`.
 
 If discovery works but `tools/call` fails, inspect worker startup and GeneXus SDK loading. The gateway can initialize without a healthy worker, but execution calls cannot succeed.
 
+### Native index recovery
+
+After an idle timeout, the Gateway starts a warm-cache refresh when the Worker
+is acquired again. It does not eagerly respawn an intentionally idle Worker.
+`Ready` alone does not mean reads are available: wait for `freshness=current`.
+If `Ready/stale/Idle` persists with no index thread active, use `action=index
+force=false` to refresh the existing snapshot rather than discard it.
+`index.workerAlive` describes the indexing thread, not the SDK process;
+`Ready/current/Idle` with `index.workerAlive=false` is a normal completed scan.
+
+The native index reports build activity separately from index availability. A
+status of `Building` means the worker is alive and making progress; `Stalled`
+means the worker is alive but has exceeded the no-progress window; `Starting`
+means startup or a bounded retry backoff is still pending; `WorkerExited`
+means a worker that had started is no longer alive. `Recovering` means an
+explicit force recovery is still waiting for the previous STA index thread to
+exit; no new generation is started while it remains alive. If the bounded stop
+window expires, the response is `IndexRecoveryPending`; retry the explicit
+force after `workerAlive=false`. Stalled or exited operations are reported as
+`recoverable=true` with an `operationId`.
+
+Use the read-only status call first:
+
+```json
+{"action":"status","wait":30,"freshness":"current"}
+```
+
+Only an explicit recovery request may stop a stalled generation:
+
+```json
+{"action":"index","force":true}
+```
+
+Repeated `index` requests while a healthy operation is active reuse its
+`operationId`; they do not cancel or start a second worker. Recovery only
+rebuilds the MCP index cache. It does not invoke Specify, Generate, Build,
+Rebuild, Reorg, publication, or execution, and it does not write GeneXus
+objects.
+
 ### Long-running tool timeout with operation tracking
 
 When a tool exceeds the gateway timeout budget, the request may continue in the worker.
@@ -70,6 +122,8 @@ Use:
 Automated smoke script:
 
 - `powershell -ExecutionPolicy Bypass -File scripts/mcp_smoke.ps1`
+- `python scripts/mcp-wire-conformance.py` exercises legacy HTTP, sessionless
+  2026 HTTP/SSE and stdio with request-id and Host/origin isolation checks.
 
 You can also stream status via SSE (`GET /mcp`) and listen for `notifications/message` entries emitted by the gateway.
 

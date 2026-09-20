@@ -206,5 +206,32 @@ namespace GxMcp.Gateway.Tests
                 string.Equals(r["name"]?.ToString(), uniqueName, StringComparison.OrdinalIgnoreCase));
             Assert.True(found, "Crystallized user macro was not discovered by RecipeCatalog.");
         }
+
+        [Fact]
+        public void Crystallize_IoFailure_HidesExceptionTextAndReturnsOperationId()
+        {
+            string dir = MakeTempUserMacroDir();
+            Directory.Delete(dir);
+            File.WriteAllText(dir, "not a directory");
+            var svc = new MacroSuggestionService(new OperationTracker(TimeSpan.FromHours(1)), dir);
+            JObject result = svc.Crystallize("io_failure", "", new JArray(new JObject { ["tool"] = "x" }));
+            Assert.Equal("Error", result["status"]?.ToString());
+            Assert.Equal("Macro crystallization failed. See server logs for details.", result["error"]?.ToString());
+            Assert.DoesNotContain(dir, result.ToString());
+            Assert.NotNull(result["operationId"]);
+        }
+
+        [Fact]
+        public void LogValue_RedactsQuotedPasswordTokenAndAuthorizationValues()
+        {
+            const string input = "IOException: {\"password\":\"password-value\", \"token\": \"token-value\", \"authorization\": \"Bearer auth-value\"}";
+
+            string result = MacroSuggestionService.LogValue(input);
+
+            Assert.DoesNotContain("password-value", result);
+            Assert.DoesNotContain("token-value", result);
+            Assert.DoesNotContain("auth-value", result);
+            Assert.Contains("<redacted>", result);
+        }
     }
 }

@@ -2,13 +2,23 @@ using System;
 using System.IO;
 using System.Reflection;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using System.Threading;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace GxMcp.Gateway
 {
     public class Configuration
     {
+        // Configuration schema version is intentionally distinct from the MCP
+        // response _meta.schemaVersion (mcp-axi/2).
+        [JsonProperty("ConfigSchemaVersion")]
+        public int? ConfigSchemaVersion { get; set; }
+
+        [JsonProperty("GatewayMode")]
+        public string? GatewayMode { get; set; }
+
         [JsonProperty("GeneXus")]
         public GeneXusConfig? GeneXus { get; set; }
 
@@ -22,8 +32,41 @@ namespace GxMcp.Gateway
         public EnvironmentConfig? Environment { get; set; }
 
         public static string? CurrentConfigPath { get; private set; }
+        public static string ResolvedFrom { get; internal set; } = "launcher";
+
+        internal static void SetCurrentConfigPathForTest(string? path)
+        {
+            CurrentConfigPath = path;
+        }
         private static FileSystemWatcher? _watcher;
+        // Debounce state for the config hot-reload, same pattern as tool_definitions.json
+        // (McpRouter): editors fire multiple Changed events per save, so coalesce them into
+        // one reload ~300ms after the last event. The lock serialises parse+dispatch so
+        // handlers never run in parallel or duplicated.
+        private static readonly object _reloadLock = new object();
+        private static System.Threading.Timer? _reloadDebounceTimer;
+        private static Configuration? _lastValidConfiguration;
         public static event Action<Configuration>? OnConfigurationChanged;
+
+        // Gateway environment-variable matrix. Structural values belong in a strict
+        // config file; only GX_CONFIG_PATH selects that file. Legacy transport and
+        // presentation overrides remain available to non-strict documents. Secrets
+        // and diagnostics are process concerns and are never copied into Configuration.
+        //
+        // Legacy overrides (strict permits only an exact match with the file): GX_MCP_PORT,
+        // GX_MCP_STDIO. Structural (strict rejects): GXMCP_SHARED_GATEWAY,
+        // GX_MCP_SHARED_GATEWAY, GXMCP_PROFILE,
+        // GXMCP_NO_STRUCTURED_CONTENT, GXMCP_EMIT_STRUCTURED_CONTENT, GXMCP_TERSE.
+        // Bootstrap selector (allowed): GX_CONFIG_PATH.
+        // Secret (allowed): GXMCP_HTTP_TOKEN, GXMCP_AI_COMPLETE_KEY, GXMCP_GAM_PASS.
+        // Diagnostic/operational (allowed): GXMCP_VERBOSE_LOGS, GXMCP_LOG_DIR,
+        // GENEXUS_MCP_NO_UPDATE_CHECK, GENEXUS_MCP_NO_SELF_UPDATE,
+        // GENEXUS_MCP_REAPPLY_TIMEOUT_MS, GXMCP_ASYNC_JOB_WATCHDOG_S,
+        // GXMCP_LEGACY_TOOL_ALIASES, MCP_PERF_PROFILE, GXMCP_SERVER_VERSION,
+        // GXMCP_ALLOW_CONCURRENT_BUILDS, GXMCP_BUILD_NOPROGRESS_SEC,
+        // GXMCP_INPROCESS_BUILD_FASTPATH, GXMCP_REAP_ORPHAN_MSBUILD,
+        // GXMCP_SEMANTIC_CACHE_MAX, PATH, PATHEXT, LOCALAPPDATA, and the
+        // remaining worker/tool-specific variables forwarded or read outside config.
 
         public static Configuration Load()
         {
@@ -36,10 +79,11 @@ namespace GxMcp.Gateway
                     if (File.Exists(fullPath))
                     {
                         CurrentConfigPath = fullPath;
+                        ResolvedFrom = "env";
                     }
                     else
                     {
-                        Program.Log($"[Gateway] WARNING: GX_CONFIG_PATH points to non-existent file '{fullPath}'. Falling back to default config discovery.");
+                        throw new FileNotFoundException($"GX_CONFIG_PATH points to non-existent config file: {fullPath}", fullPath);
                     }
                 }
 
@@ -51,20 +95,38 @@ namespace GxMcp.Gateway
                     while (currentDir != null)
                     {
                         string check = Path.Combine(currentDir, "config.json");
-                        if (File.Exists(check)) { CurrentConfigPath = check; break; }
+                        if (File.Exists(check)) { CurrentConfigPath = check; ResolvedFrom = "launcher"; break; }
                         currentDir = Path.GetDirectoryName(currentDir);
                     }
 
                     if (CurrentConfigPath == null)
                     {
-                        if (File.Exists("config.json")) CurrentConfigPath = Path.GetFullPath("config.json");
-                        else throw new FileNotFoundException($"Could not find config.json in any parent directory (explicit GX_CONFIG_PATH '{explicitConfigPath}' was missing).");
+                        if (File.Exists("config.json"))
+                        {
+                            CurrentConfigPath = Path.GetFullPath("config.json");
+                            ResolvedFrom = "cwd";
+                        }
+                        else
+                        {
+                            string userProfileDir = global::System.Environment.GetFolderPath(global::System.Environment.SpecialFolder.UserProfile);
+                            string userConfig = Path.Combine(userProfileDir, ".genexus-mcp", "config.json");
+                            if (File.Exists(userConfig))
+                            {
+                                CurrentConfigPath = userConfig;
+                                ResolvedFrom = "neutral";
+                            }
+                            else
+                            {
+                                throw new FileNotFoundException($"Could not find config.json in any parent directory or user profile (explicit GX_CONFIG_PATH '{explicitConfigPath}' was missing).");
+                            }
+                        }
                     }
                 }
             }
 
             Program.Log($"[Gateway] Loading config from: {CurrentConfigPath}");
             var config = ParseConfig(CurrentConfigPath);
+            Volatile.Write(ref _lastValidConfiguration, config);
 
             SetupWatcher(CurrentConfigPath);
 
@@ -79,14 +141,55 @@ namespace GxMcp.Gateway
                 try
                 {
                     string json = File.ReadAllText(path);
-                    var config = JsonConvert.DeserializeObject<Configuration>(json);
-                    if (config == null) throw new Exception("Failed to parse config.json");
-
-                    if (config.Environment != null &&
-                        string.IsNullOrWhiteSpace(config.Environment.DefaultKb) &&
-                        !string.IsNullOrWhiteSpace(config.Environment.ActiveKb))
+                    var document = JObject.Parse(json);
+                    bool strictDocument = document.Property("ConfigSchemaVersion") != null
+                        || document.Property("GatewayMode") != null;
+                    if (strictDocument)
+                        ValidateStrictDocument(document, path);
+                    // Tolerant parse (E6): a single invalid scalar (e.g. "HttpPort": "abc")
+                    // must not take the whole gateway down. Log the offending member and
+                    // keep every member that did deserialize.
+                    Exception? strictDeserializationError = null;
+                    var settings = new JsonSerializerSettings
                     {
-                        config.Environment.DefaultKb = config.Environment.ActiveKb;
+                        Error = (sender, args) =>
+                        {
+                            if (strictDocument)
+                            {
+                                strictDeserializationError ??= new InvalidDataException($"Invalid value at '{args.ErrorContext.Path}' in strict config '{path}': {args.ErrorContext.Error.Message}", args.ErrorContext.Error);
+                                args.ErrorContext.Handled = true;
+                                return;
+                            }
+                            Program.Log($"[Gateway] WARNING: invalid config.json value at '{args.ErrorContext.Path}' ({args.ErrorContext.Error.Message}) — ignoring it and keeping the rest.");
+                            args.ErrorContext.Handled = true;
+                        }
+                    };
+                    if (strictDocument)
+                        settings.MissingMemberHandling = MissingMemberHandling.Error;
+                    var config = JsonConvert.DeserializeObject<Configuration>(json, settings);
+                    if (strictDeserializationError != null)
+                        throw strictDeserializationError;
+                    if (config == null)
+                    {
+                        Program.Log("[Gateway] WARNING: config.json could not be deserialized into any usable state — using defaults.");
+                        return new Configuration();
+                    }
+
+                    if (config.Environment != null)
+                    {
+                        config.Environment.RawDefaultKb = config.Environment.DefaultKb;
+                        bool isLegacy = string.Equals(config.Environment.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
+                        if (isLegacy && string.IsNullOrWhiteSpace(config.Environment.DefaultKb))
+                        {
+                            if (!string.IsNullOrWhiteSpace(config.Environment.ActiveKb))
+                            {
+                                config.Environment.DefaultKb = config.Environment.ActiveKb;
+                            }
+                            else if (config.Environment.KBs != null && config.Environment.KBs.Count == 1)
+                            {
+                                config.Environment.DefaultKb = config.Environment.KBs[0].Alias;
+                            }
+                        }
                     }
 
                     if (string.IsNullOrEmpty(config.Environment?.KBPath))
@@ -95,7 +198,16 @@ namespace GxMcp.Gateway
                         Program.Log($"[Gateway] KB Path configured: {config.Environment.KBPath}");
 
                     string? portOverride = global::System.Environment.GetEnvironmentVariable("GX_MCP_PORT");
-                    if (int.TryParse(portOverride, out int httpPortOverride) && httpPortOverride > 0)
+                    if (strictDocument)
+                        RejectStrictStructuralEnvironment();
+                    if (strictDocument && !string.IsNullOrWhiteSpace(portOverride))
+                    {
+                        if (!int.TryParse(portOverride, out int strictPortOverride))
+                            throw new InvalidDataException("GX_MCP_PORT must be an integer when a strict configuration is used.");
+                        if (strictPortOverride != config.Server!.HttpPort)
+                            throw new InvalidDataException($"GX_MCP_PORT conflicts with strict Server.HttpPort ({config.Server.HttpPort}).");
+                    }
+                    else if (int.TryParse(portOverride, out int httpPortOverride) && httpPortOverride > 0)
                     {
                         config.Server ??= new ServerConfig();
                         config.Server.HttpPort = httpPortOverride;
@@ -103,7 +215,14 @@ namespace GxMcp.Gateway
                     }
 
                     string? stdioOverride = global::System.Environment.GetEnvironmentVariable("GX_MCP_STDIO");
-                    if (bool.TryParse(stdioOverride, out bool mcpStdioOverride))
+                    if (strictDocument && !string.IsNullOrWhiteSpace(stdioOverride))
+                    {
+                        if (!bool.TryParse(stdioOverride, out bool strictStdioOverride))
+                            throw new InvalidDataException("GX_MCP_STDIO must be true or false when a strict configuration is used.");
+                        if (strictStdioOverride != config.Server!.McpStdio)
+                            throw new InvalidDataException($"GX_MCP_STDIO conflicts with strict Server.McpStdio ({config.Server.McpStdio}).");
+                    }
+                    else if (bool.TryParse(stdioOverride, out bool mcpStdioOverride))
                     {
                         config.Server ??= new ServerConfig();
                         config.Server.McpStdio = mcpStdioOverride;
@@ -135,11 +254,12 @@ namespace GxMcp.Gateway
                             {
                                 new KbEntry { Alias = alias, Path = legacyPath }
                             };
-                            if (string.IsNullOrWhiteSpace(config.Environment.DefaultKb))
+                            bool isLegacy = string.Equals(config.Environment.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
+                            if (isLegacy && string.IsNullOrWhiteSpace(config.Environment.DefaultKb))
                             {
                                 config.Environment.DefaultKb = alias;
                             }
-                            Program.Log($"[Gateway] Legacy KBPath migrated to KBs[{alias}], DefaultKb={alias}");
+                            Program.Log($"[Gateway] Legacy KBPath migrated to KBs[{alias}], DefaultKb={config.Environment.DefaultKb}");
                         }
                     }
 
@@ -153,7 +273,176 @@ namespace GxMcp.Gateway
             throw new Exception("Could not read config.json after multiple attempts.");
         }
 
-        // issue #28 item 6: a path is a real KB only if it exists and carries a .gxw
+        private static void ValidateStrictDocument(JObject document, string path)
+        {
+            const int currentVersion = 2;
+            var allowedRoot = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "ConfigSchemaVersion", "GatewayMode", "GeneXus", "Server", "Logging", "Environment"
+            };
+            RejectUnknown(document, allowedRoot, "root", path);
+
+            if (document["ConfigSchemaVersion"]?.Type != JTokenType.Integer
+                || document.Value<int?>("ConfigSchemaVersion") != currentVersion)
+                throw new InvalidDataException($"Unsupported or missing ConfigSchemaVersion in strict config '{path}'. Expected {currentVersion}.");
+
+            string? mode = document.Value<string>("GatewayMode")?.Trim().ToLowerInvariant();
+            if (mode != "stdio-isolated" && mode != "http-shared")
+                throw new InvalidDataException("Strict config GatewayMode must be 'stdio-isolated' or 'http-shared'.");
+
+            var geneXus = document["GeneXus"] as JObject
+                ?? throw new InvalidDataException("Strict config requires a GeneXus object.");
+            RejectUnknown(geneXus, new HashSet<string>(new[] { "InstallationPath", "WorkerExecutable" }, StringComparer.Ordinal), "GeneXus", path);
+            RequireString(geneXus, "InstallationPath", "GeneXus");
+            RequireString(geneXus, "WorkerExecutable", "GeneXus");
+
+            var server = document["Server"] as JObject
+                ?? throw new InvalidDataException("Strict config requires a Server object.");
+            RejectUnknown(server, new HashSet<string>(new[]
+            {
+                "HttpPort", "McpStdio", "BindAddress", "AllowedOrigins", "SessionIdleTimeoutMinutes",
+                "WorkerIdleTimeoutMinutes", "WedgedCommandTimeoutMinutes", "WorkerHeapRecycleMB",
+                "ArtifactOutputDirectory", "IdempotencyTtlMinutes", "IdempotencyCacheSize", "BuildSyncThresholdSeconds", "MaxOpenKbs",
+                "ToolProfile", "EmitStructuredContent", "TerseResponses", "WorkerSharingMode"
+            }, StringComparer.Ordinal), "Server", path);
+            if (server["HttpPort"]?.Type != JTokenType.Integer || server["McpStdio"]?.Type != JTokenType.Boolean)
+                throw new InvalidDataException("Strict config requires typed Server.HttpPort and Server.McpStdio.");
+            int port = server.Value<int>("HttpPort");
+            bool stdio = server.Value<bool>("McpStdio");
+            if (mode == "stdio-isolated" && (port != 0 || !stdio))
+                throw new InvalidDataException("stdio-isolated requires HttpPort=0 and McpStdio=true.");
+            if (mode == "http-shared" && (port <= 0 || stdio))
+                throw new InvalidDataException("http-shared requires HttpPort>0 and McpStdio=false.");
+
+            string sharingMode = server.Value<string>("WorkerSharingMode")?.Trim().ToLowerInvariant() ?? "isolated";
+            if (sharingMode != "isolated" && sharingMode != "shared-host")
+                throw new InvalidDataException("Strict config Server.WorkerSharingMode must be 'isolated' or 'shared-host'.");
+            if (sharingMode == "shared-host" && mode != "stdio-isolated")
+                throw new InvalidDataException("Strict config Server.WorkerSharingMode='shared-host' requires GatewayMode='stdio-isolated'.");
+
+            if (document["Logging"] is JObject logging)
+                RejectUnknown(logging, new HashSet<string>(new[] { "Level", "Path" }, StringComparer.Ordinal), "Logging", path);
+
+            var environment = document["Environment"] as JObject
+                ?? throw new InvalidDataException("Strict config requires an Environment object.");
+            RejectUnknown(environment, new HashSet<string>(new[] { "ResolutionPolicy", "KBPath", "DefaultKb", "ActiveKb", "KBs", "DataStoreAliases" }, StringComparer.Ordinal), "Environment", path);
+            string? policy = environment.Value<string>("ResolutionPolicy")?.Trim().ToLowerInvariant();
+            if (policy != "strict" && policy != "legacy")
+                throw new InvalidDataException("Strict config ResolutionPolicy must be 'strict' or 'legacy'.");
+            ValidateStrictKbCatalog(environment["KBs"], path);
+            ValidateStrictDataStoreAliases(environment["DataStoreAliases"], "Environment.DataStoreAliases", path);
+        }
+
+        private static void ValidateStrictKbCatalog(JToken? token, string path)
+        {
+            if (token == null || token.Type == JTokenType.Null) return;
+            if (token is JArray array)
+            {
+                foreach (var item in array)
+                {
+                    if (item is not JObject entry)
+                        throw new InvalidDataException($"Strict config Environment.KBs entries must be objects in '{path}'.");
+                    ValidateStrictKbEntry(entry, entry.Value<string>("Alias") ?? "<array-entry>", path);
+                }
+                return;
+            }
+            if (token is JObject map)
+            {
+                foreach (var property in map.Properties())
+                {
+                    if (property.Value.Type == JTokenType.String) continue;
+                    if (property.Value is not JObject entry)
+                        throw new InvalidDataException($"Strict config Environment.KBs['{property.Name}'] must be a path string or object in '{path}'.");
+                    ValidateStrictKbEntry(entry, property.Name, path);
+                }
+                return;
+            }
+            throw new InvalidDataException($"Strict config Environment.KBs must be an array or object in '{path}'.");
+        }
+
+        private static void ValidateStrictKbEntry(JObject entry, string alias, string path)
+        {
+            RejectUnknown(entry, new HashSet<string>(new[] { "Alias", "Path", "Driver", "InstallationPath", "Major", "DataStoreAliases" }, StringComparer.Ordinal), $"Environment.KBs[{alias}]", path);
+            RequireString(entry, "Path", $"Environment.KBs[{alias}]");
+            ValidateStrictDataStoreAliases(entry["DataStoreAliases"], $"Environment.KBs[{alias}].DataStoreAliases", path);
+            string? driver = entry.Value<string>("Driver")?.Trim();
+            string? major = entry.Value<string>("Major")?.Trim();
+            if (!string.IsNullOrWhiteSpace(driver)
+                && driver != "native-sdk"
+                && driver != "dotnet-reflection"
+                && driver != "com-gxpublic")
+            {
+                throw new InvalidDataException($"Strict config Environment.KBs[{alias}].Driver is not a supported driver.");
+            }
+            if (!string.IsNullOrWhiteSpace(major) && !GeneXusVersionCatalog.IsSupportedOrLegacy(major))
+                throw new InvalidDataException($"Strict config Environment.KBs[{alias}].Major is outside the compatibility catalog.");
+            string? expectedDriver = GeneXusVersionCatalog.GetDriverProfile(major);
+            if (!string.IsNullOrWhiteSpace(driver)
+                && !string.IsNullOrWhiteSpace(expectedDriver)
+                && !string.Equals(driver, expectedDriver, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException($"Strict config Environment.KBs[{alias}].Driver does not match major '{major}'.");
+            }
+            if (!string.IsNullOrWhiteSpace(driver)
+                && !string.Equals(driver, "native-sdk", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrWhiteSpace(entry.Value<string>("InstallationPath")))
+            {
+                throw new InvalidDataException($"Strict config Environment.KBs[{alias}] requires InstallationPath for legacy driver '{driver}'.");
+            }
+        }
+
+        private static void ValidateStrictDataStoreAliases(JToken? token, string label, string path)
+        {
+            if (token == null || token.Type == JTokenType.Null) return;
+            if (!(token is JObject aliases))
+                throw new InvalidDataException($"Strict config {label} must be an object in '{path}'.");
+            var allowed = new HashSet<string>(new[]
+            {
+                "DataStore", "Family", "Provider", "Server", "Database", "Schema", "Port",
+                "IntegratedSecurity", "UserIdEnvironmentVariable", "PasswordEnvironmentVariable",
+                "ConnectionStringEnvironmentVariable"
+            }, StringComparer.OrdinalIgnoreCase);
+            foreach (var alias in aliases.Properties())
+            {
+                if (!(alias.Value is JObject definition))
+                    throw new InvalidDataException($"Strict config {label}['{alias.Name}'] must be an object in '{path}'.");
+                RejectUnknown(definition, allowed, $"{label}[{alias.Name}]", path);
+                var integratedSecurity = definition["IntegratedSecurity"];
+                if (integratedSecurity != null && integratedSecurity.Type != JTokenType.Boolean)
+                    throw new InvalidDataException($"Strict config {label}['{alias.Name}'].IntegratedSecurity must be boolean.");
+            }
+        }
+
+        private static void RejectStrictStructuralEnvironment()
+        {
+            // GX_MCP_PORT and GX_MCP_STDIO are the sole legacy overrides retained
+            // for strict documents, and the caller below still rejects conflicts.
+            string[] forbidden =
+            {
+                "GXMCP_SHARED_GATEWAY", "GX_MCP_SHARED_GATEWAY", "GXMCP_PROFILE",
+                "GXMCP_NO_STRUCTURED_CONTENT", "GXMCP_EMIT_STRUCTURED_CONTENT", "GXMCP_TERSE"
+            };
+            foreach (string name in forbidden)
+            {
+                if (!string.IsNullOrWhiteSpace(global::System.Environment.GetEnvironmentVariable(name)))
+                    throw new InvalidDataException($"{name} is a structural environment override and is not permitted with a strict configuration.");
+            }
+        }
+
+        private static void RejectUnknown(JObject value, HashSet<string> allowed, string scope, string path)
+        {
+            var unknown = value.Properties().FirstOrDefault(p => !allowed.Contains(p.Name));
+            if (unknown != null)
+                throw new InvalidDataException($"Unknown member '{scope}.{unknown.Name}' in strict config '{path}'.");
+        }
+
+        private static void RequireString(JObject value, string name, string scope)
+        {
+            if (value[name]?.Type != JTokenType.String || string.IsNullOrWhiteSpace(value.Value<string>(name)))
+                throw new InvalidDataException($"Strict config requires non-empty {scope}.{name}.");
+        }
+
+        // issue #28 item 6: a path is real KB only if it exists and carries a .gxw
         // (or the legacy KnowledgeBase.Connection). Used to skip auto-migrating the
         // shipped placeholder KBPath into a phantom DefaultKb.
         internal static bool LooksLikeKb(string path)
@@ -161,11 +450,20 @@ namespace GxMcp.Gateway
             try
             {
                 if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return false;
-                foreach (var f in Directory.EnumerateFiles(path))
+                var entries = Directory.EnumerateFileSystemEntries(path)
+                    .Select(entry => Path.GetFileName(entry).ToLowerInvariant())
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var f in entries)
                 {
-                    var name = Path.GetFileName(f).ToLowerInvariant();
-                    if (name.EndsWith(".gxw") || name == "knowledgebase.connection") return true;
+                    if (f.EndsWith(".gxw") || f == "knowledgebase.connection") return true;
                 }
+
+                // GeneXus 8/9 classic KBs are DAT/model folders and may not
+                // carry a modern .gxw or connection marker. Require at least
+                // two independent classic markers so an arbitrary folder is
+                // not accepted as a KB and handed to a Worker.
+                string[] classicMarkers = { "data001", "gxspc001", "kbdata", "attribut.dat", "att.xpw", "objects.dat", "objects.idx" };
+                return classicMarkers.Count(entries.Contains) >= 2;
             }
             catch { /* unreadable dir → treat as not-a-KB */ }
             return false;
@@ -202,13 +500,31 @@ namespace GxMcp.Gateway
             _watcher.NotifyFilter = NotifyFilters.LastWrite;
             _watcher.Changed += (s, e) => {
                 Program.Log($"[Gateway] Configuration file changed: {e.FullPath}");
-                // Add a small delay to ensure writing process has released the lock
-                Thread.Sleep(200);
-                try {
-                    var newConfig = ParseConfig(path);
-                    OnConfigurationChanged?.Invoke(newConfig);
-                } catch (Exception ex) {
-                    Program.Log($"[Gateway] Failed to reload configuration: {ex.Message}");
+                // Coalesce the editor's event burst into a single reload 300ms after the
+                // last event (same debounce pattern as tool_definitions.json in McpRouter).
+                // The timer callback takes _reloadLock so parse+dispatch are serialised:
+                // handlers never run in parallel, and a half-written file never reaches them
+                // (ParseConfig already retries briefly on IOException for the write lock).
+                lock (_reloadLock)
+                {
+                    _reloadDebounceTimer?.Dispose();
+                    _reloadDebounceTimer = new System.Threading.Timer(_ =>
+                    {
+                        try
+                        {
+                            Configuration newConfig;
+                            lock (_reloadLock)
+                            {
+                                newConfig = ParseConfig(path);
+                                Volatile.Write(ref _lastValidConfiguration, newConfig);
+                                OnConfigurationChanged?.Invoke(newConfig);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Program.Log($"[Gateway] Failed to reload configuration: {ex.Message}");
+                        }
+                    }, null, 300, Timeout.Infinite);
                 }
             };
             _watcher.EnableRaisingEvents = true;
@@ -223,21 +539,27 @@ namespace GxMcp.Gateway
 
     public class ServerConfig
     {
+        public string TransportMode { get; set; } = "legacy";
+        public string WorkerSharingMode { get; set; } = "isolated";
         public int HttpPort { get; set; } = 5000;
         public bool McpStdio { get; set; } = true;
+        public bool SharedGateway { get; set; } = false;
         public string BindAddress { get; set; } = "127.0.0.1";
         public List<string> AllowedOrigins { get; set; } = new List<string>();
         public int SessionIdleTimeoutMinutes { get; set; } = 10;
-        // Idle-reap window for a worker with no in-flight work. Raised from 5 to 60:
-        // the worker's cold start is ~90s (95% of it the intrinsic, unshrinkable
-        // GxServiceManager activation — see the worker's [COLD-START-BREAKDOWN] log and
-        // docs), so reaping the sole warm worker after 5 idle minutes made the very next
-        // tool call re-pay the full ~90s tax. 60 minutes keeps the worker warm across a
-        // normal working session while still reclaiming a genuinely abandoned worker.
+        // Idle-reap window for a worker with no in-flight work. 30 minutes: an idle
+        // worker holds ~130-160MB, so parking it past a normal focus break returns
+        // that memory on shared/long-running machines. Trade-off, measured: the
+        // worker's cold start is ~90s (95% of it the intrinsic, unshrinkable
+        // GxServiceManager activation — see the worker's [COLD-START-BREAKDOWN] log
+        // and docs; the warm index snapshot does NOT shorten it), so returning in
+        // the 30-60min window re-pays ~90s once. Was 60 (raised from 5 for the same
+        // reason); 30 splits the difference now that the warm snapshot makes the
+        // index half of the restart cheap. Override per deployment as needed.
         // Set to 0 (or any value <= 0) to disable idle reaping entirely — the worker then
         // lives for the gateway's lifetime and is bounded only by MaxOpenKbs LRU eviction
         // and process exit on client disconnect.
-        public int WorkerIdleTimeoutMinutes { get; set; } = 60;
+        public int WorkerIdleTimeoutMinutes { get; set; } = 30;
         /// <summary>
         /// BUG-03: hard ceiling on how long a single in-flight command may sit
         /// unanswered before the worker is force-stopped as wedged. Deliberately
@@ -256,6 +578,12 @@ namespace GxMcp.Gateway
         // Only fires when the worker is idle (no in-flight/queued work), so it never interrupts
         // an active operation. Set to 0 to disable.
         public int WorkerHeapRecycleMB { get; set; } = 1500;
+        /// <summary>
+        /// Optional root for generated wiki and visualizer files. The Worker always adds a
+        /// stable per-KB scope below this root. When omitted, artifacts go to the durable
+        /// %LOCALAPPDATA%\\GxMcp\\Artifacts root instead of the installed Worker directory.
+        /// </summary>
+        public string? ArtifactOutputDirectory { get; set; }
         public int IdempotencyTtlMinutes { get; set; } = 15;
         public int IdempotencyCacheSize { get; set; } = 1000;
         /// <summary>
@@ -271,6 +599,29 @@ namespace GxMcp.Gateway
         /// (LRU); if all are busy, the request fails with KB_POOL_FULL.
         /// </summary>
         public int MaxOpenKbs { get; set; } = 3;
+        /// <summary>
+        /// Active tool profile to gate tool surface (all, core, authoring, devops, ui, db).
+        /// Can be overridden via GXMCP_PROFILE environment variable. Default: all.
+        /// </summary>
+        public string ToolProfile { get; set; } = "all";
+        /// <summary>
+        /// Emit the MCP-standard `structuredContent` field on tool results. It duplicates
+        /// the entire JSON payload already serialized in `content[0].text`, roughly
+        /// doubling every tool response's byte size (measured: +54-60% across tools).
+        /// LLM clients read `content[0].text`; only structured-output consumers need this.
+        /// Default: true (protocol-compliant). Set false for lean responses — the biggest
+        /// single per-turn token/latency win available in the gateway. Can be forced via
+        /// GXMCP_NO_STRUCTURED_CONTENT=1 without touching config files.
+        /// </summary>
+        public bool EmitStructuredContent { get; set; } = true;
+        /// <summary>
+        /// Terse mode: strip the per-response UX sugar the LLM does not strictly need —
+        /// `next_legal_actions`, `_meta.tokens` (the used/limit block), and SQL-dialect
+        /// nudges — and keep only the payload itself plus error hints. Saves ~200-600
+        /// bytes per response on top of EmitStructuredContent=false. Default: false
+        /// (full UX). Can be forced via GXMCP_TERSE=1 without touching config files.
+        /// </summary>
+        public bool TerseResponses { get; set; } = false;
     }
 
     public class LoggingConfig
@@ -284,17 +635,47 @@ namespace GxMcp.Gateway
         public string? KBPath { get; set; }
         public string? GX_SHADOW_PATH { get; set; }
         public string? DefaultKb { get; set; }
+        public string? RawDefaultKb { get; set; }
+        public string ResolutionPolicy { get; set; } = "strict";
         // Alias written by the Node CLI (cli/lib/config.js writeKbCatalog) —
         // ParseConfig promotes it to DefaultKb after deserialize if DefaultKb is empty.
         public string? ActiveKb { get; set; }
         [JsonConverter(typeof(KbCatalogConverter))]
         public List<KbEntry> KBs { get; set; } = new List<KbEntry>();
+        /// <summary>
+        /// Optional profile-wide aliases. Use a per-KB entry when more than one KB
+        /// is configured so a connection cannot be selected ambiguously.
+        /// </summary>
+        public Dictionary<string, DataStoreAliasConfig>? DataStoreAliases { get; set; }
     }
 
     public class KbEntry
     {
         public string Alias { get; set; } = string.Empty;
         public string Path { get; set; } = string.Empty;
+        public string? InstallationPath { get; set; }
+        public string? Driver { get; set; }
+        public string? Major { get; set; }
+        /// <summary>
+        /// Optional, non-secret connection aliases used by read-only database tools.
+        /// Credentials belong in host environment variables named by the alias entry.
+        /// </summary>
+        public Dictionary<string, DataStoreAliasConfig>? DataStoreAliases { get; set; }
+    }
+
+    public class DataStoreAliasConfig
+    {
+        public string? DataStore { get; set; }
+        public string? Family { get; set; }
+        public string? Provider { get; set; }
+        public string? Server { get; set; }
+        public string? Database { get; set; }
+        public string? Schema { get; set; }
+        public string? Port { get; set; }
+        public bool? IntegratedSecurity { get; set; }
+        public string? UserIdEnvironmentVariable { get; set; }
+        public string? PasswordEnvironmentVariable { get; set; }
+        public string? ConnectionStringEnvironmentVariable { get; set; }
     }
 
     // Accepts both schemas the codebase writes for Environment.KBs:
@@ -316,11 +697,19 @@ namespace GxMcp.Gateway
 
             if (reader.TokenType == JsonToken.StartObject)
             {
-                var dict = serializer.Deserialize<Dictionary<string, string>>(reader) ?? new Dictionary<string, string>();
-                var list = new List<KbEntry>(dict.Count);
-                foreach (var kv in dict)
+                var obj = JObject.Load(reader);
+                var list = new List<KbEntry>(obj.Count);
+                foreach (var property in obj.Properties())
                 {
-                    list.Add(new KbEntry { Alias = kv.Key, Path = kv.Value });
+                    if (property.Value.Type == JTokenType.String)
+                    {
+                        list.Add(new KbEntry { Alias = property.Name, Path = property.Value.ToString() });
+                        continue;
+                    }
+
+                    var entry = property.Value.ToObject<KbEntry>(serializer) ?? new KbEntry();
+                    if (string.IsNullOrWhiteSpace(entry.Alias)) entry.Alias = property.Name;
+                    list.Add(entry);
                 }
                 return list;
             }

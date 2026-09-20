@@ -13,18 +13,35 @@ run it and paste its output; that's usually enough for us to debug a crash
 without your KB.
 -->
 
+## Environment & Versions
+
+- **GeneXus SDK Major & Version:** (e.g. GeneXus 16 / 17 / 18, Build `16.0.11.144151` or `18.0.10.184260`)
+- **Knowledge Base Major & Generator:** (e.g. GX16 .NET Framework, GX18 .NET Core 8, Java)
+- **AI Client:** (e.g. Cursor, Claude Desktop, Antigravity, OpenCode, VS Code)
+- **Genexus18MCP Package Version:** (from `genexus-mcp --version` or `genexus_whoami`)
+- **Transport Mode:** (`stdio-isolated`, `direct stdio`, `HTTP`)
+
 ## What happened
 
-<!-- One or two sentences. For a crash: "the MCP disconnected / worker died". -->
+<!-- One or two sentences describing what failed. For a crash: "Worker exited / MCP disconnected". -->
 
 ## The exact tool call
 
-<!-- The genexus_* tool + args that triggered it. For edit/patch crashes this is
-     the single most useful thing. IMPORTANT: did the call pass `type`
-     (e.g. type: "Transaction")? A homonym Transaction/Table needs it. -->
+<!-- The genexus_* tool + arguments that triggered the issue. -->
 
 ```json
 { "tool": "genexus_edit", "args": { } }
+```
+
+## Error output / MCP response
+
+<!-- Paste the exact JSON envelope returned by the MCP server, especially error code, message, hint and diagnosticContext. -->
+
+```json
+{
+  "status": "error",
+  "error": { }
+}
 ```
 
 ## Expected vs actual
@@ -32,22 +49,20 @@ without your KB.
 - **Expected:**
 - **Actual:**
 
-## Diagnostics bundle (redacted — please paste)
+## Diagnostics bundle (redacted — please run and paste)
 
 <!--
-Run this from the installed package folder (or a clone) and paste the file's
-contents. It collects versions + the worker crash ledger + crash/cold-start log
-markers, with paths/user/host/KB redacted to placeholders. Skim it first.
+Run this from the installed package folder (or clone) and paste the file's
+contents. It collects versions (Node, OS, GeneXus SDKs found on machine,
+active config, worker ledger, log markers), redacting paths/user/host/KB.
 
   pwsh -File scripts/collect-diagnostics.ps1
 
-If you don't have the repo, download scripts/collect-diagnostics.ps1 from the
-release and run it the same way. If the worker_debug.log isn't found, pass it:
-
-  pwsh -File scripts/collect-diagnostics.ps1 -WorkerLog "C:\path\to\worker_debug.log"
+Alternatively, run:
+  npx genexus-mcp doctor --format json
 -->
 
-<details><summary>genexus-mcp-diagnostics.txt</summary>
+<details><summary>Diagnostics output (genexus-mcp-diagnostics.txt / doctor output)</summary>
 
 ```
 paste here
@@ -55,9 +70,7 @@ paste here
 
 </details>
 
-## Also helpful (optional)
+## Steps to reproduce / Additional context
 
-- Output of `genexus_whoami` (the `worker.deaths` block — a recovered native
-  crash shows as `byExitCode: 70` / `WorkerNativeCrashRecovered`).
-- Whether a **smaller / simpler** version of the same edit works.
-- Steps to reproduce, if you can narrow it down.
+- Steps to reproduce or narrow down the problem.
+- Output of `genexus_whoami` (specifically `geneXus.actualVersion`, `geneXus.matchedMajor`, and `worker.deaths`).

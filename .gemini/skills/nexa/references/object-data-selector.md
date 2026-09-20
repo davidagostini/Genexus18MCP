@@ -49,9 +49,9 @@ Where:
 - `<orders>`: Sorting attributes (comma-separated; compound allowed)
 - `<attributes>`: Attributes defining the base table when not inferred
 - `<properties>`: Optional object properties in TOML syntax; see [properties](./properties-object-data-selector.md)
-- `<documentation>`: Optional object documentation; check [common-markdown](./common-markdown.md)
+- `<documentation>`: Optional object documentation; see [markdown](./common-markdown.md)
 
-Notes:
+Rules:
 - Attributes in `<conditions>`, `<orders>`, `<attributes>` must exist in Transactions
 - `<conditions>`, `<orders>`, `<attributes>` sections must end with `;` + line break
 - `#Orders`: attributes in `( )` indicate descending (e.g. `(CustomerName)` = Z→A)
@@ -61,10 +61,13 @@ Notes:
 	* `DataProvider` objects; e.g. `Customer Using SelectPremiumCustomers() { … }`
 	* Aggregates; e.g. `Average(CustomerAge, SelectPremiumCustomers(), 0)`
 
+Notes:
+- See [common-filter](./common-filter.md) for optimization details
+
 ---
 
 # OUTPUT
-Use [global-output](./global-output.md) with `<type>` value: `dataselector`
+Use [global-output](./global-output.md)
 
 ---
 

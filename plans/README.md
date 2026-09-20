@@ -1,5 +1,80 @@
 # Implementation Plans
 
+## Current audit — 2026-09-09, commit `d77c20f`
+
+The improve audit produced plans 087–109 below. Execute in order where dependencies apply; plans 087–101 are correctness/security/test/DX foundations, 102–105 are performance/architecture/migration, and 106–109 are design spikes. These plans are handoffs only and do not authorize source edits, commits, pushes, releases, or deployments by themselves.
+
+| Plan | Title | Priority | Effort | Depends on | Status |
+|------|-------|----------|--------|------------|--------|
+| 087 | Restrict preview artifact paths | P1 | S | — | DONE |
+| 088 | Remove unsafe cmd.exe browser-driver boundary | P1 | M | 087 | DONE (lint blocked outside scope: cli/lib/config.js:384) |
+| 089 | Sanitize client-visible infrastructure errors | P1 | M | — | DONE |
+| 090 | Atomically persist KB defaults | P1 | S | — | DONE |
+| 091 | Fence multi-target async mutation retries | P1 | M | 090 | DONE |
+| 092 | Single-flight cold index loading | P1 | S | — | DONE |
+| 093 | Bound Worker MTA concurrency | P1 | M | — | DONE |
+| 094 | Add GeneXus SDK CI validation lane | P1 | L | 105 | DONE |
+| 095 | Worker crash/respawn/pending RPC tests | P1 | M | — | DONE |
+| 096 | End-to-end KB selection route tests | P1 | M | 090 | DONE |
+| 097 | CLI multi-client failure-path tests | P1 | M | — | DONE |
+| 098 | Authoritative onboarding docs | P1 | S | — | DONE |
+| 099 | Reconcile limitations tracking | P1 | M | — | DONE |
+| 100 | Document explain compatibility mode | P1 | S | — | DONE |
+| 101 | Reuse metadata resolution during search | P2 | M | 092 | DONE |
+| 102 | Replace per-start WMI scans | P2 | M | 095 | DONE |
+| 103 | Split OperationsRouter into typed modules | P2 | L | 096 | DONE |
+| 104 | Decompose Gateway request loop | P2 | L | 103 | DONE |
+| 105 | Make SDK compatibility reproducible | P2 | L | — | DONE |
+| 106 | Resource navigation and object-aware completion spike | P2 | M | 099 | DONE |
+| 107 | Deterministic conversion pipeline spike | P2 | L | 105 | DONE |
+| 108 | Safe typed visual authoring spike | P2 | L | 087, 103 | DONE |
+| 109 | Capability states and release gates spike | P2 | M | 094, 105 | DONE |
+
+Recommended execution order: 087, 089, 090, 092, 093, 095, 096, 097, 098, 099, 100; then 088, 091, 101, 102; then 103, 104, 105; finally 106–109. Plans 103 and 104 must remain sequential because both alter high-fan-in Gateway routing. Do not mark an SDK/live-KB plan complete when its required environment is unavailable.
+
+## Findings considered and rejected in this audit
+
+- Dependency audit: no high/critical reachable runtime advisory was reported by `npm audit --omit=dev` or the .NET vulnerable-package check; no dependency plan was created.
+- Localhost-only unauthenticated development HTTP behavior: documented by-design in `docs/technical_architecture.md`; only implementation-specific risks were planned.
+- Existing dual-process .NET 10 Gateway/.NET Framework 4.8 Worker split: required by the GeneXus SDK; the plan targets reproducibility, not architectural replacement.
+
+
+## Programa 3.0 — 2026-09-05
+
+Nova análise sobre **b3d20f7 / v2.57.0**, preservando o histórico abaixo.
+Comece por [073 — Programa 3.0](./073-v3-programa.md): achados com evidência,
+arquitetura proposta, prioridades, dependências, critérios de GA e limitações.
+Os **13 pacotes 074–086** estão `VERIFIED_INTEGRATED` no manifest para o núcleo
+implementado e testado. O relatório [v3-integration-evidence-2026-09-06.md](../docs/v3-integration-evidence-2026-09-06.md)
+consolida os comandos e artefatos. Business Components, WWP, multi-KB, replay
+de modelo, runner VS Code interativo e soak prolongado continuam explicitamente
+fora das capabilities suportadas e são gates pré-GA; ausência de fixture nunca
+vira passagem. Esta execução não autoriza publicação.
+
+Plan 094 is implemented in the isolated `agent/plan-094` worktree: hosted CI keeps
+its fast Gateway-only path and writes a visible SDK-lane skip, while the protected
+`gx-sdk-18` lane validates the locked SDK, runs live Worker checks, and publishes
+pass/skip/fail evidence with cleanup. It remains opt-in via
+`GXMCP_SDK_CI_ENABLED=true`; no licensed SDK or credentials are checked in.
+
+- [Manifest de execução e status](./v3-execution.json)
+- [Corpus de 15 cenários e oráculos](./v3-evaluation-corpus.json)
+- 047 é consolidado em 074; 048–049 em 075; tradução/DSO de 050 em 081.
+  A consolidação não marca os planos históricos como executados.
+- O integrador atualiza o manifest e a tabela do programa após validação do diff.
+  Estados: PLANNED, IN_PROGRESS, READY_FOR_REVIEW, VERIFIED_INTEGRATED, BLOCKED.
+
+### Plan 099 — limitations reconciliation
+
+The current limitations register is [`docs/mcp_limitations_tracking.md`](../docs/mcp_limitations_tracking.md).
+It separates the 2026-03-25 historical baseline from the evidence-backed current
+register, links each capability to provenance/artifacts, and leaves SDK/live gates
+explicitly unverified until a qualifying fixture run is recorded. This documentation
+reconciliation is complete; it does not authorize release or convert a live gate to
+`DONE`.
+
+---
+
 Generated by the `improve` skill audit on 2026-07-10 against commit `b326cd4` (v2.16.1).
 
 This backlog holds the findings that were **deferred** from the audit — the ones
@@ -10,6 +85,75 @@ BUG-*, TEST-01/DOCS-02, DEP-01, TOOL-02, DOCS-01) were implemented directly on t
 
 Each executor: read the plan fully before starting, honor its STOP conditions, and
 update your row when done.
+
+## Ninth-pass audit (2026-08-10, against `e756dd2` / v2.39.4) — new-code surface since the last cold audit
+
+First pass to audit the code shipped **after** the v2.33.1 cold audit (the C# core's
+passes 1–7 ledger stands, nexus-ide was cold-audited in pass 8): ~15,354 lines across
+137 files in v2.34→v2.39.4 — write-verification integrity (#59/#70), `ObjectMover`
+folder/module placement (#50), SDT/Domain persistence (#51–#57, #64),
+`SaveSpecifyOrchestrator` (#60), `ReorgImpactService`/`ReorgSqlPreview` (#61),
+`WwpActionService`, `AtomicCreateService`/`AtomicAuthoringService` (#58–#62), async-job
+stall watchdog (#79), semantic-cache invalidation, `scripts/mcp_recover.ps1`. Every
+finding vetted against live code by the advisor (three subagent line leads corrected).
+Verification for the C# plans: `dotnet build Genexus18MCP.sln -v:minimal` + the
+Worker/Gateway test suites from the repo root (Worker needs `$env:GX_PATH =
+'C:\Program Files (x86)\GeneXus\GeneXus18'` first).
+
+**All five selected by the maintainer (2026-08-10); plans 068–072 written and executed 2026-08-10/11.** Executor implemented all five directly on `main` (no worktrees): full solution builds 0 errors; Worker 1811 passed / 4 skipped; Gateway 880 passed (pre-existing skips only). Each change was also **live-validated against a real KB** (`C:\KBs\KBTeste`) over a scratch Streamable-HTTP gateway on port 5001: 068 returned `PatternTimeout` in 2.014s on the pathological `(a|aa)+$` pattern with the STA thread still responsive; 069 forced a genuine SDK stall past the 1s watchdog bound and observed the wedged worker **recycled** (PID change + `recycledWorker: true`) with the KB answering reads afterwards; 070 returned `deepAnalysis` + `runtimeNote`; 071 returned `GroupUpdated` + `persistedVerified: true`; 072 moved the object via `EntityManager.SaveWithParent` with the hardened resolver binding the 3-arg overload. Not yet released (unreleased in CHANGELOG).
+
+| Plan | Title | Priority | Effort | Risk | Depends on | Status |
+|------|-------|----------|--------|------|------------|--------|
+| 068 | Bound regex match time on LLM-supplied patterns (search_source + read_logs grep — one pathological pattern wedges the STA worker ~15 min) | P1 | S | LOW | — | DONE |
+| 069 | Recycle the wedged worker when the async-job stall watchdog fires (stalled jobs currently leave the KB blocked ~15 min with unusable recovery steps) | P1 | S-M | MED | — | DONE |
+| 070 | Give `genexus_db deep=true` (reorg_impact/reorg_preview) a 10-min sync ceiling + expected-runtime note (60s default → spurious timeout while spec keeps running) | P2 | S-M | LOW-MED | — | DONE |
+| 071 | Add issue-#59 post-save verification to `GroupStructureService` (membership writes can report false `GroupUpdated`; every other new write path verifies) | P3 | S | LOW | — | DONE |
+| 072 | Harden `ObjectMover`'s EntityManager fallback (bare simple-name scan can bind a non-Artech type; constrain to `Artech.*` + log the binding) | P3 | S | LOW-MED | — | DONE |
+
+Recommended order: **068, 069** (P1 availability — regex hang and stalled-worker
+recycle are the two ways a single call takes down the whole KB) → **070** (P2 UX) →
+**071, 072** (P3 quick wins). File overlap: 069 and 070 both touch
+`Program.WorkerLifecycle.cs` (disjoint locations — the skip list / envelope vs
+`GetToolTimeoutMs`); if run in parallel worktrees, merge 069 first and re-check 070's
+drift excerpt. 068 and 072 both touch `ObjectService.cs` (disjoint: `ReadLogs` grep
+vs `MoveObject`); same rule. 068 and 069 are independent (worker vs gateway).
+
+Grounding evidence (each verified against live code at `e756dd2`):
+- 068: `SourceSearchService.cs:70` builds `new Regex(pattern, opts)` with no match
+  timeout and `App.config` sets no `REGEX_DEFAULT_MATCH_TIMEOUT` (net48 default =
+  infinite); `ObjectService.cs:528` `ReadLogs` grep same. Search runs on the single
+  STA thread (`CommandDispatcher.cs:379-385` `IsThreadSafe` only for control/index),
+  so a catastrophic-backtracking pattern blocks every call to that KB; the 30s
+  budget checks between entries, never inside `IsMatch`, and the gateway 60s timeout
+  can't interrupt the worker — recovery is only the 15-min wedged kill
+  (`WorkerProcess.cs:176-195`).
+- 069: `Program.RequestLoop.cs:1784-1802` watchdog fires → `JobRegistry.Stall` →
+  `return`, with no worker recycle; the stalled envelope tells the user to re-run the
+  edit synchronously, which queues behind the same stuck STA thread. `OnWorkerExited`
+  eager-respawn (`Program.WorkerLifecycle.cs:31-150`) skips only
+  Idle/GatewayShutdown/BusyReject/ExplicitClose/PlannedReload — `Wedged` is not
+  skipped, so a deliberate `StopWithReason(Wedged)` triggers the existing respawn
+  loop. `BackgroundJobRegistry.Complete/Cancel` no-op on a `stalled` job, so the
+  late "crashed/exited" response can't rewrite the terminal verdict.
+- 070: `ReorgImpactService.cs:222,727-746` runs `ISpecifierService.ImpactDatabase`
+  ("build-heavy" per its own doc) with no cancellation; `GetToolTimeoutMs`
+  (`Program.WorkerLifecycle.cs:624`) has no `genexus_db` case → 60s default.
+- 071: `GroupStructureService.cs:131-190` returns `GroupUpdated` after
+  `EnsureSave()`+Commit with no re-read of `GroupStructurePart.Members`; contrast
+  `DomainWriteService.VerifyEnumValuesPersisted` / `WwpActionService` re-read.
+- 072: `ObjectMover.cs:44-46,214-254` `FindFirstType("EntityManager")` scans all
+  loaded assemblies by simple name with no namespace filter.
+
+Considered and rejected / downgraded this pass (so nobody re-audits):
+- **mcp_recover.ps1**: reviewed clean — proper initialize/session handshake,
+  `readOnlyHint` gate before any write (write requires explicit `-AllowWrite`), no
+  injection surface (args flow as JSON body, never shell-interpolated). Not a finding.
+- **SaveSpecifyOrchestrator `Thread.Sleep(250)` poll loop**: bounded (≤120s, clamped)
+  and opt-in (`validationMode=specify`); not worth a plan.
+- **Semantic-cache invalidation**: complete with a guard test
+  (`SemanticCacheInvalidationTests`); the v2.39.4 fix holds — not re-planned.
+- **`PersistenceVerifier` boolean-alias normalization**: correctly gated by
+  `allowBooleanAliases`; enum/string values are not collapsed globally. Not a finding.
 
 ## Eighth-pass audit (2026-07-23, against `98b9a7d` / v2.33.0) — first independent cold audit of `src/nexus-ide`
 

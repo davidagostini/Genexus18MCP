@@ -19,7 +19,7 @@ Optional but desired runtime variables:
 - `Time [ DataType = 'Character(8)' ]`: Time value captured at program start
 
 Optional runtime variable for `Transaction` object handling:
-- `Mode [ DataType = 'Character(3)' ]`: Transaction execution mode (built-in enumerated `TrnMode` domain):
+- `Mode [ DataType = 'Character(3)' ]`: Transaction execution mode; built-in enumerated `TrnMode` domain:
 	* `TrnMode.Insert` ('INS')
 	* `TrnMode.Update` ('UPD')
 	* `TrnMode.Delete` ('DLT')
@@ -28,6 +28,8 @@ Optional runtime variable for `Transaction` object handling:
 Optional runtime variables for `API` object handling:
 - `RestMethod [ DataType = 'HttpMethod, GeneXus' ]`: HTTP method used in REST invocation; empty if not REST
 - `RestCode [ DataType = 'Numeric(3.0)' ]`: HTTP status code to return in REST response
+	* Allow only 2XX or 4XX codes; operation outcome
+	* Never use 1XX, 3XX, or 5XX codes; protocol behavior
 - `RestServiceName [ DataType = 'Character(128)' ]`: Name of the REST service currently executing
 
 Optional runtime variables for `Procedure` object handling:

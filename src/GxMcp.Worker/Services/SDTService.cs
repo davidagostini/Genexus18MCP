@@ -189,7 +189,30 @@ namespace GxMcp.Worker.Services
                 bool isLevel = child["isLevel"]?.ToObject<bool>() ?? (child["children"] is JArray);
                 bool isColl = child["isCollection"]?.ToObject<bool>() ?? false;
                 string basedOnDomain = child["basedOnDomain"]?.ToString();
+                string basedOnAttribute = child["basedOnAttribute"]?.ToString();
                 string typeStr = child["type"]?.ToString();
+                string referencedType = child["referencedType"]?.ToString();
+
+                // Support alternative formats for attribute binding:
+                // 1. type: "Attribute:<name>"
+                if (string.IsNullOrEmpty(basedOnAttribute) && !string.IsNullOrEmpty(typeStr) && typeStr.StartsWith("Attribute:", StringComparison.OrdinalIgnoreCase))
+                {
+                    basedOnAttribute = typeStr.Substring("Attribute:".Length).Trim();
+                }
+                // 2. type: "Attribute" and referencedType: "<name>"
+                else if (string.IsNullOrEmpty(basedOnAttribute) && !string.IsNullOrEmpty(typeStr) && typeStr.Equals("Attribute", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(referencedType))
+                {
+                    basedOnAttribute = referencedType;
+                }
+                // 3. basedOn: "Attribute:<name>" or "<name>"
+                string basedOn = child["basedOn"]?.ToString();
+                if (string.IsNullOrEmpty(basedOnAttribute) && !string.IsNullOrEmpty(basedOn))
+                {
+                    if (basedOn.StartsWith("Attribute:", StringComparison.OrdinalIgnoreCase))
+                        basedOnAttribute = basedOn.Substring("Attribute:".Length).Trim();
+                    else if (string.IsNullOrEmpty(basedOnDomain))
+                        basedOnDomain = basedOn;
+                }
 
                 dynamic target = existing.TryGetValue(name, out var found) ? found : null;
 
@@ -208,9 +231,15 @@ namespace GxMcp.Worker.Services
                     continue;
                 }
 
-                // Leaf: resolve a Domain (basedOnDomain) or an SDT reference (type names an SDT).
-                KBObject domainObj = null, sdtObj = null;
-                if (!string.IsNullOrEmpty(basedOnDomain) && model != null)
+                // Leaf: resolve an Attribute (basedOnAttribute), Domain (basedOnDomain) or an SDT reference (type names an SDT).
+                KBObject domainObj = null, attributeObj = null, sdtObj = null;
+                if (!string.IsNullOrEmpty(basedOnAttribute) && model != null)
+                {
+                    attributeObj = GxMcp.Worker.Helpers.VariableInjector.FindAttribute(model, basedOnAttribute);
+                    if (attributeObj == null)
+                        throw new Exception("basedOnAttribute '" + basedOnAttribute + "' did not resolve to an Attribute.");
+                }
+                else if (!string.IsNullOrEmpty(basedOnDomain) && model != null)
                 {
                     domainObj = GxMcp.Worker.Helpers.VariableInjector.ResolveTypeObject(model, basedOnDomain);
                     if (!(domainObj is Artech.Genexus.Common.Objects.Domain)) domainObj = null;
@@ -227,7 +256,8 @@ namespace GxMcp.Worker.Services
                 {
                     if (addItem == null || eDBTypeT == null) continue;
                     object baseType;
-                    if (domainObj != null) { try { baseType = ((dynamic)domainObj).DataType; } catch { baseType = Enum.Parse(eDBTypeT, "VARCHAR"); } }
+                    if (attributeObj != null) { try { baseType = ((dynamic)attributeObj).Type; } catch { baseType = Enum.Parse(eDBTypeT, "VARCHAR"); } }
+                    else if (domainObj != null) { try { baseType = ((dynamic)domainObj).DataType; } catch { baseType = Enum.Parse(eDBTypeT, "VARCHAR"); } }
                     else if (sdtObj != null) baseType = Enum.Parse(eDBTypeT, "GX_SDT");
                     else if (GxMcp.Worker.Helpers.VariableInjector.TryParseDbType(typeStr, out var pt)) baseType = pt;
                     else baseType = Enum.Parse(eDBTypeT, "VARCHAR");
@@ -237,7 +267,11 @@ namespace GxMcp.Worker.Services
                 if (target == null) continue;
 
                 try { target.IsCollection = isColl; } catch { }
-                if (domainObj != null)
+                if (attributeObj != null)
+                {
+                    GxMcp.Worker.Helpers.DomainPropertyApplier.ApplyAttributeBasedOn((object)target, attributeObj);
+                }
+                else if (domainObj != null)
                 {
                     GxMcp.Worker.Helpers.DomainPropertyApplier.ApplyDomainBasedOn((object)target, domainObj);
                 }
@@ -247,6 +281,8 @@ namespace GxMcp.Worker.Services
                 }
                 else
                 {
+                    GxMcp.Worker.Helpers.DomainPropertyApplier.ClearAttributeBasedOn((object)target);
+                    GxMcp.Worker.Helpers.DomainPropertyApplier.ClearDomainBasedOn((object)target);
                     if (child["length"] != null) { try { SetIntProperty((object)target, "Length", child["length"].ToObject<int>()); } catch { } }
                     if (child["decimals"] != null) { try { SetIntProperty((object)target, "Decimals", child["decimals"].ToObject<int>()); } catch { } }
                 }
@@ -341,6 +377,13 @@ namespace GxMcp.Worker.Services
                 string typeStr = "Unknown";
                 try { typeStr = level.Type.ToString(); } catch { }
                 res["type"] = typeStr;
+                // issue #109: surface basedOnAttribute if member is based on an Attribute.
+                try
+                {
+                    string attrName = GxMcp.Worker.Helpers.DomainPropertyApplier.GetAttributeBasedOnName((object)level);
+                    if (!string.IsNullOrEmpty(attrName)) res["basedOnAttribute"] = attrName;
+                }
+                catch { }
                 // issue #51: a member based on a Domain read back only as its base primitive type,
                 // hiding the Domain link. Surface the Domain name so a domain-typed member is
                 // visible (and round-trips through update_visual's basedOnDomain).

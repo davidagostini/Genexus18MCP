@@ -12,6 +12,13 @@ namespace GxMcp.Worker.Services
 {
     public class SummarizeService
     {
+        private static readonly BoundedStringCache _summaryCache = new BoundedStringCache(256);
+
+        public static void InvalidateCache()
+        {
+            _summaryCache.Clear();
+        }
+
         private readonly KbService _kbService;
         private readonly ObjectService _objectService;
 
@@ -23,6 +30,16 @@ namespace GxMcp.Worker.Services
 
         public string Summarize(string target, string typeFilter = null)
         {
+            string cacheKey = (target ?? "") + "|" + (typeFilter ?? "");
+            if (_summaryCache.TryGetValue(cacheKey, out var cached))
+            {
+                if (!WriteService.WasTargetWrittenSince(target, DateTime.UtcNow.AddMinutes(-5)))
+                {
+                    return cached;
+                }
+                _summaryCache.TryRemove(cacheKey, out _);
+            }
+
             try
             {
                 var obj = _objectService.FindObject(target, typeFilter);
@@ -40,16 +57,21 @@ namespace GxMcp.Worker.Services
                 foreach (var p in parms) parmList.Add(new JObject { ["name"] = p.Name, ["accessor"] = p.Accessor, ["type"] = p.Type });
                 result["parameters"] = parmList;
 
+                // Extract source once for both intents and metrics
+                string source = GetSourceSafe(obj);
+
                 // 2. Extract Logic Intents
-                result["intents"] = ExtractIntents(obj);
+                result["intents"] = ExtractIntents(source);
 
                 // 3. Key Dependencies (Semantic)
                 result["criticalDependencies"] = ExtractCriticalDependencies(obj);
 
                 // 4. Complexity & Risk
-                result["metrics"] = CalculateMetrics(obj);
+                result["metrics"] = CalculateMetrics(source);
 
-                return result.ToString();
+                string json = result.ToString(Newtonsoft.Json.Formatting.None);
+                _summaryCache.TryAdd(cacheKey, json);
+                return json;
             }
             catch (Exception ex)
             {
@@ -57,15 +79,34 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private JArray ExtractIntents(KBObject obj)
+        private static string GetSourceSafe(KBObject obj)
+        {
+            if (obj == null) return "";
+            try
+            {
+                if (obj is Procedure proc)
+                {
+                    try { return proc.ProcedurePart?.Source ?? ""; }
+                    catch { return ""; }
+                }
+                if (obj is WebPanel wbp)
+                {
+                    try { return wbp.Parts.Get<EventsPart>()?.Source ?? ""; }
+                    catch { return ""; }
+                }
+                if (obj is Transaction trn)
+                {
+                    try { return trn.Parts.Get<EventsPart>()?.Source ?? ""; }
+                    catch { return ""; }
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        private JArray ExtractIntents(string source)
         {
             var intents = new JArray();
-            string source = "";
-            
-            if (obj is Procedure proc) source = proc.ProcedurePart.Source;
-            else if (obj is WebPanel wbp) source = wbp.Parts.Get<EventsPart>()?.Source ?? "";
-            else if (obj is Transaction trn) source = trn.Parts.Get<EventsPart>()?.Source ?? "";
-
             if (string.IsNullOrEmpty(source)) return intents;
 
             // Simple Pattern Matching for common GeneXus logic
@@ -99,26 +140,55 @@ namespace GxMcp.Worker.Services
             var kb = _kbService.GetKB();
             if (kb == null) return deps;
 
-            // Get all references and take distinctive target names
-            var references = obj.GetReferences()
-                .Select(r => kb.DesignModel.Objects.Get(r.To)?.Name)
-                .Where(n => !string.IsNullOrEmpty(n))
-                .Distinct()
-                .Take(10);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var references = obj.GetReferences();
+                if (references != null)
+                {
+                    foreach (var r in references)
+                    {
+                        try
+                        {
+                            var targetObj = kb.DesignModel.Objects.Get(r.To);
+                            if (targetObj != null && !string.IsNullOrEmpty(targetObj.Name))
+                            {
+                                if (seen.Add(targetObj.Name))
+                                {
+                                    deps.Add(targetObj.Name);
+                                    if (deps.Count >= 10)
+                                        break;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore unresolved entities (e.g. Attribute/Domain/Key not in Objects)
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore failure getting references
+            }
 
-            foreach (var name in references) deps.Add(name);
             return deps;
         }
 
-        private JObject CalculateMetrics(KBObject obj)
+        private JObject CalculateMetrics(string source)
         {
             var metrics = new JObject();
-            string source = "";
-            if (obj is Procedure p) source = p.ProcedurePart.Source;
-            else if (obj is WebPanel w) source = w.Parts.Get<EventsPart>()?.Source ?? "";
-            else if (obj is Transaction t) source = t.Parts.Get<EventsPart>()?.Source ?? "";
+            int lines = 0;
+            if (!string.IsNullOrEmpty(source))
+            {
+                lines = 1;
+                for (int i = 0; i < source.Length; i++)
+                {
+                    if (source[i] == '\n') lines++;
+                }
+            }
 
-            int lines = string.IsNullOrEmpty(source) ? 0 : source.Split('\n').Length;
             metrics["linesOfCode"] = lines;
             metrics["complexity"] = lines > 500 ? "High" : (lines > 100 ? "Medium" : "Low");
             

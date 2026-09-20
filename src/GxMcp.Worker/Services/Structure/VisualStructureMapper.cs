@@ -133,6 +133,9 @@ namespace GxMcp.Worker.Services.Structure
                     // ("Cannot implicitly convert type 'int' to
                     // 'Artech.Genexus.Common.Parts.TableAttribute.IsNullableValue'"), so the
                     // value is cast to the enum explicitly.
+                    // Nullable belongs to the TransactionAttribute occurrence, not to the
+                    // global Attribute.  Writing an integer/property-bag value can be ignored
+                    // by the SDK and also leaks the setting to unrelated transactions.
                     targetAttr.IsNullable = (Artech.Genexus.Common.Parts.TableAttribute.IsNullableValue)val;
                     isModified = true;
                 }

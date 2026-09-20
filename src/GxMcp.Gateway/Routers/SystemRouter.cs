@@ -25,25 +25,60 @@ namespace GxMcp.Gateway.Routers
                                     module = "Build",
                                     action = "CompileCheck",
                                     target = target,
-                                    buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>()
+                                    environment = args?["environment"]?.ToString(),
+                                    buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
+                                    callers = args?["callers"]?.ToObject<bool?>() ?? true,
+                                    callerCap = args?["callerCap"]?.ToObject<int?>() ?? 0,
+                                    dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                                    deploy = args?["deploy"]?.ToObject<bool?>() ?? false
                                 };
                             }
                             return new {
-                            module = "Build",
-                            action = "Build",
-                            target = target,
-                            includeCallees = args?["includeCallees"]?.ToString(),
-                            buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
-                            // Item 72 (friction 2026-05-22) — Slack/Discord webhook on terminal Failed state.
-                            notifyOnFailure = args?["notifyOnFailure"]?.ToString(),
-                            skipFullDeploy = args?["skipFullDeploy"]?.ToObject<bool?>() ?? false,
-                            // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental opt-in.
-                            fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false
-                        };
+                                module = "Build",
+                                action = "Build",
+                                target = target,
+                                environment = args?["environment"]?.ToString(),
+                                includeCallees = args?["includeCallees"]?.ToString(),
+                                buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
+                                // Item 72 (friction 2026-05-22) — Slack/Discord webhook on terminal Failed state.
+                                notifyOnFailure = args?["notifyOnFailure"]?.ToString(),
+                                skipFullDeploy = args?["skipFullDeploy"]?.ToObject<bool?>() ?? false,
+                                // Item 28 (Tier-S, EXPERIMENTAL) — fastIncremental opt-in.
+                                fastIncremental = args?["fastIncremental"]?.ToObject<bool?>() ?? false,
+                                dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                                deploy = args?["deploy"]?.ToObject<bool?>() ?? false
+                            };
                         case "cancel": return new { module = "Build", action = "Cancel", target = target };
                         // issue #28 item 12: spec-check only — Spec+Gen, no Compile/deploy.
-                        case "specify": return new { module = "Build", action = "Specify", target = target };
-                        case "rebuild": return new { module = "Build", action = "RebuildAll", target = target };
+                        case "specify": return new {
+                            module = "Build",
+                            action = "Specify",
+                            target = target,
+                            environment = args?["environment"]?.ToString(),
+                            buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
+                        };
+                        case "rebuild": return new {
+                            module = "Build",
+                            action = "RebuildAll",
+                            target = target,
+                            environment = args?["environment"]?.ToString(),
+                            includeCallees = args?["includeCallees"]?.ToString(),
+                            buildPlanCap = args?["buildPlanCap"]?.ToObject<int?>(),
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                            deploy = args?["deploy"]?.ToObject<bool?>() ?? false
+                        };
+                        case "build_all": return new {
+                            module = "Build",
+                            action = "BuildAll",
+                            // Build All is deliberately KB-global. Preserve a supplied
+                            // target so the worker can reject it with a structured,
+                            // actionable validation error instead of silently ignoring it.
+                            target = target,
+                            environment = args?["environment"]?.ToString(),
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false,
+                            deploy = args?["deploy"]?.ToObject<bool?>() ?? false
+                        };
                         case "reorg": return new { module = "Build", action = "Reorg", target = target };
                         // Item 43 (friction 2026-05-22) — DDL diff/preview pre-reorg.
                         case "reorg_preview": return new { module = "Build", action = "ReorgPreview", target = target };
@@ -55,7 +90,8 @@ namespace GxMcp.Gateway.Routers
                         case "index": return new {
                             module = "KB",
                             action = "BulkIndex",
-                            force = args?["force"]?.ToObject<bool?>() ?? false
+                            force = args?["force"]?.ToObject<bool?>() ?? false,
+                            dryRun = args?["dryRun"]?.ToObject<bool?>() ?? false
                         };
                         case "status":
                             if (!string.IsNullOrEmpty(target))
@@ -67,9 +103,10 @@ namespace GxMcp.Gateway.Routers
                                 // counts / TargetsDone / terminal Status) or the timeout fires.
                                 // `since` is the snapshot string returned under _meta.snapshot
                                 // by the previous status response — pass it back for chaining.
-                                int wait = args?["wait"]?.ToObject<int?>() ?? 0;
+                                int wait = args?["wait"]?.ToObject<int?>()
+                                    ?? args?["wait_seconds"]?.ToObject<int?>() ?? 0;
                                 if (wait < 0) wait = 0;
-                                if (wait > 300) wait = 300;
+                                if (wait > McpRouter.MaxLongPollSeconds) wait = McpRouter.MaxLongPollSeconds;
                                 return new {
                                     module = "Build",
                                     action = "Status",
@@ -85,14 +122,19 @@ namespace GxMcp.Gateway.Routers
                             // index state transitions (e.g. UltraLiteReady→LiteReady→Ready) or
                             // a walk progress tick lands, instead of the agent polling in a loop.
                             {
-                                int idxWait = args?["wait"]?.ToObject<int?>() ?? 0;
+                                int idxWait = args?["wait"]?.ToObject<int?>()
+                                    ?? args?["wait_seconds"]?.ToObject<int?>() ?? 0;
                                 if (idxWait < 0) idxWait = 0;
-                                if (idxWait > 300) idxWait = 300;
+                                if (idxWait > McpRouter.MaxLongPollSeconds) idxWait = McpRouter.MaxLongPollSeconds;
+                                // Issue #209 (policy A): forward `freshness` so the wait can
+                                // target Freshness=current (a Status-only wait cannot observe the
+                                // warm-start delta that republishes it).
                                 return new {
                                     module = "KB",
                                     action = "GetIndexStatus",
                                     wait = idxWait,
-                                    since = args?["since"]?.ToString()
+                                    since = args?["since"]?.ToString(),
+                                    freshness = args?["freshness"]?.ToString()
                                 };
                             }
                         case "result":
@@ -121,11 +163,9 @@ namespace GxMcp.Gateway.Routers
                 case "genexus_test":
                     return new { module = "Test", action = "Run", target = args?["name"]?.ToString() };
 
-                // genexus_kb set_startup / get_startup — SDK-bound startup-object
-                // management. IDE "Set As Startup Object" parity. The other actions
-                // (list/open/close/set_default) are handled directly in Program.cs
-                // and never reach a router. Schema (action enum) is declared on
-                // genexus_kb in tool_definitions.json.
+                // genexus_kb set_startup / get_startup and environment selection —
+                // SDK-bound operations. The other actions (list/open/close/
+                // set_default) are handled directly in Program.cs.
                 case "genexus_kb":
                 {
                     string kbAction = args?["action"]?.ToString();
@@ -145,6 +185,31 @@ namespace GxMcp.Gateway.Routers
                         {
                             module = "KB",
                             action = "GetStartupObject"
+                        };
+                    }
+                    if (string.Equals(kbAction, "list_environments", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new
+                        {
+                            module = "KB",
+                            action = "ListEnvironments"
+                        };
+                    }
+                    if (string.Equals(kbAction, "get_environment", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new
+                        {
+                            module = "KB",
+                            action = "GetActiveEnvironment"
+                        };
+                    }
+                    if (string.Equals(kbAction, "set_environment", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new
+                        {
+                            module = "KB",
+                            action = "SetActiveEnvironment",
+                            target = args?["environment"]?.ToString()
                         };
                     }
                     return null;

@@ -6,9 +6,13 @@
 > [`sdk_uncovered_endpoints_2026-07-20.md`](sdk_uncovered_endpoints_2026-07-20.md).
 
 Goal: make the MCP cover every **GeneXus IDE user action** via the native SDK, so an
-agent can use the MCP *instead of* opening the GeneXus 18 IDE. This document maps each
+agent can use the MCP *instead of* opening the GeneXus IDE for a supported major. This document maps each
 IDE-capability domain to its concrete SDK entry point(s) and marks current MCP coverage,
 then ranks the gaps by how much they block "replace the IDE".
+
+Compatibility note (2026-09-09): the runtime catalog supports GeneXus 17 and 18.
+The SDK-probe and live rows below are historical GX18 evidence unless a row says
+otherwise; catalog support does not imply live persistence parity for every major.
 
 ## Scope decision (why this isn't "all 56k methods")
 
@@ -31,6 +35,14 @@ Sources: agent inventory of `src/GxMcp.Worker/Services` + `Helpers` (current cov
 `docs/sdk-probe/{INDEX,generators}.md` + `wwp-projection-discovery.md` (target surface).
 
 Status legend: **✅ covered** · **🟡 partial** (hand-rolled / reflection / read-only / narrow) · **❌ gap** (no real coverage).
+
+The read-only `genexus_sdk_probe { mode: "capabilities" }` contract now exposes
+the current decision surface as `available_unverified`, `unavailable`, or
+`deferred`. A reflected type is evidence of a loaded signature only;
+`persistenceVerified=false` remains until a disposable fixture certifies the
+roundtrip. Business Components are intentionally `deferred` because their
+rules execute in a generated application runtime, outside the design-time SDK
+worker.
 
 ## Build status — 2026-07-09 batch (code done, live-test pending)
 
@@ -57,7 +69,7 @@ Known honest caveats (in-code): `genexus_gxserver` `lock` FilePath semantics + `
 | Patterns core | 🟡 | `genexus_apply_pattern` | Only `UpdateParentObject` of 9 `IPatternBuildProcess` hooks; no full build sequence |
 | WorkWithPlus settings/components | ⛔ BLOCKED | — | Build works; **persist blocked** — typed `AddComponent` never flushes to the element tree; WWP persistence obfuscated. See `project_wwp_settings_components_persist_blocked`. |
 | WWP instance apply/update (MSBuild) | 🟡 | `genexus_apply_pattern` | `WWP_UpdateInstance/UpdateAllInstances/ApplyAllInstances/GenerateSecurityPrograms` tasks |
-| Refactor / rename / impact | 🟡 | `genexus_refactor`, `analyze` | Hand-rolled over index edges; **Move object** to folder/module has no path |
+| Refactor / rename / impact | 🟡 | `genexus_refactor`, `analyze`, `genexus_properties action=move` | Refactor/impact remains hand-rolled over index edges; move is SDK-backed with full snapshot verification |
 | Properties (resolver-driven) | 🟡 | `genexus_properties` | Valid-values / visibility / readonly via `IResolverFactory` not surfaced |
 | Build / Specify / Generate | 🟡 | `genexus_lifecycle`, `edit_and_build` | Reflection into MsBuild tasks; native `SpecifierService`/`BuildDaemon` not used |
 | Deploy (Library / Azure / Cloud) | ❌ | — | `IDeploymentService.Deploy`, `LibraryDeployer.*`, `IAzureDeploymentService` |
@@ -128,7 +140,7 @@ Ranking = how much each blocks a real team from dropping the IDE. Not effort.
 
 11. **Native build daemon.** Replace reflection-into-MsBuild-tasks with `SpecifierService.{SpecifyAll,SpecifyObjects,RebuildArtifacts,CreateDatabase}` + `BuildDaemonClient*` for cleaner, cancelable builds.
 12. **Resolver-driven properties.** Surface valid-values / visibility / readonly via `IResolverFactory.{GetValuesResolver,GetVisibleResolver,GetReadOnlyResolver}` so agents get the same constrained property choices the IDE grid shows — not blind set.
-13. **Move object** to folder/module — no SDK method surfaced (IDE-tree-only via `KBObjectParentHelper`). Needs a dig; may require `ObjectNameResolver.Qualify` + re-parent + save.
+13. ~~**Move object** to folder/module~~ — shipped in v2.35.0 and hardened after U16 exposed destructive `SaveWithParent` behavior. It now prefers `EntityManager.UpdateParent`, snapshots and verifies every part, supports dry-run/concurrency, and rolls back divergence.
 14. **CI pipelines** from the Team Dev client (`IContinuousIntegrationService.RunPipeline/…`) — nice-to-have once Commit/Update land.
 15. **New-object templates catalog** (`ObjectDefinitionHelper.LoadDefinitionsFor`) to mirror the IDE "New Object" template picker.
 

@@ -91,16 +91,6 @@ function getErrorMessage(error: unknown): string {
   return String(error ?? "");
 }
 
-function isSearchIndexUnavailable(error: unknown): boolean {
-  const message = getErrorMessage(error).toLowerCase();
-  return message.includes("index missing") || message.includes("index empty");
-}
-
-function isRootBrowseEmpty(error: unknown): boolean {
-  const message = getErrorMessage(error).toLowerCase();
-  return message.includes("root browse returned 0 objects");
-}
-
 function isGatewayTimeout(error: unknown): boolean {
   const message = getErrorMessage(error).toLowerCase();
   return message.includes("timeout gateway");
@@ -582,7 +572,7 @@ export async function addKbFolder(
           DEFAULT_STATUS_BAR_TIMEOUT,
         );
         return; // Success, exit retry loop
-      } catch (e) {
+      } catch {
         Logger.warn(
           `[Nexus IDE] Mirror mount point not ready yet (Attempt ${attempt}/${maxRetries}). Retrying in ${delayMs}ms...`,
         );
@@ -737,6 +727,26 @@ function initializeExtension(
   };
 
   // Start Backend and register discovery tools
+  const startTrustedBackend = async (reason: string): Promise<void> => {
+    if (!BackendManager.isWorkspaceTrusted()) {
+      Logger.info(`[Nexus IDE] Workspace trust is required before starting the backend (${reason}).`);
+      return;
+    }
+
+    const started = await backendManager.start(provider, true);
+    if (!started) {
+      Logger.warn(`[Nexus IDE] Backend startup was skipped or aborted (${reason}).`);
+    }
+  };
+
+  if (!BackendManager.isWorkspaceTrusted()) {
+    context.subscriptions.push(
+      vscode.workspace.onDidGrantWorkspaceTrust(() => {
+        void startTrustedBackend("workspace trust granted");
+      }),
+    );
+  }
+
   backendManager
     .start(provider)
     .then(async (started) => {

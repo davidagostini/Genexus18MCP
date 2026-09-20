@@ -27,6 +27,14 @@ namespace GxMcp.Gateway
             if (obj["Errors"] == null && obj["Warnings"] == null && obj["ErrorCount"] == null)
                 return rawJson;
 
+            return CompactObject(obj).ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        // PERFORMANCE (perf-review round 3): tree-based core shared with the gateway
+        // dispatch paths — callers holding an in-memory JObject skip the
+        // serialize→parse round-trip the string overload used to force.
+        public static JObject CompactObject(JObject obj)
+        {
             var errors = obj["Errors"] as JArray ?? new JArray();
             var warnings = obj["Warnings"] as JArray ?? new JArray();
             int errCount = obj["ErrorCount"]?.Value<int?>() ?? errors.Count;
@@ -56,6 +64,14 @@ namespace GxMcp.Gateway
                 ["Phase"] = obj["Phase"],
                 ["TaskId"] = obj["TaskId"],
                 ["ExitCode"] = obj["ExitCode"],
+                ["buildMode"] = obj["buildMode"] ?? obj["BuildMode"],
+                ["kbOpened"] = obj["kbOpened"] ?? obj["KbOpened"],
+                ["buildAllDone"] = obj["buildAllDone"] ?? obj["BuildAllDone"],
+                ["reorgRequired"] = obj["reorgRequired"] ?? obj["ReorgRequired"],
+                ["msBuildExitCode"] = obj["msBuildExitCode"] ?? obj["MsBuildExitCode"],
+                ["fullLogPath"] = obj["fullLogPath"] ?? obj["FullLogPath"],
+                ["error"] = obj["error"] ?? obj["Error"],
+                ["hint"] = obj["hint"] ?? obj["Hint"],
                 ["errorCount"] = errCount,
                 ["warningCount"] = warnCount,
                 ["errors"] = new JArray(errors.Take(ErrorCap)),
@@ -64,6 +80,34 @@ namespace GxMcp.Gateway
                 ["truncated"] = errCount > ErrorCap,
                 ["compact"] = true
             };
+
+            if (obj["Environment"] != null)
+                compactObj["Environment"] = obj["Environment"];
+
+            // compile_check metadata is attached to the raw BuildTaskStatus with
+            // PascalCase property names. Preserve it in the compact polling/result
+            // shape; otherwise async status silently loses caller-cap evidence.
+            if (obj["CompileCheck"]?.ToObject<bool?>() == true || obj["compileCheck"] != null)
+            {
+                var compileCheck = obj["compileCheck"] as JObject;
+                if (compileCheck != null)
+                {
+                    compactObj["compileCheck"] = compileCheck;
+                }
+                else
+                {
+                    var compileCheckPayload = new JObject
+                    {
+                        ["callers"] = obj["CompileCheckCallersRequested"],
+                        ["callerCap"] = obj["CompileCheckCallerCap"],
+                        ["callersAdded"] = obj["CompileCheckCallers"] ?? JValue.CreateNull(),
+                        ["truncated"] = obj["CompileCheckTruncated"],
+                        ["callerGraphAvailable"] = obj["CompileCheckGraphAvailable"]
+                            ?? obj["compileCheckGraphAvailable"]
+                    };
+                    compactObj["compileCheck"] = compileCheckPayload;
+                }
+            }
 
             // FR (2026-05-21): when CS0246/CS2001 fired, BuildService already extracted
             // the missing object names into SuggestedRebuildTargets. Surface them as a
@@ -150,7 +194,7 @@ namespace GxMcp.Gateway
             if (obj["ElapsedSeconds"] != null) compactObj["ElapsedSeconds"] = obj["ElapsedSeconds"];
             if (obj["_meta"] != null) compactObj["_meta"] = obj["_meta"];
 
-            return compactObj.ToString(Newtonsoft.Json.Formatting.None);
+            return compactObj;
         }
 
         /// <summary>
@@ -200,7 +244,17 @@ namespace GxMcp.Gateway
             bool partial = buildPayload["partial_success"]?.ToObject<bool?>()
                            ?? buildPayload["PartialSuccess"]?.ToObject<bool?>()
                            ?? false;
+            bool isBuildAll = string.Equals(buildPayload["buildMode"]?.ToString(), "BuildAll", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(buildPayload["BuildMode"]?.ToString(), "BuildAll", StringComparison.OrdinalIgnoreCase)
+                           || string.Equals(buildPayload["Action"]?.ToString(), "BuildAll", StringComparison.OrdinalIgnoreCase);
+            bool reorgRequired = buildPayload["reorgRequired"]?.ToObject<bool?>()
+                              ?? buildPayload["ReorgRequired"]?.ToObject<bool?>()
+                              ?? string.Equals(status, "ReorgRequired", StringComparison.OrdinalIgnoreCase);
+            bool buildAllDone = buildPayload["buildAllDone"]?.ToObject<bool?>()
+                             ?? buildPayload["BuildAllDone"]?.ToObject<bool?>()
+                             ?? !isBuildAll;
 
+            if (isBuildAll && (reorgRequired || !buildAllDone)) return BuildOutcome.Error;
             if (partial) return BuildOutcome.PartialSuccess;
 
             // Explicit terminal labels win when present.
@@ -212,8 +266,10 @@ namespace GxMcp.Gateway
                 if (string.Equals(status, "Failed", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(status, "Error", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "ReorgRequired", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                    || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(status, "stalled", StringComparison.OrdinalIgnoreCase))
                     return BuildOutcome.Error;
             }
 

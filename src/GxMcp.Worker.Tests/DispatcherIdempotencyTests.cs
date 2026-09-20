@@ -36,25 +36,29 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void UnknownMethod_WithRequestId_CachesAndReplays()
+        public void UnknownMethod_WithRequestId_DoesNotCacheErrorEnvelope()
         {
+            // A5: envelopes de erro não são mais cacheados — um retry com o
+            // mesmo clientRequestId deve re-executar em vez de reproduzir a
+            // falha transitória via replay.
             var dispatcher = CommandDispatcher.Instance;
             string rpc = "{\"method\":\"unknown_method\",\"action\":\"nope\",\"target\":\"X\",\"params\":{\"clientRequestId\":\"unk-1\"}}";
 
             string first = dispatcher.Dispatch(rpc);
             string second = dispatcher.Dispatch(rpc);
 
-            // First response: canonical error envelope, no replay tag.
             var f = JObject.Parse(first);
             Assert.Equal("error", (string)f["status"]);
             Assert.True(f["_meta"]?["replayed"] == null);
 
-            // Second response: same envelope shape + replay tag set.
+            // Segunda chamada re-executa: mesma forma de erro, sem tag de replay.
             var s = JObject.Parse(second);
             Assert.Equal("error", (string)s["status"]);
             Assert.Equal((string)f["error"]["code"], (string)s["error"]["code"]);
-            Assert.True((bool)s["_meta"]["replayed"]);
-            Assert.NotNull(s["_meta"]["replayedFromUtc"]);
+            Assert.True(s["_meta"]?["replayed"] == null);
+
+            // Nada foi persistido no cache.
+            Assert.Equal(0, IdempotencyCache.Count);
         }
 
         [Fact]
@@ -77,33 +81,94 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void DifferentRequestIds_CacheSeparately()
+        public void MultiEditTargets_UsesMutationEngineVersionFence()
         {
             var dispatcher = CommandDispatcher.Instance;
-            string rpc1 = "{\"method\":\"unknown_method\",\"action\":\"a\",\"params\":{\"clientRequestId\":\"id-A\"}}";
-            string rpc2 = "{\"method\":\"unknown_method\",\"action\":\"a\",\"params\":{\"clientRequestId\":\"id-B\"}}";
+            var rpc = new JObject
+            {
+                ["method"] = "batch",
+                ["action"] = "MultiEdit",
+                ["params"] = new JObject
+                {
+                    ["items"] = new JArray
+                    {
+                        new JObject
+                        {
+                            ["name"] = "NoSuchObject",
+                            ["part"] = "Source",
+                            ["content"] = "updated",
+                            ["expectedVersion"] = "stale"
+                        }
+                    },
+                    ["rollbackOnFailure"] = true
+                }
+            };
 
-            dispatcher.Dispatch(rpc1);
-            dispatcher.Dispatch(rpc2);
-            Assert.Equal(2, IdempotencyCache.Count);
+            var response = JObject.Parse(dispatcher.Dispatch(rpc.ToString(Newtonsoft.Json.Formatting.None)));
 
-            // Replays each return their own original (both happen to be the
-            // same shape, but the cache lookup is by id).
-            var r1 = JObject.Parse(dispatcher.Dispatch(rpc1));
-            Assert.True((bool)r1["_meta"]["replayed"]);
+            Assert.Equal("error", response["status"]?.ToString());
+            Assert.Equal("ConcurrencyStateUnavailable", response["error"]?["code"]?.ToString());
         }
 
         [Fact]
-        public void RequestId_FoundInsideNestedParams_StillCaches()
+        public void DifferentRequestIds_SuccessEnvelopes_CacheSeparately()
         {
-            // OperationsRouter passes args inside params.params for some routes.
-            // The dispatcher must read clientRequestId from either layer.
-            var dispatcher = CommandDispatcher.Instance;
-            string rpc = "{\"method\":\"unknown_method\",\"action\":\"x\",\"params\":{\"params\":{\"clientRequestId\":\"nested-1\"}}}";
-            dispatcher.Dispatch(rpc);
-            Assert.Equal(1, IdempotencyCache.Count);
-            var replay = JObject.Parse(dispatcher.Dispatch(rpc));
-            Assert.True((bool)replay["_meta"]["replayed"]);
+            // A5: erros não são cacheados; a separação por id vale para
+            // envelopes de sucesso — validado via IsCacheableSuccessEnvelope
+            // com dois envelopes distintos.
+            var ok1 = "{\"status\":\"Ok\",\"target\":\"A\"}";
+            var ok2 = "{\"status\":\"Ok\",\"target\":\"B\"}";
+            Assert.True(CommandDispatcher.IsCacheableSuccessEnvelope(ok1));
+            Assert.True(CommandDispatcher.IsCacheableSuccessEnvelope(ok2));
+        }
+
+        [Fact]
+        public void ErrorEnvelope_WithTopLevelErrorToken_IsNotCacheable()
+        {
+            var envelope = "{\"error\":{\"code\":\"KbNotOpen\"},\"status\":\"Error\"}";
+            Assert.False(CommandDispatcher.IsCacheableSuccessEnvelope(envelope));
+        }
+
+        [Theory]
+        [InlineData("Error")]
+        [InlineData("NotFound")]
+        [InlineData("NotImplemented")]
+        [InlineData("WorkerBusy")]
+        [InlineData("Busy")]
+        [InlineData("IndexNotReady")]
+        [InlineData("Reindexing")]
+        [InlineData("IndexCold")]
+        [InlineData("Timeout")]
+        [InlineData("Cancelled")]
+        [InlineData("Running")]
+        public void NonCacheableStatuses_AreRejected(string status)
+        {
+            var envelope = "{\"status\":\"" + status + "\"}";
+            Assert.False(CommandDispatcher.IsCacheableSuccessEnvelope(envelope));
+        }
+
+        [Fact]
+        public void StatusComparison_IsCaseInsensitive()
+        {
+            Assert.False(CommandDispatcher.IsCacheableSuccessEnvelope("{\"status\":\"error\"}"));
+            Assert.True(CommandDispatcher.IsCacheableSuccessEnvelope("{\"status\":\"OK\"}"));
+        }
+
+        [Theory]
+        [InlineData("{\"status\":\"Ok\"}")]
+        [InlineData("{\"code\":\"WriteApplied\",\"target\":\"X\"}")]
+        public void SuccessEnvelopes_AreCacheable(string envelope)
+        {
+            Assert.True(CommandDispatcher.IsCacheableSuccessEnvelope(envelope));
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("not-json")]
+        [InlineData("[1,2,3]")]
+        public void InvalidOrNonObjectJson_IsNotCacheable(string json)
+        {
+            Assert.False(CommandDispatcher.IsCacheableSuccessEnvelope(json));
         }
     }
 }

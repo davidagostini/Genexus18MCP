@@ -10,7 +10,7 @@ namespace GxMcp.Gateway.Tests
     // returns counts + top-10 errors + warning dedup; opt out with compact=false.
     public class LifecycleResponseShaperTests
     {
-        private static string MakeBuildStatus(int errors, int warnings, string repeatedWarning = null)
+        private static string MakeBuildStatus(int errors, int warnings, string? repeatedWarning = null)
         {
             var errArr = new JArray();
             for (int i = 0; i < errors; i++) errArr.Add(new JObject { ["message"] = $"err{i}: CS0246", ["location"] = $"file{i}.cs(10,5)" });
@@ -59,6 +59,28 @@ namespace GxMcp.Gateway.Tests
             Assert.Single(warns);
             Assert.Equal(6, warns[0]["count"].Value<int>());
             Assert.Equal("GAM nao sera reorganizado", warns[0]["message"].ToString());
+        }
+
+        [Fact]
+        public void Compact_True_PreservesCompileCheckCallerEvidence()
+        {
+            var rawObj = JObject.Parse(MakeBuildStatus(0, 0));
+            rawObj["CompileCheck"] = true;
+            rawObj["CompileCheckCallersRequested"] = true;
+            rawObj["CompileCheckCallerCap"] = 7;
+            rawObj["CompileCheckCallers"] = new JArray("CallerA", "CallerB");
+            rawObj["CompileCheckTruncated"] = true;
+            rawObj["CompileCheckGraphAvailable"] = true;
+
+            var compact = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+            var evidence = compact["compileCheck"] as JObject;
+
+            Assert.NotNull(evidence);
+            Assert.True(evidence!["callers"]!.Value<bool>());
+            Assert.Equal(7, evidence["callerCap"]!.Value<int>());
+            Assert.Equal(new[] { "CallerA", "CallerB" }, evidence["callersAdded"]!.ToObject<string[]>());
+            Assert.True(evidence["truncated"]!.Value<bool>());
+            Assert.True(evidence["callerGraphAvailable"]!.Value<bool>());
         }
 
         [Fact]
@@ -184,6 +206,24 @@ namespace GxMcp.Gateway.Tests
                 LifecycleResponseShaper.ClassifyBuildOutcome(fail));
         }
 
+        [Fact]
+        public void ClassifyBuildOutcome_BuildAllRequiresCompletionEvidence()
+        {
+            var payload = JObject.Parse(@"{""Status"":""Succeeded"",""Action"":""BuildAll"",""buildMode"":""BuildAll"",""ExitCode"":0,""ErrorCount"":0}");
+
+            Assert.Equal(LifecycleResponseShaper.BuildOutcome.Error,
+                LifecycleResponseShaper.ClassifyBuildOutcome(payload));
+        }
+
+        [Fact]
+        public void ClassifyBuildOutcome_BuildAllReorgOverridesPartialSuccess()
+        {
+            var payload = JObject.Parse(@"{""Status"":""ReorgRequired"",""Action"":""BuildAll"",""buildMode"":""BuildAll"",""buildAllDone"":false,""reorgRequired"":true,""PartialSuccess"":true}");
+
+            Assert.Equal(LifecycleResponseShaper.BuildOutcome.Error,
+                LifecycleResponseShaper.ClassifyBuildOutcome(payload));
+        }
+
         // Production bug this catches: a non-build envelope (e.g. job status,
         // history result) silently being reshaped — losing fields the caller
         // depended on — because the shaper failed to gate on the build-shape
@@ -211,9 +251,9 @@ namespace GxMcp.Gateway.Tests
         [InlineData("")]
         [InlineData("   ")]
         [InlineData("\t\r\n")]
-        public void Compact_EmptyOrWhitespace_ReturnsAsIs(string raw)
+        public void Compact_EmptyOrWhitespace_ReturnsAsIs(string? raw)
         {
-            var result = LifecycleResponseShaper.Compact(raw, compact: true);
+            var result = LifecycleResponseShaper.Compact(raw!, compact: true);
             Assert.Equal(raw, result);
         }
 
@@ -320,6 +360,18 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("T-1", obj["_meta"]!["taskId"]!.ToString());
         }
 
+        [Fact]
+        public void Compact_PropagatesResolvedEnvironment()
+        {
+            var rawObj = JObject.Parse(MakeBuildStatus(0, 0));
+            rawObj["Status"] = "Succeeded";
+            rawObj["Environment"] = "NETCoreMySQL";
+
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+
+            Assert.Equal("NETCoreMySQL", obj["Environment"]!.ToString());
+        }
+
         // Production bug this catches: with very many duplicate warnings, the
         // sampleLocations array was unbounded and the "compact" envelope was
         // anything but. Cap at WarningSampleCap (3).
@@ -385,6 +437,40 @@ namespace GxMcp.Gateway.Tests
             Assert.NotNull(ev);
             Assert.False(ev!["ok"]!.Value<bool>());
             Assert.Contains("MyProc", obj["hint"]!.ToString());
+        }
+
+        // Issue #86: specify on unreachable object returns generateEvidence with ok=false
+        // and effective_status=SucceededWithGaps.
+        [Fact]
+        public void Compact_SpecifyEvidenceUnreachable_SurfacesSucceededWithGaps()
+        {
+            var rawObj = JObject.Parse(MakeBuildStatus(0, 1));
+            rawObj["Status"] = "Succeeded";
+            rawObj["Action"] = "Build";
+            rawObj["Warnings"] = new JArray { "[specify-gap] Object unreachable or not found during specify: UnreachableProc" };
+            rawObj["GenerateEvidence"] = new JObject
+            {
+                ["ok"] = false,
+                ["objectsChecked"] = 1,
+                ["objectsSpecified"] = 0,
+                ["unreachable"] = new JArray
+                {
+                    new JObject { ["object"] = "UnreachableProc", ["reason"] = "unreachable" }
+                },
+                ["note"] = "Specify reported success but 1 object(s) were unreachable or not found in the Knowledge Base: UnreachableProc. The object was not specified by GeneXus."
+            };
+            rawObj["Hint"] = "Specification gap: object UnreachableProc was unreachable (spc0217) or not found.";
+
+            var obj = JObject.Parse(LifecycleResponseShaper.Compact(rawObj.ToString(), compact: true));
+
+            Assert.Equal("SucceededWithGaps", obj["effective_status"]!.ToString());
+            var ev = obj["generateEvidence"] as JObject;
+            Assert.NotNull(ev);
+            Assert.False(ev!["ok"]!.Value<bool>());
+            var un = ev!["unreachable"] as JArray;
+            Assert.NotNull(un);
+            Assert.Single(un!);
+            Assert.Equal("UnreachableProc", un![0]?["object"]?.ToString());
         }
 
         // A Succeeded build whose gate passed (ok=true) passes evidence through

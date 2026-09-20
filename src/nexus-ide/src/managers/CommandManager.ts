@@ -12,15 +12,6 @@ import { DiagramView } from "../webviews/DiagramView";
 import { PropertiesView } from "../webviews/PropertiesView";
 import { 
   GX_SCHEME, 
-  CONFIG_SECTION, 
-  CONFIG_MCP_PORT, 
-  DEFAULT_MCP_PORT,
-  MODULE_BUILD,
-  MODULE_KB,
-  MODULE_ANALYZE,
-  MODULE_REFACTOR,
-  MODULE_WRITE,
-  MODULE_HEALTH,
   DEFAULT_STATUS_BAR_TIMEOUT,
   STATE_KEY_MCP_DISCOVERY,
 } from "../constants";
@@ -235,7 +226,7 @@ export class CommandManager {
               title: `GeneXus: Building ${objName}...`,
               cancellable: false,
             },
-            async (progress) => {
+            async (_progress) => {
               try {
                 const result = await this.provider.callMcpTool(
                   "genexus_lifecycle",
@@ -750,7 +741,7 @@ export class CommandManager {
 
       vscode.commands.registerCommand(
         "gx.showReferences",
-        async (objName: string) => {
+        async (_objName: string) => {
           const activeEditor = vscode.window.activeTextEditor;
           if (!activeEditor) return;
           await vscode.commands.executeCommand(

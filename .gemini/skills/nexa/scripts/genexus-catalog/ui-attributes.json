@@ -1,0 +1,4156 @@
+{
+	"adsPosition": {
+		"Type": "enum{Top;Bottom}",
+		"Description": "Advertisement placement area within panel",
+		"Default": "Bottom",
+		"Require": {
+			"showAds": "True"
+		},
+		"Options": {
+			"Top": "Ads positioned at top",
+			"Bottom": "Ads positioned at bottom"
+		},
+		"ProductVersion": "<15.7"
+	},
+	"autoRefreshTime": {
+		"Type": "integer",
+		"Description": "Automatic refresh interval in seconds",
+		"Default": "0"
+	},
+	"backgroundGx": {
+		"Type": "ref(Image)",
+		"Description": "Tiled background image for element"
+	},
+	"bgColor": {
+		"Type": "color",
+		"Description": "Background color of element",
+		"Default": "Transparent",
+		"ProductVersion": "<15.7"
+	},
+	"caption": {
+		"Type": "string",
+		"Description": "Display text value",
+		"Constraints": [
+			"Breaklines are not allowed; must use <br /> with `format='HTML'`",
+			"Subtext styling allowed only when `format='HTML'` using these tags: `<b>`, `<i>`, `<u>`, `<sub>`, `<sup>`",
+			"Unicode characteres are not allowed; including emojis"
+		],
+		"Access": "init/get/set"
+	},
+	"dataSelector": {
+		"Type": "ref(DataSelector)",
+		"Description": "Name of a `Data Selector` object defined in the `Knowledge Base`"
+	},
+	"dataSelectorParameters": {
+		"Type": "list(ref(Attribute|Variable)|Constant)",
+		"Description": "Parameters for `Data Selector` configuration"
+	},
+	"deepLinkName": {
+		"Type": "string",
+		"Description": "String to find before '?' in URL"
+	},
+	"share": {
+		"Type": "string",
+		"Description": "Area for sharing content within panel"
+	},
+	"showAds": {
+		"Type": "boolean",
+		"Description": "Advertisement placement area within panel",
+		"Default": "True"
+	},
+	"tooltipText": {
+		"Type": "string",
+		"Description": "Advisory information displayed as tooltip",
+		"Access": "init/set"
+	},
+	"overflowBehavior": {
+		"Type": "enum{Add Scroll;Clip Content;Platform Default}",
+		"Description": "Set overflow behavior when Auto Grow is disabled",
+		"Options": {
+			"Add Scroll": "Show scroll when content overflows",
+			"Clip Content": "Clip overflowing content",
+			"Platform Default": "Use platform default overflow behavior"
+		},
+		"Default": "Platform Default",
+		"Require": {
+			"autoGrow": "False"
+		},
+		"Scope": "Native"
+	},
+	"orientation": {
+		"Type": "enum{Any Orientation;Landscape;Portrait}",
+		"Description": "Layout direction for `Panel` objects",
+		"Default": "Any Orientation",
+		"Options": {
+			"Any Orientation": "No predefined orientation; inherits from platform",
+			"Landscape": "Objects restricted to Landscape layout",
+			"Portrait": "Objects restricted to Portrait layout"
+		}
+	},
+	"platform": {
+		"Type": "sel(//Platforms/Platform/Name;src/#patternsettings/WorkWith.gx)",
+		"Description": "Select platform for execution"
+	},
+	"type": {
+		"Type": "enum{Any Mode;View;Edit}",
+		"Description": "Layout mode for `View` or `Edit`",
+		"Default": "Any Mode",
+		"Options": {
+			"Any Mode": "No specific layout mode",
+			"View": "Display layout",
+			"Edit": "Form layout"
+		}
+	},
+	"accessibleBasedControl": {
+		"Type": "ref(Control)",
+		"Description": "Announces accessible name based on another text control",
+		"ProductVersion": ">=18.5"
+	},
+	"accessibleName": {
+		"Type": "string",
+		"Description": "Short string label for screen reader announcements"
+	},
+	"accessibleRole": {
+		"Type": "enum{Article;Header;Complementary;Footer;List;Main;Region;*}",
+		"Description": "Semantic role of control for assistive technologies",
+		"Default": " ",
+		"Options": {
+			"Article": "Self-contained section in application",
+			"Header": "Application header",
+			"Complementary": "Section related to main content but can stand alone",
+			"Footer": "Application footer containing identifying information",
+			"List": "Unordered list of items",
+			"Main": "Main content of application",
+			"Region": "Section or region of web page",
+			"*": ""
+		},
+		"ProductVersion": ">=18.5"
+	},
+	"align": {
+		"Type": "enum{Center;Left;Right}",
+		"Description": "Controls horizontal alignment of element",
+		"Default": "Left",
+		"Options": {
+			"Center": "Element centered horizontally",
+			"Left": "Element aligned to left edge",
+			"Right": "Element aligned to right edge"
+		}
+	},
+	"border": {
+		"Type": "measure",
+		"Description": "Width of border around table",
+		"Default": "2"
+	},
+	"borderColor": {
+		"Type": "color",
+		"Description": "Sets color of element's borders",
+		"Default": "Transparent",
+		"Access": "init/set"
+	},
+	"cellPadding": {
+		"Type": "measure",
+		"Description": "Space between cell borders and contents",
+		"Default": "1",
+		"Access": "init/set"
+	},
+	"cellSpacing": {
+		"Type": "measure",
+		"Description": "Space between cells in table",
+		"Default": "2",
+		"Access": "init/set"
+	},
+	"columns": {
+		"Type": "integer",
+		"Description": "Number of columns in FreeStyle Grid",
+		"Default": "3",
+		"Access": "init/set"
+	},
+	"columns#tabular": {
+		"Type": "pack(measure)",
+		"Description": "Style for each column"
+	},
+	"enableHeaderRowPattern": {
+		"Type": "boolean",
+		"Description": "Enable Header Row UI pattern",
+		"Default": "False"
+	},
+	"expandBounds": {
+		"Type": "enum{Background Only;Content & Background;None}",
+		"Description": "Control expansion into unsafe areas",
+		"Default": "Background Only",
+		"Options": {
+			"Background Only": "Expands background, not content",
+			"Content & Background": "Expands both background and content",
+			"None": "Doesn't expand control"
+		}
+	},
+	"expandDirection": {
+		"Type": "set(Top;Left;Right;Bottom)",
+		"Description": "Directions for expanding control bounds"
+	},
+	"expandLimit": {
+		"Type": "enum{Behind System Bars;Behind Application Bars}",
+		"Description": "Control expansion beyond application and status bars",
+		"Default": "Behind System Bars",
+		"Options": {
+			"Behind System Bars": "Expand to both application and status bars",
+			"Behind Application Bars": "Expand only beyond application bar"
+		}
+	},
+	"header": {
+		"Type": "string",
+		"Description": "Displays header image above table"
+	},
+	"headerRowApplicationBarsClass": {
+		"Type": "class",
+		"Description": "Style class for application bars in header row pattern",
+		"ProductVersion": ">=15.7"
+	},
+	"invisibleMode": {
+		"Type": "enum{Keep Space;Collapse Space}",
+		"Description": "Controls space occupied by hidden elements",
+		"Default": "Keep Space",
+		"Options": {
+			"Keep Space": "Layout maintains control's space when not visible",
+			"Collapse Space": "Layout collapses control's space for other elements"
+		},
+		"ProductVersion": ">=15.7"
+	},
+	"isSlot": {
+		"Type": "boolean",
+		"Description": "Container included inside Stencil behaves as a Slot",
+		"Default": "False"
+	},
+	"name": {
+		"Type": "string",
+		"Description": "Unique control name in layout",
+		"Constraints": [
+			"For data-based controls, default value is `data` value with `&` as `ctl` and without `.` or `.Item(*)`"
+		]
+	},
+	"rows": {
+		"Type": "integer",
+		"Description": "Gap size between rows in design time",
+		"Default": "3",
+		"ProductVersion": ">=16.9",
+		"Access": "init/get/set"
+	},
+	"rows#tabular": {
+		"Type": "pack(measure)",
+		"Description": "Style for each row"
+	},
+	"rules": {
+		"Type": "enum{All;Columns;Rows;None}",
+		"Description": "Dividing lines displayed in application",
+		"Default": "None",
+		"Options": {
+			"All": "All dividing lines shown",
+			"Columns": "Column dividing lines shown",
+			"Rows": "Row dividing lines shown",
+			"None": "No dividing lines shown"
+		},
+		"Access": "init/set"
+	},
+	"scrollAttachment": {
+		"Type": "string",
+		"Description": "Reference control for scroll and zoom factors",
+		"Default": "Parent"
+	},
+	"scrollFactor": {
+		"Type": "decimal",
+		"Description": "Controls table or canvas scrolling speed relative to containing control",
+		"Default": "1"
+	},
+	"zoomFactor": {
+		"Type": "decimal",
+		"Description": "Simulates zoom effect when scrolling",
+		"Default": "0"
+	},
+	"alignSelf": {
+		"Type": "enum{Auto;Flex Start;Flex End;Center;Baseline;Stretch}",
+		"Description": "Aligns element within cross axis",
+		"Default": "Auto",
+		"Context": [
+			"flex"
+		],
+		"Options": {
+			"Auto": "Inherits parent's alignment; stretches if no parent",
+			"Flex Start": "Positions at cross axis start",
+			"Flex End": "Positions at cross axis end",
+			"Center": "Centers element in cross axis",
+			"Baseline": "Positions at container baseline",
+			"Stretch": "Stretches to fill cross axis"
+		}
+	},
+	"bottom": {
+		"Type": "measure",
+		"Description": "Bottom edge offset",
+		"Context": [
+			"canvas"
+		]
+	},
+	"colSpan": {
+		"Type": "integer",
+		"Description": "Horizontal span of control cell",
+		"Default": "1",
+		"Context": [
+			"table",
+			"smart"
+		]
+	},
+	"flexGrow": {
+		"Type": "string",
+		"Description": "Distributes remaining space among flex items",
+		"Default": "1",
+		"Context": [
+			"flex"
+		]
+	},
+	"flexHeight": {
+		"Type": "measure",
+		"Description": "Height of control varies based on flex properties",
+		"Context": [
+			"flex"
+		],
+		"ProductVersion": "=>15.12"
+	},
+	"flexShrink": {
+		"Type": "string",
+		"Description": "Child element's shrink factor in flexible layout",
+		"Default": "1",
+		"Context": [
+			"flex"
+		]
+	},
+	"flexWidth": {
+		"Type": "measure",
+		"Description": "Width of control varies based on flex properties",
+		"Context": [
+			"flex"
+		],
+		"ProductVersion": ">=15.7"
+	},
+	"height": {
+		"Type": "measure",
+		"Description": "Control height",
+		"Default": "17",
+		"Context": [
+			"table"
+		],
+		"ProductVersion": ">=16.3",
+		"Access": "init/set"
+	},
+	"left": {
+		"Type": "measure",
+		"Description": "Left edge offset",
+		"Context": [
+			"canvas"
+		]
+	},
+	"maxHeight": {
+		"Type": "measure",
+		"Description": "Maximum height constraint",
+		"Default": "500",
+		"Context": [
+			"flex"
+		]
+	},
+	"maxWidth": {
+		"Type": "measure",
+		"Description": "Maximum width constraint",
+		"Default": "500",
+		"Context": [
+			"flex"
+		]
+	},
+	"minHeight": {
+		"Type": "measure",
+		"Description": "Minimum height constraint",
+		"Context": [
+			"flex"
+		]
+	},
+	"minWidth": {
+		"Type": "measure",
+		"Description": "Minimum width constraint",
+		"Context": [
+			"flex"
+		]
+	},
+	"right": {
+		"Type": "measure",
+		"Description": "Right edge offset",
+		"Context": [
+			"canvas"
+		]
+	},
+	"rowSpan": {
+		"Type": "integer",
+		"Description": "Vertical span of control cell",
+		"Default": "1",
+		"Context": [
+			"table",
+			"smart"
+		]
+	},
+	"top": {
+		"Type": "measure",
+		"Description": "Top edge offset",
+		"Context": [
+			"canvas"
+		]
+	},
+	"width": {
+		"Type": "measure",
+		"Description": "Control width",
+		"Default": "30",
+		"Context": [
+			"table"
+		],
+		"Access": "init/set"
+	},
+	"zOrder": {
+		"Type": "integer",
+		"Description": "Visual stacking order among overlapping elements",
+		"Default": "0"
+	},
+	"adjustContainerSize": {
+		"Type": "boolean",
+		"Description": "Controls whether flex container size adjusts to children",
+		"Default": "False",
+		"Require": {
+			"flexWrap": "No Wrap"
+		}
+	},
+	"alignContent": {
+		"Type": "enum{Stretch;Flex Start;Flex End;Center;Space Between;Space Around}",
+		"Description": "Aligns flex lines within container",
+		"Default": "Stretch",
+		"Options": {
+			"Stretch": "Stretches lines to fill container",
+			"Flex Start": "Packs lines toward start of container",
+			"Flex End": "Packs lines toward end of container",
+			"Center": "Centers lines in container",
+			"Space Between": "Evenly distributes lines with space between",
+			"Space Around": "Distributes lines evenly, including spaces around"
+		}
+	},
+	"alignItems": {
+		"Type": "enum{Stretch;Flex Start;Flex End;Center;Baseline}",
+		"Description": "Aligns child elements vertically within container",
+		"Default": "Stretch",
+		"Options": {
+			"Stretch": "Stretches controls to fit the container",
+			"Flex Start": "Positions controls at the start of the container",
+			"Flex End": "Positions controls at the end of the container",
+			"Center": "Centers controls within the container",
+			"Baseline": "Aligns controls based on their baselines"
+		}
+	},
+	"flexDirection": {
+		"Type": "enum{Row;Row Reverse;Column;Column Reverse}",
+		"Description": "Direction of main axis in flex container",
+		"Default": "Row",
+		"Options": {
+			"Row": "Controls displayed horizontally from left to right",
+			"Row Reverse": "Controls displayed horizontally from right to left",
+			"Column": "Controls displayed vertically from top to bottom",
+			"Column Reverse": "Controls displayed vertically from bottom to top"
+		}
+	},
+	"flexWrap": {
+		"Type": "enum{No Wrap;Wrap;Wrap Reverse}",
+		"Description": "Controls layout direction of flex container",
+		"Default": "No Wrap",
+		"Options": {
+			"No Wrap": "Content does not wrap",
+			"Wrap": "Content wraps if necessary",
+			"Wrap Reverse": "Content wraps in reverse order"
+		}
+	},
+	"justifyContent": {
+		"Type": "enum{Flex Start;Flex End;Center;Space Between;Space Around}",
+		"Description": "Aligns flex elements along main axis",
+		"Default": "Flex Start",
+		"Options": {
+			"Flex Start": "Elements aligned to container start",
+			"Flex End": "Elements aligned to container end",
+			"Center": "Elements centered in container",
+			"Space Between": "Elements spaced between each other",
+			"Space Around": "Elements with space before, between and after"
+		}
+	},
+	"autoGrow": {
+		"Type": "boolean",
+		"Description": "Automatically adjusts control height based on content",
+		"Default": "False"
+	},
+	"collection": {
+		"Type": "list(ref(Grid:Layout))",
+		"Description": "Name of collection used for populating the control entries"
+	},
+	"defaultAction": {
+		"Type": "ref(Event)",
+		"Description": "Default event executed when selecting a row",
+		"Default": "<default>"
+	},
+	"defaultSelectedItemLayout": {
+		"Type": "ref(Layout)",
+		"Description": "Layout displayed when row is selected",
+		"Default": "(none)"
+	},
+	"itemLayout": {
+		"Type": "ref(Layout)",
+		"Description": "Set or get current layout in a grid",
+		"Access": "get/set"
+	},
+	"itemSelectedLayout": {
+		"Type": "ref(Layout)",
+		"Description": "Set or get current selected layout in a grid",
+		"Access": "get/set"
+	},
+	"emptyDataSetBackground": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed when grid has no data"
+	},
+	"emptyDataSetBackgroundClass": {
+		"Type": "class",
+		"Description": "Style class for empty grid background image"
+	},
+	"emptyDataSetText": {
+		"Type": "string",
+		"Description": "Text displayed when grid has no data"
+	},
+	"emptyDataSetTextClass": {
+		"Type": "class",
+		"Description": "Text displayed when grid has no data"
+	},
+	"enableMultipleSelection": {
+		"Type": "boolean",
+		"Description": "Allows multiple rows to be selected in a grid",
+		"Default": "False"
+	},
+	"inverseLoad": {
+		"Type": "boolean",
+		"Description": "Load grid data from bottom to top in common grid, right to left in horizontal grid",
+		"Default": "False"
+	},
+	"pullToRefresh": {
+		"Type": "boolean",
+		"Description": "Enable pull-down-to-refresh gesture for grid data",
+		"Default": "False"
+	},
+	"selectionFlag": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores selection state for multiple grid items"
+	},
+	"selectionFlagFieldSpecifier": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores selection state for multiple grid items",
+		"Constaints": [
+			"Requires `selectionFlag` reference a structured type (SDT/BC)"
+		],
+		"ProductVersion": ">=15.7"
+	},
+	"selectionType": {
+		"Type": "enum{Platform Default;No selection;Keep selection while executing;Keep until new selection}",
+		"Description": "Behavior of selected rows in grid",
+		"Default": "Platform Default",
+		"Options": {
+			"Platform Default": "Uses platform default selection behavior",
+			"No selection": "Row is not selected on tap",
+			"Keep selection while executing": "Selection persists until action ends",
+			"Keep until new selection": "Selection ends with new selection"
+		}
+	},
+	"showSelector": {
+		"Type": "enum{Always;On Action;Platform Default}",
+		"Description": "Controls selector visibility for multiple row selection",
+		"Default": "Platform Default",
+		"Options": {
+			"Always": "Selector always visible",
+			"On Action": "Selector visible on action execution",
+			"Platform Default": ""
+		}
+	},
+	"layoutName": {
+		"Type": "string",
+		"Description": "Select layout for selected grid row"
+	},
+	"cellHeight": {
+		"Type": "measure",
+		"Description": "Height of grid cells"
+	},
+	"cellWidth": {
+		"Type": "measure",
+		"Description": "Width of grid cells"
+	},
+	"selectedCellHeight": {
+		"Type": "measure",
+		"Description": "Height of selected row in grid"
+	},
+	"selectionType#matrixGrid": {
+		"Type": "enum{Row;Column;Cell}",
+		"Description": "Controls selection behavior on grid",
+		"Default": "Row",
+		"Options": {
+			"Row": "Selects tapped cell and row",
+			"Column": "Selects tapped cell and column",
+			"Cell": "Selects only tapped cell"
+		}
+	},
+	"xAxisDescField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores description text for x-axis"
+	},
+	"xAxisHeight": {
+		"Type": "measure",
+		"Description": "Height of X-axis column"
+	},
+	"xAxisIdField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores unique identifier for x-axis data field"
+	},
+	"xAxisSdt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Structured Data Type containing X-axis values"
+	},
+	"xAxisTitleField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores title for x axis in chart"
+	},
+	"xDataFromAttribute": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that store starting position value for X-Axis"
+	},
+	"xDataFromFieldSpecifier": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store starting position value for X-Axis",
+		"Constaints": [
+			"Requires `xDataFromAttribute` reference a structured type (SDT/BC)"
+		]
+	},
+	"xDataToAttribute": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that store ending position value for X-Axis"
+	},
+	"xDataToFieldSpecifier": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store ending position value for X-Axis",
+		"Constaints": [
+			"Requires `xDataToAttribute` reference a structured type (SDT/BC)"
+		]
+	},
+	"xScaleType": {
+		"Type": "enum{Discrete;Continuous}",
+		"Description": "Selects continuous or discrete X-axis scale type",
+		"Default": "Continuous",
+		"Options": {
+			"Discrete": "Allows selection from a set of values",
+			"Continuous": "Allows value selection within an interval"
+		}
+	},
+	"yAxisDescField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Description text for y-axis"
+	},
+	"yAxisIdField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Identifier for y-axis data field"
+	},
+	"yAxisSdt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Structured data type containing Y-axis values"
+	},
+	"yAxisSelectionFlagField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Indicates if row is selected"
+	},
+	"yAxisTitleField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Title for y-axis in matrix grid control"
+	},
+	"yAxisWidth": {
+		"Type": "measure",
+		"Description": "Width of Y-axis row in matrix grid"
+	},
+	"yDataFromAttribute": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores starting position value for Y-axis"
+	},
+	"yDataFromFieldSpecifier": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores starting position value for Y-axis",
+		"Constaints": [
+			"Requires `yDataFromAttribute` reference a structured type (SDT/BC)"
+		]
+	},
+	"yDataToAttribute": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that steores ending position of Y-axis identifier"
+	},
+	"yDataToFieldSpecifier": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that steores ending position of Y-axis identifier",
+		"Constaints": [
+			"Requires `yDataToAttribute` reference a structured type (SDT/BC)"
+		]
+	},
+	"yScaleType": {
+		"Type": "enum{Discrete;Continuous}",
+		"Description": "Selects continuous or discrete values for Y-axis",
+		"Default": "Discrete",
+		"Options": {
+			"Discrete": "Selects values within a set",
+			"Continuous": "Selects values within an interval"
+		}
+	},
+	"categoryAttribute": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores category value"
+	},
+	"categoryField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores category value",
+		"Constaints": [
+			"Requires `categoryAttribute` reference a structured type (SDT/BC)"
+		]
+	},
+	"chartType": {
+		"Type": "enum{TimeLine;Pie}",
+		"Description": "Chart type displayed in visualization",
+		"Default": "TimeLine",
+		"Options": {
+			"TimeLine": "Linear timeline chart",
+			"Pie": "Pie chart"
+		}
+	},
+	"commentsAttribute": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that store comments value"
+	},
+	"commentsField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store comments value",
+		"Constaints": [
+			"Requires `commentsAttribute` reference a structured type (SDT/BC)"
+		]
+	},
+	"seriesAttributeCollection": {
+		"Type": "string",
+		"Description": "Series attributes for timeline chart"
+	},
+	"seriesFieldCollection": {
+		"Type": "string",
+		"Description": "Collection of series fields for chart"
+	},
+	"seriesLabelCollection": {
+		"Type": "string",
+		"Description": "Labels for series in chart"
+	},
+	"showinPercentage": {
+		"Type": "boolean",
+		"Description": "Displays element as percentage of parent size",
+		"Default": "True"
+	},
+	"timeAttribute": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores starting value for timeline chart"
+	},
+	"timeField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores starting value for timeline chart",
+		"Constaints": [
+			"Requires `timeAttribute` reference a structured type (SDT/BC)"
+		]
+	},
+	"timePeriodCollection": {
+		"Type": "string",
+		"Description": "Collection of time periods",
+		"Default": "1w, 1m, 3m, 6m, 1y"
+	},
+	"title": {
+		"Type": "string",
+		"Description": "Semester title for grouped data",
+		"Default": "Map Title"
+	},
+	"valueAttribute": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores value for graphing"
+	},
+	"valueField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores value for graphing",
+		"Constaints": [
+			"Requires `valueAttribute` reference a structured type (SDT/BC)"
+		]
+	},
+	"xAxisPosition": {
+		"Type": "enum{Top;Bottom}",
+		"Description": "Position of x axis",
+		"Default": "Top",
+		"Options": {
+			"Top": "X axis at top edge",
+			"Bottom": "X axis at bottom edge"
+		}
+	},
+	"yAxisPosition": {
+		"Type": "enum{Right;Left}",
+		"Description": "Position of Y-axis label",
+		"Default": "Right",
+		"Options": {
+			"Right": "Y-axis label on right side",
+			"Left": "Y-axis label on left side"
+		}
+	},
+	"columnsPerPageLandscape": {
+		"Type": "integer",
+		"Description": "Number of columns per page in landscape orientation",
+		"Default": "1"
+	},
+	"columnsPerPagePortrait": {
+		"Type": "integer",
+		"Description": "Number of columns in portrait mode",
+		"Default": "1"
+	},
+	"pageControllerClass": {
+		"Type": "class",
+		"Description": "Style class for page controller in horizontal grid"
+	},
+	"paged": {
+		"Type": "boolean",
+		"Description": "Enable paging for horizontal grid",
+		"Default": "True"
+	},
+	"rowsPerPageLandscape": {
+		"Type": "integer",
+		"Description": "Number of rows displayed in landscape mode",
+		"Default": "1"
+	},
+	"rowsPerPagePortrait": {
+		"Type": "integer",
+		"Description": "Number of rows displayed in portrait mode for horizontal grid",
+		"Default": "1"
+	},
+	"showPageController": {
+		"Type": "boolean",
+		"Description": "Controls visibility of page controller in horizontal grid",
+		"Default": "True"
+	},
+	"dataAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores target data"
+	},
+	"dataField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores target data",
+		"Constraints": [
+			"Requires `dataAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"enableShare": {
+		"Type": "boolean",
+		"Description": "Adds share functionality for images",
+		"Default": "False"
+	},
+	"gridBehavior": {
+		"Type": "enum{Show Full Image;Show Detail View;None}",
+		"Description": "Behavior of grid display",
+		"Default": "scroll",
+		"Options": {
+			"Show Full Image": "Displays full image in grid",
+			"Show Detail View": "Shows detailed view for each grid item",
+			"None": "No specific grid behavior"
+		}
+	},
+	"subtitleAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Soruce that store subtitle text"
+	},
+	"subtitleField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores subtitle text",
+		"Constraints": [
+			"Requires `subtitleAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"titleAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that store title text"
+	},
+	"titleField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store title text",
+		"Constraints": [
+			"Requires `titleAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"hCoordAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that store horiztonal position value"
+	},
+	"hCoordField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store horiztonal postion value",
+		"Constraints": [
+			"Requires `hCoordAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"heightAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that store height value",
+		"Default": "False",
+		"ProductVersion": "<15.7"
+	},
+	"heightField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store height value",
+		"Constraints": [
+			"Requires `heightAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"image": {
+		"Type": "ref(Image)",
+		"Description": "Image associated within the control",
+		"Access": "init/set",
+		"ProductVersion": "<17.1"
+	},
+	"rotationAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Soruce that store rotation angle"
+	},
+	"rotationField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store rotation angle",
+		"Constraints": [
+			"Requires `rotationAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"sizeAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that store size value",
+		"Default": "False"
+	},
+	"sizeField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that sotre size value",
+		"Constraints": [
+			"Requires `sizeAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"vCoordAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that store vertical position value"
+	},
+	"vCoordField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store vertical position value",
+		"Constraints": [
+			"Requires `vCoordAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"widthAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores `width` value"
+	},
+	"widthField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores `width` value",
+		"ProductVersion": "<16.3",
+		"Constraints": [
+			"Requires `widthAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"headerText": {
+		"Type": "string",
+		"Description": "Style for table or grid header",
+		"Default": "TableHeaderText"
+	},
+	"itemsPerPage": {
+		"Type": "integer",
+		"Description": "Controls number of items displayed per page",
+		"Default": "5"
+	},
+	"pageLayout": {
+		"Type": "enum{Random;Specific}",
+		"Description": "Indicates whether content is displayed using paging",
+		"Default": "Specific",
+		"Options": {
+			"Random": "Content displayed in pages with dynamic layout",
+			"Specific": "Content displayed in pages with fixed layout"
+		}
+	},
+	"rowsPerColumn": {
+		"Type": "string",
+		"Description": "Number of rows per column in grid layout",
+		"Default": "2 2"
+	},
+	"shareActionMessage": {
+		"Type": "string",
+		"Description": "Subject of shared action message"
+	},
+	"sharePageAction": {
+		"Type": "boolean",
+		"Description": "Allow sharing of current page",
+		"Default": "False"
+	},
+	"showFooter": {
+		"Type": "boolean",
+		"Description": "Displays footer with page indicator",
+		"Default": "True"
+	},
+	"itemsPerColumn": {
+		"Type": "integer",
+		"Description": "Number of items per column in grid layout",
+		"Default": "2"
+	},
+	"itemsPerRow": {
+		"Type": "integer",
+		"Description": "Number of items displayed per row in grid",
+		"Default": "2"
+	},
+	"maximumHeight": {
+		"Type": "integer",
+		"Description": "Maximum height of grid items in Panel Grid",
+		"Default": "0"
+	},
+	"maximumWidth": {
+		"Type": "integer",
+		"Description": "Maximum width of grid items in Panel Grid",
+		"Default": "0"
+	},
+	"minimumHeight": {
+		"Type": "integer",
+		"Description": "Minimum number of rows in Panel Grid",
+		"Default": "0"
+	},
+	"minimumWidth": {
+		"Type": "integer",
+		"Description": "Minimum width for grid columns",
+		"Default": "0"
+	},
+	"itemsLayoutMode": {
+		"Type": "enum{Single;Multiple by Quantity;Staggered by Quantity;Multiple by Size}",
+		"Description": "Defines item arrangement in grid",
+		"Default": "Single",
+		"Options": {
+			"Single": "Displays one item per cell",
+			"Multiple by Quantity": "Shows multiple items per column based on quantity",
+			"Staggered by Quantity": "Displays items with staggered columns based on quantity",
+			"Multiple by Size": "Arranges items based on size in grid"
+		},
+		"Access": "init/set"
+	},
+	"selectedIndex": {
+		"Type": "integer",
+		"Description": "Stores the selected index in a grid; -1 indicates unselected",
+		"Scope": "Native",
+		"Access": "get"
+	},
+	"scrollDirection": {
+		"Type": "enum{Vertical;Horizontal}",
+		"Description": "Scroll direction of grid control",
+		"Default": "Vertical",
+		"Options": {
+			"Vertical": "Scrolls vertically",
+			"Horizontal": "Scrolls horizontally"
+		},
+		"Access": "init/set"
+	},
+	"snapToGrid": {
+		"Type": "boolean",
+		"Description": "Grid items align to edges during scrolling",
+		"Default": "False",
+		"Access": "init/set"
+	},
+	"currentValueColor": {
+		"Type": "color",
+		"Description": "Color displayed for current value",
+		"Default": "Transparent"
+	},
+	"labelText": {
+		"Type": "string",
+		"Description": "Message inviting user to enter data"
+	},
+	"showCurrentValue": {
+		"Type": "boolean",
+		"Description": "Displays current value as percentage",
+		"Default": "True"
+	},
+	"animationDuration": {
+		"Type": "integer",
+		"Description": "Duration of animation in seconds",
+		"Default": "1"
+	},
+	"animationDurationAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores `animationDuration` value"
+	},
+	"animationDurationField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores `animationDuration` value",
+		"Constraints": [
+			"Requires `animationDurationAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"animationEndBehavior": {
+		"Type": "enum{Do not repeat;Disappear;Repeat}",
+		"Description": "Animation completion action",
+		"Default": "Do not repeat",
+		"Options": {
+			"Do not repeat": "Ends animation without repeating",
+			"Disappear": "Animation ends by disappearing",
+			"Repeat": "Repeats the animation"
+		},
+		"ProductVersion": "<16.5"
+	},
+	"animationEndBehaviorAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores `animationEndBehavior` value"
+	},
+	"animationEndBehaviorField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that sotres `animationEndBehavior` value",
+		"ProductVersion": "<16.5",
+		"Constraints": [
+			"Requires `animationEndBehaviorAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"animationKeyAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores animation identifier for transitions"
+	},
+	"animationKeyField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores animation identifier for transitions",
+		"Constraints": [
+			"Requires `animationKeyAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"animationsLayer": {
+		"Type": "boolean",
+		"Description": "Enables map point animations",
+		"Default": "False"
+	},
+	"canChooseType": {
+		"Type": "boolean",
+		"Description": "Provides map type selection button to user",
+		"Default": "False"
+	},
+	"center": {
+		"Type": "enum{Default;My location;Custom}",
+		"Description": "Criteria for initial map centering",
+		"Default": "Default",
+		"Options": {
+			"Default": "Map centered by loaded points and initial zoom setting",
+			"My location": "Map centered on device current location",
+			"Custom": "Map centered on specified coordinate"
+		}
+	},
+	"centerAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores `center` value"
+	},
+	"centerField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores `center` value",
+		"Constraints": [
+			"Requires `centerAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"defaultRouteClass": {
+		"Type": "class",
+		"Description": "Style class for Directions layer display"
+	},
+	"directionsLayer": {
+		"Type": "boolean",
+		"Description": "Enable drawing route between two points on map",
+		"Default": "False"
+	},
+	"editableGeographies": {
+		"Type": "enum{None;Points;Lines;Polygons}",
+		"Description": "Geography elements that can be edited",
+		"Default": "None",
+		"Options": {
+			"None": "No geography enabled to draw",
+			"Points": "Draws points",
+			"Lines": "Draws lines",
+			"Polygons": "Draws polygons"
+		}
+	},
+	"geoLayerIdAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Attribute that store layer identifier for drawn geometry"
+	},
+	"geoLayerIdField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store layer identifier for drawn geometry",
+		"Constraints": [
+			"Requires `geoLayerIdAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"initialZoomBehavior": {
+		"Type": "enum{Show all points;Nearest point visible;Radius;No initial zoom}",
+		"Description": "Initial map zoom level at startup",
+		"Default": "ShowAll",
+		"Options": {
+			"Show all points": "Displays all loaded points and current location if enabled",
+			"Nearest point visible": "Centers on current location and nearest point",
+			"Radius": "Zooms to a fixed radius from specified center",
+			"No initial zoom": "No specific action regarding initial zoom"
+		}
+	},
+	"locationAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores reference to value displayed alongside element"
+	},
+	"locationField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores reference to value displayed alongside element",
+		"Constraints": [
+			"Requires `locationAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"mapType": {
+		"Type": "enum{Standard;Satellite;Hybrid}",
+		"Description": "Type of map display",
+		"Default": "Standard",
+		"Options": {
+			"Standard": "Default map view",
+			"Satellite": "Aerial satellite imagery",
+			"Hybrid": "Combination of standard and satellite views"
+		}
+	},
+	"markerClustering": {
+		"Type": "boolean",
+		"Description": "Groups nearby markers into clusters based on zoom level",
+		"Default": "False"
+	},
+	"pinImage": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed as pin icon"
+	},
+	"pinImageAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores `pinImage` value"
+	},
+	"pinImageClass": {
+		"Type": "class",
+		"Description": "Style class for pin icon image"
+	},
+	"pinImageField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores `pinImage` value",
+		"Constraints": [
+			"Requires `pinImageAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"pinImageMyLocation": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for current device pin location"
+	},
+	"polygonClass": {
+		"Type": "class",
+		"Description": "Style class for drawing polygon elements"
+	},
+	"selectionLayer": {
+		"Type": "boolean",
+		"Description": "Enables map navigation and location selection",
+		"Default": "False",
+		"ProductVersion": "<16.3"
+	},
+	"selectionTargetImage": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for selected location on map"
+	},
+	"selectionTargetImageClass": {
+		"Type": "class",
+		"Description": "Style class for selection pin image",
+		"ProductVersion": "<16.3"
+	},
+	"showMyLocation": {
+		"Type": "boolean",
+		"Description": "Displays current device location on map",
+		"Default": "False"
+	},
+	"showNavigation": {
+		"Type": "boolean",
+		"Description": "Hide navigation controls in Full Screen mode",
+		"Default": "True"
+	},
+	"showTraffic": {
+		"Type": "boolean",
+		"Description": "Indicates if traffic information is displayed on map",
+		"Default": "False"
+	},
+	"transportType": {
+		"Type": "enum{Driving;Walking;Transit}",
+		"Description": "Type of transport for drawing directions",
+		"Options": {
+			"Driving": "Vehicle navigation",
+			"Walking": "Pedestrian route",
+			"Transit": "Public transportation"
+		}
+	},
+	"zoomRadiusAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that stores minimum visible distance around map center point"
+	},
+	"zoomRadiusField": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that stores minimum visible distance around map center point",
+		"Constraints": [
+			"Requires `zoomRadiusAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"allBackColor": {
+		"Type": "color",
+		"Description": "Background color for all lines in grids",
+		"Default": "Transparent"
+	},
+	"allowCollapsing": {
+		"Type": "boolean",
+		"Description": "Grid can collapse/expand during runtime",
+		"Default": "False",
+		"Access": "init/set"
+	},
+	"allowDrag": {
+		"Type": "boolean",
+		"Description": "Enables dragging grid rows to another control",
+		"Default": "False",
+		"Access": "init/set"
+	},
+	"allowDrop": {
+		"Type": "boolean",
+		"Description": "Enable drag-and-drop from other controls",
+		"Default": "False",
+		"Access": "init/set"
+	},
+	"backColorEven": {
+		"Type": "color",
+		"Description": "Background color for even lines in grid",
+		"Default": "Transparent",
+		"Access": "init/set"
+	},
+	"backColorOdd": {
+		"Type": "color",
+		"Description": "Background color for odd lines in grid",
+		"Default": "Transparent",
+		"Access": "init/set"
+	},
+	"backColorStyle": {
+		"Type": "enum{None;Uniform;Report}",
+		"Description": "Background color style for grid",
+		"Default": "None",
+		"Options": {
+			"None": "No specific background style; inherits form design",
+			"Uniform": "Single background color for entire grid",
+			"Report": "Alternate colors for even and odd rows with title background"
+		},
+		"Access": "init/set"
+	},
+	"baseTable": {
+		"Type": "ref(Transaction)",
+		"Description": "Transaction used for grid navigation"
+	},
+	"collapsed": {
+		"Type": "boolean",
+		"Description": "Grid or Free Style Grid control is collapsed",
+		"Default": "False",
+		"Access": "init/set"
+	},
+	"controlUnique": {
+		"Type": "ref(Attribute)",
+		"Description": "Ensures unique values in query results"
+	},
+	"customRender": {
+		"Type": "ref(UserControl)",
+		"Description": "Select custom user control for grid rendering",
+		"Access": "init/set"
+	},
+	"emptyGridText": {
+		"Type": "string",
+		"Description": "Text displayed when grid has no data",
+		"Access": "init/set"
+	},
+	"infiniteScrolling": {
+		"Type": "enum{One page at a time;Infinite scrolling}",
+		"Description": "Navigates through grid content by scrolling",
+		"Default": "One page at a time",
+		"Options": {
+			"One page at a time": "Breaks content into pages with fixed items per page",
+			"Infinite scrolling": "Loads more content as user scrolls"
+		}
+	},
+	"inverseLoading": {
+		"Type": "boolean",
+		"Description": "Reverses data loading direction in Grid",
+		"Default": "False"
+	},
+	"maxCols": {
+		"Type": "integer",
+		"Description": "Maximum number of columns, 0 for unlimited",
+		"Default": "1"
+	},
+	"multiColumns": {
+		"Type": "int[4]",
+		"Description": "Customizes column display for different screen sizes"
+	},
+	"multiColumnsLg": {
+		"Type": "integer",
+		"Description": "Maximum columns displayed on large screens",
+		"Default": "1"
+	},
+	"multiColumnsMd": {
+		"Type": "integer",
+		"Description": "Maximum columns for medium screens",
+		"Default": "1"
+	},
+	"multiColumnsSm": {
+		"Type": "integer",
+		"Description": "Maximum columns displayed on small screens",
+		"Default": "1"
+	},
+	"multiColumnsXs": {
+		"Type": "integer",
+		"Description": "Maximum columns on extra small screens",
+		"Default": "1"
+	},
+	"notifyContextChange": {
+		"Type": "boolean",
+		"Description": "Tracks context changes for attributes and variables",
+		"Default": "False"
+	},
+	"order": {
+		"Type": "ref(Attribute)",
+		"Description": "Attribute for ordering criteria",
+		"Constraints": [
+			"Append `(…)` for descending order",
+			"Use `,` for multiple attributes"
+		]
+	},
+	"renderingMode": {
+		"Type": "enum{Responsive;Tabular}",
+		"Description": "Selects rendering behavior as responsive or tabular",
+		"Options": {
+			"responsive": "Enables responsive design for grid",
+			"table": "Draws grid in fixed table layout"
+		},
+		"Access": "init/set"
+	},
+	"state": {
+		"Type": "string",
+		"Description": "Grid state data for saving and loading state externally",
+		"Scope": "Web",
+		"Access": "set/get"
+	},
+	"saveState": {
+		"Type": "boolean",
+		"Description": "Automatically saves and restores grid state",
+		"Default": "False"
+	},
+	"scrollBar": {
+		"Type": "enum{Grid;Form}",
+		"Description": "Controls scroll visibility within grid",
+		"Default": "Grid",
+		"Options": {
+			"Grid": "Scroll bar shown inside grid area",
+			"Form": "Browser's vertical scroll bar used"
+		}
+	},
+	"where": {
+		"Type": "code(boolean)",
+		"Description": "Filter records in grid"
+	},
+	"moreButtonSelectedImage": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed when 'more' button is selected"
+	},
+	"moreButtonUnselectedImage": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for unselected 'more' button"
+	},
+	"scrollLeftIndicator": {
+		"Type": "ref(Image)",
+		"Description": "ScrollIndicator visual representation"
+	},
+	"scrollRightIndicator": {
+		"Type": "ref(Image)",
+		"Description": "Visual indicator for scroll right action"
+	},
+	"tabsBehavior": {
+		"Type": "enum{Platform Default;Fixed Size;Scroll}",
+		"Description": "Defines tab distribution within container",
+		"Default": "Platform Default",
+		"Options": {
+			"Platform Default": "Scrolls for Android, fixed for iOS",
+			"Fixed Size": "Tabs are fixed size (at most four)",
+			"Scroll": "Enables scrolling when tabs exceed screen width"
+		}
+	},
+	"tabsNavigation": {
+		"Type": "enum{Platform Default;True;False}",
+		"Description": "Enable tab navigation within application",
+		"Default": "Platform Default",
+		"Options": {
+			"Platform Default": "Uses default platform behavior for tab navigation",
+			"True": "Enables tab navigation within application",
+			"False": "Disables tab navigation within application"
+		}
+	},
+	"activePage": {
+		"Description": "Active page index; 1-based",
+		"Type": "integer",
+		"Access": "get/set"
+	},
+	"imagePosition": {
+		"Type": "enum{Platform Default;Above Text;Below Text;Before Text;After Text;Behind Text}",
+		"Description": "Relative positioning of image to text",
+		"Default": "Platform Default",
+		"Options": {
+			"Platform Default": "Before text for Android, Above text for Apple",
+			"Above Text": "Image above text",
+			"Below Text": "Image below text",
+			"Before Text": "Image before text",
+			"After Text": "Image after text",
+			"Behind Text": "Image behind text (Apple only)"
+		}
+	},
+	"unselectedImage": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for unselected tab"
+	},
+	"addEmptyItem": {
+		"Type": "boolean",
+		"Description": "Adds 'none/all' selection option",
+		"Default": "False"
+	},
+	"alt": {
+		"Type": "string",
+		"Description": "Text displayed when image is not rendered"
+	},
+	"alternateText": {
+		"Type": "string",
+		"Description": "Text displayed when image is not rendered",
+		"Access": "set"
+	},
+	"attNumDim": {
+		"Type": "enum{Scalar;Vector;Matrix}",
+		"Description": "Defines scalar, vector, or matrix type domains or variables",
+		"Default": "Scalar",
+		"Options": {
+			"Scalar": "Specifies a scalar domain or variable",
+			"Vector": "Defines a one-dimensional domain or variable",
+			"Matrix": "Defines a two-dimensional domain or variable"
+		}
+	},
+	"autoCapitalization": {
+		"Type": "enum{None;First word;First letter of each word}",
+		"Description": "Automatically capitalize first letter of each word",
+		"Default": "First word",
+		"Options": {
+			"None": "No automatic capitalization",
+			"First word": "Automatically capitalize first word of sentences",
+			"First letter of each word": "Automatically capitalize first letter of each word"
+		}
+	},
+	"autocomplete": {
+		"Type": "boolean",
+		"Description": "Suggests previous values to speed up data entry",
+		"Default": "False"
+	},
+	"autoCorrection": {
+		"Type": "boolean",
+		"Description": "Enables automatic spelling correction in edit mode",
+		"Default": "True"
+	},
+	"autolink": {
+		"Type": "boolean",
+		"Description": "Automatically create links to other pattern instances",
+		"Default": "True"
+	},
+	"autoResize": {
+		"Type": "boolean",
+		"Description": "Adjusts element size to fit content",
+		"Default": "False"
+	},
+	"backColor": {
+		"Type": "color",
+		"Description": "Background color of dashboard element",
+		"Default": "Transparent",
+		"Access": "init/set"
+	},
+	"backStyle": {
+		"Type": "boolean",
+		"Description": "Background style appearance",
+		"Default": "True"
+	},
+	"borderStyle": {
+		"Type": "enum{None;Single;3D}",
+		"Description": "Sets rectangle edge appearance",
+		"Default": "3D",
+		"Options": {
+			"None": "No border",
+			"Single": "Solid line",
+			"3D": "Three-dimensional effect"
+		}
+	},
+	"caseSensitive": {
+		"Type": "boolean",
+		"Description": "Filter suggestions based on case",
+		"Default": "False"
+	},
+	"checkedValue": {
+		"Type": "string",
+		"Description": "Value assigned when check box is selected"
+	},
+	"colIndex": {
+		"Type": "integer",
+		"Description": "Column index of target control"
+	},
+	"controlDirection": {
+		"Type": "enum{Horizontal;Vertical}",
+		"Description": "Orientation of radio options in layout",
+		"Default": "Vertical",
+		"Options": {
+			"Horizontal": "Radio options displayed horizontally",
+			"Vertical": "Radio options displayed vertically"
+		}
+	},
+	"controlItemDescription": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Load descriptions from specified attribute"
+	},
+	"controlItemValues": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Selected attribute for item values when Filter is enabled",
+		"ProductVersion": "<15.7"
+	},
+	"bind": {
+		"Type": "string",
+		"Description": "Element name in referenced stencil object when overriding",
+		"Context": [
+			"stencil"
+		]
+	},
+	"controlRestrictedBy": {
+		"Type": "list(ref(Attribute|Variable)|Constant)",
+		"Description": "Configure multimedia file access type",
+		"Default": "Public Read"
+	},
+	"controlSortDescription": {
+		"Type": "boolean",
+		"Description": "Sorts list descriptions alphabetically",
+		"Default": "True"
+	},
+	"controlTitle": {
+		"Type": "string",
+		"Description": "Title displayed for check box or radio button"
+	},
+	"count": {
+		"Type": "integer",
+		"Description": "Returns collection size or message count",
+		"Default": "0"
+	},
+	"dataProvider": {
+		"Type": "ref(*)",
+		"Description": "Name of `Data Provider` object for loading data"
+	},
+	"dataProviderEdit": {
+		"Type": "ref(*)",
+		"Description": "Name of `Data Provider` object for loading data"
+	},
+	"dataProviderParameters": {
+		"Type": "ref(Attribute|Variable)|Constant",
+		"Description": "List of parameters for `Data Provider` invocation"
+	},
+	"dataProviderParametersEdit": {
+		"Type": "ref(Attribute|Variable)|Constant",
+		"Description": "List of parameters for `Data Provider` object invocation"
+	},
+	"dataSourceFrom": {
+		"Type": "enum{Values;Attributes;Data Provider}",
+		"Description": "Indicates data source for control",
+		"Default": "Values",
+		"Options": {
+			"Values": "Selects set of values for Wheel Control",
+			"Attributes": "Fills control with attributes",
+			"Data Provider": "Uses Data Provider to fill control"
+		}
+	},
+	"dataSourceFromEdit": {
+		"Type": "enum{Attributes}",
+		"Description": "Indicates data source for control",
+		"Default": "Attributes",
+		"Options": {
+			"Attributes": "Fills control with attributes"
+		}
+	},
+	"displaysKeyboardOnFocus": {
+		"Type": "boolean",
+		"Description": "Controls virtual keyboard display on focus",
+		"Default": "True",
+		"ProductVersion": "<17.11"
+	},
+	"dpItemDescriptionFieldSpecifier": {
+		"Type": "string",
+		"Description": "Load descriptions from data provider using specified field"
+	},
+	"dpItemDescriptionFieldSpecifierEdit": {
+		"Type": "string",
+		"Description": "Load descriptions from data provider using specified field"
+	},
+	"dpItemValuesFieldSpecifier": {
+		"Type": "string",
+		"Description": "Load values from data provider using specified field"
+	},
+	"dpItemValuesFieldSpecifierEdit": {
+		"Type": "string",
+		"Description": "Load values from data provider using specified field"
+	},
+	"editAutocomplete": {
+		"Type": "enum{No}",
+		"Description": "Provides suggestions for entered data",
+		"Default": "No",
+		"Options": {
+			"No": "No suggestion list is shown"
+		}
+	},
+	"emptyAsNull": {
+		"Type": "enum{No Nulls;Empty as Null;Blank as Null;Compatible}",
+		"Description": "Indicates if empty value is stored as null",
+		"Default": "Empty as Null",
+		"Options": {
+			"No Nulls": "Always stores non-empty values",
+			"Empty as Null": "Stores null for empty or zero values",
+			"Blank as Null": "Stores null only for blank fields",
+			"Compatible": "Matches GeneXus 8.0 behavior, storing null for blank fields"
+		}
+	},
+	"emptyItemText": {
+		"Type": "string",
+		"Description": "Text displayed when no items are available",
+		"Default": "GX_EmptyItemText"
+	},
+	"enableCopy": {
+		"Type": "boolean",
+		"Description": "Allows copying image to clipboard",
+		"Default": "False"
+	},
+	"enableShowPasswordHint": {
+		"Type": "boolean",
+		"Description": "Show button to toggle password visibility",
+		"Default": "False"
+	},
+	"enableZoom": {
+		"Type": "boolean",
+		"Description": "Enable zooming on image element",
+		"Default": "False"
+	},
+	"enterEvent": {
+		"Type": "ref(Event)",
+		"Description": "Action taken when user presses Enter key",
+		"Default": "'<Platform Default>'"
+	},
+	"enterKeyCaption": {
+		"Type": "enum{Default;Go;Search;Send;Join}",
+		"Description": "Caption for virtual keyboard's enter key",
+		"Default": "Default",
+		"Options": {
+			"Default": "Platform default caption",
+			"Go": "Navigate to next field",
+			"Search": "Initiate search action",
+			"Send": "Submit form or data",
+			"Join": "Join text input"
+		}
+	},
+	"eventGx": {
+		"Type": "ref(Event)",
+		"Description": "Event name executed on control click"
+	},
+	"filterOperator": {
+		"Type": "enum{Begins with;Contains}",
+		"Description": "Search criteria for matching input value",
+		"Default": "Contains",
+		"Options": {
+			"Begins with": "Match only if input is prefix of field content",
+			"Contains": "Match if input is part of field content (default)"
+		}
+	},
+	"flatDatepicker": {
+		"Type": "boolean",
+		"Description": "Show calendar always open",
+		"Default": "False"
+	},
+	"fontBold": {
+		"Type": "integer",
+		"Description": "Applies bold formatting",
+		"Default": "0",
+		"Access": "init/set"
+	},
+	"fontItalic": {
+		"Type": "integer",
+		"Description": "Applies italic formatting",
+		"Default": "0",
+		"Access": "init/set"
+	},
+	"fontName": {
+		"Type": "string",
+		"Description": "Font name used for text in control",
+		"Access": "init/set"
+	},
+	"fontSize": {
+		"Type": "integer",
+		"Description": "Font size used for text in control",
+		"Default": "0",
+		"Access": "init/set"
+	},
+	"fontStrikethru": {
+		"Type": "integer",
+		"Description": "Applies strikethrough formatting",
+		"Default": "0",
+		"Access": "init/set"
+	},
+	"fontUnderline": {
+		"Type": "integer",
+		"Description": "Applies underline formatting",
+		"Default": "0",
+		"Access": "init/set"
+	},
+	"foreColor": {
+		"Type": "color",
+		"Description": "Foreground color in control",
+		"Default": "Transparent",
+		"Access": "init/set"
+	},
+	"format": {
+		"Type": "enum{Text;HTML}",
+		"Description": "Interpret text content as HTML code",
+		"Default": "Text",
+		"Options": {
+			"Text": "Interpret text content as plain text",
+			"HTML": "Interpret text content as HTML code"
+		},
+		"Access": "init/set"
+	},
+	"getDescriptionByKeyProcedure": {
+		"Type": "ref(*)",
+		"Description": "Maps item values to descriptions for display"
+	},
+	"getDescriptionByKeyProcedureParameters": {
+		"Type": "ref(Attribute|Variable)|Constant",
+		"Description": "Additional parameters for description retrieval procedure"
+	},
+	"gxFormat": {
+		"Type": "enum{HTML;Raw HTML;Text with meaningful spaces}",
+		"Description": "Text formatting mode",
+		"Default": "HTML",
+		"Options": {
+			"HTML": "Content as HTML code",
+			"Raw HTML": "Content as raw HTML without SPAN tag",
+			"Text with meaningful spaces": "Content as plain text, preserve leading and internal spaces"
+		}
+	},
+	"horizontalAlignment": {
+		"Type": "enum{Left;Center;Right;Justify;Default}",
+		"Description": "Controls horizontal positioning within cell",
+		"Default": "Default",
+		"Options": {
+			"Left": "Aligns to left edge of cell",
+			"Center": "Centers within cell",
+			"Right": "Aligns to right edge of cell",
+			"Justify": "Justifies text; requires text-based child",
+			"Default": "Uses engine-defined alignment"
+		},
+		"Access": "init/set"
+	},
+	"hSpace": {
+		"Type": "measure",
+		"Description": "Horizontal space between image and surrounding elements",
+		"Default": "0"
+	},
+	"inputHistory": {
+		"Type": "boolean",
+		"Description": "Enables input history suggestions for previously entered values",
+		"Default": "True",
+		"Require": {
+			"isPasswrod": "False"
+		},
+		"Access": "init/set"
+	},
+	"inputType": {
+		"Type": "enum{Values;Descriptions}",
+		"Description": "Allows entering data as values or descriptions",
+		"Default": "Values",
+		"Options": {
+			"Values": "User enters value; code is stored",
+			"Descriptions": "User enters description; code is retrieved"
+		}
+	},
+	"isPassword": {
+		"Type": "boolean",
+		"Description": "Displays input as asterisks (*)",
+		"Default": "False",
+		"Access": "init/set"
+	},
+	"isUserControl": {
+		"Type": "boolean",
+		"Description": "Controls column visibility in tabular grid",
+		"Default": "False"
+	},
+	"isUserControlWithCustomValues": {
+		"Type": "boolean",
+		"Description": "Indicates user control has custom values",
+		"Default": "False"
+	},
+	"isUserControlWithDynamicValues": {
+		"Type": "boolean",
+		"Description": "Indicates if user control has dynamic values",
+		"Default": "False"
+	},
+	"isUserControlWithFixedValues": {
+		"Type": "boolean",
+		"Description": "indicates if user control has fixed values",
+		"Default": "False"
+	},
+	"labelPosition": {
+		"Type": "enum{Platform Default;None;Left;Top;Right;Bottom;Float}",
+		"Description": "Position of associated label relative to input content",
+		"Default": "Platform Default",
+		"Options": {
+			"Platform Default": "Adopts default position per platform (top for Android, left for iOS)",
+			"None": "No label displayed",
+			"Left": "Label on left side of content",
+			"Top": "Label above content",
+			"Right": "Label on right side of content",
+			"Bottom": "Label below content",
+			"Float": "Label floats from bottom to top as user types"
+		}
+	},
+	"link": {
+		"Type": "string",
+		"Description": "Assigns URL links to controls",
+		"Access": "set"
+	},
+	"linkTarget": {
+		"Type": "string",
+		"Description": "Window where links open",
+		"Access": "set"
+	},
+	"loading": {
+		"Type": "enum{Lazy;Eager;Do not specify}",
+		"Description": "Instructs browser to defer loading of images/iframes",
+		"Default": "none",
+		"Options": {
+			"Lazy": "Defer loading until near user's viewport",
+			"Eager": "Load immediately regardless of position",
+			"Do not specify": "Browser default behavior"
+		}
+	},
+	"maximumUploadSize": {
+		"Type": "enum{Actual Size;Large;Medium;Small}",
+		"Description": "Control image size transferred to server",
+		"Default": "Large",
+		"Options": {
+			"Actual Size": "Images transferred in original sizes",
+			"Large": "Image size controlled by Large Image Upload Size property",
+			"Medium": "Image size controlled by Medium Image Upload Size property",
+			"Small": "Image size controlled by Small Image Upload Size property"
+		}
+	},
+	"maxItems": {
+		"Type": "integer",
+		"Description": "Maximum number of items in suggestion list",
+		"Default": "5"
+	},
+	"maxTextNumberLines": {
+		"Type": "integer",
+		"Description": "Maximum number of lines for text input",
+		"Default": "0"
+	},
+	"maxZoom": {
+		"Type": "integer",
+		"Description": "Maximum allowed zoom level for map"
+	},
+	"maxZoomRel": {
+		"Type": "enum{Image;Control}",
+		"Description": "Indicates if maximum zoom is relative to control size",
+		"Default": "Image",
+		"Options": {
+			"Image": "Maximum zoom based on image size",
+			"Control": "Maximum zoom based on control size"
+		}
+	},
+	"propBlobContenttype": {
+		"Type": "string",
+		"Description": "MIME type of content"
+	},
+	"propBlobDisplay": {
+		"Type": "enum{Inline;Link}",
+		"Description": "Control display method on screen",
+		"Default": "Inline",
+		"Options": {
+			"Inline": "Display control inline with text",
+			"Link": "Display control as a link"
+		}
+	},
+	"propBlobFilename": {
+		"Type": "string",
+		"Description": "File name for blob property"
+	},
+	"propBlobFiletype": {
+		"Type": "string",
+		"Description": "File type associated with blob"
+	},
+	"propCtrlRtpicture": {
+		"Type": "string",
+		"Description": "Desired format for displaying attribute value"
+	},
+	"readonly": {
+		"Type": "enum{True;False;Auto}",
+		"Description": "Indicates if element can be modified",
+		"Default": "True",
+		"Options": {
+			"True": "Element cannot be modified",
+			"False": "Element can be modified",
+			"Auto": "Default value based on control type"
+		}
+	},
+	"rowIndex": {
+		"Type": "integer",
+		"Description": "Row index"
+	},
+	"text": {
+		"Type": "string",
+		"Description": "Base text color",
+		"Constraints": [
+			"Has priority over `foreColor` attribute value"
+		]
+	},
+	"timeInviteMessage": {
+		"Type": "string",
+		"Description": "Text inviting user to enter specific time",
+		"Default": "Time"
+	},
+	"uncheckedValue": {
+		"Type": "string",
+		"Description": "Value assigned when check box is not selected"
+	},
+	"useDatepicker": {
+		"Type": "boolean",
+		"Description": "Show date picker for date selection",
+		"Default": "True"
+	},
+	"vSpace": {
+		"Type": "measure",
+		"Description": "Vertical space between element borders",
+		"Default": "0",
+		"Access": "init/set"
+	},
+	"zoomOutsideControl": {
+		"Type": "boolean",
+		"Description": "Allows image to expand beyond control bounds",
+		"Default": "False"
+	},
+	"barcodeTypes": {
+		"Type": "string",
+		"Description": "Comma-separated list of barcode types to scan",
+		"Options": {
+			"Aztec": "Aztec 2D barcode",
+			"Code128": "Code 128 linear barcode",
+			"Code39": "Code 39 linear barcode",
+			"Code39Mod43": "Code 39 Mod 43 linear barcode",
+			"Code93": "Code 93 linear barcode",
+			"DataMatrix": "Data Matrix 2D barcode",
+			"EAN_13": "EAN-13 13-digit linear barcode",
+			"EAN_8": "EAN-8 8-digit linear barcode",
+			"Interleaved2of5": "Interleaved 2 of 5 linear barcode",
+			"ITF14": "ITF-14 linear barcode",
+			"PDF417": "PDF417 2D barcode",
+			"QR": "QR 2D barcode",
+			"UPC_E": "UPC-E linear barcode"
+		}
+	},
+	"beep": {
+		"Type": "boolean",
+		"Description": "Sounds a beep when message rule is executed",
+		"Default": "False",
+		"ProductVersion": "<15.7"
+	},
+	"displayMode": {
+		"Type": "enum{As prompt;Inline}",
+		"Description": "Indicates whether scanner uses prompt or inline mode",
+		"Default": "As prompt",
+		"Options": {
+			"As prompt": "Shows indicator with new screen for camera viewport",
+			"Inline": "Displays camera viewport inside panel layout"
+		},
+		"Access": "init/set"
+	},
+	"operationMode": {
+		"Type": "enum{Single read;Continuous read}",
+		"Description": "Controls scanning mode for barcode reader",
+		"Default": "Single read",
+		"Options": {
+			"Single read": "Reads first code then stops",
+			"Continuous read": "Reads all codes continuously"
+		}
+	},
+	"displayMode#calendar": {
+		"Type": "enum{Month;Week;Day}",
+		"Description": "Viewing calendar format",
+		"Default": "Month",
+		"Options": {
+			"Month": "Display monthly calendar view",
+			"Week": "Display weekly calendar view",
+			"Day": "Display daily calendar view"
+		}
+	},
+	"maxDateVarRef": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Source that stores maximum date value"
+	},
+	"minDateVarRef": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Source that stores minimum date value"
+	},
+	"maxValue": {
+		"Type": "integer",
+		"Description": "Maximum value allowed"
+	},
+	"maxValueText": {
+		"Type": "string",
+		"Description": "Text displayed when maximum is reached"
+	},
+	"tickInterval": {
+		"Type": "integer",
+		"Description": "Tick interval in seconds",
+		"Default": "1"
+	},
+	"publishAllowed": {
+		"Type": "boolean",
+		"Description": "Indicates if publishing permissions are required",
+		"Default": "False"
+	},
+	"readPermissions": {
+		"Type": "string",
+		"Description": "Set read permissions for user data",
+		"Default": "public_profile,email,user_friends"
+	},
+	"mapZoom": {
+		"Type": "integer",
+		"Description": "Initial map display zoom level",
+		"Default": "5"
+	},
+	"minZoom": {
+		"Type": "integer",
+		"Description": "Minimum allowed zoom level for map",
+		"Default": "1"
+	},
+	"traceColor": {
+		"Type": "color",
+		"Description": "Trace color for drawing",
+		"Default": "#000"
+	},
+	"traceThickness": {
+		"Type": "integer",
+		"Description": "Thickness of drawing",
+		"Default": "1"
+	},
+	"measureType": {
+		"Type": "enum{Height}",
+		"Description": "Indicates if transaction is a measure",
+		"Default": "Height",
+		"Options": {
+			"Height": ""
+		}
+	},
+	"countingType": {
+		"Type": "enum{Auto;Down;Up}",
+		"Description": "Controls timing direction as countdown or elapsed time",
+		"Default": "Auto",
+		"Options": {
+			"Auto": "Switches between countdown and elapsed time based on event timing",
+			"Down": "Operates exclusively as a countdown timer",
+			"Up": "Works only as an elapsed time counter"
+		}
+	},
+	"maxSeconds": {
+		"Type": "integer",
+		"Description": "Interval in seconds before showing `MaxText` value",
+		"Default": "0"
+	},
+	"maxText": {
+		"Type": "string",
+		"Description": "Text displayed once `maxSeconds` value is reached",
+		"Default": "0"
+	},
+	"minSeconds": {
+		"Type": "integer",
+		"Description": "Interval in seconds before showing `minText` value",
+		"Default": "0"
+	},
+	"minText": {
+		"Type": "string",
+		"Description": "Text displayed once `minSeconds` value is reached"
+	},
+	"mostRepresentativeUnitOnly": {
+		"Type": "boolean",
+		"Description": "Displays largest time unit with relevant value",
+		"Default": "False"
+	},
+	"prefixText": {
+		"Type": "string",
+		"Description": "Text displayed before relative time"
+	},
+	"suffixText": {
+		"Type": "string",
+		"Description": "Text displayed after relative time"
+	},
+	"timerFormat": {
+		"Type": "enum{Positional;Abbreviated;Short;Full;Spelled Out}",
+		"Description": "Time interval display style",
+		"Default": "Positional",
+		"Options": {
+			"Positional": "Numbers separated by colon",
+			"Abbreviated": "Numbers next to initial of time unit",
+			"Short": "Numbers next to abbreviation of time unit",
+			"Full": "Numbers next to name of time unit",
+			"Spelled Out": "Names next to time unit"
+		}
+	},
+	"units": {
+		"Type": "string",
+		"Description": "Display time interval using specified units",
+		"Default": "smhdwMY"
+	},
+	"displayValue": {
+		"Type": "boolean",
+		"Description": "Indicates whether value is displayed as bubble above slider",
+		"Default": "False"
+	},
+	"maxValueImageIndicator": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for maximum value"
+	},
+	"minValue": {
+		"Type": "integer",
+		"Description": "Minimum value for slider control"
+	},
+	"minValueImageIndicator": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for minimum value"
+	},
+	"step": {
+		"Type": "integer",
+		"Description": "Discrete value increment for slider control",
+		"Default": "0"
+	},
+	"cyclic": {
+		"Type": "boolean",
+		"Description": "Last value continues to first in cyclic navigation",
+		"Default": "False"
+	},
+	"displayStyle": {
+		"Type": "enum{As a picker;Inline}",
+		"Description": "UI rendering mode for selection controls",
+		"Default": "picker",
+		"Options": {
+			"As a picker": "Uses popup menu for selections",
+			"Inline": "Displays options directly"
+		}
+	},
+	"initialValue": {
+		"Type": "string",
+		"Description": "Initial value for attributes and variables",
+		"Default": "0"
+	},
+	"resultsPanel": {
+		"Type": "ref(*)",
+		"Description": "Area for displaying query results"
+	},
+	"searchType": {
+		"Type": "enum{Dynamic;Explicit}",
+		"Description": "Search method used in `Work With` pattern",
+		"Default": "Dynamic",
+		"Options": {
+			"Dynamic": "Automatically determines search criteria based on context",
+			"Explicit": "Manually defines search criteria"
+		}
+	},
+	"autoplay": {
+		"Type": "boolean",
+		"Description": "Video starts playing automatically",
+		"Default": "False"
+	},
+	"placeholderImage": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed while video thumbnail is loading",
+		"ProductVersion": "<17.1"
+	},
+	"playbackRate": {
+		"Type": "integer",
+		"Description": "Sets video playback speed percentage",
+		"Default": "100"
+	},
+	"playInFullScreen": {
+		"Type": "enum{Platform Default;Yes;No}",
+		"Description": "Video plays in full screen mode",
+		"Default": "default",
+		"Options": {
+			"Platform Default": "Behavior depends on device; iOS iPhone shows video in full screen, iPad inside control",
+			"Yes": "Video always shown in full screen",
+			"No": "Video played inside control boundaries"
+		}
+	},
+	"showPlaybackControls": {
+		"Type": "enum{On User Interaction;Never}",
+		"Description": "Controls playback controls visibility",
+		"Default": "interaction",
+		"Options": {
+			"On User Interaction": "Playback controls shown on tap",
+			"Never": "No playback controls shown"
+		}
+	},
+	"thumbnailAtt": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Source that store the video thumbnail image"
+	},
+	"thumbnailFieldSpecifier": {
+		"Type": "ref(SDT:Member)",
+		"Description": "Member field that store the video thumbnail image",
+		"ProductVersion": "<17.1",
+		"Constaint": [
+			"Requires `thumbnailAtt` reference a structured type (SDT/BC)"
+		]
+	},
+	"adsProvider": {
+		"Type": "enum{GoogleMobileAds;AdMob}",
+		"Description": "Select ads server provider for `Work With` pattern",
+		"Default": "AdMob",
+		"Options": {
+			"GoogleMobileAds": "Ad Manager",
+			"AdMob": "AdMob Provider"
+		}
+	},
+	"adUnitId": {
+		"Type": "string",
+		"Description": "Unique identifier for ad placement",
+		"ProductVersion": "<18.2"
+	},
+	"buttonBorderStyle": {
+		"Type": "enum{Standard;Rounded}",
+		"Description": "Border style of button",
+		"Default": "Standard",
+		"Options": {
+			"Standard": "Rectangular border",
+			"Rounded": "Circular-corners border"
+		}
+	},
+	"disabledImage": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed when button is disabled in `Work With` pattern"
+	},
+	"imagePosition#action": {
+		"Type": "enum{Above Text;Below Text;Before Text;After Text;Behind Text}",
+		"Description": "Relative positioning of image to text",
+		"Default": "Above Text",
+		"Options": {
+			"Above Text": "Image above text",
+			"Below Text": "Image below text",
+			"Before Text": "Image before text",
+			"After Text": "Image after text",
+			"Behind Text": "Image behind text (Apple only)"
+		}
+	},
+	"onClickEvent": {
+		"Type": "ref(Event)",
+		"Description": "Executes specified event when control is clicked"
+	},
+	"event": {
+		"Type": "ref(Event)",
+		"Description": "Custom code for Web Panel start event"
+	},
+	"gxFormat#label": {
+		"Type": "enum{Text;HTML;Raw HTML;Text with meaningful spaces}",
+		"Description": "Interpret control content as text, HTML, raw HTML, or text with spaces",
+		"Default": "Text",
+		"Options": {
+			"Text": "Content interpreted as plain text",
+			"HTML": "Content interpreted as HTML code",
+			"Raw HTML": "Content interpreted as HTML without SPAN tag",
+			"Text with meaningful spaces": "Content interpreted with preserved leading and middle spaces"
+		}
+	},
+	"returnOnClick": {
+		"Type": "boolean",
+		"Description": "Triggers return on click for attribute/variable, text block, and image controls",
+		"Default": "False"
+	},
+	"align#image": {
+		"Type": "enum{Center;Left;Right;TextTop;Top;Middle;AbsMiddle;Bottom;AbsBottom}",
+		"Description": "Controls image alignment relative to text or container",
+		"Default": "Left",
+		"Options": {
+			"Center": "Centers image horizontally",
+			"Left": "Aligns image left, next to text",
+			"Right": "Aligns image right, away from text",
+			"TextTop": "Positions image above highest text element",
+			"Top": "Positions image at top of container",
+			"Middle": "Centers image vertically within container",
+			"AbsMiddle": "Centers image vertically relative to highest element",
+			"Bottom": "Positions image below lowest text element",
+			"AbsBottom": "Aligns image base with lowest element's base"
+		}
+	},
+	"bitmap": {
+		"Type": "string",
+		"Description": "Display bitmap image in control"
+	},
+	"lowimagereference": {
+		"Type": "ref(Image)",
+		"Description": "Reference to low resolution image"
+	},
+	"inviteMessage": {
+		"Type": "string",
+		"Description": "Text inviting user to enter specific data",
+		"Access": "init/set"
+	},
+	"content": {
+		"Type": "",
+		"Description": ""
+	},
+	"display": {
+		"Type": "enum{Inline;Link}",
+		"Description": "Controls section display in Work With Detail",
+		"Options": {
+			"Inline": "Draws sections in same view",
+			"Link": "Displays sections as single links"
+		}
+	},
+	"parameters": {
+		"Type": "list(ref(Attribute|Variable)|Constant)",
+		"Description": "List of parameters for invoked object"
+	},
+	"showSectionTitle": {
+		"Type": "boolean",
+		"Description": "Display section title in UI",
+		"Require": {
+			"display": "Inline"
+		}
+	},
+	"display#allcontent": {
+		"Type": "enum{Platform Default;Tab;Inline;Link}",
+		"Description": "Preferred way to display sections in Work With Detail Node",
+		"Default": "Platform Default",
+		"Options": {
+			"Platform Default": "Uses platform default display method",
+			"Tab": "Displays sections using tabs",
+			"Inline": "Draws all sections inline",
+			"Link": "Shows sections as links"
+		}
+	},
+	"object": {
+		"Type": "ref(WorkWithDevices|Panel)",
+		"Description": "Embedded UI object",
+		"Access": "init/set"
+	},
+	"allowHover": {
+		"Type": "boolean",
+		"Description": "Highlights rows on mouse hover",
+		"Default": "True"
+	},
+	"allowSelection": {
+		"Type": "boolean",
+		"Description": "Keeps selected item highlighted after mouse click",
+		"Default": "False"
+	},
+	"backColorStyle#simplegrid": {
+		"Type": "enum{None;Uniform;Header;Report}",
+		"Description": "Background color style for grid",
+		"Default": "None",
+		"Options": {
+			"None": "No specific background color style",
+			"Uniform": "Single background color for entire grid",
+			"Header": "Different colors for headers and lines",
+			"Report": "Alternate line colors with header color"
+		},
+		"ProductVersion": "<15.7"
+	},
+	"hoverColor": {
+		"Type": "color",
+		"Description": "Background color for grid row on mouse hover",
+		"Default": "Transparent"
+	},
+	"maxRows": {
+		"Type": "integer",
+		"Description": "Limits number of records displayed in query results",
+		"Default": "0"
+	},
+	"paging": {
+		"Type": "enum{One page at a time;Infinite scrolling}",
+		"Description": "Navigates content in pages or continuously",
+		"Options": {
+			"One page at a time": "Navigates through fixed-page content",
+			"Infinite scrolling": "Scrolls content without page navigation"
+		}
+	},
+	"pagingControls": {
+		"Type": "enum{Navigation buttons;Pages buttons;Navigation and Pages buttons}",
+		"Description": "Controls display of navigation and page buttons",
+		"Default": "Navigation and Pages buttons",
+		"Require": {
+			"paging": "One page at a time"
+		},
+		"Options": {
+			"Navigation buttons": "Only navigation buttons displayed",
+			"Pages buttons": "Only page buttons displayed",
+			"Navigation and Pages buttons": "Both navigation and page buttons displayed"
+		}
+	},
+	"selectionColor": {
+		"Type": "color",
+		"Description": "Background color for selected row",
+		"Default": "Transparent"
+	},
+	"sortable": {
+		"Type": "boolean",
+		"Description": "End-user can sort Grid by column",
+		"Default": "True"
+	},
+	"titleBackColor": {
+		"Type": "color",
+		"Description": "Background color of header lines in grid",
+		"Default": "Transparent"
+	},
+	"colTitle": {
+		"Type": "string",
+		"Description": "Title text displayed for column"
+	},
+	"colTitleColor": {
+		"Type": "color",
+		"Description": "Foreground color of grid column title",
+		"Default": "Transparent"
+	},
+	"colTitleExpression": {
+		"Type": "code",
+		"Description": "Expression defining column title text"
+	},
+	"columnClass": {
+		"Type": "class(GridColumn)",
+		"Description": "Applies predefined or custom class for styling grid columns"
+	},
+	"columnFreeze": {
+		"Type": "enum{No;Start;End}",
+		"Description": "Fix column in start or end position when scrolling",
+		"Default": "No",
+		"Options": {
+			"No": "Column moves with horizontal scroll",
+			"Start": "Column fixed at start position",
+			"End": "Column fixed at end position"
+		}
+	},
+	"columnHidden": {
+		"Type": "boolean",
+		"Description": "Controls column visibility in Tabular Grid",
+		"Default": "False"
+	},
+	"columnHideable": {
+		"Type": "boolean",
+		"Description": "Allows user to hide column",
+		"Default": "True"
+	},
+	"columnImage": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed in column header"
+	},
+	"columnResizable": {
+		"Type": "boolean",
+		"Description": "Allows end user to resize column",
+		"Default": "True"
+	},
+	"columnSize": {
+		"Type": "enum{Minimum content;Maximum content;Autoexpand;Fraction;From ColumnClass}",
+		"Description": "Defines column size behavior",
+		"Default": "Maximum content",
+		"Options": {
+			"Minimum content": "Size based on smallest content",
+			"Maximum content": "Size based on largest content",
+			"Autoexpand": "Dynamic width adjustment",
+			"Fraction": "Equal space distribution",
+			"From ColumnClass": "Size from design system"
+		}
+	},
+	"columnTitleVisible": {
+		"Type": "boolean",
+		"Description": "Controls visibility of column header text",
+		"Default": "True"
+	},
+	"columnTooltip": {
+		"Type": "string",
+		"Description": "Text displayed as tooltip over column header"
+	},
+	"propThemeColumnHeaderClassObj": {
+		"Type": "class(GridColumn)",
+		"Description": "Class applied to column header"
+	},
+	"titleBackStyle": {
+		"Type": "boolean",
+		"Description": "Indicates whether grid column title background is transparent",
+		"Default": "True"
+	},
+	"titleFontBold": {
+		"Type": "integer",
+		"Description": "Enable bold font style",
+		"Default": "0"
+	},
+	"titleFontItalic": {
+		"Type": "integer",
+		"Description": "Enables italic font style",
+		"Default": "0"
+	},
+	"titleFontName": {
+		"Type": "string",
+		"Description": "Font type for title text"
+	},
+	"titleFontSize": {
+		"Type": "integer",
+		"Description": "Size of title font during execution",
+		"Default": "0"
+	},
+	"titleFontStrikethru": {
+		"Type": "integer",
+		"Description": "Cross out grid column title",
+		"Default": "0"
+	},
+	"titleFontUnderline": {
+		"Type": "integer",
+		"Description": "Indicates if title text is underlined",
+		"Default": "0"
+	},
+	"titleFormat": {
+		"Type": "integer",
+		"Description": "Interpret control content as text or HTML",
+		"Default": "0"
+	},
+	"visible": {
+		"Type": "boolean",
+		"Description": "Dashboard element frame visibility",
+		"Default": "True",
+		"Access": "init/get/set"
+	},
+	"displayMode#errorviewer": {
+		"Type": "enum{Bullet List;List}",
+		"Description": "Controls display mode for Scanner control",
+		"Default": "List",
+		"Options": {
+			"Bullet List": "",
+			"List": ""
+		}
+	},
+	"propObjCtrlPgmdesc": {
+		"Type": "string",
+		"Description": "Program description for control"
+	},
+	"propObjCtrlPgmname": {
+		"Type": "string",
+		"Description": "Name of program controlling element"
+	},
+	"borderStyle#embeddedpage": {
+		"Type": "enum{None;3D}",
+		"Description": "Visual style of border",
+		"Default": "2",
+		"Options": {
+			"None": "No border",
+			"3D": "3-dimensional border"
+		}
+	},
+	"class": {
+		"Type": "class",
+		"Description": "Style class for styling Dashboard widget",
+		"Context": [
+			"responsive"
+		],
+		"Access": "init/get/set"
+	},
+	"heightUnit": {
+		"Type": "string",
+		"Description": "Unit of measure for element height",
+		"Default": "px",
+		"Access": "set"
+	},
+	"widthUnit": {
+		"Type": "string",
+		"Description": "Unit of measure for element width",
+		"Default": "px",
+		"Access": "set"
+	},
+	"src": {
+		"Type": "string",
+		"Description": "URL for embedded page"
+	},
+	"href": {
+		"Type": "string",
+		"Description": "URL destination for navigation"
+	},
+	"semanticContent": {
+		"Type": "enum{Header;Subtitle1;Subtitle2;Subtitle3;Subtitle4;Subtitle5;Subtitle6;Section;Main;Footer;General;Address;Navigation menu;Reference container;Related}",
+		"Description": "Semantics for HTML element generation",
+		"Default": "div",
+		"Options": {
+			"Header": "Generates a header element",
+			"Subtitle1": "Generates an h1 element",
+			"Subtitle2": "Generates an h2 element",
+			"Subtitle3": "Generates an h3 element",
+			"Subtitle4": "Generates an h4 element",
+			"Subtitle5": "Generates an h5 element",
+			"Subtitle6": "Generates an h6 element",
+			"Section": "Generates a section element",
+			"Main": "Generates a main element",
+			"Footer": "Generates a footer element",
+			"General": "Generates a div element (default)",
+			"Address": "Generates an address element",
+			"Navigation menu": "Generates a nav element",
+			"Reference container": "Generates an article element",
+			"Related": "Generates an aside element"
+		},
+		"Access": "init/set"
+	},
+	"position": {
+		"Type": "enum{Deafult;Custom}",
+		"Description": "Position in the application bar",
+		"Default": "Default",
+		"Options": {
+			"Deafult": "Use the platform-defined location",
+			"Custom": "Use a custom location (iOS only)"
+		}
+	},
+	"priority": {
+		"Type": "enum{High;Normal;Low}",
+		"Description": "Prioriy in the application bar",
+		"Default": "Normal",
+		"Options": {
+			"High": "Displayed first",
+			"Normal": "Displayed after high actions",
+			"Low": "Displayed last; overflowed first"
+		}
+	},
+	"verticalAlignment": {
+		"Type": "enum{Top;Bottom,Middle,Default}",
+		"Description": "Controls vertical positioning within cell",
+		"Default": "Default",
+		"Options": {
+			"Top": "Content aligned to top edge",
+			"Bottom": "Content aligned to bottom edge",
+			"Middle": "Content aligned to middle",
+			"Default": "Uses engine-defined alignment"
+		}
+	},
+	"controlType": {
+		"Type": "enum{Bar;Action Sheet;Menu}",
+		"Description": "Type of mobile UI element",
+		"Default": "Bar",
+		"Options": {
+			"Bar": "Navigation bar or tab strip",
+			"Action Sheet": "Modal sheet with action items",
+			"Menu": "Dropdown menu"
+		}
+	},
+	"baseTrn": {
+		"Type": "ref(Transaction|Level)",
+		"Description": "Transaction name for grid navigation"
+	},
+	"conditions": {
+		"Type": "code(boolean)",
+		"Description": "Filter records loaded into grid"
+	},
+	"unique": {
+		"Type": "list(ref(Attribute))",
+		"Description": "Ensures query results have no duplicate records"
+	},
+	"descriptionAttribute": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Specify attribute/variable value displayed on UI",
+		"Require": {
+			"groupBy": "True"
+		}
+	},
+	"enableAlphaIndexer": {
+		"Type": "boolean",
+		"Description": "Enable alpha indexer for first attribute in list",
+		"Default": "False"
+	},
+	"groupBy": {
+		"Type": "boolean",
+		"Description": "Groups query results by month"
+	},
+	"groupByUpTo": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Maximum number of lines for text area element",
+		"Default": "0",
+		"Require": {
+			"groupBy": "True"
+		}
+	},
+	"ascending": {
+		"Type": "boolean",
+		"Description": "Prevents end user from changing data sort order",
+		"Default": "True"
+	},
+	"description": {
+		"Type": "string",
+		"Description": "Description for target control"
+	},
+	"alwaysVisible": {
+		"Type": "boolean",
+		"Description": "Time and date fields vary based on device time zone",
+		"Default": "False"
+	},
+	"breakBy": {
+		"Type": "enum{Platform Default;Disabled;Use order's break by}",
+		"Description": "Defines break behavior during searches",
+		"Default": "Platform Default",
+		"Options": {
+			"Platform Default": "Follows order's break by on Android; ignores it on iOS",
+			"Disabled": "Ignores order's break by in both platforms",
+			"Use order's break by": "Considers order's break by for search results"
+		}
+	},
+	"optionForIndividualFields": {
+		"Type": "boolean",
+		"Description": "Allows specifying individual search fields",
+		"Default": "False"
+	},
+	"displayName": {
+		"Type": "string",
+		"Description": "Title of filter group for this grid"
+	},
+	"allValue": {
+		"Type": "boolean",
+		"Description": "Indicates if file is extracted for Java Generator",
+		"Default": "False"
+	},
+	"default": {
+		"Type": "code",
+		"Description": "Default event for Grid row selection",
+		"Require": {
+			"type": "Standard"
+		}
+	},
+	"defaultBeginRange": {
+		"Type": "code",
+		"Description": "Default start value for range searches",
+		"Require": {
+			"type": "range"
+		}
+	},
+	"defaultEndRange": {
+		"Type": "code",
+		"Description": "Default error message for out-of-range values",
+		"Require": {
+			"type": "range"
+		}
+	},
+	"expression": {
+		"Type": "code(boolean)",
+		"Description": "Custom condition for filter selection",
+		"ProductVersion": "<16.4"
+	},
+	"type#filterattribute": {
+		"Type": "enum{Standard;Range}",
+		"Description": "Defines query element display type",
+		"Default": "Standard",
+		"Options": {
+			"Standard": "Displays as an axis for slicing and dicing data",
+			"Range": "Directly displays datum value"
+		}
+	},
+	"value": {
+		"Type": "string",
+		"Description": "Target value for gauge chart data"
+	},
+	"defaultLabelWidthXs": {
+		"Type": "integer",
+		"Description": "Default label width percentage on extra small screens",
+		"Deafult": "25"
+	},
+	"defaultLabelWidthSm": {
+		"Type": "integer",
+		"Description": "Default label width percentage on small screens",
+		"Deafult": "25"
+	},
+	"defaultLabelWidthMd": {
+		"Type": "integer",
+		"Description": "Default label width percentage on medium screens",
+		"Deafult": "25"
+	},
+	"defaultLabelWidthLg": {
+		"Type": "integer",
+		"Description": "Default label width percentage on large screens",
+		"Deafult": "25"
+	},
+	"labelWidthXs": {
+		"Type": "integer",
+		"Description": "Label width percentage on extra small screens",
+		"Constraints": "Only for cell with data-based child"
+	},
+	"labelWidthSm": {
+		"Type": "integer",
+		"Description": "Label width percentage on small screens",
+		"Constraints": "Only for cell with data-based child"
+	},
+	"labelWidthMd": {
+		"Type": "integer",
+		"Description": "Label width percentage on medium screens",
+		"Constraints": "Only for cell with data-based child"
+	},
+	"labelWidthLg": {
+		"Type": "integer",
+		"Description": "Label width percentage on large screens",
+		"Constraints": "Only for cell with data-based child"
+	},
+	"widthXs": {
+		"Type": "integer",
+		"Description": "Number of grid columns element spans on extra small screens"
+	},
+	"widthSm": {
+		"Type": "integer",
+		"Description": "Number of grid columns element spans on small screens"
+	},
+	"widthMd": {
+		"Type": "integer",
+		"Description": "Number of grid columns element spans on medium screens"
+	},
+	"widthLg": {
+		"Type": "integer",
+		"Description": "Number of grid columns element spans on large screens"
+	},
+	"offsetXs": {
+		"Type": "integer",
+		"Description": "Number of grid columns offset from left on extra small screens",
+		"Default": "0"
+	},
+	"offsetSm": {
+		"Type": "integer",
+		"Description": "Number of grid columns offset from left on small screens"
+	},
+	"offsetMd": {
+		"Type": "integer",
+		"Description": "Number of grid columns offset from left on medium screens"
+	},
+	"offsetLg": {
+		"Type": "integer",
+		"Description": "Number of grid columns offset from left on large screens",
+		"Default": "0"
+	},
+	"moveXs": {
+		"Type": "integer",
+		"Description": "Number of grid columns moved on extra small screens"
+	},
+	"moveSm": {
+		"Type": "integer",
+		"Description": "Number of grid columns to move element on small screens"
+	},
+	"moveMd": {
+		"Type": "integer",
+		"Description": "Number of grid columns to move element on medium screens"
+	},
+	"moveLg": {
+		"Type": "integer",
+		"Description": "Number of grid columns moved on large screens"
+	},
+	"visibleXs": {
+		"Type": "boolean",
+		"Description": "Element visible on extra small screens"
+	},
+	"visibleSm": {
+		"Type": "boolean",
+		"Description": "Element visible on small screens"
+	},
+	"visibleMd": {
+		"Type": "boolean",
+		"Description": "Element visible on medium screens"
+	},
+	"visibleLg": {
+		"Type": "boolean",
+		"Description": "Element visible on large screens"
+	},
+	"rowHeightWeb": {
+		"Type": "string",
+		"Description": "Minimum height of rows",
+		"Context": [
+			"responsive"
+		]
+	},
+	"columnsGap": {
+		"Type": "measure",
+		"Description": "Gap size between columns in layout"
+	},
+	"rowsGap": {
+		"Type": "measure",
+		"Description": "Gap size between table rows"
+	},
+	"rowHeights": {
+		"Type": "measure",
+		"Description": "Height of each row in layout"
+	},
+	"historyManagement": {
+		"Type": "boolean",
+		"Description": "Automatically manage browser history for tab navigation",
+		"Default": "False"
+	},
+	"labelWidth": {
+		"Type": "string",
+		"Description": "Width of label for responsive design",
+		"Default": "25%"
+	},
+	"alignment": {
+		"Type": "enum{Left;Right}",
+		"Description": "Controls horizontal alignment of application bar title",
+		"Default": "Right",
+		"Options": {
+			"Left": "Aligns title to left edge",
+			"Right": "Aligns title to right edge"
+		}
+	},
+	"autoFit": {
+		"Type": "boolean",
+		"Description": "Automatically adjust column width to fit content",
+		"Default": "True"
+	},
+	"autoHide": {
+		"Type": "boolean",
+		"Description": "Hides element when not in focus",
+		"Default": "True"
+	},
+	"dropDownSectionVisible": {
+		"Type": "boolean",
+		"Description": "Controls drop down section visibility",
+		"Default": "True"
+	},
+	"fadeInSpeed": {
+		"Type": "integer",
+		"Description": "Duration of fade-in animation",
+		"Default": "300"
+	},
+	"allowLinker": {
+		"Type": "boolean",
+		"Description": "Enable linking between controls",
+		"Default": "False"
+	},
+	"code": {
+		"Type": "string",
+		"Description": "Measurement ID for Google Analytics",
+		"Default": "<yourCodeHere>"
+	},
+	"dimensions": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "List of dimensions for pageview tracking"
+	},
+	"domainName": {
+		"Type": "string",
+		"Description": "Unique identifier for a website domain",
+		"Default": "<yourDomainNameHere>"
+	},
+	"allValuesSuffix": {
+		"Type": "string",
+		"Description": "Suffix appended to all values displayed"
+	},
+	"displayAnnotations": {
+		"Type": "boolean",
+		"Description": "Show annotations in `Work With` pattern",
+		"Default": "True"
+	},
+	"displayAnnotationsFilter": {
+		"Type": "boolean",
+		"Description": "Filter annotations displayed in application",
+		"Default": "False"
+	},
+	"displayExactValues": {
+		"Type": "boolean",
+		"Description": "Show exact values in `Work With` pattern",
+		"Default": "False"
+	},
+	"displayZoomButtons": {
+		"Type": "boolean",
+		"Description": "Show zoom controls in `Work With` pattern",
+		"Default": "True"
+	},
+	"scaleType": {
+		"Type": "enum{Maximized;Fixed}",
+		"Description": "Maximum size of control",
+		"Default": "Fixed",
+		"Options": {
+			"Maximized": "Control expands to maximum available space",
+			"Fixed": "Control maintains fixed size"
+		}
+	},
+	"selectedItem": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Indicates selected layout for Grid row"
+	},
+	"visualizationData": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Numeric value or collection displayed as a gauge"
+	},
+	"axisColor": {
+		"Type": "color",
+		"Description": "Color of axis",
+		"Default": "Transparent"
+	},
+	"backgroundColor": {
+		"Type": "color",
+		"Description": "Background color in control"
+	},
+	"colors": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Editor for creating and editing colors"
+	},
+	"data": {
+		"Type": "ref(Attribute|Variable)",
+		"Description": "Data source bound on control",
+		"Constraints": [
+			"Append `.Member` for structured source; with `Member` as field member name in structured type",
+			"Append `.Item(X)` for collection sources; use `X=0` for current iteration item or `X>0` (or expression) for specific 1-based position"
+		]
+	},
+	"data#google": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Controls data population during build process",
+		"Default": "True"
+	},
+	"focusBorderColor": {
+		"Type": "color",
+		"Description": "Color of border around focused chart elements",
+		"Default": "Transparent"
+	},
+	"is3D": {
+		"Type": "boolean",
+		"Description": "Enable 3D rendering for control",
+		"Default": "True"
+	},
+	"isStacked": {
+		"Type": "boolean",
+		"Description": "Stacking arrangement of elements",
+		"Default": "False"
+	},
+	"legend": {
+		"Type": "enum{Right;Left;Top;Bottom;none}",
+		"Description": "Position of legend within `Chart` element",
+		"Default": "Right",
+		"Options": {
+			"Right": "Legend positioned to the right",
+			"Left": "Legend positioned to the left",
+			"Top": "Legend positioned at top",
+			"Bottom": "Legend positioned at bottom",
+			"none": "No legend displayed"
+		}
+	},
+	"legendBackgroundColor": {
+		"Type": "color",
+		"Description": "Background color for legend area",
+		"Default": "Transparent"
+	},
+	"legendTextColor": {
+		"Type": "color",
+		"Description": "Text color for legend entries",
+		"Default": "Transparent"
+	},
+	"mode": {
+		"Type": "enum{Interactive;Image}",
+		"Description": "Interactive mode or image display",
+		"Default": "Interactive",
+		"Options": {
+			"Interactive": "Enables interactive elements",
+			"Image": "Displays static image"
+		}
+	},
+	"reverseAxis": {
+		"Type": "boolean",
+		"Description": "Sort order of elements in PivotTable",
+		"Default": "False"
+	},
+	"selectedCategoryName": {
+		"Type": "string",
+		"Description": "Name of currently selected category"
+	},
+	"selectedSeriesName": {
+		"Type": "string",
+		"Description": "Name of selected series in chart"
+	},
+	"selectedSeriesValue": {
+		"Type": "integer",
+		"Description": "Base value for difference calculation",
+		"Default": "0"
+	},
+	"titleColor": {
+		"Type": "color",
+		"Description": "Background color for PivotTable title",
+		"Default": "Transparent"
+	},
+	"type#googleCharts": {
+		"Type": "enum{Column Chart;Bar Chart;Line Chart;Pie Chart;Scatter Chart}",
+		"Description": "Type of Google Chart to display",
+		"Default": "Column Chart",
+		"Options": {
+			"Column Chart": "Bar-like columns grouped by category",
+			"Bar Chart": "Columns representing data values",
+			"Line Chart": "Lines showing data trends over time",
+			"Pie Chart": "Pie slices indicating proportions",
+			"Scatter Chart": "Points plotted on a grid"
+		}
+	},
+	"xTitle": {
+		"Type": "string",
+		"Description": "X axis title text",
+		"Default": "Year"
+	},
+	"yTitle": {
+		"Type": "string",
+		"Description": "Y axis title text",
+		"Default": "Quantity"
+	},
+	"gadgetUrl": {
+		"Type": "string",
+		"Description": "URL of Google Gadget",
+		"Default": "http://www.google.com/ig/modules/datetime.xml&up_color=blue&up_firstDay=0&synd=open&w=320&h=136&title=__MSG_title__&lang=en&country=ALL&border=%23ffffff%7C3px%2C1px+solid+%23999999&output=js"
+	},
+	"greenFrom": {
+		"Type": "integer",
+		"Description": "Starting green color value",
+		"Default": "0"
+	},
+	"greenTo": {
+		"Type": "integer",
+		"Description": "Vertical coordinate of element in SD Image Map",
+		"Default": "0"
+	},
+	"majorTicksLabels": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Number of major tick marks and labels",
+		"Default": "5"
+	},
+	"max": {
+		"Type": "integer",
+		"Description": "Maximum range value",
+		"Default": "100"
+	},
+	"min": {
+		"Type": "integer",
+		"Description": "Minimum range value",
+		"Default": "0"
+	},
+	"minorTicks": {
+		"Type": "integer",
+		"Description": "Number of minor ticks between major tick marks",
+		"Default": "2"
+	},
+	"redFrom": {
+		"Type": "integer",
+		"Description": "Red color start point in gradient",
+		"Default": "0"
+	},
+	"redTo": {
+		"Type": "integer",
+		"Description": "X coordinate of left upper corner in SD Image Map",
+		"Default": "0"
+	},
+	"yellowFrom": {
+		"Type": "integer",
+		"Description": "Color of control starting from this point",
+		"Default": "0"
+	},
+	"yellowTo": {
+		"Type": "integer",
+		"Description": "Width of element in SD Image Map control",
+		"Default": "0"
+	},
+	"accessKey": {
+		"Type": "string",
+		"Description": "Unique identifier for connecting to storage provider",
+		"ProductVersion": "<16.10"
+	},
+	"mode#googleGeoMap": {
+		"Type": "enum{regions;markers}",
+		"Description": "Type of Google Geo Map display",
+		"Default": "regions",
+		"Options": {
+			"regions": "Displays map regions",
+			"markers": "Displays map markers"
+		}
+	},
+	"region": {
+		"Type": "enum{Whole world;South America;Central America;North America;All of Africa;Central Africa;Northern Africa;Southern Africa;Eastern Asia;Southern Asia;Asia/Pacific region;Central Asia;Middle East;Northern Asia;Northern Europe;Western Europe;Southern Europe}",
+		"Description": "Geographical region for data filtering",
+		"Default": "Central Africa",
+		"Options": {
+			"Whole world": "All regions included",
+			"South America": "South American countries selected",
+			"Central America": "Central American countries selected",
+			"North America": "North American countries selected",
+			"All of Africa": "All African regions included",
+			"Central Africa": "Central African regions selected",
+			"Northern Africa": "Northern African regions selected",
+			"Southern Africa": "Southern African regions selected",
+			"Eastern Asia": "East Asian countries selected",
+			"Southern Asia": "South Asian countries selected",
+			"Asia/Pacific region": "Asian and Pacific countries selected",
+			"Central Asia": "Central Asian countries selected",
+			"Middle East": "Middle Eastern countries selected",
+			"Northern Asia": "North Asian countries selected",
+			"Northern Europe": "Northern European regions included",
+			"Western Europe": "Western European regions included",
+			"Southern Europe": "Southern European regions included"
+		}
+	},
+	"titleValue": {
+		"Type": "string",
+		"Description": "Controls column header visibility",
+		"Default": "Groups"
+	},
+	"series": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Determine if series are shown in same or separate charts",
+		"Default": "In the same chart"
+	},
+	"anchorLeft": {
+		"Type": "integer",
+		"Description": "Sets the anchor left icon for Google Map control",
+		"Default": "10"
+	},
+	"anchorTop": {
+		"Type": "integer",
+		"Description": "Sets anchor Top icon for Google Map control",
+		"Default": "32"
+	},
+	"baiduKey": {
+		"Type": "string",
+		"Description": "API key for Baidu Map control"
+	},
+	"centerWhenClick": {
+		"Type": "boolean",
+		"Description": "Center map on click",
+		"Default": "True"
+	},
+	"city": {
+		"Type": "enum{Montevideo;Asuncion;Barcelona;Beijing;Bogota;Buenos Aires;Caracas;Chicago;Cordoba - Arg;Guatemala;Guayaquil;La Habana;Johannesburg;La Paz;Lima;Madrid;Mexico City;Paris;Panama city;Porto Alegre;Port-au-Prince;Rio de Janeiro;Roma;Sao Paulo;San Jose ;San Salvador ;Santiago de Chile;Shanghai;Tegucigalpa;Tokyo;Specific Coordinate}",
+		"Description": "Centers map on specified city",
+		"Default": "-34.90,-56.11",
+		"Options": {
+			"Montevideo": "Positions map on Montevideo",
+			"Asuncion": "Positions map on Asuncion",
+			"Barcelona": "Positions map on Barcelona",
+			"Beijing": "Positions map on Beijing",
+			"Bogota": "Positions map on Bogota",
+			"Buenos Aires": "Positions map on Buenos Aires",
+			"Caracas": "Positions map on Caracas",
+			"Chicago": "Positions map on Chicago",
+			"Cordoba - Arg": "Positions map on Cordoba, Argentina",
+			"Guatemala": "Positions map on Guatemala",
+			"Guayaquil": "Positions map on Guayaquil",
+			"La Habana": "Positions map on Havana",
+			"Johannesburg": "Positions map on Johannesburg",
+			"La Paz": "Positions map on La Paz",
+			"Lima": "Positions map on Lima",
+			"Madrid": "Positions map on Madrid",
+			"Mexico City": "Positions map on Mexico City",
+			"Paris": "Positions map on Paris",
+			"Panama city": "Positions map on Panama city",
+			"Porto Alegre": "Positions map on Porto Alegre",
+			"Port-au-Prince": "Positions map on Port-au-Prince",
+			"Rio de Janeiro": "Positions map on Rio de Janeiro",
+			"Roma": "Positions map on Rome",
+			"Sao Paulo": "Positions map on Sao Paulo",
+			"San Jose": "Positions map on San Jose, Costa Rica",
+			"San Salvador": "Positions map on San Salvador",
+			"Santiago de Chile": "Positions map on Santiago, Chile",
+			"Shanghai": "Positions map on Shanghai",
+			"Tegucigalpa": "Positions map on Tegucigalpa",
+			"Tokyo": "Positions map on Tokyo",
+			"Specific Coordinate": "Sets custom coordinates"
+		}
+	},
+	"clearOverlay": {
+		"Type": "boolean",
+		"Description": "Clears overlay on map when marker is clicked",
+		"Default": "False"
+	},
+	"clickLatitude": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Latitude value when clicking map"
+	},
+	"clickLongitude": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Gets Longitude value on map click"
+	},
+	"displayNumberClusteredPoints": {
+		"Type": "boolean",
+		"Description": "Shows number of markers in each cluster",
+		"Default": "True"
+	},
+	"displayStyleClusteredPoints": {
+		"Type": "string",
+		"Description": "Styling class for clustered points text"
+	},
+	"getIcon": {
+		"Type": "enum{Blue;Green;Orange;Pink;Red;BlueCircle;GreenCircle;YellowCircle}",
+		"Description": "Marker icon color when clicking on map",
+		"Default": "Orange",
+		"Options": {
+			"Blue": "Blue circle marker icon",
+			"Green": "Green circle marker icon",
+			"Orange": "Orange marker icon",
+			"Pink": "Pink marker icon",
+			"Red": "Red marker icon",
+			"BlueCircle": "Blue circle marker icon",
+			"GreenCircle": "Green circle marker icon",
+			"YellowCircle": "Yellow circle marker icon"
+		}
+	},
+	"googleApiKey": {
+		"Type": "string",
+		"Description": "Sets Google API Key for map control"
+	},
+	"gSmall": {
+		"Type": "boolean",
+		"Description": "Displays small control on map",
+		"Default": "Gsmall_True"
+	},
+	"gType": {
+		"Type": "boolean",
+		"Description": "Selects map type for display",
+		"Default": "Gtype_False"
+	},
+	"gxMap": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Structured data type for map"
+	},
+	"icon": {
+		"Type": "enum{Default;Blue;Green;Orange;Pink;Red;BlueCircle;GreenCircle;YellowCircle}",
+		"Description": "Default icon for map markers",
+		"Default": "Default",
+		"Options": {
+			"Default": "Default icon",
+			"Blue": "Blue circle icon",
+			"Green": "Green circle icon",
+			"Orange": "Orange icon",
+			"Pink": "Pink icon",
+			"Red": "Red icon",
+			"BlueCircle": "Blue circle icon",
+			"GreenCircle": "Green circle icon",
+			"YellowCircle": "Yellow circle icon"
+		}
+	},
+	"iconHeight": {
+		"Type": "integer",
+		"Description": "Default height of icons for markers on map",
+		"Default": "32"
+	},
+	"iconWidth": {
+		"Type": "integer",
+		"Description": "Default width for map markers",
+		"Default": "20"
+	},
+	"informationControl": {
+		"Type": "string",
+		"Description": "Name for control binding",
+		"Default": "ControlName"
+	},
+	"kml": {
+		"Type": "boolean",
+		"Description": "Enables KML file support for map",
+		"Default": "False"
+	},
+	"kmlurl": {
+		"Type": "string",
+		"Description": "URL of KML file for map"
+	},
+	"large": {
+		"Type": "boolean",
+		"Description": "Shows the Large control on map",
+		"Default": "Glarge_False"
+	},
+	"latitude": {
+		"Type": "string",
+		"Description": "Center map on specified location"
+	},
+	"longitude": {
+		"Type": "string",
+		"Description": "Center map on specified location"
+	},
+	"mapTypeControlStyle": {
+		"Type": "enum{Default;DropDown Menu;Horizontal Bar}",
+		"Description": "Sets map type control display style",
+		"Default": "Default",
+		"Options": {
+			"Default": "Uses default control appearance",
+			"DropDown Menu": "Displays control as drop-down menu",
+			"Horizontal Bar": "Shows control as horizontal bar"
+		}
+	},
+	"navigationControlStyle": {
+		"Type": "enum{Default;Small;Android;Zoom Pan}",
+		"Description": "Sets map navigation control appearance",
+		"Default": "Default",
+		"Options": {
+			"Default": "Uses default navigation controls",
+			"Small": "Displays smaller navigation controls",
+			"Android": "Implements Android-style navigation controls",
+			"Zoom Pan": "Enables zoom and pan functionality"
+		}
+	},
+	"onclick": {
+		"Type": "enum{none;Add Marker;Get Value}",
+		"Description": "Determines map click behavior",
+		"Default": "add_Marker",
+		"Options": {
+			"none": "No action on click",
+			"Add Marker": "Adds marker on click",
+			"Get Value": "Returns clicked point coordinates"
+		}
+	},
+	"openLinksInNewWindow": {
+		"Type": "boolean",
+		"Description": "Links open in new window",
+		"Default": "Opennew_True"
+	},
+	"overview": {
+		"Type": "boolean",
+		"Description": "Show OverView control on Map element",
+		"Default": "Goverviewmap_False"
+	},
+	"precision": {
+		"Type": "integer",
+		"Description": "Supports storing and displaying milliseconds precision",
+		"Default": "8",
+		"ProductVersion": "<15.11"
+	},
+	"provider": {
+		"Type": "enum{Google Maps;Baidu Maps}",
+		"Description": "Selects map provider for rendering",
+		"Default": "GOOGLE",
+		"Options": {
+			"Google Maps": "Uses Google Maps service",
+			"Baidu Maps": "Uses Baidu Maps service"
+		}
+	},
+	"scale": {
+		"Type": "boolean",
+		"Description": "Shows Map control scale",
+		"Default": "Gscale_False"
+	},
+	"scrollWheel": {
+		"Type": "boolean",
+		"Description": "Enables scroll wheel functionality on map",
+		"Default": "True"
+	},
+	"smallZoom": {
+		"Type": "boolean",
+		"Description": "Controls small zoom control visibility",
+		"Default": "Gsmallzoom_False"
+	},
+	"style": {
+		"Type": "enum{Standard;Silver;Retro;Dark;Nigth;Aubergine}",
+		"Description": "Visual theme of application interface",
+		"Default": "GStyle_Standard",
+		"Options": {
+			"Standard": "Default look and feel",
+			"Silver": "Modern, metallic appearance",
+			"Retro": "Vintage, nostalgic design",
+			"Dark": "Dark background with light text",
+			"Nigth": "Fully darkened interface",
+			"Aubergine": "Purple-based theme"
+		}
+	},
+	"travelMode": {
+		"Type": "enum{Driving;Walking}",
+		"Description": "Routing method for map control",
+		"Default": "Walking",
+		"Options": {
+			"Driving": "Uses roads and highways for navigation",
+			"Walking": "Follows pedestrian paths and sidewalks"
+		}
+	},
+	"type#googleMapControl": {
+		"Type": "enum{Map;Satellital Photo;Hybrid;Terrain}",
+		"Description": "Type of map displayed in `Web Panel` and `Panel` objects",
+		"Default": "G_NORMAL_MAP",
+		"Options": {
+			"Map": "Default road map view",
+			"Satellital Photo": "Google Earth satellite images",
+			"Hybrid": "Mixture of normal and satellite views",
+			"Terrain": ""
+		}
+	},
+	"backColorStyle#googleTable": {
+		"Type": "enum{Header;Report}",
+		"Description": "Assigns background color style to grid",
+		"Default": "Header",
+		"Options": {
+			"Header": "Uses plain color for titles and lines",
+			"Report": "Alternates colors for even and odd rows"
+		},
+		"ProductVersion": "<15.7"
+	},
+	"page": {
+		"Type": "enum{Enable;Event;Disable}",
+		"Description": "Enable paging for table",
+		"Default": "Disable",
+		"Options": {
+			"Enable": "Include page buttons, display full record set",
+			"Event": "Include page buttons, trigger PageChanged event",
+			"Disable": "Do not use paging"
+		}
+	},
+	"pageSize": {
+		"Type": "integer",
+		"Description": "Number of rows displayed per page",
+		"Default": "10"
+	},
+	"selection": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Behavior of selected rows in Grid",
+		"Default": "Platform Default"
+	},
+	"showRowNumber": {
+		"Type": "boolean",
+		"Description": "Displays row numbers in first column",
+		"Default": "False"
+	},
+	"sort": {
+		"Type": "enum{Enable;Event;Disable}",
+		"Description": "Enable user sorting by column headers",
+		"Default": "Enable",
+		"Options": {
+			"Enable": "Allow automatic sorting on click",
+			"Event": "Trigger event for manual sorting",
+			"Disable": "Prevent header clicks from sorting"
+		}
+	},
+	"sortAscending": {
+		"Type": "boolean",
+		"Description": "Prevents changing data sort order",
+		"Default": "True"
+	},
+	"sortColumn": {
+		"Type": "integer",
+		"Description": "Initial sort order for `Web Panel` grid",
+		"Default": "0"
+	},
+	"allowCollapse": {
+		"Type": "boolean",
+		"Description": "Prevent collapsing of pivot table elements",
+		"Default": "True",
+		"ProductVersion": "<15.7"
+	},
+	"color": {
+		"Type": "color",
+		"Description": "Font color",
+		"Default": "Transparent"
+	},
+	"size": {
+		"Type": "enum{Small;Medium;Large}",
+		"Description": "Font size",
+		"Default": "Medium",
+		"Options": {
+			"Small": "Smaller font size",
+			"Medium": "Default font size",
+			"Large": "Larger font size"
+		}
+	},
+	"fullScreen": {
+		"Type": "boolean",
+		"Description": "Video plays in full screen mode",
+		"Default": "False"
+	},
+	"mediaTitle": {
+		"Type": "string",
+		"Description": "Descriptive name for media content"
+	},
+	"source": {
+		"Type": "string",
+		"Description": "Indicates data source for control",
+		"Access": "init/set"
+	},
+	"allowDragNDrop": {
+		"Type": "boolean",
+		"Description": "Enables drag and drop functionality",
+		"Default": "True"
+	},
+	"autoLoad": {
+		"Type": "enum{Day;Week;Month;Year}",
+		"Description": "Automatically load data on specific intervals",
+		"Default": "Month",
+		"Options": {
+			"Day": "Load data daily",
+			"Week": "Load data weekly",
+			"Month": "Load data monthly",
+			"Year": "Load data yearly"
+		}
+	},
+	"currentEvent": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Current event being processed"
+	},
+	"defaultLengthTime": {
+		"Type": "integer",
+		"Description": "Maximum character length for edit controls",
+		"Default": "60"
+	},
+	"defaultStepTime": {
+		"Type": "integer",
+		"Description": "Time interval between steps in `Work With` pattern",
+		"Default": "5"
+	},
+	"detailsFormObject": {
+		"Type": "ref(*)",
+		"Description": "Name of transaction for updating events"
+	},
+	"detailsOnCreate": {
+		"Type": "boolean",
+		"Description": "Indicates if details are stored externally",
+		"Default": "True"
+	},
+	"detailsOnDblClick": {
+		"Type": "boolean",
+		"Description": "Show details on double-click",
+		"Default": "True"
+	},
+	"displayDayTab": {
+		"Type": "boolean",
+		"Description": "Show day tab in calendar control",
+		"Default": "True"
+	},
+	"displayMonthTab": {
+		"Type": "boolean",
+		"Description": "Show month navigation tabs",
+		"Default": "True"
+	},
+	"displayNavigationButtons": {
+		"Type": "boolean",
+		"Description": "Show navigation buttons in `Work With` pattern",
+		"Default": "True"
+	},
+	"displayWeekTab": {
+		"Type": "boolean",
+		"Description": "Show week tab in calendar view",
+		"Default": "True"
+	},
+	"firstHour": {
+		"Type": "enum{0;1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23}",
+		"Description": "First hour of day for scheduling",
+		"Default": "0",
+		"Options": {
+			"0": "Midnight to 1 AM",
+			"1": "1 AM to 2 AM",
+			"2": "2 AM to 3 AM",
+			"3": "3 AM to 4 AM",
+			"4": "4 AM to 5 AM",
+			"5": "5 AM to 6 AM",
+			"6": "6 AM to 7 AM",
+			"7": "7 AM to 8 AM",
+			"8": "8 AM to 9 AM",
+			"9": "9 AM to 10 AM",
+			"10": "10 AM to 11 AM",
+			"11": "11 AM to 12 PM",
+			"12": "12 PM to 1 PM",
+			"13": "1 PM to 2 PM",
+			"14": "2 PM to 3 PM",
+			"15": "3 PM to 4 PM",
+			"16": "4 PM to 5 PM",
+			"17": "5 PM to 6 PM",
+			"18": "6 PM to 7 PM",
+			"19": "7 PM to 8 PM",
+			"20": "8 PM to 9 PM",
+			"21": "9 PM to 10 PM",
+			"22": "10 PM to 11 PM",
+			"23": "11 PM to Midnight"
+		}
+	},
+	"futureEventsColor": {
+		"Type": "color",
+		"Description": "Width of the scheduler control in pixels",
+		"Default": "Transparent"
+	},
+	"hourSize": {
+		"Type": "enum{1 row;2 rows;3 rows;4 rows;5 rows;6 rows}",
+		"Description": "Number of rows for hour display",
+		"Default": "3 rows",
+		"Options": {
+			"1 row": "Single row for hours",
+			"2 rows": "Two rows for hours",
+			"3 rows": "Three rows for hours",
+			"4 rows": "Four rows for hours",
+			"5 rows": "Five rows for hours",
+			"6 rows": "Six rows for hours"
+		}
+	},
+	"initialDate": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Initial date of record"
+	},
+	"keepParameters": {
+		"Type": "boolean",
+		"Description": "Keep last day and view parameters after browser refresh",
+		"Default": "False"
+	},
+	"lastHour": {
+		"Type": "enum{0;1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24}",
+		"Description": "Time of day for last hour",
+		"Default": "24",
+		"Options": {
+			"0": "",
+			"1": "",
+			"2": "",
+			"3": "",
+			"4": "",
+			"5": "",
+			"6": "",
+			"7": "",
+			"8": "",
+			"9": "",
+			"10": "",
+			"11": "",
+			"12": "",
+			"13": "",
+			"14": "",
+			"15": "",
+			"16": "",
+			"17": "",
+			"18": "",
+			"19": "",
+			"20": "",
+			"21": "",
+			"22": "",
+			"23": "",
+			"24": ""
+		}
+	},
+	"loadEventsObject": {
+		"Type": "ref(*)",
+		"Description": "Name of Data Provider or Procedure loading events"
+	},
+	"monthEventsView": {
+		"Type": "enum{MultiLine;SingleLine}",
+		"Description": "View mode for displaying monthly events",
+		"Default": "SingleLine",
+		"Options": {
+			"MultiLine": "Events displayed in multiple lines",
+			"SingleLine": "Events displayed in single line"
+		}
+	},
+	"newEventsColor": {
+		"Type": "color",
+		"Description": "Background color for newly inserted events",
+		"Default": "Transparent"
+	},
+	"openLinkNewWindow": {
+		"Type": "boolean",
+		"Description": "Opens links in new window",
+		"Default": "False"
+	},
+	"pastEventsColor": {
+		"Type": "color",
+		"Description": "Width of the scheduler control in pixels",
+		"Default": "Transparent"
+	},
+	"scrollHour": {
+		"Type": "enum{0;1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23}",
+		"Description": "",
+		"Default": "0",
+		"Options": {
+			"0": "",
+			"1": "",
+			"2": "",
+			"3": "",
+			"4": "",
+			"5": "",
+			"6": "",
+			"7": "",
+			"8": "",
+			"9": "",
+			"10": "",
+			"11": "",
+			"12": "",
+			"13": "",
+			"14": "",
+			"15": "",
+			"16": "",
+			"17": "",
+			"18": "",
+			"19": "",
+			"20": "",
+			"21": "",
+			"22": "",
+			"23": ""
+		}
+	},
+	"startDay": {
+		"Type": "enum{Sunday;Monday}",
+		"Description": "Week mode starts on Monday or Sunday",
+		"Default": "Monday",
+		"Options": {
+			"Sunday": "Week mode starts on Sunday",
+			"Monday": "Week mode starts on Monday"
+		}
+	},
+	"theme": {
+		"Type": "enum{Classic;Terrace;Flat;Glossy}",
+		"Description": "Sets default design system or web theme for `Work With` pattern",
+		"Default": "Classic",
+		"Options": {
+			"Classic": "Uses classic design system",
+			"Terrace": "Uses terrace design system",
+			"Flat": "Uses flat design system",
+			"Glossy": "Uses glossy design system"
+		}
+	},
+	"todayEventsColor": {
+		"Type": "color",
+		"Description": "Width of the scheduler control in pixels",
+		"Default": "Transparent"
+	},
+	"view": {
+		"Type": "enum{Day;Week;Month}",
+		"Description": "Time period displayed in calendar view",
+		"Default": "Day",
+		"Options": {
+			"Day": "Daily time periods shown",
+			"Week": "Weekly time periods shown",
+			"Month": "Monthly time periods shown"
+		}
+	},
+	"backgroundImage": {
+		"Type": "ref(Image)",
+		"Description": "Sets default background image for layout"
+	},
+	"borderWidth": {
+		"Type": "string",
+		"Description": "Width of element's borders",
+		"Default": "1",
+		"Access": "init/set"
+	},
+	"cellPad": {
+		"Type": "string",
+		"Description": "Spacing between cells in grid layout"
+	},
+	"cellSpace": {
+		"Type": "string",
+		"Description": "Space between cells in grid layout"
+	},
+	"imagesData": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Controls image size transferred to server",
+		"ProductVersion": "<15.10"
+	},
+	"loadingImage": {
+		"Type": "ref(Image)",
+		"Description": "URL of image displayed during loading"
+	},
+	"resizeSpeed": {
+		"Type": "integer",
+		"Description": "Speed of resizing operation",
+		"Default": "7"
+	},
+	"thumbnailHeight": {
+		"Type": "string",
+		"Description": "Height of thumbnail images",
+		"Default": "100"
+	},
+	"thumbnailWidth": {
+		"Type": "string",
+		"Description": "Width of thumbnails in `ImageGallery` element",
+		"Default": "100"
+	},
+	"type#imageGallery": {
+		"Type": "enum{Slider;Table}",
+		"Description": "Display images in slider or table view",
+		"Default": "Table",
+		"Options": {
+			"Slider": "Images displayed as slides with navigation",
+			"Table": "Images shown in a grid layout"
+		},
+		"ProductVersion": "<16.11"
+	},
+	"class#basicTab": {
+		"Type": "string",
+		"Description": "Style class for styling Dashboard widget",
+		"Default": "Tab"
+	},
+	"pageCount": {
+		"Type": "integer",
+		"Description": "Number of pages in a Grid or Freestyle grid; -1 when undetermined",
+		"Access": "get"
+	},
+	"recordCount": {
+		"Type": "integer",
+		"Description": "Number of records in a Grid or Free Style Grid; -1 when undetermined",
+		"Access": "get"
+	},
+	"class#ucTab": {
+		"Type": "string",
+		"Description": "Style class for styling Dashboard widget",
+		"Default": "Tab"
+	},
+	"leafIcon": {
+		"Type": "ref(Image)",
+		"Description": "Icon displayed for leaf nodes"
+	},
+	"leafSelectedIcon": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for selected leaf nodes"
+	},
+	"linkTarget#treeview": {
+		"Type": "enum{_blank;_self}",
+		"Description": "Opens link in specified window or tab",
+		"Default": "_self",
+		"Options": {
+			"_blank": "Opens link in new window or tab",
+			"_self": "Opens link in current window"
+		}
+	},
+	"parentIcon": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for parent nodes"
+	},
+	"parentSelectedIcon": {
+		"Type": "ref(Image)",
+		"Description": "Image displayed for selected parent nodes"
+	},
+	"picture": {
+		"Type": "string",
+		"Description": "Defines the display format using picture tokens",
+		"Constraints": [
+			"Bounded Attribute/Variable must be Numeric-based",
+			"Strictly follow [Picture](../../references/common-data-picture.md) syntax"
+		],
+		"Access": "set"
+	},
+	"selectedTreeNode": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Currently selected tree node"
+	},
+	"style#treeview": {
+		"Type": "enum{Default;DefaultWithDefaultIcons;Modern;ModernWithDefaultIcons;Menu;NoLines;NoLinesWithDefaultIcons}",
+		"Description": "VisualStyle of treeview control",
+		"Default": "DefaultWithDefaultIcons",
+		"Options": {
+			"Default": "Standard appearance with lines",
+			"DefaultWithDefaultIcons": "Standard appearance with default icons",
+			"Modern": "Modern look with big plus and minus icons",
+			"ModernWithDefaultIcons": "Modern look with default icons",
+			"Menu": "Menu style appearance",
+			"NoLines": "No lines, no icons",
+			"NoLinesWithDefaultIcons": "No lines with default icons"
+		}
+	},
+	"treeNodeCollectionData": {
+		"Type": "ref(Control|Attribute|Variable)",
+		"Description": "Collection of tree nodes defining the tree structure"
+	},
+	"backColorStyle#tabularFlexGrid": {
+		"Type": "enum{None;Uniform;Header;Report}",
+		"Description": "Background color style for tabular flex grid",
+		"Default": "None",
+		"Options": {
+			"None": "No specific background color style",
+			"Uniform": "Single background color for entire grid",
+			"Header": "Different colors for titles and lines",
+			"Report": "Alternate line colors with title background"
+		},
+		"ProductVersion": "<15.7"
+	},
+	"backColorStyle#tabularGrid": {
+		"Type": "enum{None;Uniform;Header;Report}",
+		"Description": "Background color style for tabular grid",
+		"Default": "None",
+		"Options": {
+			"None": "No specific background color style",
+			"Uniform": "Single background color for entire grid",
+			"Header": "Different colors for titles and lines",
+			"Report": "Alternate line colors with title background"
+		},
+		"ProductVersion": "<15.7"
+	},
+	"controlWebType": {
+		"Type": "enum{ToolBar;Menu}",
+		"Description": "Render action group as toolbar or menu",
+		"Default": "ToolBar",
+		"Options": {
+			"ToolBar": "Render action group as toolbar",
+			"Menu": "Render action group as menu"
+		}
+	},
+	"position#actiongroup": {
+		"Type": "enum{Fixed Top;Fixed Bottom;Default}",
+		"Description": "Fixes menu position to top, bottom, or default location",
+		"Default": "Default",
+		"Options": {
+			"Fixed Top": "Positions menu fixed at the top of the page",
+			"Fixed Bottom": "Positions menu fixed at the bottom of the page",
+			"Default": ""
+		}
+	},
+	"ordersWebProperty": {
+		"Type": "ref(Attribute)",
+		"Description": "Grid for displaying orders"
+	},
+	"currentPage": {
+		"Type": "integer",
+		"Description": "Returns the current page number of a grid with paging enabled; returns -1 if not supported",
+		"Access": "get",
+		"Scope": "Web"
+	},
+	"enabled": {
+		"Type": "boolean",
+		"Description": "Enables or disables user interaction with the control",
+		"Default": "True",
+		"Access": "init/set"
+	},
+	"background": {
+		"Type": "ref(Image)",
+		"Description": "Background image displayed on the control",
+		"Access": "init/set",
+		"Scope": "Web"
+	},
+	"headerRawHTML": {
+		"Type": "string",
+		"Description": "Raw HTML injected directly inside the <head> element of the generated page",
+		"Access": "set",
+		"Scope": "Web",
+		"Constraints": [
+			"Only available on the Form object (Form.HeaderRawHTML)",
+			"Web only: Transaction and Web Panel"
+		]
+	},
+	"jScriptSrc": {
+		"Type": "list(string)",
+		"Description": "Manages referenced JavaScript files in the HTML page header",
+		"Access": "set",
+		"Scope": "Web",
+		"Constraints": [
+			"Only available on the Form object (Form.JScriptSrc)",
+			"Collection type: supports Add, Clear, Item, Count operations"
+		]
+	},
+	"meta": {
+		"Type": "list(string)",
+		"Description": "Manages <meta name='...'> tags in the HTML page header",
+		"Access": "set",
+		"Scope": "Web",
+		"Constraints": [
+			"Only available on the Form object (Form.Meta)",
+			"Collection type: supports Add, Clear, RemoveItem, Text, Value, Count operations"
+		]
+	},
+	"metaEquiv": {
+		"Type": "list(string)",
+		"Description": "Manages <meta http-equiv='...'> tags in the HTML page header",
+		"Access": "set",
+		"Scope": "Web",
+		"Constraints": [
+			"Only available on the Form object (Form.MetaEquiv)",
+			"Collection type: supports Add, Clear, RemoveItem, Text, Value, Count operations"
+		]
+	}
+}

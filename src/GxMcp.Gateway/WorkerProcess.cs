@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
@@ -21,8 +22,21 @@ namespace GxMcp.Gateway
         ExplicitClose,   // genexus_kb action=close
         PlannedReload,   // genexus_worker_reload (non-force); gateway is orchestrating drain+respawn
         Wedged,          // BUG-03: an in-flight command exceeded WedgedCommandTimeoutMinutes with no response
-        HeapRecycle      // idle worker exceeded WorkerHeapRecycleMB; recycled proactively so a long
+        HeapRecycle,      // idle worker exceeded WorkerHeapRecycleMB; recycled proactively so a long
                          // session can't drift into an OOM/fragmented state. Eager-respawns.
+        SdkCompatibilityRejected // Worker refused the configured SDK before opening the KB.
+    }
+
+    /// <summary>
+    /// issue #112 — result of worker-exe resolution: the configured value, every location
+    /// probed (in order), and the winner (null when nothing exists). Surfaced by Start()
+    /// errors and the genexus-mcp doctor worker_binary check.
+    /// </summary>
+    public sealed class WorkerExecutableResolution
+    {
+        public string? ResolvedPath { get; init; }
+        public string ConfiguredPath { get; init; } = string.Empty;
+        public List<string> TriedPaths { get; init; } = new();
     }
 
     public class WorkerProcess
@@ -34,7 +48,16 @@ namespace GxMcp.Gateway
         public KbHandle Kb { get; }
         private Process? _process;
         private readonly Configuration _config;
-        private readonly Channel<string> _commandChannel = Channel.CreateUnbounded<string>();
+        private SharedWorkerConnection? _sharedConnection;
+        private SharedWorkerIdentity? _sharedIdentity;
+        private bool IsSharedHostMode => string.Equals(_config.Server?.WorkerSharingMode, "shared-host", StringComparison.OrdinalIgnoreCase);
+        // PERFORMANCE (perf-review): queue item carries the id/method the consumer
+        // needs, so it doesn't re-parse the command we just serialized (every large
+        // genexus_edit / import command used to be JObject.Parse'd a second time on
+        // the write path just to read two top-level fields).
+        private readonly Channel<QueuedCommand> _commandChannel = Channel.CreateUnbounded<QueuedCommand>();
+
+        private sealed record QueuedCommand(string? Json, JObject? Rpc, string? Id, string? Method);
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly object _processLock = new object();
         private readonly TimeSpan _workerIdleTimeout;
@@ -61,6 +84,10 @@ namespace GxMcp.Gateway
         // event — so idle-shutdown teardown must signal the exit itself, or the pool never
         // drops the entry and the next command hits a dead worker (WorkerCrashed).
         private int _exitNotified;
+        private int _exitConfirmed;
+        private bool? _processAliveForTest;
+        private bool? _exitConfirmedForTest;
+        internal Func<WorkerStopReason, Exception?>? StopFailureForTest { get; set; }
         private int _inFlightCommands;
         private int _queuedCommands;
         // BUG-03: start timestamp of each in-flight command, keyed by JSON-RPC id.
@@ -75,6 +102,14 @@ namespace GxMcp.Gateway
         // (no stdout/stderr) this long. Below it, an old-but-chatty command is treated as
         // progressing (long update/build), not reaped.
         private const int WedgedSilenceSeconds = 120;
+        // issue #113 — a background build is NOT an in-flight RPC, so idle-reap decisions
+        // can't rely on _inFlightCommands alone. The worker emits notifications/worker/
+        // build_active every 20s while a build runs (BuildService.buildHeartbeat); each
+        // notification refreshes _lastBuildActiveUtcTicks, and both reap guards refuse to
+        // act while that signal is fresher than this window (2× heartbeat interval + margin).
+        private static readonly TimeSpan BuildActiveGraceWindow = TimeSpan.FromSeconds(90);
+        // 0 = never signalled (IsBuildActive short-circuits on it).
+        private long _lastBuildActiveUtcTicks;
         // Proactive idle heap-recycle ceiling (bytes; 0 = disabled) and a grace so we only
         // recycle a worker that has been genuinely idle, not one momentarily between commands.
         private readonly long _heapRecycleBytes;
@@ -90,21 +125,63 @@ namespace GxMcp.Gateway
         private int _lastExitCode = int.MinValue;
         private long _lastWorkingSetBytes = -1;
         private int _lastPid;
+        private string? _startupDiagnostic;
+        private string? _lastFailureDiagnostic;
+        private WorkerOwnershipLease? _ownershipLease;
+        private DateTime _lastOwnershipReconcileUtc = DateTime.MinValue;
 
         public long? SpawnMs { get { var v = System.Threading.Interlocked.Read(ref _spawnMs); return v < 0 ? (long?)null : v; } }
         public long? SdkInitMs { get { var v = System.Threading.Interlocked.Read(ref _sdkInitMs); return v < 0 ? (long?)null : v; } }
+        public int? LastExitCode => _lastExitCode == int.MinValue ? (int?)null : _lastExitCode;
+        public string? StartupDiagnostic => _startupDiagnostic;
+        public string? LastFailureDiagnostic => _lastFailureDiagnostic;
 
-        public event Action<string>? OnRpcResponse;
+        // PERFORMANCE (perf-review): carries the raw string (needed for stdio/http
+        // forwarding) together with the already-parsed JObject (WorkerProcess parses
+        // every line to route it), so downstream handlers don't re-parse the response.
+        public event Action<string, JObject>? OnRpcResponse;
+        // Context-preserving companion used by the Gateway's notification path. The
+        // original event remains unchanged for existing consumers and tests; this
+        // event carries the worker's KB identity so unsolicited resource updates can
+        // never be mistaken for the same-named object from another open KB.
+        public event Action<string, JObject, string?>? OnRpcResponseWithContext;
         public event Action<WorkerStopReason>? OnWorkerExited;
+
+        private void RaiseRpcResponse(string json, JObject payload)
+        {
+            OnRpcResponse?.Invoke(json, payload);
+            OnRpcResponseWithContext?.Invoke(json, payload, Kb?.NormalizedAlias);
+        }
 
         public int? Pid
         {
             get
             {
+                if (IsSharedHostMode)
+                    return _sharedConnection?.WorkerPid;
                 try { return _process?.HasExited == false ? _process.Id : (int?)null; }
                 catch { return null; }
             }
         }
+
+        public int? HostPid => IsSharedHostMode ? _sharedConnection?.HostPid : null;
+        public string? AttachmentId => IsSharedHostMode ? _sharedConnection?.AttachId : null;
+        public long? WorkerGeneration => IsSharedHostMode ? _sharedConnection?.Generation : null;
+        public bool IsSharedWorker => IsSharedHostMode;
+        public bool SharedConnectionIsConnected => IsSharedHostMode && _sharedConnection?.IsConnected == true;
+        public string? SharedIdentityKey => IsSharedHostMode ? _sharedIdentity?.Key : null;
+        public string? SharedPipeName => IsSharedHostMode && _sharedIdentity != null
+            ? SharedWorkerRegistry.PipeName(_sharedIdentity)
+            : null;
+        public string? SharedConnectionError => IsSharedHostMode ? _sharedConnection?.LastError : null;
+        public string? SharedWorkerExecutable => IsSharedHostMode ? _sharedIdentity?.WorkerExecutable : null;
+        public string? SharedKbPath => IsSharedHostMode ? _sharedIdentity?.KbPath : null;
+        public string? SharedInstallationPath => IsSharedHostMode ? _sharedIdentity?.InstallationPath : null;
+        public string? SharedDriver => IsSharedHostMode ? _sharedIdentity?.Driver : null;
+        public string? SharedMajor => IsSharedHostMode ? _sharedIdentity?.Major : null;
+
+        internal bool ExitConfirmed => _exitConfirmedForTest ?? Volatile.Read(ref _exitConfirmed) != 0;
+        internal bool IsProcessAliveForPool => _processAliveForTest ?? (IsSharedHostMode ? _sharedConnection?.IsConnected == true : (_process == null || IsProcessRunning(_process)));
 
         // Friction 2026-05-22: surface the exe path the worker was actually
         // spawned from so whoami can show it. Worker can come from publish/worker/
@@ -124,6 +201,58 @@ namespace GxMcp.Gateway
             }
         }
 
+        // issue #112 — single source of truth for locating GxMcp.Worker.exe: the configured
+        // GeneXus.WorkerExecutable (absolute, or relative to the gateway's base dir), then
+        // the dev bin/Debug fallbacks, then the gateway-relative worker\ dir. Logs a warning
+        // when the configured path is dead so it's never "silently ignored" again.
+        internal static WorkerExecutableResolution ResolveWorkerExecutable(Configuration config, string? baseDir = null)
+        {
+            baseDir ??= AppDomain.CurrentDomain.BaseDirectory;
+            string configured = config.GeneXus?.WorkerExecutable ?? string.Empty;
+            string workerPath = configured;
+            if (!string.IsNullOrWhiteSpace(workerPath) && !Path.IsPathRooted(workerPath))
+            {
+                workerPath = Path.Combine(baseDir, workerPath);
+            }
+
+            var tried = new List<string>();
+            if (!string.IsNullOrWhiteSpace(workerPath))
+            {
+                tried.Add(workerPath);
+            }
+
+            if (string.IsNullOrWhiteSpace(workerPath) || !File.Exists(workerPath))
+            {
+                if (!string.IsNullOrWhiteSpace(configured))
+                {
+                    Program.Log($"[Gateway] WARNING: GeneXus.WorkerExecutable '{workerPath}' (from config.json) does not exist — trying fallback locations.");
+                }
+
+                string[] devPaths = new[]
+                {
+                    Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\..\..\src\GxMcp.Worker\bin\Debug\GxMcp.Worker.exe")),
+                    Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\src\GxMcp.Worker\bin\Debug\GxMcp.Worker.exe")),
+                    Path.Combine(baseDir, @"worker\GxMcp.Worker.exe")
+                };
+
+                foreach (var path in devPaths)
+                {
+                    tried.Add(path);
+                    if (File.Exists(path))
+                    {
+                        return new WorkerExecutableResolution { ResolvedPath = path, ConfiguredPath = configured, TriedPaths = tried };
+                    }
+                }
+            }
+
+            return new WorkerExecutableResolution
+            {
+                ResolvedPath = !string.IsNullOrWhiteSpace(workerPath) && File.Exists(workerPath) ? workerPath : null,
+                ConfiguredPath = configured,
+                TriedPaths = tried
+            };
+        }
+
         public WorkerProcess(Configuration config, KbHandle kb)
         {
             _config = config;
@@ -132,7 +261,7 @@ namespace GxMcp.Gateway
             // short-circuits on TimeSpan.Zero). The previous Math.Max(1, …) floor forced 0 up
             // to 1 minute, making the documented disable path dead code AND turning the most
             // aggressive setting into the worst 90s-tax generator.
-            int idleMin = _config.Server?.WorkerIdleTimeoutMinutes ?? 60;
+            int idleMin = _config.Server?.WorkerIdleTimeoutMinutes ?? new ServerConfig().WorkerIdleTimeoutMinutes;
             _workerIdleTimeout = idleMin <= 0 ? TimeSpan.Zero : TimeSpan.FromMinutes(idleMin);
             _heapRecycleBytes = (long)Math.Max(0, _config.Server?.WorkerHeapRecycleMB ?? 1500) * 1024 * 1024;
             _wedgedCommandTimeout = TimeSpan.FromMinutes(Math.Max(1, _config.Server?.WedgedCommandTimeoutMinutes ?? 15));
@@ -149,6 +278,11 @@ namespace GxMcp.Gateway
                     if (_process != null && !_process.HasExited)
                     {
                         SnapshotVitals();
+                        if (DateTime.UtcNow - _lastOwnershipReconcileUtc >= TimeSpan.FromMinutes(1))
+                        {
+                            _lastOwnershipReconcileUtc = DateTime.UtcNow;
+                            WorkerOwnershipRegistry.Reconcile(SpawnedExePath ?? string.Empty, Kb.Path);
+                        }
                         if (ShouldStopForIdle())
                         {
                             Program.Log($"[Gateway] worker_idle_shutdown pid={_process.Id} idleTimeoutMinutes={_workerIdleTimeout.TotalMinutes}");
@@ -207,8 +341,13 @@ namespace GxMcp.Gateway
                             Program.Log("[Health] Sending Ping to Worker...");
                             try
                             {
-                                var ping = new { jsonrpc = "2.0", id = "heartbeat", method = "ping" };
-                                await SendCommandAsync(JsonConvert.SerializeObject(ping));
+                                var ping = new JObject
+                                {
+                                    ["jsonrpc"] = "2.0",
+                                    ["id"] = "heartbeat",
+                                    ["method"] = "ping"
+                                };
+                                await SendCommandAsync(ping);
                             }
                             catch (Exception exPing)
                             {
@@ -217,12 +356,24 @@ namespace GxMcp.Gateway
                         }
                     }
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
                 catch (Exception ex)
                 {
                     Program.Log($"[Health] Error during health check loop: {ex.Message}");
                 }
 
-                await Task.Delay(15000, ct);
+                if (ct.IsCancellationRequested) break;
+                try
+                {
+                    await Task.Delay(15000, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
             }
         }
 
@@ -234,10 +385,10 @@ namespace GxMcp.Gateway
                 {
                     if (await _commandChannel.Reader.WaitToReadAsync(_cts.Token))
                     {
-                        while (_commandChannel.Reader.TryRead(out var jsonRpc))
+                        while (_commandChannel.Reader.TryRead(out var cmd))
                         {
                             Interlocked.Decrement(ref _queuedCommands);
-                            if (string.IsNullOrEmpty(jsonRpc))
+                            if (cmd.Rpc == null && string.IsNullOrEmpty(cmd.Json))
                             {
                                 continue;
                             }
@@ -248,15 +399,20 @@ namespace GxMcp.Gateway
                             // orphaned worker) and bypassed the respawn-suppression path in Program.cs.
                             // If the process is not running, fail this command with a typed error
                             // so the gateway returns a clean JSON-RPC error instead of silently dropping it.
-                            if (!IsProcessRunning(_process))
+                            if (!IsTransportRunning())
                             {
-                                string failId = "unknown";
-                                try
+                                string failId = cmd.Id ?? (cmd.Rpc?["id"]?.ToString()) ?? "unknown";
+                                // PERF: id rides on the queue item (JObject overload); fall
+                                // back to parsing only for the legacy string shim.
+                                if (failId == "unknown" && !string.IsNullOrEmpty(cmd.Json))
                                 {
-                                    var failJson = JObject.Parse(jsonRpc);
-                                    failId = failJson["id"]?.ToString() ?? "unknown";
+                                    try
+                                    {
+                                        var failJson = JObject.Parse(cmd.Json);
+                                        failId = failJson["id"]?.ToString() ?? "unknown";
+                                    }
+                                    catch { }
                                 }
-                                catch { }
                                 Program.Log($"[Gateway] Worker not running; failing command {failId} with WorkerCrashed error.");
                                 var errResponse = new JObject
                                 {
@@ -264,31 +420,28 @@ namespace GxMcp.Gateway
                                     ["id"] = failId == "unknown" ? (JToken)JValue.CreateNull() : new JValue(failId),
                                     ["error"] = new JObject { ["code"] = -32000, ["message"] = $"Worker for KB '{Kb.Alias}' crashed/exited. Reconnect or try again." }
                                 };
-                                OnRpcResponse?.Invoke(errResponse.ToString(Formatting.None));
+                                RaiseRpcResponse(errResponse.ToString(Formatting.None), errResponse);
                                 continue;
                             }
 
-                            string id = "unknown";
-                            var countsAsActivity = false;
-                            try
+                            // PERFORMANCE: id/method ride on the queue item (JObject
+                            // overload) — no re-parse of the serialized command. The
+                            // legacy string shim (Id/Method null) lazily parses once.
+                            string id = cmd.Id ?? (cmd.Rpc?["id"]?.ToString()) ?? "unknown";
+                            string method = cmd.Method ?? (cmd.Rpc?["method"]?.ToString()) ?? "unknown";
+                            if ((id == "unknown" || method == "unknown") && !string.IsNullOrEmpty(cmd.Json))
                             {
-                                // PERFORMANCE (G-M1): JObject.Parse is the direct constructor — avoids
-                                // the JsonConvert.DeserializeObject<T> reflection-style dispatch on every
-                                // command. Semantically identical for our case.
-                                var json = JObject.Parse(jsonRpc);
-                                if (json["id"] != null)
+                                try
                                 {
-                                    id = json["id"]?.ToString() ?? "unknown";
+                                    var json = JObject.Parse(cmd.Json);
+                                    if (id == "unknown" && json["id"] != null) id = json["id"]?.ToString() ?? "unknown";
+                                    if (method == "unknown") method = json["method"]?.ToString() ?? "unknown";
                                 }
-
-                                var method = json["method"]?.ToString() ?? "unknown";
-                                _lastOperationInfo = $"{method} (ID: {id})";
-                                countsAsActivity = !string.Equals(id, "heartbeat", StringComparison.OrdinalIgnoreCase) &&
-                                                   !string.Equals(method, "ping", StringComparison.OrdinalIgnoreCase);
+                                catch { }
                             }
-                            catch
-                            {
-                            }
+                            _lastOperationInfo = $"{method} (ID: {id})";
+                            var countsAsActivity = !string.Equals(id, "heartbeat", StringComparison.OrdinalIgnoreCase) &&
+                                                  !string.Equals(method, "ping", StringComparison.OrdinalIgnoreCase);
 
                             try
                             {
@@ -311,10 +464,26 @@ namespace GxMcp.Gateway
                                     writer = _pipeWriter;
                                 }
 
-                                if (writer != null)
+                                if (_sharedConnection != null)
                                 {
-                                    // WriteLineAsync + FlushAsync with cancellation support.
-                                    await writer.WriteLineAsync(jsonRpc).ConfigureAwait(false);
+                                    JObject sharedRpc = cmd.Rpc ?? JObject.Parse(cmd.Json ?? string.Empty);
+                                    await _sharedConnection.SendAsync(sharedRpc, _cts.Token).ConfigureAwait(false);
+                                    Program.Log($"[Gateway] Shared Worker command written to attachment: {id}");
+                                }
+                                else if (writer != null)
+                                {
+                                    if (cmd.Rpc != null)
+                                    {
+                                        using (var jsonWriter = new JsonTextWriter(writer) { CloseOutput = false })
+                                        {
+                                            cmd.Rpc.WriteTo(jsonWriter);
+                                        }
+                                        await writer.WriteLineAsync().ConfigureAwait(false);
+                                    }
+                                    else if (!string.IsNullOrEmpty(cmd.Json))
+                                    {
+                                        await writer.WriteLineAsync(cmd.Json).ConfigureAwait(false);
+                                    }
                                     await writer.FlushAsync().ConfigureAwait(false);
                                     Program.Log($"[Gateway] Command written to pipe: {id}");
                                 }
@@ -326,6 +495,7 @@ namespace GxMcp.Gateway
                                     }
 
                                     Program.Log($"[Gateway] ERROR: Cannot send command {id}, pipe not available after wait.");
+                                    EmitSendFailure(id, $"Worker for KB '{Kb.Alias}' pipe unavailable after 30s wait. Try again or reconnect the worker.");
                                 }
                             }
                             catch (Exception ex)
@@ -336,6 +506,7 @@ namespace GxMcp.Gateway
                                 }
 
                                 Program.Log($"[Gateway] IPC Send Error ({id}): {ex.Message}");
+                                EmitSendFailure(id, $"Worker for KB '{Kb.Alias}' command send failed: {ex.Message}");
                             }
                         }
                     }
@@ -393,8 +564,34 @@ namespace GxMcp.Gateway
             }
         }
 
+        private bool IsTransportRunning()
+        {
+            if (IsSharedHostMode) return _sharedConnection?.IsConnected == true;
+            return IsProcessRunning(_process);
+        }
+
+        // C5 fix: a send failure (pipe never became ready within the wait window — including
+        // the TimeoutException from WaitForPipeReadyAsync — or any IPC exception while
+        // writing) must surface as a JSON-RPC error response; otherwise the pending MCP
+        // request hangs until its overall timeout fires. Mirrors the WorkerCrashed envelope.
+        internal void EmitSendFailure(string id, string message)
+        {
+            var errResponse = new JObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = id == "unknown" ? (JToken)JValue.CreateNull() : new JValue(id),
+                ["error"] = new JObject { ["code"] = -32000, ["message"] = message }
+            };
+            RaiseRpcResponse(errResponse.ToString(Formatting.None), errResponse);
+        }
+
         private async Task WaitForPipeReadyAsync(string id, CancellationToken cancellationToken)
         {
+            if (IsSharedHostMode)
+            {
+                if (_sharedConnection?.IsConnected == true) return;
+                throw new IOException($"Shared Worker attachment is not connected for command {id}.");
+            }
             Task pipeReadyTask;
             lock (_processLock)
             {
@@ -479,47 +676,6 @@ namespace GxMcp.Gateway
             }
             catch
             {
-            }
-        }
-
-        // Hard "exactly one worker per KB" backstop. Run at the top of every Start():
-        // kill any OTHER GxMcp.Worker process bound to this KB (matched on the --kb path
-        // in its command line) before we spawn ours. This reaps orphans left by crashes,
-        // reload races, or a gateway that died without cleaning up — so a KB can never
-        // accumulate duplicate workers regardless of how the previous one ended. Our own
-        // live process (when self != exited) is preserved. Best-effort per process.
-        private void KillOrphanWorkers()
-        {
-            try
-            {
-                string norm = (Kb?.Path ?? string.Empty).Trim().TrimEnd('\\', '/').ToLowerInvariant();
-                if (norm.Length == 0) return;
-
-                int? ourPid = null;
-                try { ourPid = _process?.HasExited == false ? _process.Id : (int?)null; } catch { }
-
-                foreach (var proc in Process.GetProcessesByName("GxMcp.Worker"))
-                {
-                    try
-                    {
-                        if (ourPid.HasValue && proc.Id == ourPid.Value) continue;
-                        string cmd = GetCommandLine(proc);
-                        if (string.IsNullOrEmpty(cmd)) continue;
-                        if (!CommandLineTargetsKb(cmd, norm)) continue;
-
-                        Program.Log($"[Gateway] KillOrphanWorkers: reaping duplicate worker pid={proc.Id} for KB '{Kb?.Alias}'.");
-                        proc.Kill(true);
-                        proc.WaitForExit(3000);
-                    }
-                    catch (Exception ex)
-                    {
-                        Program.Log($"[Gateway] KillOrphanWorkers: probe/kill pid={proc.Id} failed: {ex.Message}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Program.Log($"[Gateway] KillOrphanWorkers: enumeration failed: {ex.Message}");
             }
         }
 
@@ -609,11 +765,65 @@ namespace GxMcp.Gateway
             return string.Empty;
         }
 
+        private void StartShared(string workerPath, string workerInstallationPath, string workerDriver, string workerMajor, string? legacyProvider)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            SpawnedExePath = workerPath;
+            try { SpawnedExeBuiltAtUtc = File.GetLastWriteTimeUtc(workerPath); } catch { SpawnedExeBuiltAtUtc = null; }
+            SharedWorkerConnection? connection = null;
+            try
+            {
+                connection = SharedWorkerHostLauncher.Connect(_config, Kb, workerPath,
+                    workerInstallationPath ?? string.Empty, workerDriver, workerMajor, legacyProvider);
+                _sharedIdentity = SharedWorkerIdentity.Create(workerPath, Kb.Path, workerInstallationPath, workerDriver, workerMajor, Configuration.CurrentConfigPath);
+                _sharedConnection = connection;
+                connection.LineReceived += line =>
+                {
+                    _lastResponse = DateTime.UtcNow;
+                    try
+                    {
+                        HandleWorkerRpcResponse(line, out JObject? parsed);
+                        if (parsed != null) RaiseRpcResponse(line, parsed);
+                    }
+                    catch (Exception ex) { Program.Log("[Gateway] shared Worker response handling failed: " + ex.Message); }
+                };
+                connection.Disconnected += failure =>
+                {
+                    if (_cts.IsCancellationRequested) return;
+                    ObserveFailureDiagnostic(failure?.ToString());
+                    ObserveStartupDiagnostic(failure?.Message);
+                    Volatile.Write(ref _exitConfirmed, 1);
+                    FireWorkerExitedOnce(WorkerStopReason.None);
+                };
+                connection.WorkerRestarted += diagnostic =>
+                {
+                    ObserveFailureDiagnostic("shared Worker child restarted: " + (string.IsNullOrWhiteSpace(diagnostic) ? "no failure detail" : diagnostic));
+                };
+                if (connection.AttachInfo?.SdkReady == true)
+                    _sdkReady.TrySetResult(true);
+                _lastPid = connection.WorkerPid ?? 0;
+                SpawnedAtUtc = DateTime.UtcNow;
+                watch.Stop();
+                Interlocked.Exchange(ref _spawnMs, watch.ElapsedMilliseconds);
+                _pipeReady.TrySetResult(true);
+                Program.Log($"[Gateway] shared_worker_attached hostPid={connection.HostPid} workerPid={connection.WorkerPid} attachId={connection.AttachId} generation={connection.Generation} attachMs={watch.ElapsedMilliseconds}");
+            }
+            catch (Exception ex)
+            {
+                ObserveFailureDiagnostic(ex.ToString());
+                try { connection?.Dispose(); } catch { }
+                _sharedConnection = null;
+                _sharedIdentity = null;
+                _pipeReady.TrySetException(new IOException("Shared Worker attachment failed."));
+                throw;
+            }
+        }
+
         public void Start()
         {
             lock (_processLock)
             {
-                if (_isStarting || IsProcessRunning(_process))
+                if (_isStarting || IsProcessRunning(_process) || (_sharedConnection?.IsConnected == true))
                 {
                     return;
                 }
@@ -623,8 +833,10 @@ namespace GxMcp.Gateway
 
             try
             {
-                KillOrphanWorkers();
                 _stopReason = WorkerStopReason.None;
+                _startupDiagnostic = null;
+                _lastFailureDiagnostic = null;
+                Volatile.Write(ref _exitConfirmed, 0);
                 MarkActivity();
                 // Publish the readiness sources under the lock: StopProcess /
                 // WaitForPipeReadyAsync read these same fields under _processLock, and
@@ -637,35 +849,76 @@ namespace GxMcp.Gateway
                 }
 
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                string workerPath = _config.GeneXus?.WorkerExecutable ?? string.Empty;
-                if (!Path.IsPathRooted(workerPath))
+                WorkerExecutableResolution res = ResolveWorkerExecutable(_config, baseDir);
+
+                if (res.ResolvedPath == null)
                 {
-                    workerPath = Path.Combine(baseDir, workerPath);
+                    // issue #112: enumerate every candidate so the operator can see exactly
+                    // what was checked — and that a broken npm/npx extraction (empty
+                    // publish/worker/) or a stale config value is the cause.
+                    throw new FileNotFoundException(
+                        "Worker NOT FOUND. Configured GeneXus.WorkerExecutable: '"
+                        + (string.IsNullOrWhiteSpace(res.ConfiguredPath) ? "(not set)" : res.ConfiguredPath)
+                        + "'. Locations checked: " + string.Join("; ", res.TriedPaths)
+                        + ". If this install came from npm/npx, the package extraction may be incomplete — fix with: "
+                        + "npm cache clean --force && npm uninstall -g genexus-mcp && npm install -g genexus-mcp@latest (or npx genexus-mcp@latest init).");
                 }
 
-                if (!File.Exists(workerPath))
-                {
-                    string[] devPaths = new[]
-                    {
-                        Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\..\..\src\GxMcp.Worker\bin\Debug\GxMcp.Worker.exe")),
-                        Path.GetFullPath(Path.Combine(baseDir, @"..\..\..\src\GxMcp.Worker\bin\Debug\GxMcp.Worker.exe")),
-                        Path.Combine(baseDir, @"worker\GxMcp.Worker.exe")
-                    };
+                string workerPath = res.ResolvedPath;
 
-                    foreach (var path in devPaths)
-                    {
-                        if (File.Exists(path))
-                        {
-                            workerPath = path;
-                            break;
-                        }
-                    }
+                // Fail before creating a process for a major that the explicit
+                // compatibility catalog rejects. The Worker still performs the
+                // authoritative manifest/fingerprint validation; this preflight
+                // only prevents a deterministic unsupported-major respawn loop.
+                string? workerInstallationPath = string.IsNullOrWhiteSpace(Kb.InstallationPath)
+                    ? _config.GeneXus?.InstallationPath
+                    : Kb.InstallationPath;
+                var sdkProbe = WorkerSdkCompatibilityProbe.Check(workerInstallationPath);
+                if (sdkProbe.IsRejected)
+                {
+                    ObserveStartupDiagnostic(sdkProbe.Diagnostic);
+                    throw new InvalidOperationException(sdkProbe.Diagnostic);
                 }
 
-                if (!File.Exists(workerPath))
+                string workerDriver = string.IsNullOrWhiteSpace(Kb.Driver)
+                    ? (sdkProbe.Driver ?? "native-sdk")
+                    : Kb.Driver!;
+                string workerMajor = string.IsNullOrWhiteSpace(Kb.Major)
+                    ? (sdkProbe.Major ?? string.Empty)
+                    : Kb.Major!;
+                if (!string.IsNullOrWhiteSpace(Kb.Driver)
+                    && !string.IsNullOrWhiteSpace(sdkProbe.Driver)
+                    && !string.Equals(Kb.Driver, sdkProbe.Driver, StringComparison.OrdinalIgnoreCase))
                 {
-                    throw new FileNotFoundException($"Worker NOT FOUND at {workerPath}");
+                    string mismatch = $"GXMCP_KB_DRIVER_MISMATCH kb={Kb.Alias} requested={Kb.Driver} detected={sdkProbe.Driver} major={sdkProbe.Major}";
+                    ObserveStartupDiagnostic(mismatch);
+                    throw new InvalidOperationException(mismatch);
                 }
+
+                string? legacyProvider = null;
+                if (string.Equals(workerDriver, "com-gxpublic", StringComparison.OrdinalIgnoreCase)
+                    && (string.IsNullOrWhiteSpace(workerInstallationPath) || !Directory.Exists(workerInstallationPath)))
+                {
+                    string diagnostic = $"GXMCP_LEGACY_INSTALLATION_NOT_FOUND kb={Kb.Alias} major={workerMajor} path="
+                        + (string.IsNullOrWhiteSpace(workerInstallationPath) ? "<missing>" : workerInstallationPath);
+                    ObserveStartupDiagnostic(diagnostic);
+                    throw new InvalidOperationException(diagnostic);
+                }
+                if (string.Equals(workerDriver, "com-gxpublic", StringComparison.OrdinalIgnoreCase)
+                    && !WorkerSdkCompatibilityProbeResult.TryFindLegacyProvider(workerMajor, out legacyProvider))
+                {
+                    string diagnostic = $"GXMCP_GXPUBLIC_PROVIDER_NOT_REGISTERED kb={Kb.Alias} major={workerMajor}. Register a matching 32-bit GXPublic provider before opening this legacy KB.";
+                    ObserveStartupDiagnostic(diagnostic);
+                    throw new InvalidOperationException(diagnostic);
+                }
+
+                if (IsSharedHostMode)
+                {
+                    StartShared(workerPath, workerInstallationPath ?? string.Empty, workerDriver, workerMajor, legacyProvider);
+                    return;
+                }
+
+                _ownershipLease = WorkerOwnershipRegistry.Acquire(workerPath, Kb.Path);
 
                 SpawnedExePath = workerPath;
                 try { SpawnedExeBuiltAtUtc = File.GetLastWriteTimeUtc(workerPath); } catch { SpawnedExeBuiltAtUtc = null; }
@@ -686,14 +939,38 @@ namespace GxMcp.Gateway
 
                 string kbPath = Kb.Path;
                 startInfo.Arguments = $"--kb \"{kbPath}\"";
-                startInfo.EnvironmentVariables["GX_PROGRAM_DIR"] = _config.GeneXus?.InstallationPath ?? string.Empty;
+                startInfo.EnvironmentVariables["GX_PROGRAM_DIR"] = workerInstallationPath ?? string.Empty;
+                startInfo.EnvironmentVariables["GXMCP_DRIVER"] = workerDriver;
+                startInfo.EnvironmentVariables["GXMCP_TARGET_MAJOR"] = workerMajor;
+                if (!string.IsNullOrWhiteSpace(legacyProvider))
+                    startInfo.EnvironmentVariables["GXMCP_GXPUBLIC_PROVIDER"] = legacyProvider;
+                // GX_KB_PATH is always derived from the gateway-owned handle.
                 startInfo.EnvironmentVariables["GX_KB_PATH"] = kbPath;
+                startInfo.EnvironmentVariables["GXMCP_STATE_SCOPE_ID"] = StateScope.ProcessScopeId.ToString();
+                startInfo.EnvironmentVariables["GXMCP_KB_ID"] = Kb.KbId;
+                startInfo.EnvironmentVariables["GXMCP_KB_GENERATION"] = Kb.ContextGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                string scopedOperationalDir = Path.GetDirectoryName(CrashLedger.ResolveScopedPath(StateScope.ProcessScopeId, Kb.KbId, Kb.ContextGeneration))!;
+                startInfo.EnvironmentVariables["GXMCP_LOG_DIR"] = scopedOperationalDir;
+                startInfo.EnvironmentVariables["GXMCP_CRASH_LEDGER_PATH"] = Path.Combine(scopedOperationalDir, "crash-ledger.jsonl");
+                if (!string.IsNullOrWhiteSpace(_config.Server?.ArtifactOutputDirectory))
+                {
+                    // The Worker adds its KB identity below this root. Do not pass a
+                    // KB-specific path here: the same configured root is safe for every
+                    // worker because the Worker resolves the per-KB scope.
+                    startInfo.EnvironmentVariables["GXMCP_ARTIFACT_OUTPUT_DIR"] = _config.Server.ArtifactOutputDirectory;
+                }
                 // v2.8.5: hand the worker the authoritative server version so
                 // genexus_doctor reports the same number as whoami (the worker
                 // assembly version can lag the package version between releases).
                 startInfo.EnvironmentVariables["GXMCP_SERVER_VERSION"] = McpRouter.ServerVersion;
+                // Preview CLI resolution needs the MCP profile as a source of
+                // configuration, but the Worker otherwise only receives --kb.
+                // Forward the already-resolved absolute profile path so relative
+                // axiCli values are resolved against the profile file, not CWD.
+                if (!string.IsNullOrWhiteSpace(Configuration.CurrentConfigPath))
+                    startInfo.EnvironmentVariables["GXMCP_PROFILE_CONFIG_PATH"] = Configuration.CurrentConfigPath;
                 startInfo.EnvironmentVariables["GX_SHADOW_PATH"] = _config.Environment?.GX_SHADOW_PATH ?? Path.Combine(kbPath, ".gx_mirror");
-                startInfo.EnvironmentVariables["PATH"] = (_config.GeneXus?.InstallationPath ?? string.Empty) + ";" + Environment.GetEnvironmentVariable("PATH");
+                startInfo.EnvironmentVariables["PATH"] = (workerInstallationPath ?? string.Empty) + ";" + Environment.GetEnvironmentVariable("PATH");
 
                 // Forward any GXMCP_* env vars from the gateway process to the worker.
                 // Lets benchmarks / opt-outs (GXMCP_BUILD_COMPILE_ONLY, GXMCP_INPROCESS_BUILD_FASTPATH,
@@ -703,7 +980,7 @@ namespace GxMcp.Gateway
                 {
                     foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
                     {
-                        string key = entry.Key?.ToString();
+                        string? key = entry.Key?.ToString();
                         if (!string.IsNullOrEmpty(key)
                             && key.StartsWith("GXMCP_", StringComparison.OrdinalIgnoreCase)
                             && !startInfo.EnvironmentVariables.ContainsKey(key))
@@ -743,6 +1020,7 @@ namespace GxMcp.Gateway
                     {
                     }
                     _lastExitCode = exitCode;
+                    Volatile.Write(ref _exitConfirmed, 1);
 
                     // FR#19: exit code 17 means a sibling worker already serves this KB
                     // (single-instance reject). Don't respawn — the live worker is authoritative.
@@ -752,6 +1030,7 @@ namespace GxMcp.Gateway
                     // exit code says so (can override an earlier "none").
                     WorkerStopReason reason = _stopReason;
                     if (busyReject) reason = WorkerStopReason.BusyReject;
+                    else if (IsSdkCompatibilityFailure(_startupDiagnostic)) reason = WorkerStopReason.SdkCompatibilityRejected;
 
                     Program.Log($"[Gateway] Worker process EXITED with code {exitCode}. reason={reason}");
 
@@ -762,8 +1041,8 @@ namespace GxMcp.Gateway
                     // NOT also restart itself in place. Having both paths active spawned two
                     // live processes per exit — one tracked by the pool, one orphaned-but-alive
                     // — which compounded into a runaway worker-process explosion (a real memory
-                    // leak: hundreds of GxMcp.Worker for a single KB). KillOrphanWorkers() at
-                    // the top of Start() is the hard "exactly one worker per KB" backstop.
+                    // leak: hundreds of GxMcp.Worker for a single KB). Ownership is now released
+                    // before the pool is notified, so a replacement can reserve the same scope.
                     FireWorkerExitedOnce(reason);
                 };
                 }
@@ -777,6 +1056,7 @@ namespace GxMcp.Gateway
                     {
                         _process.Start();
                         _lastPid = _process.Id;
+                        _ownershipLease.SetWorker(_process);
                         SpawnedAtUtc = DateTime.UtcNow;
                         _spawnWatch.Stop();
                         System.Threading.Interlocked.Exchange(ref _spawnMs, _spawnWatch.ElapsedMilliseconds);
@@ -809,6 +1089,7 @@ namespace GxMcp.Gateway
                     if (!string.IsNullOrEmpty(e.Data))
                     {
                         _lastResponse = DateTime.UtcNow;
+                        ObserveStartupDiagnostic(e.Data);
                         if (_sdkInitWatch != null && _sdkInitWatch.IsRunning &&
                             e.Data.Contains("Full SDK Initialization SUCCESS"))
                         {
@@ -818,8 +1099,14 @@ namespace GxMcp.Gateway
                         }
                         if (e.Data.TrimStart().StartsWith("{") && e.Data.Contains("\"jsonrpc\""))
                         {
-                            HandleWorkerRpcResponse(e.Data);
-                            OnRpcResponse?.Invoke(e.Data);
+                            // PERF (perf-review): HandleWorkerRpcResponse already parsed the
+                            // line to route it — pass the parsed JObject down with the raw
+                            // string instead of making the gateway handlers parse it again
+                            // (was 3 full JObject.Parse per response, now 1).
+                            HandleWorkerRpcResponse(e.Data, out var parsed);
+                            // parsed is null only when the line failed to parse; the
+                            // handler is null-tolerant (falls back to its own parse).
+                            RaiseRpcResponse(e.Data, parsed!);
                         }
                         else
                         {
@@ -833,6 +1120,7 @@ namespace GxMcp.Gateway
                     if (!string.IsNullOrEmpty(e.Data))
                     {
                         _lastResponse = DateTime.UtcNow;
+                        ObserveStartupDiagnostic(e.Data);
                         Program.Log($"[Worker-Err] {e.Data}");
                     }
                 };
@@ -852,6 +1140,19 @@ namespace GxMcp.Gateway
                     _healthCheckTask = Task.Run(() => RunHealthCheckAsync(_cts.Token));
                 }
             }
+            catch (Exception ex)
+            {
+                ObserveFailureDiagnostic(ex.ToString());
+                ObserveStartupDiagnostic(ex.Message);
+                try
+                {
+                    if (IsProcessRunning(_process)) _process!.Kill(true);
+                }
+                catch { }
+                _ownershipLease?.Dispose();
+                _ownershipLease = null;
+                throw;
+            }
             finally
             {
                 lock (_processLock)
@@ -861,10 +1162,25 @@ namespace GxMcp.Gateway
             }
         }
 
+        // PERFORMANCE (perf-review): JObject overload reads id/method off the tree we
+        // already have and enqueues the serialized payload once — the old path
+        // serialized then JObject.Parse'd the string back on the write side just to
+        // recover those two fields. Large payloads (genexus_edit with many targets)
+        // paid that second full-tree parse on every call.
+        public async Task SendCommandAsync(JObject rpc)
+        {
+            string? id = rpc["id"]?.ToString();
+            string? method = rpc["method"]?.ToString();
+            Interlocked.Increment(ref _queuedCommands);
+            await _commandChannel.Writer.WriteAsync(new QueuedCommand(null, rpc, id, method));
+        }
+
+        // Compatibility shim (no production caller after the JObject overload was
+        // introduced). The consumer lazily parses only when Id/Method are null.
         public async Task SendCommandAsync(string jsonRpc)
         {
             Interlocked.Increment(ref _queuedCommands);
-            await _commandChannel.Writer.WriteAsync(jsonRpc);
+            await _commandChannel.Writer.WriteAsync(new QueuedCommand(jsonRpc, null, null, null));
         }
 
         public void Stop() => StopWithReason(WorkerStopReason.GatewayShutdown);
@@ -895,8 +1211,47 @@ namespace GxMcp.Gateway
 
         public void StopWithReason(WorkerStopReason reason)
         {
+            var failure = StopFailureForTest?.Invoke(reason);
+            if (failure != null)
+            {
+                try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+                throw failure;
+            }
             StopProcess(reason);
         }
+
+        private void ObserveStartupDiagnostic(string? line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            if (line.IndexOf("GXMCP_SDK_", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                string candidate = line.Trim();
+                if (string.IsNullOrWhiteSpace(_startupDiagnostic)) _startupDiagnostic = candidate;
+                else if (_startupDiagnostic.IndexOf(candidate, StringComparison.OrdinalIgnoreCase) < 0)
+                    _startupDiagnostic += Environment.NewLine + candidate;
+            }
+        }
+
+        private void ObserveFailureDiagnostic(string? line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            string candidate = line.Trim();
+            if (candidate.Length > 4096)
+                candidate = candidate.Substring(0, 4096) + "…";
+            if (string.IsNullOrWhiteSpace(_lastFailureDiagnostic))
+            {
+                _lastFailureDiagnostic = candidate;
+                return;
+            }
+            if (_lastFailureDiagnostic.IndexOf(candidate, StringComparison.OrdinalIgnoreCase) >= 0) return;
+            string combined = _lastFailureDiagnostic + Environment.NewLine + candidate;
+            _lastFailureDiagnostic = combined.Length <= 8192
+                ? combined
+                : combined.Substring(0, 8192) + "…";
+        }
+
+        private static bool IsSdkCompatibilityFailure(string? diagnostic)
+            => SdkDiagnosticClassifier.IsFatalDiagnostic(diagnostic);
 
         // Invokes OnWorkerExited at most once per WorkerProcess lifetime. Both the async
         // Process.Exited event and StopProcess route through here; whichever runs first
@@ -904,6 +1259,8 @@ namespace GxMcp.Gateway
         private void FireWorkerExitedOnce(WorkerStopReason reason)
         {
             if (Interlocked.Exchange(ref _exitNotified, 1) != 0) return;
+            _ownershipLease?.Dispose();
+            _ownershipLease = null;
             try
             {
                 int? exitCode = _lastExitCode == int.MinValue ? (int?)null : _lastExitCode;
@@ -920,7 +1277,8 @@ namespace GxMcp.Gateway
                     lastOperation: _lastOperationInfo,
                     spawnMs: SpawnMs,
                     sdkInitMs: SdkInitMs,
-                    sdkReady: IsSdkReady);
+                    sdkReady: IsSdkReady,
+                    ledgerPath: Kb == null ? null : ScopedCrashLedgerPath());
             }
             catch (Exception ex) { Program.Log($"[Gateway] CrashLedger.Record threw: {ex.Message}"); }
             try { OnWorkerExited?.Invoke(reason); }
@@ -929,6 +1287,11 @@ namespace GxMcp.Gateway
 
         private void StopProcess(WorkerStopReason reason)
         {
+            if (IsSharedHostMode && _sharedConnection != null)
+            {
+                StopSharedConnection(reason);
+                return;
+            }
             // Every stop path (idle/heap/wedged reap from the health loop, and
             // StopWithReason for gateway shutdown / pool teardown) funnels here.
             // Cancel _cts so the writer loop (ProcessQueueAsync) and health loop
@@ -936,6 +1299,7 @@ namespace GxMcp.Gateway
             // the gateway. Idempotent — safe when StopWithReason already cancelled.
             try { _cts.Cancel(); } catch (ObjectDisposedException) { }
 
+            bool hadProcess = _process != null;
             lock (_processLock)
             {
                 _stopReason = reason;
@@ -973,12 +1337,15 @@ namespace GxMcp.Gateway
                         if (!_process.HasExited)
                         {
                             _process.Kill(true);
+                            _process.WaitForExit(5000);
                         }
                         else
                         {
                             try { _lastExitCode = _process.ExitCode; } catch { }
                         }
 
+                        if (_process.HasExited)
+                            Volatile.Write(ref _exitConfirmed, 1);
                         _process.Dispose();
                     }
                     catch (Exception ex)
@@ -994,6 +1361,29 @@ namespace GxMcp.Gateway
             // async Exited event, so without this the pool would never drop the entry on an
             // idle/planned teardown and the next AcquireAsync would hand back this dead
             // worker. Fired outside _processLock; idempotent with the Exited handler.
+            if (!hadProcess && _exitConfirmedForTest == null)
+                Volatile.Write(ref _exitConfirmed, 1);
+            if (ExitConfirmed)
+                FireWorkerExitedOnce(reason);
+        }
+
+        private void StopSharedConnection(WorkerStopReason reason)
+        {
+            try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+            SharedWorkerConnection? connection;
+            lock (_processLock)
+            {
+                _stopReason = reason;
+                connection = _sharedConnection;
+                _sharedConnection = null;
+                _sharedIdentity = null;
+                _pipeReady.TrySetCanceled();
+                Interlocked.Exchange(ref _queuedCommands, 0);
+                Interlocked.Exchange(ref _inFlightCommands, 0);
+                _inFlightStartTimes.Clear();
+            }
+            try { connection?.Dispose(); } catch { }
+            Volatile.Write(ref _exitConfirmed, 1);
             FireWorkerExitedOnce(reason);
         }
 
@@ -1014,8 +1404,17 @@ namespace GxMcp.Gateway
             if (_heapRecycleBytes <= 0) return false;
             if (_isStarting) return false;
             if (Volatile.Read(ref _queuedCommands) > 0 || Volatile.Read(ref _inFlightCommands) > 0) return false;
+            if (IsBuildActive()) return false;
             if (DateTime.UtcNow - _lastActivityUtc < HeapRecycleIdleGrace) return false;
             return wsBytes > 0 && wsBytes > _heapRecycleBytes;
+        }
+
+        // issue #113 — true while a background build recently announced itself via
+        // notifications/worker/build_active (heartbeat every 20s during a build).
+        private bool IsBuildActive()
+        {
+            long ticks = Volatile.Read(ref _lastBuildActiveUtcTicks);
+            return ticks != 0 && DateTime.UtcNow - new DateTime(ticks) < BuildActiveGraceWindow;
         }
 
         private bool ShouldStopForIdle()
@@ -1035,14 +1434,22 @@ namespace GxMcp.Gateway
                 return false;
             }
 
+            // A background build keeps the worker busy even with nothing in flight or
+            // queued — never idle-reap (or heap-recycle) mid-build. issue #113.
+            if (IsBuildActive())
+            {
+                return false;
+            }
+
             return DateTime.UtcNow - _lastActivityUtc >= _workerIdleTimeout;
         }
 
-        private void HandleWorkerRpcResponse(string json)
+        private void HandleWorkerRpcResponse(string json, out JObject? payload)
         {
+            payload = null;
             try
             {
-                var payload = JObject.Parse(json);
+                payload = JObject.Parse(json);
                 var id = payload["id"]?.ToString();
                 if (string.IsNullOrWhiteSpace(id))
                 {
@@ -1061,6 +1468,7 @@ namespace GxMcp.Gateway
                         // ShouldStopForIdle / ShouldRecycleForHeap from reaping the
                         // worker mid-build.
                         MarkActivity();
+                        Volatile.Write(ref _lastBuildActiveUtcTicks, DateTime.UtcNow.Ticks);
                     }
                     else if (string.Equals(method, "notifications/worker/persist_jobs_request", StringComparison.Ordinal))
                     {
@@ -1075,32 +1483,49 @@ namespace GxMcp.Gateway
 
                 if (!string.Equals(id, "heartbeat", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Fallback readiness signal: a real response means the worker is processing
-                    // commands, so it's SDK-ready even if the sdk_ready notification was missed
-                    // (e.g. an older worker binary that doesn't emit it).
-                    _sdkReady.TrySetResult(true);
                     MarkActivity();
                     CompleteInFlight(id);
+                    // A pipe-level RPC error proves only transport, not SDK readiness.
+                    // Accept readiness from a valid success response or sdk_ready notification.
+                    if (payload["error"] == null && payload.TryGetValue("result", out _))
+                        _sdkReady.TrySetResult(true);
                 }
             }
             catch (Exception ex)
             {
+                payload = null;
                 // Never swallow silently — a parse failure here always meant a bug upstream
                 // (worker emitted malformed JSON-RPC) but historically nobody saw it.
                 Program.Log($"[Gateway] HandleWorkerRpcResponse error: {ex.Message}");
             }
         }
 
+        internal void HandleWorkerRpcResponseForTest(string json)
+        {
+            HandleWorkerRpcResponse(json, out _);
+        }
+
+        private string ScopedCrashLedgerPath()
+        {
+            if (Kb == null) throw new InvalidOperationException("Cannot resolve crash ledger without an owned KB.");
+            return CrashLedger.ResolveScopedPath(StateScope.ProcessScopeId, Kb.KbId, Kb.ContextGeneration);
+        }
+
+        private string ScopedJobsPath()
+        {
+            if (Kb == null) throw new InvalidOperationException("Cannot resolve jobs without an owned KB.");
+            var scope = StateScope.Create(id: StateScope.ProcessScopeId);
+            return scope.JobsPath(Kb.KbId, Kb.ContextGeneration);
+        }
+
         private void TryReloadJobsAfterSoftReload(JObject? p)
         {
             try
             {
-                string? path = p?["path"]?.ToString();
-                if (string.IsNullOrWhiteSpace(path))
-                {
-                    Program.Log("[Gateway] soft_reload jobs_restored missing path; skipping.");
-                    return;
-                }
+                // The worker-provided path is untrusted. Rehydrate only from the
+                // gateway-derived owner directory for this worker.
+                string path = ScopedJobsPath();
+                if (!File.Exists(path)) return;
                 int count = Program.JobRegistry.LoadFrom(path, deleteAfterRead: true);
                 Program.Log($"[Gateway] soft_reload rehydrated {count} jobs from {path}");
             }
@@ -1114,12 +1539,7 @@ namespace GxMcp.Gateway
         {
             try
             {
-                string? path = p?["path"]?.ToString();
-                if (string.IsNullOrWhiteSpace(path))
-                {
-                    Program.Log("[Gateway] soft_reload persist_jobs_request missing path; skipping.");
-                    return;
-                }
+                string path = ScopedJobsPath();
                 Program.JobRegistry.SaveTo(path);
                 int count = Program.JobRegistry.Count;
                 Program.Log($"[Gateway] soft_reload persisted {count} jobs to {path}");
@@ -1197,6 +1617,15 @@ namespace GxMcp.Gateway
         // Test seam: invoke the private teardown sink directly (no real process needed).
         internal void StopProcessForTest(WorkerStopReason reason) => StopProcess(reason);
 
+        internal void SetProcessStateForTest(bool alive, bool exitConfirmed)
+        {
+            _processAliveForTest = alive;
+            _exitConfirmedForTest = exitConfirmed;
+        }
+
+        // Test seam: model the OS process exiting without starting or killing one.
+        internal void SimulateUnexpectedExitForTest() => FireWorkerExitedOnce(WorkerStopReason.None);
+
         // Idle-reap window resolved from config in the ctor. TimeSpan.Zero == disabled.
         internal TimeSpan IdleTimeoutForTest => _workerIdleTimeout;
 
@@ -1207,5 +1636,11 @@ namespace GxMcp.Gateway
             _lastWorkingSetBytes = workingSetBytes;
             _lastActivityUtc = lastActivityUtc;
         }
+
+        // issue #113 — seed the build-active signal and drive ShouldStopForIdle without
+        // a live process/pipe, mirroring the SetHeapProbeForTest pattern.
+        internal void MarkBuildActiveForTest(DateTime utcUtc) => Volatile.Write(ref _lastBuildActiveUtcTicks, utcUtc.Ticks);
+
+        internal bool ShouldStopForIdleForTest() => ShouldStopForIdle();
     }
 }

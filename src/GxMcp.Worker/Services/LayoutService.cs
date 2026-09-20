@@ -14,6 +14,7 @@ namespace GxMcp.Worker.Services
 {
     public partial class LayoutService
     {
+        private static readonly char[] CaptionLineBreaks = { (char)13, (char)10 };
         private readonly ObjectService _objectService;
 
         public LayoutService(ObjectService objectService)
@@ -197,6 +198,7 @@ namespace GxMcp.Worker.Services
                 if (contextResult.Error != null) return contextResult.Error;
 
                 var doc = contextResult.Document;
+                string baselineXml = doc.ToString();
                 var element = FindControlElement(doc, controlName);
                 if (element == null)
                     return Models.McpResponse.Err(
@@ -205,6 +207,17 @@ namespace GxMcp.Worker.Services
                         hint: "Use get_tree to enumerate the control names present in this object's layout.",
                         nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists all controls and their ControlName values.")),
                         target: target);
+
+                if (string.Equals(propertyName, "Caption", StringComparison.OrdinalIgnoreCase)
+                    && HasCaptionLineBreak(value))
+                {
+                    return Models.McpResponse.Err(
+                        code: "CaptionNewlineUnsupported",
+                        message: "Caption values cannot contain embedded line breaks.",
+                        hint: "Use a single-line Caption. GeneXus may rename the control when a multiline caption is saved.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "set_property", ["name"] = target, ["controlName"] = controlName, ["propertyName"] = "Caption", ["value"] = (value ?? string.Empty).Replace("\r", " ").Replace("\n", " ") }, "Retry with a single-line caption.")),
+                        target: target);
+                }
 
                 string attrName;
                 string previous;
@@ -219,18 +232,17 @@ namespace GxMcp.Worker.Services
                     attrName = ResolveCanonicalAttributeName(element, propertyName);
 
                     // gxTextBlock and other legacy controls authoritatively store the caption
-                    // as a CaptionExpression Tokens XML. Writing only a loose `Caption` attr
-                    // leaves the stale Tokens in place; on save the SDK re-emits from
-                    // CaptionExpression and the regenerated EntityVersion sibling wins
-                    // composition (root cause confirmed via SQL inspection of EntityVersion
-                    // rows on session 4's ListaAtiCPAlunoUniGra repro).
-                    if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase) &&
-                        element.Attribute("CaptionExpression") != null)
+                    // as a CaptionExpression Tokens XML, while WebForm controls (like gxButton)
+                    // use the Caption attribute directly.
+                    // Keep both in sync when CaptionExpression exists, but never delete Caption.
+                    if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase))
                     {
-                        attrName = "CaptionExpression";
-                        previous = element.Attribute(attrName)?.Value;
-                        element.SetAttributeValue(attrName, BuildConstantCaptionTokens(value ?? string.Empty));
-                        element.Attribute("Caption")?.Remove();
+                        previous = element.Attribute("Caption")?.Value ?? ExtractConstantCaptionFromTokens(element.Attribute("CaptionExpression")?.Value);
+                        element.SetAttributeValue("Caption", value ?? string.Empty);
+                        if (element.Attribute("CaptionExpression") != null)
+                        {
+                            element.SetAttributeValue("CaptionExpression", BuildConstantCaptionTokens(value ?? string.Empty));
+                        }
                     }
                     else
                     {
@@ -243,7 +255,13 @@ namespace GxMcp.Worker.Services
                 Logger.Info($"SetProperty: Target XML updated for {controlName}. attrName={attrName}. Current element attributes: {string.Join(", ", System.Linq.Enumerable.Select(element.Attributes(), a => a.Name.LocalName + "=" + a.Value))}");
                 Logger.Info($"SetProperty: New XML Sample (first 500 chars): " + (normalized.Length > 500 ? normalized.Substring(0, 500) : normalized));
                 
-                var persistError = PersistVisualXml(obj, contextResult, target, normalized, compositionRepairToken: value);
+                var persistError = PersistVisualXml(
+                    obj,
+                    contextResult,
+                    target,
+                    normalized,
+                    baselineXml: baselineXml,
+                    compositionRepairToken: value);
                 if (persistError != null) return persistError;
 
                 var persistedObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target);
@@ -259,15 +277,19 @@ namespace GxMcp.Worker.Services
                         nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the persisted layout to confirm the current control names.")),
                         target: target);
 
-                string persistedValue = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
-                    ? persistedElement.Value
-                    : (persistedElement.Attribute(attrName) != null ? persistedElement.Attribute(attrName).Value : null);
-
-                // When we wrote a Tokens XML into CaptionExpression, compare against the
-                // CDATA payload, not the raw serialized XML.
-                if (string.Equals(attrName, "CaptionExpression", StringComparison.Ordinal))
+                string persistedValue;
+                if (string.Equals(attrName, "InnerText", StringComparison.Ordinal))
                 {
-                    persistedValue = ExtractConstantCaptionFromTokens(persistedValue);
+                    persistedValue = persistedElement.Value;
+                }
+                else if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase) || string.Equals(attrName, "CaptionExpression", StringComparison.OrdinalIgnoreCase))
+                {
+                    persistedValue = persistedElement.Attribute("Caption")?.Value
+                        ?? ExtractConstantCaptionFromTokens(persistedElement.Attribute("CaptionExpression")?.Value);
+                }
+                else
+                {
+                    persistedValue = persistedElement.Attribute(attrName)?.Value;
                 }
 
                 bool match = IsPersistedValueMatch(attrName, value, persistedValue);
@@ -278,9 +300,13 @@ namespace GxMcp.Worker.Services
                     if (isProcedure)
                     {
                         // Reports can defer SDK persistence. Retry a few read-backs before failing.
-                        for (int attempt = 0; attempt < 6 && !match; attempt++)
+                        // Adaptive backoff: most persistence lands within ~350ms, so probe
+                        // fast first (100/200ms) and only fall back to 350ms — cuts the
+                        // common-case retry wait from up to 2.1s to under 600ms.
+                        int[] backoffMs = { 100, 200, 350, 350, 500, 500 };
+                        for (int attempt = 0; attempt < backoffMs.Length && !match; attempt++)
                         {
-                            System.Threading.Thread.Sleep(350);
+                            System.Threading.Thread.Sleep(backoffMs[attempt]);
                             var retryObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
                             var retryContext = LoadVisualContext(retryObject, target, VisualSurface.Any);
                             if (retryContext.Error != null) break;
@@ -290,22 +316,34 @@ namespace GxMcp.Worker.Services
 
                             persistedValue = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
                                 ? retryElement.Value
-                                : (retryElement.Attribute(attrName) != null ? retryElement.Attribute(attrName).Value : null);
-                            if (string.Equals(attrName, "CaptionExpression", StringComparison.Ordinal))
-                            {
-                                persistedValue = ExtractConstantCaptionFromTokens(persistedValue);
-                            }
+                                : ((string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase) || string.Equals(attrName, "CaptionExpression", StringComparison.OrdinalIgnoreCase))
+                                    ? (retryElement.Attribute("Caption")?.Value ?? ExtractConstantCaptionFromTokens(retryElement.Attribute("CaptionExpression")?.Value))
+                                    : (retryElement.Attribute(attrName)?.Value));
                             match = IsPersistedValueMatch(attrName, value, persistedValue);
                         }
                     }
                     if (!match)
                     {
+                        // Roll back to baseline XML on verification failure
+                        if (!string.IsNullOrEmpty(baselineXml))
+                        {
+                            try
+                            {
+                                PersistVisualXml(obj, contextResult, target, baselineXml, baselineXml: null);
+                            }
+                            catch (Exception rbEx)
+                            {
+                                Logger.Warn($"SetProperty: rollback to baseline failed: {rbEx.Message}");
+                            }
+                        }
+
                         return Models.McpResponse.Err(
                             code: "LayoutWriteVerificationFailed",
-                            message: "Layout write verification failed: persisted value does not match requested value after SDK save and read-back.",
+                            message: "Layout write verification failed: persisted value does not match requested value after SDK save and read-back. Original layout was rolled back.",
                             hint: "The SDK may have normalised the value on save; read back the property to check the canonical form.",
                             nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Reads the current persisted value of the control.")),
-                            target: target);
+                            target: target,
+                            extra: new JObject { ["rolledBack"] = true });
                     }
                 }
 
@@ -397,6 +435,7 @@ namespace GxMcp.Worker.Services
                 if (contextResult.Error != null) return contextResult.Error;
 
                 var doc = contextResult.Document;
+                string baselineXml = doc.ToString();
                 var applied = new JArray();
 
                 foreach (var token in changes)
@@ -440,8 +479,20 @@ namespace GxMcp.Worker.Services
                     else
                     {
                         attrName = ResolveCanonicalAttributeName(element, propertyName);
-                        previous = element.Attribute(attrName) != null ? element.Attribute(attrName).Value : null;
-                        element.SetAttributeValue(attrName, value ?? string.Empty);
+                        if (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase))
+                        {
+                            previous = element.Attribute("Caption")?.Value ?? ExtractConstantCaptionFromTokens(element.Attribute("CaptionExpression")?.Value);
+                            element.SetAttributeValue("Caption", value ?? string.Empty);
+                            if (element.Attribute("CaptionExpression") != null)
+                            {
+                                element.SetAttributeValue("CaptionExpression", BuildConstantCaptionTokens(value ?? string.Empty));
+                            }
+                        }
+                        else
+                        {
+                            previous = element.Attribute(attrName) != null ? element.Attribute(attrName).Value : null;
+                            element.SetAttributeValue(attrName, value ?? string.Empty);
+                        }
                     }
 
                     applied.Add(new JObject
@@ -454,7 +505,12 @@ namespace GxMcp.Worker.Services
                 }
 
                 string normalized = doc.ToString();
-                var persistError = PersistVisualXml(obj, contextResult, target, normalized);
+                var persistError = PersistVisualXml(
+                    obj,
+                    contextResult,
+                    target,
+                    normalized,
+                    baselineXml: baselineXml);
                 if (persistError != null) return persistError;
 
                 var persistedObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target);
@@ -472,24 +528,52 @@ namespace GxMcp.Worker.Services
 
                     var persistedEl = FindControlElement(persistedContext.Document, controlName);
                     if (persistedEl == null)
+                    {
+                        bool rolledBack = false;
+                        if (!string.IsNullOrEmpty(baselineXml))
+                        {
+                            try
+                            {
+                                var rbErr = PersistVisualXml(obj, contextResult, target, baselineXml);
+                                rolledBack = rbErr == null;
+                            }
+                            catch { }
+                        }
                         return Models.McpResponse.Err(
                             code: "LayoutReadBackFailed",
-                            message: "Layout read-back failed: control '" + controlName + "' was not found after save.",
+                            message: "Layout read-back failed: control '" + controlName + "' was not found after save." + (rolledBack ? " Changes were rolled back." : ""),
                             hint: "The SDK may have renamed or dropped the control on save; use get_tree to verify.",
                             nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the persisted layout to confirm current control names.")),
-                            target: target);
+                            target: target,
+                            extra: new JObject { ["rolledBack"] = rolledBack, ["control"] = controlName, ["property"] = attrName });
+                    }
 
                     string actual = string.Equals(attrName, "InnerText", StringComparison.Ordinal)
                         ? (persistedEl.Value ?? string.Empty)
-                        : (persistedEl.Attribute(attrName) != null ? persistedEl.Attribute(attrName).Value : string.Empty);
+                        : (persistedEl.Attribute(attrName) != null
+                            ? persistedEl.Attribute(attrName).Value
+                            : (string.Equals(attrName, "Caption", StringComparison.OrdinalIgnoreCase)
+                                ? ExtractConstantCaptionFromTokens(persistedEl.Attribute("CaptionExpression")?.Value)
+                                : string.Empty));
                     if (!IsPersistedValueMatch(attrName, expected, actual))
                     {
+                        bool rolledBack = false;
+                        if (!string.IsNullOrEmpty(baselineXml))
+                        {
+                            try
+                            {
+                                var rbErr = PersistVisualXml(obj, contextResult, target, baselineXml);
+                                rolledBack = rbErr == null;
+                            }
+                            catch { }
+                        }
                         return Models.McpResponse.Err(
                             code: "LayoutWriteVerificationFailed",
-                            message: "Layout write verification failed: persisted value for control '" + controlName + "' property '" + attrName + "' does not match requested value.",
+                            message: "Layout write verification failed: persisted value for control '" + controlName + "' property '" + attrName + "' does not match requested value." + (rolledBack ? " Changes were rolled back." : ""),
                             hint: "The SDK may have normalised the value on save; read back the property to check the canonical form.",
                             nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Reads the current persisted value of the control.")),
-                            target: target);
+                            target: target,
+                            extra: new JObject { ["rolledBack"] = rolledBack, ["control"] = controlName, ["property"] = attrName, ["expected"] = expected, ["actual"] = actual });
                     }
                 }
 
@@ -870,6 +954,141 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        public string DeletePrintBlock(string target, string printBlockName)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(printBlockName))
+                {
+                    return Models.McpResponse.Err(
+                        code: "MissingArgument",
+                        message: "printBlockName is required.",
+                        hint: "Pass the name of the print block to remove, e.g. printBlockName=header.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists all print blocks in the report layout.")),
+                        target: target);
+                }
+
+                var obj = _objectService.FindObject(target);
+                if (obj == null)
+                {
+                    return Models.McpResponse.Err(
+                        code: "ObjectNotFound",
+                        message: "Object not found.",
+                        hint: "Verify the object name matches an entry in the active Knowledge Base.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_list_objects", null, "Lists all objects in the KB so you can confirm the correct name.")),
+                        target: target);
+                }
+
+                var context = LoadVisualContext(obj, target, VisualSurface.Report);
+                if (context.Error != null) return context.Error;
+                if (context.VisualPart == null)
+                {
+                    return Models.McpResponse.Err(
+                        code: "ReportPartNotFound",
+                        message: "Report part not found.",
+                        hint: "This operation requires a Procedure with a report layout part; verify the target is a report-capable Procedure.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "inspect_surface", ["name"] = target }, "Diagnoses which visual surfaces are present for this object.")),
+                        target: target);
+                }
+
+                var kb = _objectService.GetKbService().GetKB();
+                if (kb == null)
+                {
+                    return Models.McpResponse.Err(
+                        code: "KbNotOpened",
+                        message: "KB not opened.",
+                        hint: "Open a Knowledge Base before mutating the report layout.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_kb", new JObject { ["action"] = "open" }, "Opens the configured Knowledge Base.")),
+                        retryAfterMs: 2000,
+                        target: target);
+                }
+
+                string sourceSnapshot = GetProcedureSourceSnapshot(obj);
+
+                using (var tx = kb.BeginTransaction())
+                {
+                    try
+                    {
+                        if (!ReportLayoutHelper.DeletePrintBlock(context.VisualPart, printBlockName, persist: false))
+                        {
+                            tx.Rollback();
+                            return Models.McpResponse.Err(
+                                code: "DeletePrintBlockFailed",
+                                message: "Delete print block failed: the SDK could not stage the removal of '" + printBlockName + "'.",
+                                hint: "Ensure the print block exists and is not protected (Header/Footer bands may be required by the report).",
+                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Lists existing print blocks.")),
+                                target: target);
+                        }
+
+                        if (!TryRemovePrintCommandFromSourceInMemory(obj, printBlockName, out string sourceSyncError))
+                        {
+                            TryRestoreProcedureSource(obj, sourceSnapshot);
+                            tx.Rollback();
+                            return Models.McpResponse.Err(
+                                code: "DeletePrintBlockSourceSyncFailed",
+                                message: "Delete print block source sync failed: " + sourceSyncError,
+                                hint: "The Procedure source could not be updated; the transaction was rolled back.",
+                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm current print blocks.")),
+                                target: target);
+                        }
+
+                        if (!TrySaveVisualPart(context.VisualPart, out string partSaveError))
+                        {
+                            TryRestoreProcedureSource(obj, sourceSnapshot);
+                            tx.Rollback();
+                            return Models.McpResponse.Err(
+                                code: "DeletePrintBlockPersistFailed",
+                                message: "Delete print block persistence failed: " + partSaveError,
+                                hint: "The SDK could not save the layout part; the transaction was rolled back.",
+                                nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm current print blocks.")),
+                                target: target);
+                        }
+
+                        obj.EnsureSave(true);
+                        tx.Commit();
+                    }
+                    catch
+                    {
+                        try { tx.Rollback(); } catch { }
+                        throw;
+                    }
+                }
+                _objectService.MarkReadCacheDirty(obj, "Layout");
+
+                // Cold read-back to prove the block is really gone from disk.
+                var refreshedObj = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? obj;
+                var refreshed = LoadVisualContext(refreshedObj, target, VisualSurface.Report);
+                bool stillThere = refreshed.Error == null && refreshed.Document != null && refreshed.Document.Descendants("PrintBlock")
+                    .Any(pb => string.Equals(Attr(pb, "Name"), printBlockName, StringComparison.OrdinalIgnoreCase) ||
+                               string.Equals(Attr(pb, "ControlName"), printBlockName, StringComparison.OrdinalIgnoreCase));
+                if (stillThere)
+                {
+                    return Models.McpResponse.Err(
+                        code: "DeletePrintBlockVerificationFailed",
+                        message: "Delete print block verification failed: '" + printBlockName + "' is still present after commit.",
+                        hint: "The transaction committed but the read-back still shows the block; open the Procedure in the IDE to inspect.",
+                        nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to see current print blocks.")),
+                        target: target);
+                }
+
+                return Models.McpResponse.Ok(target: target, code: "PrintBlockDeleted", result: new JObject
+                {
+                    ["name"] = obj.Name,
+                    ["operation"] = "DeletePrintBlock",
+                    ["printBlockName"] = printBlockName
+                });
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "DeletePrintBlockException",
+                    message: ex.Message,
+                    hint: "An unexpected exception occurred; retry or inspect the Procedure in the IDE.",
+                    nextSteps: new JArray(Models.McpResponse.NextStep("genexus_layout", new JObject { ["action"] = "get_tree", ["name"] = target }, "Re-reads the layout to confirm the current state.")),
+                    target: target);
+            }
+        }
+
         public string InspectSurface(string target, int limit = 50)
         {
             try
@@ -1188,6 +1407,11 @@ namespace GxMcp.Worker.Services
                    string.Equals(propertyName, "value", StringComparison.OrdinalIgnoreCase);
         }
 
+        internal static bool HasCaptionLineBreak(string value)
+        {
+            return (value ?? string.Empty).IndexOfAny(CaptionLineBreaks) >= 0;
+        }
+
         private static string BuildConstantCaptionTokens(string value)
         {
             var tokens = new XElement("Tokens",
@@ -1237,27 +1461,12 @@ namespace GxMcp.Worker.Services
                 return true;
             }
 
-            // The report SDK often serializes colors as nested "Color [ ... ]" descriptors.
-            if (string.Equals(propertyName, "ForeColor", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(propertyName, "BackColor", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(propertyName, "BorderColor", StringComparison.OrdinalIgnoreCase))
+            // The report SDK often serializes colors as nested "Color [ ... ]" descriptors or RGB tokens.
+            if (ColorHelper.IsColorAttributeName(propertyName))
             {
-                string expectedLeaf = ExtractColorLeafToken(normalizedExpected);
-                string actualLeaf = ExtractColorLeafToken(normalizedActual);
-                if (!string.IsNullOrWhiteSpace(expectedLeaf) &&
-                    !string.IsNullOrWhiteSpace(actualLeaf) &&
-                    string.Equals(expectedLeaf, actualLeaf, StringComparison.OrdinalIgnoreCase))
+                if (ColorHelper.IsColorEquivalent(normalizedExpected, normalizedActual))
                 {
                     return true;
-                }
-
-                if (TryParseColorToken(normalizedExpected, out var expectedColor) &&
-                    TryParseColorToken(normalizedActual, out var actualColor))
-                {
-                    if (expectedColor.ToArgb() == actualColor.ToArgb())
-                    {
-                        return true;
-                    }
                 }
 
                 if (normalizedActual.IndexOf(normalizedExpected, StringComparison.OrdinalIgnoreCase) >= 0)
@@ -1270,69 +1479,10 @@ namespace GxMcp.Worker.Services
         }
 
         private static string ExtractColorLeafToken(string raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
-
-            string token = raw.Trim();
-            if (token.StartsWith("'", StringComparison.Ordinal) &&
-                token.EndsWith("'", StringComparison.Ordinal) &&
-                token.Length > 1)
-            {
-                token = token.Substring(1, token.Length - 2).Trim();
-            }
-
-            var matches = Regex.Matches(token, @"\[(?<name>[^\[\]]+)\]");
-            if (matches.Count > 0)
-            {
-                for (int i = matches.Count - 1; i >= 0; i--)
-                {
-                    string candidate = matches[i].Groups["name"].Value.Trim();
-                    if (!string.Equals(candidate, "Color", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return candidate;
-                    }
-                }
-            }
-
-            return token;
-        }
+            => ColorHelper.ExtractColorLeafToken(raw);
 
         private static bool TryParseColorToken(string raw, out System.Drawing.Color color)
-        {
-            color = System.Drawing.Color.Empty;
-            if (string.IsNullOrWhiteSpace(raw)) return false;
-
-            string token = ExtractColorLeafToken(raw);
-            if (string.IsNullOrWhiteSpace(token)) return false;
-
-            if (string.Equals(token, "Transparent", StringComparison.OrdinalIgnoreCase))
-            {
-                color = System.Drawing.Color.Transparent;
-                return true;
-            }
-
-            var rgbMatch = Regex.Match(token, @"^\s*(\d{1,3})\s*;\s*(\d{1,3})\s*;\s*(\d{1,3})\s*\|?\s*$");
-            if (rgbMatch.Success &&
-                int.TryParse(rgbMatch.Groups[1].Value, out int r) &&
-                int.TryParse(rgbMatch.Groups[2].Value, out int g) &&
-                int.TryParse(rgbMatch.Groups[3].Value, out int b))
-            {
-                r = Math.Max(0, Math.Min(255, r));
-                g = Math.Max(0, Math.Min(255, g));
-                b = Math.Max(0, Math.Min(255, b));
-                color = System.Drawing.Color.FromArgb(r, g, b);
-                return true;
-            }
-
-            var named = System.Drawing.Color.FromName(token);
-            if (named.IsKnownColor || named.IsNamedColor || named.IsSystemColor)
-            {
-                color = named;
-                return true;
-            }
-
-            return false;
-        }
+            => ColorHelper.TryParseColor(raw, out color);
 
 
 

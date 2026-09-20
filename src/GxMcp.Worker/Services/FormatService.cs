@@ -15,6 +15,13 @@ namespace GxMcp.Worker.Services
             "Using", "When Duplicate", "When None", "Return", "Exit", "Call", "Udp", "Commit", "Rollback"
         };
 
+        private static readonly Regex AllKeywordsRegex = new Regex(
+            @"\b(?:" + string.Join("|", Keywords.OrderByDescending(k => k.Length).Select(Regex.Escape)) + @")\b",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Dictionary<string, string> KeywordMap =
+            Keywords.ToDictionary(k => k, k => k, StringComparer.OrdinalIgnoreCase);
+
         private static readonly string[] BlockStarters = {
             "For Each", "If", "Do Case", "New", "Sub", "Case", "Otherwise"
         };
@@ -30,9 +37,8 @@ namespace GxMcp.Worker.Services
                 if (string.IsNullOrEmpty(code)) return "{\"formatted\": \"\"}";
 
                 string[] lines = code.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-                List<string> result = new List<string>();
+                List<string> result = new List<string>(lines.Length);
                 int indentLevel = 0;
-                const string indentStr = "\t"; // GeneXus standard usually uses Tabs, but we can stick to what the user prefers or standard Tabs
 
                 foreach (string rawLine in lines)
                 {
@@ -51,9 +57,7 @@ namespace GxMcp.Worker.Services
                     if (isEnder) indentLevel = Math.Max(0, indentLevel - 1);
 
                     // 3. Apply Indentation
-                    string formattedLine = "";
-                    for (int i = 0; i < indentLevel; i++) formattedLine += indentStr;
-                    formattedLine += line;
+                    string formattedLine = indentLevel > 0 ? new string('\t', indentLevel) + line : line;
                     result.Add(formattedLine);
 
                     // 4. Determine Indent Shift (Next Line)
@@ -73,13 +77,7 @@ namespace GxMcp.Worker.Services
 
         private string NormalizeKeywords(string line)
         {
-            foreach (var kw in Keywords)
-            {
-                // We use regex to match whole word only
-                string pattern = @"(?i)\b" + Regex.Escape(kw) + @"\b";
-                line = Regex.Replace(line, pattern, kw);
-            }
-            return line;
+            return AllKeywordsRegex.Replace(line, m => KeywordMap.TryGetValue(m.Value, out var proper) ? proper : m.Value);
         }
 
         private bool IsBlockStarter(string line)

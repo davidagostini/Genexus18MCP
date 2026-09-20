@@ -39,15 +39,32 @@ namespace GxMcp.Worker.Services
             if (!KbModelGuard.TryGetDesignModel(_kb, out var model, out var kbErr))
                 return kbErr;
 
-            var svc = SdkServiceLocator.ConstructOrResolve<GenexusServices.ICurlGeneratorService>(
-                () => new Artech.Packages.Genexus.BL.Services.CurlGeneratorService());
+            var curlSvcType = Type.GetType("Artech.Genexus.Common.Services.ICurlGeneratorService, Artech.Genexus.Common")
+                ?? typeof(Artech.Genexus.Common.Objects.Procedure).Assembly.GetType("Artech.Genexus.Common.Services.ICurlGeneratorService");
+            if (curlSvcType == null)
+                return McpResponse.Err("CurlGeneratorServiceUnavailable", "ICurlGeneratorService is not available in this GeneXus version.", "Importing procedures from cURL requires GeneXus 17 or later.");
+
+            object svc = null;
+            try
+            {
+                var concreteType = Type.GetType("Artech.Packages.Genexus.BL.Services.CurlGeneratorService, Artech.Packages.Genexus.BL");
+                if (concreteType != null)
+                    svc = Activator.CreateInstance(concreteType);
+            }
+            catch { }
+
+            if (svc == null)
+            {
+                svc = SdkServiceLocator.TryResolve(curlSvcType.GUID);
+            }
+
             if (svc == null)
                 return McpResponse.Err("CurlGeneratorServiceUnavailable", "Could not construct the SDK's CurlGeneratorService.", "Restart the worker (genexus_worker_reload mode=hard) and retry.");
 
             try
             {
                 // parent = null → created at the KB root (folder/module placement is IDE-only).
-                svc.Generate(model, procName, description, null, curl);
+                ((dynamic)svc).Generate(model, procName, description, null, curl);
 
                 KBObject created = null;
                 try { created = _objects?.FindObject(procName, "Procedure"); } catch { }

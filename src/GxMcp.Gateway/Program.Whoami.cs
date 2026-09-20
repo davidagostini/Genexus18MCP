@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -30,25 +32,26 @@ namespace GxMcp.Gateway
                 }
                 catch { }
             }
-            // Fallback: read FileVersion from GeneXus.exe metadata (standard install layout)
-            try
+            // Legacy GeneXus 8/9 installations expose gxw32.exe/gx.exe/gxdl32.dll
+            // instead of the modern GeneXus.exe anchor.
+            foreach (string executableName in new[] { "GeneXus.exe", "gxw32.exe", "gx.exe", "gxdl32.dll" })
             {
-                string exePath = Path.Combine(installationPath, "GeneXus.exe");
-                if (File.Exists(exePath))
+                try
                 {
-                    var info = FileVersionInfo.GetVersionInfo(exePath);
+                    string executablePath = Path.Combine(installationPath, executableName);
+                    if (!File.Exists(executablePath)) continue;
+                    var info = FileVersionInfo.GetVersionInfo(executablePath);
                     string? version = info.ProductVersion ?? info.FileVersion;
-                    if (!string.IsNullOrWhiteSpace(version))
-                    {
-                        return version.Trim();
-                    }
+                    if (!string.IsNullOrWhiteSpace(version)) return version.Trim();
                 }
+                catch { }
             }
-            catch { }
             return null;
         }
 
-        internal const string SupportedGeneXusMajor = "18";
+        // Backward-compatible alias for callers that used the original single-major field.
+        // The authoritative compatibility set lives in GeneXusVersionCatalog.
+        internal static string SupportedGeneXusMajor => GeneXusVersionCatalog.PrimaryMajor;
 
         private static void LogGeneXusVersionCheck(Configuration config)
         {
@@ -61,14 +64,19 @@ namespace GxMcp.Gateway
             }
             if (detected == null)
             {
-                Log($"[Gateway] GeneXus version not detected at '{gxPath}' (no version.txt). Target major: {SupportedGeneXusMajor}.");
+                Log($"[Gateway] GeneXus version not detected at '{gxPath}' (no version.txt). Supported majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}.");
                 return;
             }
-            Log($"[Gateway] Detected GeneXus version: {detected} (target major: {SupportedGeneXusMajor}).");
-            if (!detected.StartsWith(SupportedGeneXusMajor, StringComparison.OrdinalIgnoreCase))
+            Log($"[Gateway] Detected GeneXus version: {detected} (native SDK majors: {GeneXusVersionCatalog.SupportedMajorsDisplay}; legacy majors: {string.Join(", ", GeneXusVersionCatalog.LegacyMajors)}).");
+            if (!GeneXusVersionCatalog.IsSupportedOrLegacy(detected))
             {
-                Log($"[Gateway] WARNING: detected GeneXus version '{detected}' may not match MCP target major '{SupportedGeneXusMajor}'. Some tools may behave unexpectedly.");
+                Log($"[Gateway] WARNING: detected GeneXus version '{detected}' is outside the MCP compatibility catalog. Some tools may behave unexpectedly.");
             }
+        }
+
+        private static JObject BuildSdkCompatibilityBlock(string? gxPath)
+        {
+            return WorkerSdkCompatibilityProbe.Check(gxPath).ToDiagnosticObject();
         }
 
         // v2.3.8 Task 1.2: gateway-side mirror of the worker's IndexCacheService.GetState().
@@ -83,7 +91,10 @@ namespace GxMcp.Gateway
         // than trusting a stale snapshot. Do not assume search/list/lifecycle calls keep it warm.
         private sealed class IndexStateSnapshot
         {
+            public string? KbAlias;
             public string Status = "Cold";
+            public string? Freshness;
+            public DateTime? LastSuccessfulScanAt;
             public int TotalObjects;
             public DateTime? LastIndexedAt;
             public double? Progress;
@@ -94,6 +105,13 @@ namespace GxMcp.Gateway
             public int FlushFailuresConsecutive;
             public DateTime? FlushLastSuccessUtc;
             public string? FlushLastError;
+            public string? OperationId;
+            public string OperationState = "Idle";
+            public bool WorkerAlive;
+            public bool Recoverable;
+            public bool Stalled;
+            public DateTime? LastProgressAtUtc;
+            public DateTime? StalledAtUtc;
             // v2.6.8: top-5 recently-changed projection from the worker's
             // in-memory index. Cached so subsequent whoami calls don't pay
             // another round-trip — refreshed every TryRefreshIndexStateFromWorkerAsync.
@@ -101,6 +119,8 @@ namespace GxMcp.Gateway
         }
         private static IndexStateSnapshot _lastKnownIndexState = new IndexStateSnapshot();
         private static readonly object _lastKnownIndexStateLock = new object();
+        private static readonly ConcurrentDictionary<string, IndexStateSnapshot> _lastKnownIndexStatesByKb
+            = new ConcurrentDictionary<string, IndexStateSnapshot>(StringComparer.OrdinalIgnoreCase);
 
         // Per-KB database configuration (DataStores). Read once per KB via the worker
         // on first whoami after open; cached until the gateway restarts or KB switches.
@@ -108,16 +128,80 @@ namespace GxMcp.Gateway
         // pure waste. Keyed by normalized KB alias.
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JObject> _databaseInfoByKb
             = new System.Collections.Concurrent.ConcurrentDictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+        private static long _databaseInfoCacheEpoch;
+
+        // PERFORMANCE (perf round 5): whoami is the most-called first-turn tool, and
+        // DetectGeneXusVersion hits the disk on EVERY call (up to 3 version.txt probes
+        // plus FileVersionInfo on GeneXus.exe). The GeneXus install version is stable
+        // across a gateway session, so memoize per install path with a 60s TTL.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string? Version, DateTime AtUtc)> _gxVersionCache
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, (string?, DateTime)>(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan GxVersionCacheTtl = TimeSpan.FromSeconds(60);
+
+        // PERFORMANCE (perf round 5): kbValid walks the KB root directory (EnumerateFiles)
+        // on every whoami. KB validity is stable across a session — memoize per path with
+        // a 15s TTL so a tight whoami retry loop stops paying the directory walk.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (bool Valid, DateTime AtUtc)> _kbValidCache
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, (bool, DateTime)>(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan KbValidCacheTtl = TimeSpan.FromSeconds(15);
+
+        private static string? GetCachedGxVersion(string? gxPath)
+        {
+            if (string.IsNullOrWhiteSpace(gxPath)) return null;
+            if (_gxVersionCache.TryGetValue(gxPath!, out var cached)
+                && (DateTime.UtcNow - cached.AtUtc) < GxVersionCacheTtl)
+            {
+                return cached.Version;
+            }
+            string? fresh = DetectGeneXusVersion(gxPath);
+            _gxVersionCache[gxPath!] = (fresh, DateTime.UtcNow);
+            return fresh;
+        }
+
+        private static bool IsKbPathValid(string kbPath)
+        {
+            if (string.IsNullOrEmpty(kbPath) || !Directory.Exists(kbPath)) return false;
+            if (_kbValidCache.TryGetValue(kbPath, out var cached)
+                && (DateTime.UtcNow - cached.AtUtc) < KbValidCacheTtl)
+            {
+                return cached.Valid;
+            }
+            bool valid = false;
+            try
+            {
+                valid = Directory.EnumerateFiles(kbPath).Any(f =>
+                    f.EndsWith(".gxw", StringComparison.OrdinalIgnoreCase) ||
+                    Path.GetFileName(f).Equals("KnowledgeBase.Connection", StringComparison.OrdinalIgnoreCase));
+            }
+            catch { }
+            _kbValidCache[kbPath] = (valid, DateTime.UtcNow);
+            return valid;
+        }
 
         internal static void UpdateLastKnownIndexState(string status, int totalObjects, DateTime? lastIndexedAt, double? progress, int? etaMs,
             int flushFailuresConsecutive = 0, DateTime? flushLastSuccessUtc = null, string? flushLastError = null,
-            JArray? recentlyChanged = null)
+            JArray? recentlyChanged = null, string? freshness = null, DateTime? lastSuccessfulScanAt = null,
+            string? kbAlias = null, string? operationId = null, string? operationState = null,
+            bool? workerAlive = null, bool? recoverable = null, bool? stalled = null,
+            DateTime? lastProgressAtUtc = null, DateTime? stalledAtUtc = null)
         {
+            string? displayAlias = string.IsNullOrWhiteSpace(kbAlias) ? null : kbAlias.Trim();
+            string? mirrorAlias = NormalizeKbAlias(displayAlias) ?? ResolveKbAliasForIndexRefresh();
+            IndexStateSnapshot? previous;
             lock (_lastKnownIndexStateLock)
             {
-                _lastKnownIndexState = new IndexStateSnapshot
+                if (!string.IsNullOrEmpty(mirrorAlias)
+                    && _lastKnownIndexStatesByKb.TryGetValue(mirrorAlias, out var scopedPrevious))
+                    previous = scopedPrevious;
+                else
+                    previous = _lastKnownIndexState;
+
+                var snapshot = new IndexStateSnapshot
                 {
+                    KbAlias = displayAlias ?? previous?.KbAlias ?? mirrorAlias,
                     Status = string.IsNullOrEmpty(status) ? "Cold" : status,
+                    Freshness = string.IsNullOrEmpty(freshness) ? InferIndexFreshness(status) : freshness,
+                    LastSuccessfulScanAt = lastSuccessfulScanAt ?? previous?.LastSuccessfulScanAt,
                     TotalObjects = totalObjects,
                     LastIndexedAt = lastIndexedAt,
                     Progress = progress,
@@ -126,10 +210,23 @@ namespace GxMcp.Gateway
                     FlushFailuresConsecutive = flushFailuresConsecutive,
                     FlushLastSuccessUtc = flushLastSuccessUtc,
                     FlushLastError = flushLastError,
+                    OperationId = operationId ?? previous?.OperationId,
+                    OperationState = string.IsNullOrEmpty(operationState) ? previous?.OperationState ?? "Idle" : operationState,
+                    WorkerAlive = workerAlive ?? previous?.WorkerAlive ?? false,
+                    Recoverable = recoverable ?? previous?.Recoverable ?? false,
+                    Stalled = stalled ?? previous?.Stalled ?? false,
+                    LastProgressAtUtc = lastProgressAtUtc ?? previous?.LastProgressAtUtc,
+                    StalledAtUtc = stalled == false || string.Equals(operationState, "Idle", StringComparison.OrdinalIgnoreCase)
+                        ? stalledAtUtc
+                        : stalledAtUtc ?? previous?.StalledAtUtc,
                     // Preserve prior recentlyChanged when the caller doesn't pass a fresh
                     // value — search/lifecycle pushes update telemetry without it.
-                    RecentlyChanged = recentlyChanged ?? _lastKnownIndexState?.RecentlyChanged
+                    RecentlyChanged = recentlyChanged ?? previous?.RecentlyChanged
                 };
+                if (!string.IsNullOrEmpty(mirrorAlias))
+                    _lastKnownIndexStatesByKb[mirrorAlias] = snapshot;
+                else
+                    _lastKnownIndexState = snapshot;
             }
             // Keep AutoTypeInjector's name→type map warm whenever we get fresh index data.
             // Plan 038: scope the refresh to the KB it actually came from. This feeder runs
@@ -138,10 +235,52 @@ namespace GxMcp.Gateway
             // established pattern; skip (don't guess) when more than one KB is open.
             if (recentlyChanged != null)
             {
-                string? alias = ResolveKbAliasForIndexRefresh();
+                string? alias = mirrorAlias ?? ResolveKbAliasForIndexRefresh();
                 if (!string.IsNullOrEmpty(alias))
                     AutoTypeInjector.RefreshFromRecentlyChanged(alias!, recentlyChanged);
             }
+
+            // Root-cause fix (Table-shadow auto-injection): the top-5 RecentlyChanged
+            // window cannot establish real uniqueness — a Transaction's physical Table
+            // shadow can win the window without the sibling Transaction ever appearing.
+            // Once the index reaches a usable state, fetch the FULL name→[types] map once
+            // per KB alias (fire-and-forget; the per-alias gate keeps it to one fetch per
+            // gateway process) and rebuild the injector from it, so Transaction+Table →
+            // Transaction resolves deterministically.
+            try
+            {
+                string? mapAlias = mirrorAlias ?? ResolveKbAliasForIndexRefresh();
+                if (!string.IsNullOrEmpty(mapAlias))
+                {
+                    bool indexWasInvalidated = previous != null
+                        && IndexStatusUsable(previous.Status)
+                        && !IndexStatusUsable(status);
+                    if (indexWasInvalidated)
+                    {
+                        InvalidateFullNameTypeMap(mapAlias!);
+                    }
+
+                    if (IndexStatusUsable(status))
+                        MaybeFetchFullNameTypeMap(mapAlias!);
+                }
+            }
+            catch { /* never break the telemetry update over a background fetch */ }
+        }
+
+        private static string? NormalizeKbAlias(string? alias)
+        {
+            return string.IsNullOrWhiteSpace(alias) ? null : alias.Trim().ToLowerInvariant();
+        }
+
+        private static string InferIndexFreshness(string status)
+        {
+            if (IndexStatusUsable(status)) return "current";
+            if (string.Equals(status, "Reindexing", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "Refreshing", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "Enriching", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(status, "UltraLiteReady", StringComparison.OrdinalIgnoreCase))
+                return "refreshing";
+            return "stale";
         }
 
         // Plan 038: same fallback pattern as TryRefreshDatabaseInfoFromWorkerAsync — try the
@@ -161,6 +300,155 @@ namespace GxMcp.Gateway
             return null;
         }
 
+        // Root-cause fix: name→type map fed from the FULL index. The top-5
+        // RecentlyChanged window cannot establish real uniqueness (a Transaction's
+        // Table shadow can win the window without its sibling Transaction appearing),
+        // so once the index reaches a usable state we fetch the complete map once per
+        // KB alias and rebuild the injector from it (Transaction+Table → Transaction is
+        // now resolved deterministically instead of just refused).
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _fullNameTypeMapFetched
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _fullNameTypeMapGeneration
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private static readonly object _fullNameTypeMapStateLock = new object();
+
+        // Deliberately EXCLUDES UltraLiteReady: the lite pass streams partial
+        // snapshots every 500-1000 objects, so a full map fetched at that point would
+        // be incomplete — and the once-per-KB gate would pin the partial map forever.
+        // Fetch only once the lite pass COMPLETED (LiteReady/Enriching/Ready).
+        private static bool IndexStatusUsable(string status) =>
+            string.Equals(status, "Ready", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "LiteReady", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(status, "Enriching", StringComparison.OrdinalIgnoreCase);
+
+        // Fire-and-forget fetch of the worker's full name→[types] map, applied to the
+        // AutoTypeInjector's per-KB map. Never blocks whoami; best-effort (any failure
+        // leaves the recentlyChanged-primed map in place).
+        private static void MaybeFetchFullNameTypeMap(string alias)
+        {
+            if (_workerPool == null) return;
+            if (!TryArmFullNameTypeMapFetch(alias, out int generation)) return; // once per KB per process
+            _ = Task.Run(async () =>
+            {
+                bool applied = false;
+                try
+                {
+                    var cmd = new JObject { ["module"] = "kb", ["action"] = "GetNameTypeMap" };
+                    JObject? env = await SendWorkerCommandAsync(
+                        cmd,
+                        4000,
+                        "Timeout fetching full name→type map for auto-injection",
+                        e => e,
+                        (_, correlationId) => new JObject { ["__timeout"] = true, ["correlationId"] = correlationId },
+                        toolName: "genexus_whoami",
+                        toolArgs: null,
+                        trackOperation: false);
+                    if (env == null || env["__timeout"] != null) return;
+                    JObject? result = env["result"] as JObject;
+                    if (result == null) return;
+
+                    // A reindex or close/reopen can invalidate this request while the
+                    // worker is still answering. Never let an older map overwrite the
+                    // new KB generation.
+                    applied = ApplyNameTypeMapFromWorkerResultIfCurrent(alias, result, generation);
+                }
+                catch (Exception ex)
+                {
+                    Log($"[Whoami] full name→type map fetch failed: {ex.Message}");
+                }
+                finally
+                {
+                    // Re-arm the once-per-KB gate on any failure so the next whoami
+                    // push retries — a one-shot timeout would otherwise regress this
+                    // KB to window-only injection for the whole process lifetime.
+                    if (!applied)
+                        ReleaseFullNameTypeMapGate(alias, generation);
+                }
+            });
+        }
+
+        // Once-per-KB gate: mark this alias as fetched. Returns true only for the
+        // first caller; every later whoami push for the same alias no-ops here.
+        internal static bool TryArmFullNameTypeMapFetch(string alias) =>
+            TryArmFullNameTypeMapFetch(alias, out _);
+
+        private static bool TryArmFullNameTypeMapFetch(string alias, out int generation)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                generation = _fullNameTypeMapGeneration.GetOrAdd(alias, 0);
+                return _fullNameTypeMapFetched.TryAdd(alias, 0);
+            }
+        }
+
+        // Re-arm the once-per-KB gate (call on fetch failure) so the next whoami
+        // push retries instead of permanently regressing to window-only injection.
+        internal static void ReleaseFullNameTypeMapGate(string alias) =>
+            ReleaseFullNameTypeMapGate(alias, GetFullNameTypeMapGeneration(alias));
+
+        private static void ReleaseFullNameTypeMapGate(string alias, int generation)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                if (_fullNameTypeMapGeneration.TryGetValue(alias, out int current) && current == generation)
+                    _fullNameTypeMapFetched.TryRemove(alias, out _);
+            }
+        }
+
+        internal static int GetFullNameTypeMapGeneration(string alias)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                return _fullNameTypeMapGeneration.GetOrAdd(alias, 0);
+            }
+        }
+
+        internal static void InvalidateFullNameTypeMap(string alias)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                _fullNameTypeMapGeneration.AddOrUpdate(alias, 1, (_, current) => unchecked(current + 1));
+                AutoTypeInjector.ClearAll(alias);
+                _fullNameTypeMapFetched.TryRemove(alias, out _);
+            }
+        }
+
+        internal static bool ApplyNameTypeMapFromWorkerResultIfCurrent(string alias, JObject? workerResult, int expectedGeneration)
+        {
+            lock (_fullNameTypeMapStateLock)
+            {
+                if (!_fullNameTypeMapGeneration.TryGetValue(alias, out int current) || current != expectedGeneration)
+                    return false;
+
+                return ApplyNameTypeMapFromWorkerResult(alias, workerResult);
+            }
+        }
+
+        // Parses the worker's GetNameTypeMap reply and rebuilds the AutoTypeInjector
+        // name→type map for `alias`. Extracted from MaybeFetchFullNameTypeMap so the
+        // envelope-shape handling is unit-testable without a worker (mirrors
+        // ApplyIndexStateFromWorkerResult). `workerResult` is env["result"] — the
+        // JSON-RPC result the worker returned for the GetNameTypeMap command.
+        // Returns true when a map was applied.
+        internal static bool ApplyNameTypeMapFromWorkerResult(string alias, JObject? workerResult)
+        {
+            if (workerResult == null) return false;
+
+            // v2.8.1 canonical envelope: { status:"ok", code:"NameTypeMap",
+            // result:{ nameTypeMap, totalNames } } — descend into result when the
+            // current level lacks nameTypeMap.
+            JObject payload = workerResult;
+            if (payload["nameTypeMap"] == null && payload["result"] is JObject canonicalInner && canonicalInner["nameTypeMap"] != null)
+                payload = canonicalInner;
+
+            var nameTypeMap = payload["nameTypeMap"] as JObject;
+            if (nameTypeMap == null) return false;
+
+            AutoTypeInjector.ApplyFullNameTypeMap(alias, nameTypeMap);
+            Log($"[Whoami] applied full name→type map for '{alias}' ({nameTypeMap.Count} names).");
+            return true;
+        }
+
         // True when the index has enough populated entries for SDK-bound reads/edits.
         // v2.6.9 perf: accept UltraLiteReady + LiteReady + Enriching as usable too. The lite
         // pass streams partial snapshots every 500-1000 objects (UltraLiteReady), then completes
@@ -171,27 +459,61 @@ namespace GxMcp.Gateway
         // publishes "Ready" here when indexing finishes; the two must not be conflated.)
         private static bool IsIndexUsableForReads(IndexStateSnapshot snap)
         {
-            if (snap == null || snap.TotalObjects <= 0) return false;
+            // Issue #209 (policy A): the predicate is a conjunction of STATUS and FRESHNESS.
+            // The object count still does not participate — a Ready/LiteReady/Enriching index
+            // with 0 objects is a legitimately-built EMPTY KB (the lite walk completed and
+            // found no model objects — e.g. a KB whose LocalDB model is missing): the worker's
+            // ListService/SearchService return an honest empty listing there, so reads must be
+            // forwarded, not fast-failed with IndexNotReady (which left agents looping
+            // `lifecycle action=index force=true` on empty KBs forever).
+            // The freshness arm is what makes the gate fail-closed: a snapshot restored from a
+            // warm start is Ready but stale/refreshing, and the delta that republishes
+            // Freshness=current is what the caller waits for (see IndexWaitPolicy).
+            if (snap == null) return false;
             string s = snap.Status ?? string.Empty;
+            string freshness = string.IsNullOrWhiteSpace(snap.Freshness)
+                ? InferIndexFreshness(s)
+                : snap.Freshness;
+            if (!string.Equals(freshness, "current", StringComparison.OrdinalIgnoreCase)) return false;
             return string.Equals(s, "Ready", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(s, "LiteReady", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(s, "Enriching", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(s, "UltraLiteReady", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static JObject BuildIndexBlock()
+        private static JObject BuildIndexBlock(string? kbAlias = null)
         {
-            IndexStateSnapshot snap;
-            lock (_lastKnownIndexStateLock) { snap = _lastKnownIndexState; }
+            IndexStateSnapshot snap = GetLastKnownIndexState(kbAlias);
             return new JObject
             {
+                ["kbAlias"] = snap.KbAlias != null ? (JToken)snap.KbAlias : JValue.CreateNull(),
                 ["status"] = snap.Status,
+                ["freshness"] = string.IsNullOrWhiteSpace(snap.Freshness)
+                    ? InferIndexFreshness(snap.Status)
+                    : snap.Freshness,
                 ["totalObjects"] = snap.TotalObjects,
+                ["lastSuccessfulScanAt"] = snap.LastSuccessfulScanAt.HasValue
+                    ? (JToken)snap.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                    : JValue.CreateNull(),
                 ["lastIndexedAt"] = snap.LastIndexedAt.HasValue
                     ? (JToken)snap.LastIndexedAt.Value.ToUniversalTime().ToString("o")
                     : JValue.CreateNull(),
                 ["progress"] = snap.Progress.HasValue ? (JToken)snap.Progress.Value : JValue.CreateNull(),
                 ["etaMs"] = snap.EtaMs.HasValue ? (JToken)snap.EtaMs.Value : JValue.CreateNull(),
+                ["operationId"] = snap.OperationId != null ? (JToken)snap.OperationId : JValue.CreateNull(),
+                ["operationState"] = snap.OperationState,
+                ["workerAlive"] = snap.WorkerAlive,
+                ["recoverable"] = snap.Recoverable,
+                ["stalled"] = snap.Stalled,
+                ["lastProgressAtUtc"] = snap.LastProgressAtUtc.HasValue
+                    ? (JToken)snap.LastProgressAtUtc.Value.ToUniversalTime().ToString("o")
+                    : JValue.CreateNull(),
+                ["stalledAtUtc"] = snap.StalledAtUtc.HasValue
+                    ? (JToken)snap.StalledAtUtc.Value.ToUniversalTime().ToString("o")
+                    : JValue.CreateNull(),
+                ["recoveryAction"] = snap.Recoverable
+                    ? (JToken)"genexus_lifecycle action=index force=true"
+                    : JValue.CreateNull(),
                 // PERFORMANCE (W-M2): expose flush health so a degraded snapshot is
                 // visible without combing through worker_debug.log.
                 ["flushHealth"] = new JObject
@@ -211,15 +533,83 @@ namespace GxMcp.Gateway
             };
         }
 
+        internal static JObject BuildIndexBlockForTest(string? kbAlias)
+        {
+            return BuildIndexBlock(kbAlias);
+        }
+
+        internal static void ResetIndexStateMirrorForTest()
+        {
+            lock (_lastKnownIndexStateLock)
+            {
+                _lastKnownIndexState = new IndexStateSnapshot();
+                _lastKnownIndexStatesByKb.Clear();
+            }
+        }
+
+        internal static void InvalidateIndexStateForKb(string? kbAlias)
+        {
+            string? alias = NormalizeKbAlias(kbAlias);
+            if (string.IsNullOrEmpty(alias)) return;
+            lock (_lastKnownIndexStateLock)
+            {
+                if (!_lastKnownIndexStatesByKb.TryGetValue(alias!, out var current))
+                    current = new IndexStateSnapshot { KbAlias = alias };
+                current.KbAlias = alias;
+                current.Status = "Cold";
+                current.Freshness = "stale";
+                current.TotalObjects = 0;
+                current.Progress = null;
+                current.EtaMs = null;
+                current.RefreshedAtUtc = DateTime.MinValue;
+                _lastKnownIndexStatesByKb[alias!] = current;
+            }
+        }
+
+        internal static void UpdateLastKnownIndexStateForTest(string alias, string status, int totalObjects,
+            DateTime? lastIndexedAt, string? freshness)
+        {
+            UpdateLastKnownIndexState(
+                status,
+                totalObjects,
+                lastIndexedAt,
+                progress: null,
+                etaMs: null,
+                freshness: freshness,
+                lastSuccessfulScanAt: lastIndexedAt,
+                kbAlias: alias);
+        }
+
+        private static IndexStateSnapshot GetLastKnownIndexState(string? kbAlias)
+        {
+            string? alias = NormalizeKbAlias(kbAlias);
+            lock (_lastKnownIndexStateLock)
+            {
+                if (!string.IsNullOrEmpty(alias)
+                    && _lastKnownIndexStatesByKb.TryGetValue(alias, out var scoped))
+                    return scoped;
+                return _lastKnownIndexState;
+            }
+        }
+
         // v2.3.8 Task 1.2: live-fetch index state from worker (source of truth).
         // Called from BuildWhoamiPayloadAsync; on success refreshes _lastKnownIndexState
         // so subsequent timeouts/worker outages still see the last good value.
         // Short timeout (1500ms): whoami is supposed to be near-instant.
-        private static async Task<bool> TryRefreshIndexStateFromWorkerAsync(int timeoutMs = 1500)
+        private static async Task<bool> TryRefreshIndexStateFromWorkerAsync(int timeoutMs = 1500, string? kbAlias = null)
         {
             if (_workerPool == null) return false;
+            KbHandle? previousKb = _currentKb.Value;
             try
             {
+                if (!string.IsNullOrWhiteSpace(kbAlias))
+                {
+                    string normalizedAlias = NormalizeKbAlias(kbAlias)!;
+                    KbHandle? scopedKb = _workerPool.ListOpen()
+                        .FirstOrDefault(h => string.Equals(h.NormalizedAlias, normalizedAlias, StringComparison.OrdinalIgnoreCase));
+                    if (scopedKb == null) return false;
+                    _currentKb.Value = scopedKb;
+                }
                 var cmd = new JObject
                 {
                     ["module"] = "kb",
@@ -240,12 +630,16 @@ namespace GxMcp.Gateway
                 JObject? result = env["result"] as JObject;
                 if (result == null) return false;
 
-                return ApplyIndexStateFromWorkerResult(result);
+                return ApplyIndexStateFromWorkerResult(result, kbAlias);
             }
             catch (Exception ex)
             {
                 Log($"[Whoami] index state fetch failed; using cached snapshot: {ex.Message}");
                 return false;
+            }
+            finally
+            {
+                _currentKb.Value = previousKb;
             }
         }
 
@@ -254,7 +648,7 @@ namespace GxMcp.Gateway
         // is unit-testable without spinning up a worker. `workerResult` is env["result"] —
         // the JSON-RPC result the worker returned for the GetIndexState command.
         // Returns true when a state was applied.
-        internal static bool ApplyIndexStateFromWorkerResult(JObject workerResult)
+        internal static bool ApplyIndexStateFromWorkerResult(JObject workerResult, string? kbAlias = null)
         {
             if (workerResult == null) return false;
 
@@ -283,28 +677,81 @@ namespace GxMcp.Gateway
             var liTok = state["lastIndexedAt"];
             if (liTok != null && liTok.Type != JTokenType.Null)
             {
-                if (DateTime.TryParse(liTok.ToString(), null,
-                    System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
-                {
-                    lastIndexedAt = parsed;
-                }
+                lastIndexedAt = TryParseUtc(liTok);
             }
             double? progress = state["progress"]?.ToObject<double?>();
             int? etaMs = state["etaMs"]?.ToObject<int?>();
             int flushFailuresConsecutive = state["flushFailuresConsecutive"]?.ToObject<int?>() ?? 0;
             DateTime? flushLastSuccessUtc = null;
             var fls = state["flushLastSuccessUtc"];
-            if (fls != null && fls.Type != JTokenType.Null &&
-                DateTime.TryParse(fls.ToString(), null, System.Globalization.DateTimeStyles.RoundtripKind, out var flsParsed))
-            {
-                flushLastSuccessUtc = flsParsed;
-            }
+            if (fls != null && fls.Type != JTokenType.Null)
+                flushLastSuccessUtc = TryParseUtc(fls);
             string? flushLastError = state["flushLastError"]?.Type == JTokenType.Null ? null : state["flushLastError"]?.ToString();
 
             JArray? recentlyChanged = state["recentlyChanged"] as JArray;
+            string? freshness = state["freshness"]?.ToString();
+            DateTime? lastSuccessfulScanAt = null;
+            var lss = state["lastSuccessfulScanAt"];
+            if (lss != null && lss.Type != JTokenType.Null)
+                lastSuccessfulScanAt = TryParseUtc(lss);
+            string? operationId = state["operationId"]?.Type == JTokenType.Null ? null : state["operationId"]?.ToString();
+            string? operationState = state["operationState"]?.ToString();
+            bool? workerAlive = TryReadBoolean(state["workerAlive"]);
+            bool? recoverable = TryReadBoolean(state["recoverable"]);
+            bool? stalled = TryReadBoolean(state["stalled"]);
+            DateTime? lastProgressAtUtc = null;
+            if (state["lastProgressAtUtc"] != null && state["lastProgressAtUtc"].Type != JTokenType.Null)
+                lastProgressAtUtc = TryParseUtc(state["lastProgressAtUtc"]);
+            DateTime? stalledAtUtc = null;
+            if (state["stalledAtUtc"] != null && state["stalledAtUtc"].Type != JTokenType.Null)
+                stalledAtUtc = TryParseUtc(state["stalledAtUtc"]);
             UpdateLastKnownIndexState(status, totalObjects, lastIndexedAt, progress, etaMs,
-                flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged);
+                flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged,
+                freshness, lastSuccessfulScanAt, kbAlias, operationId, operationState,
+                workerAlive, recoverable, stalled, lastProgressAtUtc, stalledAtUtc);
             return true;
+        }
+
+        private static bool? TryReadBoolean(JToken? value)
+        {
+            return value?.Type == JTokenType.Boolean ? value.Value<bool>() : (bool?)null;
+        }
+
+        private static DateTime? TryParseUtc(JToken? value)
+        {
+            if (value == null || value.Type == JTokenType.Null) return null;
+            if (value.Type == JTokenType.Date)
+            {
+                try
+                {
+                    DateTime date = value.ToObject<DateTime>();
+                    return date.Kind == DateTimeKind.Unspecified
+                        ? DateTime.SpecifyKind(date, DateTimeKind.Utc)
+                        : date.ToUniversalTime();
+                }
+                catch { }
+
+                try
+                {
+                    return value.ToObject<DateTimeOffset>().UtcDateTime;
+                }
+                catch { return null; }
+            }
+
+            return TryParseUtc(value.Type == JTokenType.String
+                ? value.Value<string>()
+                : value.ToString(Newtonsoft.Json.Formatting.None));
+        }
+
+        private static DateTime? TryParseUtc(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            if (DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AllowWhiteSpaces
+                | System.Globalization.DateTimeStyles.AssumeUniversal
+                | System.Globalization.DateTimeStyles.AdjustToUniversal, out var parsed))
+                return parsed.UtcDateTime;
+            return null;
         }
 
         private static async Task<bool> TryRefreshDatabaseInfoFromWorkerAsync(int timeoutMs = 800)
@@ -328,6 +775,7 @@ namespace GxMcp.Gateway
             }
             if (string.IsNullOrEmpty(alias)) return false;
             if (_databaseInfoByKb.ContainsKey(alias!)) return true;
+            long fetchEpoch = System.Threading.Interlocked.Read(ref _databaseInfoCacheEpoch);
             try
             {
                 var cmd = new JObject { ["module"] = "kb", ["action"] = "GetDatabaseInfo" };
@@ -342,6 +790,7 @@ namespace GxMcp.Gateway
 
                 JObject? info = ExtractDatabaseInfoFromWorkerResult(env);
                 if (info == null) return false;
+                if (fetchEpoch != System.Threading.Interlocked.Read(ref _databaseInfoCacheEpoch)) return false;
                 _databaseInfoByKb[alias!] = info;
                 return true;
             }
@@ -391,24 +840,69 @@ namespace GxMcp.Gateway
         {
             KbHandle? kb = _currentKb.Value;
             string? alias = kb?.NormalizedAlias;
+            if (string.IsNullOrEmpty(alias))
+            {
+                // whoami is a meta-tool and normally has no per-request KB binding.
+                // TryRefreshDatabaseInfoFromWorkerAsync already falls back to the sole
+                // open worker; use the same alias here so the freshly fetched payload
+                // is not hidden behind the Pending placeholder.
+                try
+                {
+                    var open = _workerPool?.ListOpen();
+                    if (open != null && open.Count == 1) alias = open[0].NormalizedAlias;
+                }
+                catch { }
+            }
             if (string.IsNullOrEmpty(alias)) return null;
             return _databaseInfoByKb.TryGetValue(alias!, out var info) ? info : null;
+        }
+
+        internal static void InvalidateDatabaseInfoCache(string? kbAlias)
+        {
+            System.Threading.Interlocked.Increment(ref _databaseInfoCacheEpoch);
+            if (string.IsNullOrWhiteSpace(kbAlias))
+            {
+                _databaseInfoByKb.Clear();
+                return;
+            }
+            _databaseInfoByKb.TryRemove(kbAlias.Trim(), out _);
+        }
+
+        private static string? ResolveWhoamiIndexAlias(string? sessionId)
+        {
+            if (!string.IsNullOrWhiteSpace(sessionId))
+            {
+                string? selected = GetSessionSelectedKb(sessionId!);
+                if (!string.IsNullOrWhiteSpace(selected)) return selected.Trim();
+            }
+            string? current = _currentKb.Value?.Alias;
+            if (!string.IsNullOrWhiteSpace(current)) return current.Trim();
+            try
+            {
+                var open = _workerPool?.ListOpen();
+                return open != null && open.Count == 1 ? open[0].Alias : null;
+            }
+            catch { return null; }
         }
 
         // v2.3.8 Task 1.2: async variant that performs a live fetch against the worker
         // before assembling whoami. The sync BuildWhoamiPayload() is kept for tests and
         // any caller that doesn't want to block on a worker round-trip.
-        internal static Task<JObject> BuildWhoamiPayloadAsync() => BuildWhoamiPayloadAsync(false);
+        internal static Task<JObject> BuildWhoamiPayloadAsync() => BuildWhoamiPayloadAsync(false, null);
 
-        internal static async Task<JObject> BuildWhoamiPayloadAsync(bool verbose)
+        internal static Task<JObject> BuildWhoamiPayloadAsync(bool verbose)
+            => BuildWhoamiPayloadAsync(verbose, null);
+
+        internal static async Task<JObject> BuildWhoamiPayloadAsync(bool verbose, string? sessionId)
         {
+            string? whoamiAlias = ResolveWhoamiIndexAlias(sessionId);
             // Skip the worker round-trip when our cached snapshot is recent enough.
             // whoami is the most-called first-turn tool — a stale-by-a-few-seconds
             // index status is far better UX than a 1.5s blocking call. Search/lifecycle
             // paths refresh the snapshot whenever they receive new telemetry, so the
             // cache stays warm during real use.
             IndexStateSnapshot snap;
-            lock (_lastKnownIndexStateLock) { snap = _lastKnownIndexState; }
+            snap = GetLastKnownIndexState(whoamiAlias);
             bool cacheFresh = snap.RefreshedAtUtc != DateTime.MinValue
                 && (DateTime.UtcNow - snap.RefreshedAtUtc).TotalSeconds < 15;
 
@@ -428,35 +922,42 @@ namespace GxMcp.Gateway
                 // path (index/lifecycle progress) will overwrite the placeholder
                 // with real data as soon as it arrives. Net effect on the bench:
                 // first whoami pays ~400ms once, subsequent calls drop to ms-range.
-                bool refreshed = await TryRefreshIndexStateFromWorkerAsync(timeoutMs: 400).ConfigureAwait(false);
-                // DB info is stable; fetch once per KB and cache forever. Await on first
-                // whoami of a session so the database block populates inline; subsequent
-                // calls short-circuit on the cache and pay nothing. The timeout is generous
-                // (3s) because GetDatabaseInfo enumerates the DataStoresPart across the
-                // environment's models, which the SDK lazy-loads on first touch after a cold
-                // start — 600ms missed it, leaving database stuck at "Pending" for the session.
-                await TryRefreshDatabaseInfoFromWorkerAsync(timeoutMs: 3000).ConfigureAwait(false);
+                bool refreshed = await TryRefreshIndexStateFromWorkerAsync(timeoutMs: 400, kbAlias: whoamiAlias).ConfigureAwait(false);
                 if (!refreshed)
                 {
                     lock (_lastKnownIndexStateLock)
                     {
-                        if (_lastKnownIndexState.RefreshedAtUtc == DateTime.MinValue)
+                        IndexStateSnapshot current = GetLastKnownIndexState(whoamiAlias);
+                        if (current.RefreshedAtUtc == DateTime.MinValue)
                         {
                             // Stamp a "Unknown" placeholder. Status stays Cold so the
                             // agent can still see that the index hasn't reported yet;
                             // we just stop hammering the round-trip every call.
-                            _lastKnownIndexState = new IndexStateSnapshot
+                            var placeholder = new IndexStateSnapshot
                             {
+                                KbAlias = whoamiAlias,
                                 Status = "Cold",
                                 TotalObjects = 0,
                                 RefreshedAtUtc = DateTime.UtcNow,
-                                RecentlyChanged = _lastKnownIndexState?.RecentlyChanged
+                                RecentlyChanged = current.RecentlyChanged
                             };
+                            if (!string.IsNullOrEmpty(whoamiAlias))
+                                _lastKnownIndexStatesByKb[whoamiAlias!] = placeholder;
+                            else
+                                _lastKnownIndexState = placeholder;
                         }
                     }
                 }
             }
-            var payload = BuildWhoamiPayload(verbose);
+            if (workerHealthy)
+            {
+                // Database info is cached per KB but invalidated when the active
+                // environment changes. Keep this refresh independent from the index
+                // freshness cache so a recent index snapshot cannot hide a newly
+                // selected environment's datastore.
+                await TryRefreshDatabaseInfoFromWorkerAsync(timeoutMs: 3000).ConfigureAwait(false);
+            }
+            var payload = BuildWhoamiPayload(verbose, sessionId);
             if (!workerHealthy)
             {
                 // v2.6.8 (review C7): workerHealth is purely additive — emit it
@@ -515,7 +1016,7 @@ namespace GxMcp.Gateway
         // and, crucially, SELF-HEALS: when there's a known KB but no worker and none
         // spawning, it kicks an AcquireAsync so the worker actually comes back without the
         // agent having to run worker_reload force by hand.
-        private static JObject BuildHonestWorkerHealth(JObject payload)
+        private static JObject BuildHonestWorkerHealth(JObject payload, bool allowSelfHeal = true)
         {
             try
             {
@@ -529,6 +1030,58 @@ namespace GxMcp.Gateway
                 if (string.IsNullOrEmpty(alias)) alias = _currentKb.Value?.NormalizedAlias;
                 var known = pool.ListKnown();
                 if (string.IsNullOrEmpty(alias)) alias = known.FirstOrDefault()?.NormalizedAlias;
+
+                if (!string.IsNullOrEmpty(alias)
+                    && pool.TryGetStartupFailure(alias!, out var startupFailure))
+                {
+                    return BuildStartupFailureHealth(alias!, startupFailure);
+                }
+
+                if (!string.IsNullOrEmpty(alias))
+                {
+                    var activeWorker = pool.TryGet(alias!);
+                    if (activeWorker != null && !activeWorker.IsSdkReady)
+                    {
+                        return new JObject
+                        {
+                            ["status"] = "starting",
+                            ["alias"] = alias,
+                            ["hint"] = "Worker process is alive but has not completed SDK readiness. Retry in a few seconds."
+                        };
+                    }
+
+                    var sdk = WorkerSdkCompatibilityProbe.Check(_activeConfig?.GeneXus?.InstallationPath);
+                    if (sdk.IsRejected)
+                    {
+                        return new JObject
+                        {
+                            ["status"] = "sdk_incompatible",
+                            ["alias"] = alias,
+                            ["code"] = sdk.Code,
+                            ["error"] = sdk.Diagnostic,
+                            ["sdkCompatibility"] = sdk.ToDiagnosticObject(),
+                            ["hint"] = "The configured GeneXus major is outside the explicit compatibility catalog. Change GeneXus.InstallationPath or use a Worker build validated for that major; no respawn will be attempted."
+                        };
+                    }
+                    if (activeWorker != null
+                        && (activeWorker.IsSdkReady || activeWorker.SharedConnectionIsConnected))
+                    {
+                        var running = new JObject
+                        {
+                            ["status"] = "running",
+                            ["alias"] = alias,
+                            ["pid"] = activeWorker.Pid,
+                            ["sharingMode"] = activeWorker.IsSharedWorker ? "shared-host" : "stdio-isolated"
+                        };
+                        if (activeWorker.IsSharedWorker)
+                        {
+                            running["hostPid"] = activeWorker.HostPid;
+                            running["attachmentId"] = activeWorker.AttachmentId;
+                            running["workerGeneration"] = activeWorker.WorkerGeneration;
+                        }
+                        return running;
+                    }
+                }
 
                 if (!string.IsNullOrEmpty(alias) && pool.IsSpawning(alias))
                 {
@@ -558,6 +1111,15 @@ namespace GxMcp.Gateway
                 {
                     var handle = known.FirstOrDefault(h =>
                         string.Equals(h.NormalizedAlias, alias, StringComparison.OrdinalIgnoreCase));
+                    if (!allowSelfHeal)
+                    {
+                        return new JObject
+                        {
+                            ["status"] = "no_worker",
+                            ["alias"] = alias,
+                            ["hint"] = "No ready worker is running for this KB."
+                        };
+                    }
                     if (handle != null)
                     {
                         _ = Task.Run(async () =>
@@ -586,7 +1148,106 @@ namespace GxMcp.Gateway
             }
         }
 
-        internal static JObject BuildWhoamiPayload() => BuildWhoamiPayload(false);
+        private static JObject BuildStartupFailureHealth(string alias, WorkerStartupFailure failure)
+        {
+            bool sdkFailure = SdkDiagnosticClassifier.IsFatalCode(failure.Code);
+            var health = new JObject
+            {
+                ["status"] = sdkFailure ? "sdk_incompatible" : "startup_failed",
+                ["alias"] = alias,
+                ["code"] = failure.Code,
+                ["error"] = failure.Diagnostic,
+                ["failedAtUtc"] = failure.AtUtc,
+                ["exitCode"] = failure.ExitCode
+            };
+            health["hint"] = sdkFailure
+                ? "The Worker rejected the configured GeneXus SDK before opening the KB. Check geneXus.sdkCompatibility and use a supported major; the gateway will not restart this rejected worker in a loop."
+                : "The Worker failed during startup. Check the error above and retry after correcting the reported path or process problem.";
+            return health;
+        }
+
+        internal static JObject BuildGatewayDoctorEnvelope(string? sessionId = null)
+        {
+            var whoami = BuildWhoamiPayload(false, sessionId);
+            var geneXus = whoami["geneXus"] is JObject gx
+                ? (JObject)gx.DeepClone()
+                : new JObject();
+            var kb = whoami["kb"] is JObject kbObject
+                ? (JObject)kbObject.DeepClone()
+                : new JObject();
+            var worker = whoami["worker"] is JObject workerObject
+                ? (JObject)workerObject.DeepClone()
+                : new JObject();
+            var health = BuildHonestWorkerHealth(whoami, allowSelfHeal: false);
+            var warnings = new JArray();
+
+            string sdkStatus = geneXus["sdkCompatibility"]?["status"]?.ToString() ?? "unavailable";
+            if (sdkStatus == "incompatible")
+                warnings.Add("CRITICAL: " + (geneXus["sdkCompatibility"]?["diagnostic"]?.ToString() ?? "GeneXus SDK major is incompatible."));
+            else if (sdkStatus == "unavailable")
+                warnings.Add("GeneXus SDK version could not be verified before Worker startup.");
+
+            string workerStatus = health["status"]?.ToString() ?? "unknown";
+            if (workerStatus != "running")
+            {
+                string failureDetail = health["error"]?.ToString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(failureDetail))
+                    failureDetail = worker["diagnostics"]?["failureDiagnostic"]?.ToString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(failureDetail))
+                    failureDetail = "no failure detail was recorded";
+                warnings.Add("Worker status: " + workerStatus + ". Cause: " + failureDetail);
+            }
+            if (kb["active"] == null || kb["active"]!.Type == JTokenType.Null)
+                warnings.Add("No active KB is selected.");
+
+            var index = whoami["index"] as JObject;
+            var metrics = _operationTracker.BuildMetricsSummary();
+            metrics["source"] = "gateway";
+            // Keep the doctor vocabulary stable while exposing the Gateway-side
+            // counters that remain valid across Worker replacement.
+            metrics["totalToolCalls"] = metrics["totalCalls"] ?? 0;
+            var result = new JObject
+            {
+                ["checkedAt"] = DateTime.UtcNow.ToString("o"),
+                ["version"] = new JObject
+                {
+                    ["current"] = McpRouter.ServerVersion,
+                    ["source"] = "gateway"
+                },
+                ["geneXus"] = geneXus,
+                ["kb"] = kb,
+                ["worker"] = worker,
+                ["diagnostics"] = worker["diagnostics"]?.DeepClone() ?? new JObject(),
+                ["workerHealth"] = health,
+                ["cache"] = new JObject
+                {
+                    ["indexEntries"] = index?["totalObjects"] ?? 0,
+                    ["ageHours"] = JValue.CreateNull()
+                },
+                ["telemetry"] = metrics,
+                ["warnings"] = warnings,
+                ["hint"] = warnings.Count > 0 ? warnings[0] : JValue.CreateNull()
+            };
+
+            return new JObject
+            {
+                ["status"] = "ok",
+                ["code"] = "DoctorOk",
+                ["result"] = result
+            };
+        }
+
+        // PERFORMANCE (perf round 5): CrashLedger.Summarize reads the ledger file on
+        // every call; whoami is the most-called first-turn tool. Cache the summary with
+        // a 10s TTL — a stale-by-seconds death count is far better than a disk read per
+        // whoami. Invalidated implicitly by the TTL; writes to the ledger go through
+        // CrashLedger.Record which does NOT touch this cache (staleness bounded at 10s).
+        private static readonly object _crashSummaryLock = new object();
+        private static JObject _crashSummary = new JObject();
+        private static DateTime _crashSummaryAtUtc = DateTime.MinValue;
+        private static readonly TimeSpan CrashSummaryCacheTtl = TimeSpan.FromSeconds(10);
+
+        internal static JObject BuildWhoamiPayload() => BuildWhoamiPayload(false, null);
 
         // issue #25 #5: whoami defaulted to dumping ~3k tokens of STATIC content
         // (playbooks + skills catalog) plus a session-growing stats/heatmap block
@@ -596,6 +1257,9 @@ namespace GxMcp.Gateway
         // and drop the static reference blocks. verbose=true restores the full payload.
         // For a pure connection/index health probe, genexus_doctor is even leaner.
         internal static JObject BuildWhoamiPayload(bool verbose)
+            => BuildWhoamiPayload(verbose, null);
+
+        internal static JObject BuildWhoamiPayload(bool verbose, string? sessionId)
         {
             var cfg = _activeConfig;
             string? gxPath = cfg?.GeneXus?.InstallationPath;
@@ -603,46 +1267,153 @@ namespace GxMcp.Gateway
             // issue #26 P4/P1: report the KB the session is ACTUALLY working against,
             // not the raw Environment.KBPath scaffold (which `kb open` never updated, so
             // whoami used to keep showing the empty "YourKB" while real work went to a
-            // different, explicitly-opened KB). Priority: currently-open worker matching
-            // DefaultKb → any open worker → a KB opened this session (known) → the
-            // declared DefaultKb entry → legacy Environment.KBPath.
+            // different, explicitly-opened KB). A default is authoritative when several
+            // workers are live; with no selection, only a single worker is reported as
+            // active so whoami never invents a target in a multi-KB session.
             string? activeAlias = null;
             string? kbPath = null;
+            IReadOnlyList<KbHandle> openKbs = Array.Empty<KbHandle>();
+            IReadOnlyList<KbHandle> knownKbs = Array.Empty<KbHandle>();
+            string resolutionPolicy = !string.Equals(cfg?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase)
+                ? "strict"
+                : "legacy";
+            string? startupDefault = cfg?.Environment?.RawDefaultKb ?? cfg?.Environment?.DefaultKb;
+            string? sessionSelected = !string.IsNullOrWhiteSpace(sessionId)
+                ? GetSessionSelectedKb(sessionId!)
+                : null;
+            string leaseState = !string.IsNullOrWhiteSpace(sessionId)
+                ? GetSessionLeaseState(sessionId!)
+                : "none";
+            bool leaseActive = string.Equals(leaseState, "active", StringComparison.Ordinal);
+            string selectionSource = "none";
+            string selectionState = "absent";
+            bool contextRequired = false;
             try
             {
                 var pool = _workerPool;
-                var open = pool?.ListOpen() ?? new List<KbHandle>();
-                var known = pool?.ListKnown() ?? new List<KbHandle>();
-                string? defAlias = cfg?.Environment?.DefaultKb;
-                KbHandle? pick =
-                    (defAlias != null ? open.FirstOrDefault(h => string.Equals(h.Alias, defAlias, StringComparison.OrdinalIgnoreCase)) : null)
-                    ?? open.FirstOrDefault()
-                    ?? (defAlias != null ? known.FirstOrDefault(h => string.Equals(h.Alias, defAlias, StringComparison.OrdinalIgnoreCase)) : null)
-                    ?? known.FirstOrDefault();
-                if (pick != null) { activeAlias = pick.Alias; kbPath = pick.Path; }
-                else if (!string.IsNullOrWhiteSpace(defAlias))
+                openKbs = pool?.ListOpen() ?? Array.Empty<KbHandle>();
+                knownKbs = pool?.ListKnown() ?? Array.Empty<KbHandle>();
+
+                var available = new Dictionary<string, KbHandle>(StringComparer.OrdinalIgnoreCase);
+                if (cfg?.Environment?.KBs != null)
                 {
-                    var decl = cfg?.Environment?.KBs?.FirstOrDefault(
-                        k => string.Equals(k.Alias, defAlias, StringComparison.OrdinalIgnoreCase));
-                    if (decl != null) { activeAlias = decl.Alias; kbPath = decl.Path; }
+                    foreach (var k in cfg.Environment.KBs)
+                    {
+                        if (!string.IsNullOrWhiteSpace(k.Alias))
+                            available[k.Alias] = KbHandle.FromEntry(k);
+                    }
+                }
+                foreach (var k in openKbs)
+                {
+                    if (!string.IsNullOrWhiteSpace(k.Alias))
+                        available[k.Alias] = k;
+                }
+                foreach (var k in knownKbs)
+                {
+                    if (!string.IsNullOrWhiteSpace(k.Alias))
+                        available[k.Alias] = k;
+                }
+
+                if (!string.IsNullOrWhiteSpace(sessionSelected))
+                {
+                    selectionSource = "session-select";
+                    if (available.TryGetValue(sessionSelected, out var matchedHandle))
+                    {
+                        selectionState = "valid";
+                        contextRequired = !leaseActive;
+                        activeAlias = sessionSelected;
+                        kbPath = matchedHandle.Path;
+                    }
+                    else
+                    {
+                        selectionState = "invalid";
+                        contextRequired = true;
+                        activeAlias = sessionSelected;
+                        kbPath = null;
+                    }
+                }
+                else
+                {
+                    if (resolutionPolicy == "strict")
+                    {
+                        if (openKbs.Count == 1)
+                        {
+                            var sole = openKbs.First();
+                            if (!string.IsNullOrWhiteSpace(startupDefault) && !string.Equals(startupDefault, sole.Alias, StringComparison.OrdinalIgnoreCase))
+                            {
+                                selectionSource = "none";
+                                selectionState = "conflicting";
+                                contextRequired = true;
+                                activeAlias = null;
+                                kbPath = null;
+                            }
+                            else
+                            {
+                                selectionSource = "single-open";
+                                selectionState = "valid";
+                                contextRequired = false;
+                                activeAlias = sole.Alias;
+                                kbPath = sole.Path;
+                            }
+                        }
+                        else
+                        {
+                            selectionSource = "none";
+                            selectionState = "absent";
+                            contextRequired = true;
+                            activeAlias = null;
+                            kbPath = null;
+                        }
+                    }
+                    else // legacy mode
+                    {
+                        if (!string.IsNullOrWhiteSpace(startupDefault) && available.TryGetValue(startupDefault, out var defHandle))
+                        {
+                            selectionSource = "config-default";
+                            selectionState = "valid";
+                            contextRequired = false;
+                            activeAlias = defHandle.Alias;
+                            kbPath = defHandle.Path;
+                        }
+                        else if (openKbs.Count == 1)
+                        {
+                            var sole = openKbs.First();
+                            selectionSource = "single-open";
+                            selectionState = "valid";
+                            contextRequired = false;
+                            activeAlias = sole.Alias;
+                            kbPath = sole.Path;
+                        }
+                        else if (cfg?.Environment?.KBs?.Count > 0)
+                        {
+                            var first = cfg.Environment.KBs[0];
+                            selectionSource = "declared-first";
+                            selectionState = "valid";
+                            contextRequired = false;
+                            activeAlias = first.Alias;
+                            kbPath = first.Path;
+                        }
+                        else
+                        {
+                            selectionSource = "none";
+                            selectionState = "absent";
+                            contextRequired = true;
+                            activeAlias = null;
+                            kbPath = null;
+                        }
+                    }
                 }
             }
             catch { }
-            if (string.IsNullOrEmpty(kbPath)) kbPath = cfg?.Environment?.KBPath;
+            // Do not report the legacy KBPath scaffold as the selected target when
+            // this session points at an alias that is currently unavailable.
+            if (string.IsNullOrEmpty(kbPath) && string.IsNullOrWhiteSpace(sessionSelected))
+                kbPath = cfg?.Environment?.KBPath;
             string? kbName = !string.IsNullOrEmpty(kbPath) ? Path.GetFileName(kbPath!.TrimEnd('\\', '/')) : null;
             bool kbExists = !string.IsNullOrEmpty(kbPath) && Directory.Exists(kbPath);
-            bool kbValid = false;
-            if (kbExists)
-            {
-                try
-                {
-                    kbValid = Directory.EnumerateFiles(kbPath!).Any(f =>
-                        f.EndsWith(".gxw", StringComparison.OrdinalIgnoreCase) ||
-                        Path.GetFileName(f).Equals("KnowledgeBase.Connection", StringComparison.OrdinalIgnoreCase));
-                }
-                catch { }
-            }
-            string? gxVersion = DetectGeneXusVersion(gxPath);
+            bool kbValid = kbExists && IsKbPathValid(kbPath!);
+            string? gxVersion = GetCachedGxVersion(gxPath);
+            JObject sdkCompatibility = BuildSdkCompatibilityBlock(gxPath);
 
             var payload = new JObject
             {
@@ -653,22 +1424,44 @@ namespace GxMcp.Gateway
                     ["path"] = kbPath,
                     ["exists"] = kbExists,
                     ["looksValid"] = kbValid,
-                    // issue #26 P4: the alias actually active this session (null if none
-                    // opened yet), and how many workers are live — so the agent can tell
-                    // an opened KB apart from the config scaffold.
                     ["active"] = activeAlias,
-                    ["openCount"] = _workerPool?.ListOpen().Count ?? 0
+                    ["selected"] = sessionSelected,
+                    ["sessionSelection"] = sessionSelected,
+                    ["selectionSource"] = selectionSource,
+                    ["selectionState"] = selectionState,
+                    ["leaseState"] = leaseState,
+                    ["leaseActive"] = leaseActive,
+                    ["startupDefault"] = startupDefault,
+                    ["persistedFallback"] = startupDefault,
+                    ["default"] = startupDefault,
+                    ["resolutionPolicy"] = resolutionPolicy,
+                    ["contextRequired"] = contextRequired,
+                    ["openCount"] = openKbs.Count,
+                    ["openKbs"] = JArray.FromObject(openKbs
+                        .Select(k => k.Alias)
+                        .OrderBy(alias => alias, StringComparer.OrdinalIgnoreCase)),
+                    ["knownKbs"] = JArray.FromObject(knownKbs
+                        .Select(k => k.Alias)
+                        .OrderBy(alias => alias, StringComparer.OrdinalIgnoreCase)),
+                    ["declaredKbs"] = JArray.FromObject((cfg?.Environment?.KBs ?? new List<KbEntry>())
+                        .Select(k => k.Alias)
+                        .OrderBy(alias => alias, StringComparer.OrdinalIgnoreCase))
                 },
                 ["geneXus"] = new JObject
                 {
                     ["installationPath"] = gxPath,
                     ["version"] = gxVersion,
                     ["supportedMajor"] = SupportedGeneXusMajor,
-                    ["versionMatches"] = gxVersion != null && gxVersion.StartsWith(SupportedGeneXusMajor, StringComparison.OrdinalIgnoreCase)
+                    ["supportedMajors"] = JArray.FromObject(GeneXusVersionCatalog.SupportedMajors),
+                    ["matchedMajor"] = GeneXusVersionCatalog.GetMatchingMajor(gxVersion),
+                    ["versionMatches"] = sdkCompatibility["status"]?.ToString() == "compatible",
+                    ["sdkCompatibility"] = sdkCompatibility,
+                    ["catalog"] = GeneXusVersionCatalog.ToDiagnosticObject()
                 },
                 ["config"] = new JObject
                 {
-                    ["path"] = Configuration.CurrentConfigPath
+                    ["path"] = Configuration.CurrentConfigPath,
+                    ["resolvedFrom"] = Configuration.ResolvedFrom
                 },
                 ["mcp"] = new JObject
                 {
@@ -686,7 +1479,7 @@ namespace GxMcp.Gateway
                 },
                 // v2.3.8 Task 1.2: surface index readiness so agents know whether to
                 // call `lifecycle action=index` before relying on search/analyze.
-                ["index"] = BuildIndexBlock(),
+                ["index"] = BuildIndexBlock(activeAlias),
                 // Per-KB database configuration. SQL-generating tools should default to
                 // database.default.dialect (oracle / sqlserver / mysql / postgres / db2 / …)
                 // instead of guessing. Populated once per session via the worker, cached
@@ -702,8 +1495,16 @@ namespace GxMcp.Gateway
                 // Heuristics inspect KB / index / worker / update state and emit
                 // {tool, args, why} triples matching the canonical envelope's
                 // nextSteps shape. Empty when state is healthy + nothing pending.
-                ["suggestedNext"] = BuildSuggestedNextBlock(kbPath, kbExists, kbValid)
+                ["suggestedNext"] = BuildSuggestedNextBlock(kbPath, kbExists, kbValid, activeAlias)
             };
+
+            // A post-timeout mutation is never retried implicitly. Surface the
+            // durable fence only when it needs attention so the first-turn
+            // whoami remains compact while still offering an inspect path.
+            var recovery = BuildMutationRecoveryBlock();
+            if (recovery["pendingCount"]?.ToObject<int>() > 0
+                || recovery["journalHealthy"]?.ToObject<bool>() == false)
+                payload["mutationRecovery"] = recovery;
 
             if (verbose)
             {
@@ -718,16 +1519,100 @@ namespace GxMcp.Gateway
             }
             else
             {
-                // Lean default: point at where the static reference lives instead of
-                // re-shipping it every call.
-                payload["reference"] = new JObject
+                // Terse mode: drop the reference pointer block too — a terse deployment
+                // is one where the agent already knows the surface (~280 bytes saved).
+                if (Program.TerseResponsesEnabled())
                 {
-                    ["hint"] = "Call genexus_whoami(verbose=true) once for inline playbooks + skills catalog, or genexus_recipe / resources/list on demand. genexus_doctor gives a minimal connection+index health check.",
-                    ["playbooksVia"] = "genexus_whoami(verbose=true)",
-                    ["skillsVia"] = "resources/list"
-                };
+                    payload.Remove("reference");
+                    // Forensics/telemetry sugar that terse deployments don't need per call:
+                    // death history with recent entries + roll-up metrics summary
+                    // (~2.7KB combined). Status/pid stay in worker.status/pid.
+                    if (payload["worker"] is JObject w)
+                    {
+                        w.Remove("deaths");
+                        w.Remove("toolLatency");
+                    }
+                    payload.Remove("metricsSummary");
+                    // Heuristic "what do I call next" triples — redundant for an agent
+                    // that already knows the surface (~450 bytes).
+                    payload.Remove("suggestedNext");
+                    // Top-5 recently-changed with per-object metadata (~500B when set);
+                    // genexus_list_objects sort=lastUpdate covers this on demand.
+                    if (payload["index"] is JObject idx)
+                    {
+                        idx.Remove("recentlyChanged");
+                        // Flush health + progress telemetry: doctor/debug data, not
+                        // per-turn state. status/totalObjects/lastIndexedAt stay.
+                        idx.Remove("flushHealth");
+                        if ((string?)idx["progress"] == null) idx.Remove("progress");
+                        if ((string?)idx["etaMs"]?.ToString() == "" && idx["etaMs"]?.Type == JTokenType.Null) idx.Remove("etaMs");
+                    }
+                    // Update block: only actionable when updateAvailable=true. When up
+                    // to date, keep a single boolean instead of the full registry dump.
+                    if (payload["update"] is JObject upd && upd["updateAvailable"]?.ToObject<bool>() != true)
+                    {
+                        payload["update"] = new JObject { ["currentVersion"] = upd["currentVersion"], ["updateAvailable"] = false };
+                    }
+                    // KB alias lists: openKbs/knownKbs/declaredKbs are the same alias
+                    // in the common single-KB case; openCount+active already say it all.
+                    if (payload["kb"] is JObject kb)
+                    {
+                        var open = kb["openKbs"] as JArray;
+                        var known = kb["knownKbs"] as JArray;
+                        var declared = kb["declaredKbs"] as JArray;
+                        bool allSame = open != null && known != null && declared != null
+                            && open.Count == known.Count && known.Count == declared.Count
+                            && open.ToString() == known.ToString() && known.ToString() == declared.ToString();
+                        if (allSame) { kb.Remove("openKbs"); kb.Remove("knownKbs"); }
+                        // selected/default echo active in the common case; drop when
+                        // equal, or when selected is null (default-KB path — active
+                        // already tells the agent which KB the session resolves to).
+                        string? sel = (string?)kb["selected"];
+                        if (sel == null || string.Equals(sel, (string?)kb["active"])) kb.Remove("selected");
+                        if (string.Equals((string?)kb["default"], (string?)kb["active"])) kb.Remove("default");
+                    }
+                }
+
+                // Lean default: point at where the static reference lives instead of
+                // re-shipping it every call. Terse mode already removed this above;
+                // only re-add when NOT terse.
+                if (!Program.TerseResponsesEnabled())
+                {
+                    payload["reference"] = new JObject
+                    {
+                        ["hint"] = "Call genexus_whoami(verbose=true) once for inline playbooks + skills catalog, or genexus_recipe / resources/list on demand. genexus_doctor gives a minimal connection+index health check.",
+                        ["playbooksVia"] = "genexus_whoami(verbose=true)",
+                        ["skillsVia"] = "resources/list"
+                    };
+                }
             }
             return payload;
+        }
+
+        private static JObject BuildMutationRecoveryBlock()
+        {
+            var registry = _mutationRecovery;
+            var block = new JObject
+            {
+                ["journalHealthy"] = registry.IsHealthy,
+                ["pendingCount"] = registry.Count,
+                ["automaticRetry"] = false,
+                ["hint"] = "Read each fenced object part before authorizing another mutation."
+            };
+            if (!registry.IsHealthy)
+                block["journalError"] = registry.JournalError;
+            if (registry.Count > 0)
+            {
+                block["pending"] = JArray.FromObject(registry.Pending.Select(item => new
+                {
+                    kb = item.KbAlias,
+                    target = item.Target,
+                    part = item.Part,
+                    operationId = item.OperationId,
+                    requiredAtUtc = item.RequiredAtUtc
+                }));
+            }
+            return block;
         }
 
         // v2.8.0 — skill catalog block. Mirrors SkillCatalog.All so the
@@ -766,6 +1651,8 @@ namespace GxMcp.Gateway
                     return "BEFORE marking a Smart Device object as Main, claiming an 'IsMain' property exists, or setting Native Mobile application-level properties — confirm the real name (it's 'Main program') and which object types support it.";
                 case "webpanel-events":
                     return "BEFORE writing Web Panel event code (Start / Refresh / Load) — confirm the firing order and what attribute access each event has. Refresh runs BEFORE Load (per record), not after.";
+                case "nexa":
+                    return "BEFORE modeling objects, editing properties, generating Object Text, or using build/import/export workflows — read the relevant official Nexa reference first; use the live KB tools to verify the installed version and object state.";
                 default:
                     return "Read before invoking related properties or methods you aren't fully certain about.";
             }
@@ -819,7 +1706,7 @@ namespace GxMcp.Gateway
             }
         }
 
-        internal static JArray BuildSuggestedNextBlock(string? kbPath, bool kbExists, bool kbValid)
+        internal static JArray BuildSuggestedNextBlock(string? kbPath, bool kbExists, bool kbValid, string? kbAlias = null)
         {
             var arr = new JArray();
             try
@@ -850,21 +1737,12 @@ namespace GxMcp.Gateway
                 }
 
                 // Index state drives discovery tools. Cold / 0 objects means
-                // search / list / impact will all return empty until indexed.
-                IndexStateSnapshot snap;
-                lock (_lastKnownIndexStateLock) { snap = _lastKnownIndexState; }
-                bool indexEmpty = snap.TotalObjects == 0;
-                bool indexCold = string.Equals(snap.Status, "Cold", StringComparison.OrdinalIgnoreCase)
-                                 || string.Equals(snap.Status, "Unknown", StringComparison.OrdinalIgnoreCase);
-                if (indexCold || indexEmpty)
-                {
-                    arr.Add(new JObject
-                    {
-                        ["tool"] = "genexus_lifecycle",
-                        ["args"] = new JObject { ["action"] = "index", ["force"] = true },
-                        ["why"] = "Index is " + (indexEmpty ? "empty" : "cold") + ". Run a full index so list_objects / query / impact return real data."
-                    });
-                }
+                // search / list / impact will all return empty until indexed — but a
+                // BUILT index with 0 objects is a genuinely empty KB, so the nudge must
+                // not loop force=true reindexing forever (there is nothing to index).
+                IndexStateSnapshot snap = GetLastKnownIndexState(kbAlias);
+                var indexSuggestion = BuildIndexSuggestion(snap.Status, snap.TotalObjects);
+                if (indexSuggestion != null) arr.Add(indexSuggestion);
 
                 // Update available — surface as a soft hint, not blocking.
                 try
@@ -886,7 +1764,7 @@ namespace GxMcp.Gateway
                 // Phase 2 — memory orientation. Once per KB alias per gateway process
                 // lifetime (mirrors UpdateNotifier._triggered), nudge the agent to
                 // recall saved memories when the KB actually has some. Gateway reads
-                // the memory.jsonl straight off disk — it's a separate net8 assembly
+                // the memory.jsonl straight off disk — it's a separate Gateway assembly
                 // from the Worker, so it can't reuse MemoryService.
                 try
                 {
@@ -946,6 +1824,54 @@ namespace GxMcp.Gateway
             return arr;
         }
 
+        // Index-state → suggested next action for whoami. Returns null when the index is
+        // healthy (built and non-empty) and no index-related nudge applies. This is the
+        // single decision point that keeps agents from looping `lifecycle action=index
+        // force=true` on a genuinely-empty KB: a BUILT index with 0 objects (Ready /
+        // LiteReady / Enriching — e.g. a KB whose LocalDB model is missing) means the walk
+        // already completed and found nothing, so re-running the reindex cannot help.
+        // Only a Cold/Unknown (never-built) index gets the force=true nudge.
+        internal static JObject BuildIndexSuggestion(string status, int totalObjects)
+        {
+            string s = status ?? string.Empty;
+            bool indexCold = string.Equals(s, "Cold", StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(s, "Unknown", StringComparison.OrdinalIgnoreCase);
+            if (indexCold)
+            {
+                return new JObject
+                {
+                    ["tool"] = "genexus_lifecycle",
+                    ["args"] = new JObject { ["action"] = "index", ["force"] = true },
+                    ["why"] = "Index is cold. Run a full index so list_objects / query / impact return real data."
+                };
+            }
+            if (totalObjects == 0)
+            {
+                // A walk/rebuild is still in progress (nothing has landed yet) — nudge the
+                // agent to observe progress, never to create objects or re-trigger the index.
+                bool walkInProgress = string.Equals(s, "UltraLiteReady", StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(s, "Reindexing", StringComparison.OrdinalIgnoreCase);
+                if (walkInProgress)
+                {
+                    return new JObject
+                    {
+                        ["tool"] = "genexus_whoami",
+                        ["args"] = new JObject(),
+                        ["why"] = "Index build is still in progress — poll whoami until indexStatus reaches Ready before listing objects."
+                    };
+                }
+                // Ready / LiteReady / Enriching with 0 objects: the walk completed and found
+                // no model objects. force=true reindexing cannot change that.
+                return new JObject
+                {
+                    ["tool"] = "genexus_create",
+                    ["args"] = new JObject { ["action"] = "object", ["type"] = "Transaction" },
+                    ["why"] = "This KB's model is empty (0 objects indexed after a completed build — e.g. a missing LocalDB model). Create an object or open a different KB; force=true reindexing cannot populate it."
+                };
+            }
+            return null;
+        }
+
         // Friction 2026-05-22: which worker exe is actually running was opaque —
         // users had to inspect tasklist + git status to know if their rebuilt
         // worker was in use, or if the gateway was still serving from publish/.
@@ -976,6 +1902,17 @@ namespace GxMcp.Gateway
                 }
                 if (wp == null)
                 {
+                    if (_workerPool != null)
+                    {
+                        string? failedAlias = _currentKb.Value?.NormalizedAlias;
+                        if (string.IsNullOrEmpty(failedAlias))
+                            failedAlias = _workerPool.ListKnown().FirstOrDefault()?.NormalizedAlias;
+                        if (!string.IsNullOrEmpty(failedAlias)
+                            && _workerPool.TryGetStartupFailure(failedAlias!, out var startupFailure))
+                        {
+                            return BuildStartupFailureHealth(failedAlias!, startupFailure);
+                        }
+                    }
                     return new JObject
                     {
                         ["status"] = "not_spawned",
@@ -1018,22 +1955,88 @@ namespace GxMcp.Gateway
                 {
                     ["status"] = wp.Pid.HasValue ? "running" : "stopped",
                     ["pid"] = wp.Pid,
-                    ["exePath"] = exe,
-                    ["exeSource"] = sourceLabel,
-                    ["builtAtUtc"] = builtAt?.ToString("o"),
-                    ["spawnMs"] = wp.SpawnMs,
-                    ["sdkInitMs"] = wp.SdkInitMs,
                     ["memoryMb"] = memoryMb,
-                    ["uptimeMin"] = uptimeMin
+                    ["uptimeMin"] = uptimeMin,
+                    ["sharingMode"] = wp.IsSharedWorker ? "shared-host" : "isolated"
                 };
+                var diagnostics = new JObject
+                {
+                    ["mode"] = wp.IsSharedWorker ? "shared-host" : "stdio-isolated",
+                    ["status"] = wp.Pid.HasValue ? "running" : "stopped",
+                    ["configured"] = new JObject
+                    {
+                        ["kbPath"] = wp.IsSharedWorker ? wp.SharedKbPath : wp.Kb?.Path,
+                        ["workerExecutable"] = wp.IsSharedWorker ? wp.SharedWorkerExecutable : wp.SpawnedExePath,
+                        ["installationPath"] = wp.IsSharedWorker ? wp.SharedInstallationPath : wp.Kb?.InstallationPath,
+                        ["driver"] = wp.IsSharedWorker ? wp.SharedDriver : wp.Kb?.Driver,
+                        ["major"] = wp.IsSharedWorker ? wp.SharedMajor : wp.Kb?.Major
+                    },
+                    ["lastExitCode"] = wp.LastExitCode,
+                    ["startupDiagnostic"] = wp.StartupDiagnostic,
+                    ["failureDiagnostic"] = wp.LastFailureDiagnostic
+                };
+                string? failureDiagnostic = wp.LastFailureDiagnostic ?? wp.StartupDiagnostic;
+                if (!string.IsNullOrWhiteSpace(failureDiagnostic))
+                {
+                    diagnostics["failureCode"] = failureDiagnostic.IndexOf("stage=child_exit", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? "WORKER_CHILD_EXIT"
+                        : SdkDiagnosticClassifier.ClassifyCode(failureDiagnostic);
+                    diagnostics["failureSummary"] = failureDiagnostic!.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)[0];
+                }
+                if (wp.IsSharedWorker)
+                {
+                    diagnostics["sharedHost"] = new JObject
+                    {
+                        ["identityKey"] = wp.SharedIdentityKey,
+                        ["pipeName"] = wp.SharedPipeName,
+                        ["connected"] = wp.SharedConnectionIsConnected,
+                        ["hostPid"] = wp.HostPid,
+                        ["workerPid"] = wp.Pid,
+                        ["generation"] = wp.WorkerGeneration,
+                        ["attachmentId"] = wp.AttachmentId,
+                        ["connectionError"] = wp.SharedConnectionError
+                    };
+                }
+                workerBlock["diagnostics"] = diagnostics;
+
+                if (wp.IsSharedWorker)
+                {
+                    workerBlock["hostPid"] = wp.HostPid;
+                    workerBlock["attachmentId"] = wp.AttachmentId;
+                    workerBlock["workerGeneration"] = wp.WorkerGeneration;
+                }
+                // Terse mode: exePath/exeSource/builtAtUtc/spawnMs/sdkInitMs are
+                // install forensics for doctor-style debugging (~300 bytes), not
+                // per-turn data. reloadHint (actionable) is kept.
+                if (!TerseResponsesEnabled())
+                {
+                    workerBlock["exePath"] = exe;
+                    workerBlock["exeSource"] = sourceLabel;
+                    workerBlock["builtAtUtc"] = builtAt?.ToString("o");
+                    workerBlock["spawnMs"] = wp.SpawnMs;
+                    workerBlock["sdkInitMs"] = wp.SdkInitMs;
+                }
                 if (reloadHint != null) workerBlock["reloadHint"] = reloadHint;
 
                 // Durable death history (survives worker log rotation). Lets the agent —
                 // and support — see how often the worker actually dies and why, instead of
                 // guessing. Only attached when at least one death has been recorded.
+                // PERFORMANCE (perf round 5): CrashLedger.Summarize reads the ledger file
+                // on every call — memoize per whoami with a 10s TTL (deaths are rare; a
+                // stale-by-seconds count is far better than a disk read per whoami).
                 try
                 {
-                    var deaths = CrashLedger.Summarize(recentN: 3);
+                    JObject deaths;
+                    lock (_crashSummaryLock)
+                    {
+                        if (_crashSummaryAtUtc == DateTime.MinValue
+                            || (DateTime.UtcNow - _crashSummaryAtUtc) > CrashSummaryCacheTtl)
+                        {
+                            _crashSummary = CrashLedger.Summarize(recentN: 3);
+                            _crashSummaryAtUtc = DateTime.UtcNow;
+                        }
+                        deaths = _crashSummary;
+                    }
                     if ((deaths["total"]?.ToObject<int?>() ?? 0) > 0)
                         workerBlock["deaths"] = deaths;
                 }
@@ -1069,6 +2072,8 @@ namespace GxMcp.Gateway
                 ["wwp_on_webpanel"] = "genexus_apply_pattern { name: <WebPanel>, pattern: 'WorkWithPlus', settings: { template: '<TemplateName>' } } → direct-attach via host WorkWithPlus<WebPanel>. CHECK PARENT TYPE FIRST with genexus_inspect: WebPanel + SDPanel are direct-attach; Transaction is family-gen; other types are REJECTED.",
                 ["edit_wwp_layout"] = "genexus_edit { name: WorkWithPlus<X>, part: 'PatternInstance', mode: 'patch', ... } → edit the host's XML; the MCP auto-projects to the WebForm.",
                 ["create_popup"] = "genexus_create_popup { name, spec: { title, inputs:[{type,varName,...}], buttons:[{caption,event}] } } → one call replaces ~6 edits (Form layout=true + inputs + buttons + parms).",
+                ["smart_read_1_call"] = "genexus_read { name: <Object> } (omit 'part') → returns the COMPLETE object in 1 roundtrip: rules with parm, source/events, variables, structure, and called signatures. ALWAYS prefer this over reading separate parts.",
+                ["task_360_context"] = "genexus_analyze { name: <Object>, mode: 'context' } → returns 360° task context in 1 roundtrip: full object + called procedures' parm signatures + referenced tables' schemas/PKs + SDTs + callers. Ideal before editing or refactoring.",
                 ["read_object_structure"] = "genexus_inspect { name, include:['parts','variables','signature'] } → cheap snapshot before any edit. ALWAYS run this first when unsure of object type.",
                 ["unbreak_build"] = "Build failed with CS0246/CS2001? Check response.suggested_retry — it already carries `target` as a CSV of the missing objects. Fire `genexus_lifecycle { action:'build', target:<that CSV>, includeCallees:'direct' }` BEFORE asking the user. Don't grep raw error[] paths by hand and don't hand the list back to the user.",
                 // Friction 2026-05-22: each of these cost multiple iterations the first time.

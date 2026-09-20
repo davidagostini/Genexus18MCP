@@ -1,3 +1,4 @@
+using System.Linq;
 using GxMcp.Worker.Services;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -108,6 +109,39 @@ namespace GxMcp.Worker.Tests
             var svc = new TransferService(null, null);
             var jo = Parse(svc.Run(JObject.Parse("{\"action\":\"export\"}")));
             Assert.Equal("NoKbOpen", jo["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void TransferService_Export_WithDependencies_ReturnsNoKbOpen()
+        {
+            var svc = new TransferService(null, null, null);
+            var jo = Parse(svc.Run(JObject.Parse("{\"action\":\"export\",\"targets\":[\"Customer\"],\"includeDependencies\":true,\"outputFile\":\"C:\\\\tmp\\\\test.xpz\"}")));
+            Assert.Equal("NoKbOpen", jo["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void ImportOptions_InspectProperties()
+        {
+            var fullOverwrite = typeof(Artech.Architecture.Common.Services.ImportOptions).GetProperty("FullOverwrite", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)?.GetValue(null);
+            Assert.NotNull(fullOverwrite);
+        }
+
+        [Fact]
+        public void RefactorService_ExtractSubroutine_MissingArgs_ReturnsError()
+        {
+            var svc = new RefactorService(null, null, null, null, null);
+            var result = svc.Refactor("Customer", "ExtractSubroutine", "{}");
+            var jo = Parse(result);
+            Assert.Equal("ExtractSubroutineArgsMissing", jo["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void RefactorService_ExtractProcedure_MissingArgs_ReturnsError()
+        {
+            var svc = new RefactorService(null, null, null, null, null);
+            var result = svc.Refactor("Customer", "ExtractProcedure", "{}", dryRun: true);
+            var jo = Parse(result);
+            Assert.Equal("ExtractProcedureArgsMissing", jo["error"]?["code"]?.ToString());
         }
 
         [Fact]

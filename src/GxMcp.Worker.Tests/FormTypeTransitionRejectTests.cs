@@ -42,8 +42,7 @@ namespace GxMcp.Worker.Tests
         {
             string patchSrc = System.IO.File.ReadAllText(
                 System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services",
+                    TestFixtures.FindRepoRoot(), "src", "GxMcp.Worker", "Services",
                     "PatchService.cs"));
             Assert.Contains("FormTypeTransitionUnsupported", patchSrc);
             Assert.Contains("WebFormXmlHelper.IsVisualPart(partName)", patchSrc);
@@ -55,8 +54,7 @@ namespace GxMcp.Worker.Tests
         {
             string writeSrc = System.IO.File.ReadAllText(
                 System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "..", "..", "..", "..", "GxMcp.Worker", "Services",
+                    TestFixtures.FindRepoRoot(), "src", "GxMcp.Worker", "Services",
                     "WriteService.VisualWrite.cs"));
             // The visualMessage local replaces the bare "Visual write failed"
             // with a specific transition message when code == FormTypeTransitionUnsupported.

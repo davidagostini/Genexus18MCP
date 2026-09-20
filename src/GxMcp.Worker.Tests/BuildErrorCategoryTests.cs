@@ -18,6 +18,13 @@ namespace GxMcp.Worker.Tests
         [InlineData("error NU1101: Unable to find package", "environment")]
         [InlineData("error spc0031: attribute not found", "spec")]
         [InlineData("error gen0022: generation issue", "spec")]
+        [InlineData("error src0294: unknown function", "spec")]
+        [InlineData("error qry0001: query generation issue", "spec")]
+        [InlineData("error gtm0092: Cannot find module to restore", "environment")]
+        [InlineData("error mtd0007: metadata file generation failed", "environment")]
+        [InlineData("error pmm0012: package management failed", "environment")]
+        [InlineData("error rgz0004: reorganization failed", "environment")]
+        [InlineData("error rgo0004: reorganization output failed", "environment")]
         [InlineData("error CS0246: type 'Foo' could not be found", "code")]
         [InlineData("error CS1002: ; expected", "code")]
         public void ClassifyErrorCategory_BucketsCorrectly(string line, string expected)
@@ -36,6 +43,22 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(0, status.CodeErrorCount);
             Assert.NotNull(status.EnvErrorsHint);
             Assert.Contains("environment", status.EnvErrorsHint);
+        }
+
+        [Fact]
+        public void GtmInfrastructureErrors_AreEnvironmentErrors()
+        {
+            const string raw = "error gtm0092: Cannot find module to restore";
+            var status = new BuildService.BuildTaskStatus { TaskId = "t1-gtm", Status = "Failed" };
+            status.ErrorsDetailed.Add(new BuildService.ErrorDetail
+            {
+                raw = raw,
+                category = BuildService.ClassifyErrorCategory(raw)
+            });
+
+            Assert.Equal(1, status.EnvErrorCount);
+            Assert.Equal(0, status.CodeErrorCount);
+            Assert.NotNull(status.EnvErrorsHint);
         }
 
         [Fact]
@@ -79,6 +102,17 @@ namespace GxMcp.Worker.Tests
             status.ErrorsDetailed.Add(new BuildService.ErrorDetail { raw = "error CS0246: type 'Foo' could not be found", category = "code" });
             Assert.Equal(0, status.SpecErrorCount);
             Assert.Null(status.SpecErrorsHint);
+        }
+
+        [Fact]
+        public void SourceAndQueryFamilies_CountAsSpecErrors()
+        {
+            var status = new BuildService.BuildTaskStatus { TaskId = "t6", Status = "Failed" };
+            status.ErrorsDetailed.Add(new BuildService.ErrorDetail { raw = "error src0294: unknown function", category = "spec" });
+            status.ErrorsDetailed.Add(new BuildService.ErrorDetail { raw = "error qry0001: query generation issue", category = "spec" });
+
+            Assert.Equal(2, status.SpecErrorCount);
+            Assert.NotNull(status.SpecErrorsHint);
         }
     }
 }

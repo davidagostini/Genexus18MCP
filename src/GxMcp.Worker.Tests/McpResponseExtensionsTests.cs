@@ -10,6 +10,31 @@ namespace GxMcp.Worker.Tests
     public class McpResponseExtensionsTests
     {
         [Fact]
+        public void Err_CarriesRetryAndReconciliationDecisions()
+        {
+            string raw = McpResponse.Err(
+                code: "UnknownCommitState",
+                message: "The commit state is unknown.",
+                retryable: false,
+                reconciliationRequired: true);
+
+            var obj = JObject.Parse(raw);
+            Assert.False((bool)obj["error"]["retryable"]);
+            Assert.True((bool)obj["error"]["reconciliationRequired"]);
+            Assert.True(EnvelopeConformance.Validate(raw).Ok);
+        }
+
+        [Fact]
+        public void ErrRejectsMalformedCanonicalOptionalFields()
+        {
+            string bad = "{\"status\":\"error\",\"error\":{\"code\":\"X\",\"message\":\"boom\",\"retryable\":\"yes\",\"nextSteps\":{}}}";
+            var result = EnvelopeConformance.Validate(bad);
+            Assert.False(result.Ok);
+            Assert.Contains(result.Violations, v => v.Contains("retryable must be boolean"));
+            Assert.Contains(result.Violations, v => v.Contains("nextSteps must be an array"));
+        }
+
+        [Fact]
         public void Accepted_AutoDerivesCancelAndPollTools()
         {
             string raw = McpResponse.Accepted(target: "X", operationId: "op-1", pollTarget: "op:op-1");

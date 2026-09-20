@@ -77,6 +77,25 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        public bool TryRemove(string key) => TryRemove(key, out _);
+
+        public bool TryRemove(string key, out string value)
+        {
+            value = null;
+            if (string.IsNullOrEmpty(key)) return false;
+            lock (_lock)
+            {
+                if (_map.TryGetValue(key, out var entry))
+                {
+                    value = entry.Value;
+                    _map.Remove(key);
+                    if (entry.Node != null) _lru.Remove(entry.Node);
+                    return true;
+                }
+                return false;
+            }
+        }
+
         public void Clear()
         {
             lock (_lock)

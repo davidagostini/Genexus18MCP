@@ -27,6 +27,13 @@ namespace GxMcp.Worker.Helpers
             public string Source;     // typically the control id or layout path
         }
 
+        public sealed class ValidationReport
+        {
+            public List<ValidationMessage> Messages = new List<ValidationMessage>();
+            public bool ValidatorAvailable;
+            public string Error;
+        }
+
         /// <summary>
         /// Run the SDK validator against a WebFormPart. Returns all messages. Best-effort:
         /// returns an empty list on reflection failure rather than throwing — validation
@@ -34,13 +41,32 @@ namespace GxMcp.Worker.Helpers
         /// </summary>
         public static List<ValidationMessage> Validate(object webFormPart)
         {
-            var results = new List<ValidationMessage>();
-            if (webFormPart == null) return results;
+            return ValidateDetailed(webFormPart).Messages;
+        }
+
+        /// <summary>
+        /// Same validation as <see cref="Validate"/>, but preserves whether the
+        /// SDK validator was actually found and whether reflection failed. An empty
+        /// message list alone is not enough evidence: older GeneXus builds may not
+        /// ship WebFormHelper.Validate at all.
+        /// </summary>
+        public static ValidationReport ValidateDetailed(object webFormPart)
+        {
+            var report = new ValidationReport();
+            if (webFormPart == null)
+            {
+                report.Error = "WebForm part is not available.";
+                return report;
+            }
 
             try
             {
                 Type helperType = FindType("Artech.Genexus.Common.Parts.WebForm.WebFormHelper");
-                if (helperType == null) return results;
+                if (helperType == null)
+                {
+                    report.Error = "WebFormHelper was not found in the loaded GeneXus SDK.";
+                    return report;
+                }
 
                 // Locate Validate(part, OutputMessages) — signatures vary across SDK versions:
                 //   Validate(WebFormPart, OutputMessages)
@@ -58,8 +84,11 @@ namespace GxMcp.Worker.Helpers
                 if (validate == null)
                 {
                     Logger.Info("[WebFormValidate] WebFormHelper.Validate(part, OutputMessages) overload not found.");
-                    return results;
+                    report.Error = "WebFormHelper.Validate(part, OutputMessages) overload was not found.";
+                    return report;
                 }
+
+                report.ValidatorAvailable = true;
 
                 // Construct an OutputMessages instance to collect.
                 Type outMsgsType = validate.GetParameters()[1].ParameterType;
@@ -67,18 +96,21 @@ namespace GxMcp.Worker.Helpers
                 if (outMsgs == null)
                 {
                     Logger.Info("[WebFormValidate] could not instantiate " + outMsgsType.FullName);
-                    return results;
+                    report.Error = "Could not instantiate " + outMsgsType.FullName + ".";
+                    return report;
                 }
 
+                object validationResult = null;
                 try
                 {
-                    validate.Invoke(null, new[] { webFormPart, outMsgs });
+                    validationResult = validate.Invoke(null, new[] { webFormPart, outMsgs });
                 }
                 catch (Exception ex)
                 {
                     var inner = ex.InnerException ?? ex;
                     Logger.Info("[WebFormValidate] Validate threw: " + inner.GetType().Name + ": " + inner.Message);
-                    return results;
+                    report.Error = inner.Message;
+                    return report;
                 }
 
                 // Extract messages — OutputMessages typically implements IEnumerable<OutputMessage>
@@ -89,7 +121,23 @@ namespace GxMcp.Worker.Helpers
                     var p = outMsgsType.GetProperty("Messages", BindingFlags.Public | BindingFlags.Instance);
                     msgs = p?.GetValue(outMsgs) as IEnumerable;
                 }
-                if (msgs == null) return results;
+                if (msgs == null)
+                {
+                    if (validationResult is bool && !(bool)validationResult)
+                    {
+                        report.Messages.Add(new ValidationMessage
+                        {
+                            Severity = "Error",
+                            Message = "The GeneXus SDK WebForm validator returned false without diagnostics.",
+                            Source = "WebForm"
+                        });
+                    }
+                    else
+                    {
+                        report.Error = "WebForm validator returned no enumerable message collection.";
+                    }
+                    return report;
+                }
 
                 foreach (var m in msgs)
                 {
@@ -97,15 +145,30 @@ namespace GxMcp.Worker.Helpers
                     string sev = ReadString(m, "Level") ?? ReadString(m, "Severity") ?? ReadString(m, "Type") ?? "Information";
                     string msg = ReadString(m, "Text") ?? ReadString(m, "Message") ?? m.ToString();
                     string src = ReadString(m, "Source") ?? ReadString(m, "ObjectName") ?? null;
-                    results.Add(new ValidationMessage { Severity = sev, Message = msg, Source = src });
+                    report.Messages.Add(new ValidationMessage { Severity = sev, Message = msg, Source = src });
+                }
+
+                // Some SDK builds communicate failure through the bool return and
+                // leave OutputMessages empty. Preserve that signal so callers do not
+                // mistake an unsuccessful validation for a clean WebForm.
+                if (validationResult is bool && !(bool)validationResult && !HasErrors(report.Messages))
+                {
+                    report.Messages.Add(new ValidationMessage
+                    {
+                        Severity = "Error",
+                        Message = "The GeneXus SDK WebForm validator returned false without diagnostics.",
+                        Source = "WebForm"
+                    });
                 }
             }
             catch (Exception ex)
             {
-                Logger.Info("[WebFormValidate] outer fault: " + (ex.InnerException ?? ex).Message);
+                var inner = ex.InnerException ?? ex;
+                report.Error = inner.Message;
+                Logger.Info("[WebFormValidate] outer fault: " + inner.Message);
             }
 
-            return results;
+            return report;
         }
 
         /// <summary>

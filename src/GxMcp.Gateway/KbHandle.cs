@@ -22,11 +22,45 @@ namespace GxMcp.Gateway
     {
         public string Alias { get; }
         public string Path { get; }
+        public string? InstallationPath { get; }
+        public string? Driver { get; }
+        public string? Major { get; }
+        /// <summary>Stable identity and context generation used for operational state.</summary>
+        public string KbId { get; }
+        public long ContextGeneration { get; }
 
         public KbHandle(string alias, string path)
+            : this(alias, path, alias, 0, null, null, null)
+        {
+        }
+
+        public KbHandle(string alias, string path, string? installationPath, string? driver, string? major)
+            : this(alias, path, alias, 0, installationPath, driver, major)
+        {
+        }
+
+        internal KbHandle(
+            string alias,
+            string path,
+            string kbId,
+            long contextGeneration,
+            string? installationPath = null,
+            string? driver = null,
+            string? major = null)
         {
             Alias = alias;
             Path = path;
+            InstallationPath = string.IsNullOrWhiteSpace(installationPath) ? null : installationPath.Trim();
+            Driver = string.IsNullOrWhiteSpace(driver) ? null : driver.Trim();
+            Major = string.IsNullOrWhiteSpace(major) ? null : major.Trim();
+            KbId = string.IsNullOrWhiteSpace(kbId) ? alias : kbId.Trim();
+            ContextGeneration = contextGeneration;
+        }
+
+        public static KbHandle FromEntry(KbEntry entry)
+        {
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            return new KbHandle(entry.Alias, entry.Path, entry.InstallationPath, entry.Driver, entry.Major);
         }
 
         public string NormalizedAlias => Alias.Trim().ToLowerInvariant();
@@ -36,10 +70,10 @@ namespace GxMcp.Gateway
         public static TimeSpan DefaultTtl { get; } = TimeSpan.FromSeconds(60);
 
         private readonly object _envLock = new object();
-        private string _cachedEnv;
-        private string _cachedEnvVersion;
+        private string? _cachedEnv;
+        private string? _cachedEnvVersion;
         private DateTime _cachedAtUtc = DateTime.MinValue;
-        private Func<(string env, string version)> _envFetcher;
+        private Func<(string env, string version)>? _envFetcher;
         private TimeSpan _ttl = DefaultTtl;
 
         /// <summary>
@@ -59,7 +93,7 @@ namespace GxMcp.Gateway
         /// Cache-hit on read within TTL; cache-miss pays one worker round-trip.
         /// Returns <c>null</c> when no fetcher has been wired (degraded mode).
         /// </summary>
-        public string ActiveEnvironment
+        public string? ActiveEnvironment
         {
             get
             {
@@ -68,7 +102,7 @@ namespace GxMcp.Gateway
             }
         }
 
-        public string ActiveEnvironmentVersion
+        public string? ActiveEnvironmentVersion
         {
             get
             {
@@ -101,7 +135,7 @@ namespace GxMcp.Gateway
 
         private void EnsureFresh()
         {
-            Func<(string env, string version)> fetcher;
+            Func<(string env, string version)>? fetcher;
             lock (_envLock)
             {
                 if (_cachedAtUtc != DateTime.MinValue && (DateTime.UtcNow - _cachedAtUtc) < _ttl)
@@ -126,10 +160,10 @@ namespace GxMcp.Gateway
         // Record-style equality preserved so existing call sites comparing two
         // KbHandle values keep working. Compare on Alias only (the path may
         // differ in case/trailing slash for the same logical KB).
-        public bool Equals(KbHandle other) =>
+        public bool Equals(KbHandle? other) =>
             other != null && string.Equals(NormalizedAlias, other.NormalizedAlias, StringComparison.Ordinal);
 
-        public override bool Equals(object obj) => Equals(obj as KbHandle);
+        public override bool Equals(object? obj) => Equals(obj as KbHandle);
 
         public override int GetHashCode() =>
             NormalizedAlias?.GetHashCode() ?? 0;

@@ -27,6 +27,13 @@ namespace GxMcp.Gateway
         // Set per-call at the top of ProcessMcpRequest; SendWorkerCommandAsync reads it
         // to route the command to the correct WorkerProcess in the pool.
         private static readonly AsyncLocal<KbHandle?> _currentKb = new AsyncLocal<KbHandle?>();
+        private static readonly AsyncLocal<SessionKbContextStore.Snapshot?> _currentSessionContext = new AsyncLocal<SessionKbContextStore.Snapshot?>();
+        private static readonly AsyncLocal<bool> _currentOperationRequiresOwner = new AsyncLocal<bool>();
+        // An explicit kb= selector identifies the worker directly. It must not be
+        // rejected merely because the caller did not first establish a session
+        // selection; selected-session calls still use the lease fence below.
+        private static readonly AsyncLocal<bool> _currentExplicitKb = new AsyncLocal<bool>();
+        private static readonly KbUseLeaseRegistry _kbLeases = new KbUseLeaseRegistry(new StopwatchMonotonicClock());
         // Legacy single-worker accessor: returns the worker for the AsyncLocal KB if set,
         // otherwise the worker for the DefaultKb (acquiring it lazily).
         private static async Task<WorkerProcess> GetActiveWorkerAsync()
@@ -38,13 +45,87 @@ namespace GxMcp.Gateway
                 // Fall back to default for callers outside a tool-call context (warmup, etc.).
                 kb = _kbResolver!.Resolve(null, _workerPool.ListOpen(), _workerPool.ListKnown());
             }
-            return await _workerPool.AcquireAsync(kb, CancellationToken.None);
+            bool legacy = string.Equals(_activeConfig?.Environment?.ResolutionPolicy, "legacy", StringComparison.OrdinalIgnoreCase);
+            bool requireOwner = _currentOperationRequiresOwner.Value;
+            return await _workerPool.AcquireAsync(kb, CancellationToken.None, _kbLeases, _currentSessionContext.Value, requireOwner, legacy);
         }
         internal static WorkerPool? GetWorkerPool() => _workerPool;
         internal static KbResolver? GetKbResolver() => _kbResolver;
+        internal static void StartWorkerForTest(Configuration config) => StartWorker(config);
+
+        internal static Task<string> AddPendingRequestForTest(string id, string workerAlias)
+        {
+            var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingRequests[id] = new PendingWorkerRequest
+            {
+                WorkerAlias = workerAlias,
+                ToolName = "test",
+                CorrelationId = id,
+                CompletionSource = completion
+            };
+            return completion.Task;
+        }
+
+        internal static int PendingRequestCountForTest => _pendingRequests.Count;
+
+        internal static void ResetWorkerLifecycleForTest()
+        {
+            _respawnTestCancellation.Cancel();
+            _respawnTestCancellation.Dispose();
+            _respawnTestCancellation = new CancellationTokenSource();
+            try { _workerPool?.StopAll(); } catch { }
+            _workerPool = null;
+            _kbResolver = null;
+            _pendingRequests.Clear();
+            IndexBootstrapTriggerForTest = null;
+            RespawnDelayForTest = null;
+            _indexBootstrapStartedByKb.Clear();
+            ResetIndexStateMirrorForTest();
+        }
         // Plan 038: minimal accessor so McpRouter (a separate class) can resolve the
         // per-request KB alias for AutoTypeInjector.CompleteName, same pattern as the two above.
         internal static KbHandle? GetCurrentKb() => _currentKb.Value;
+
+        internal static OwnershipFence GetCurrentOwnership(string sessionId)
+        {
+            var snapshot = _currentSessionContext.Value;
+            if (snapshot == null)
+                _sessionKbContexts.TryGetSnapshot(sessionId, out snapshot);
+            if (snapshot != null)
+                return new OwnershipFence(snapshot.OwnerScopeId, snapshot.KbId, snapshot.ContextGeneration);
+
+            // Explicit KB arguments have no session selection snapshot. They are
+            // still owner-bound; generation zero denotes the request's immutable
+            // explicit context, never a process-wide fallback.
+            return new OwnershipFence(
+                sessionId ?? string.Empty,
+                _currentKb.Value?.NormalizedAlias ?? string.Empty,
+                0);
+        }
+
+        internal static string? ResolveConfiguredKbAlias(Configuration config, string? kbPath)
+        {
+            if (config?.Environment?.KBs == null || string.IsNullOrWhiteSpace(kbPath)) return null;
+            try
+            {
+                string normalizedPath = Path.GetFullPath(kbPath.Trim())
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var entry = config.Environment.KBs.FirstOrDefault(candidate =>
+                {
+                    if (candidate == null || string.IsNullOrWhiteSpace(candidate.Alias)
+                        || string.IsNullOrWhiteSpace(candidate.Path)) return false;
+                    try
+                    {
+                        string candidatePath = Path.GetFullPath(candidate.Path.Trim())
+                            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        return string.Equals(candidatePath, normalizedPath, StringComparison.OrdinalIgnoreCase);
+                    }
+                    catch { return false; }
+                });
+                return entry?.Alias?.Trim().ToLowerInvariant();
+            }
+            catch { return null; }
+        }
 
         // Tools that are not KB-scoped: routed by the gateway itself or operate on global state.
         // Must mirror the exclusion list in tool_definitions.json (no `kb` param on these).
@@ -53,6 +134,11 @@ namespace GxMcp.Gateway
             "genexus_kb", "genexus_whoami", "genexus_logs", "genexus_doc", "genexus_worker_reload", "genexus_recipe"
         };
         private static bool IsMetaTool(string name) => _metaTools.Contains(name);
+
+        internal static bool IsJsonRpcNotification(JObject request)
+        {
+            return request["id"] == null || request["id"]!.Type == JTokenType.Null;
+        }
         private sealed class PendingWorkerRequest
         {
             public TaskCompletionSource<string> CompletionSource { get; init; } = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -62,13 +148,164 @@ namespace GxMcp.Gateway
             public DateTime CreatedAtUtc { get; init; } = DateTime.UtcNow;
             /// <summary>Worker (KB) the command was routed to; used to abort pending on per-worker crash.</summary>
             public string? WorkerAlias { get; init; }
+            /// <summary>MCP client request id (tools/call `id`) that spawned this worker request, when known.
+            /// notifications/cancelled carries THIS id, not the gateway-generated key of _pendingRequests,
+            /// so the cancel handler needs the bridge to find what to abort.</summary>
+            public string? McpRequestId { get; init; }
+            /// <summary>Exact JSON-RPC id token; numeric 1 and string "1" are distinct.</summary>
+            public JToken? McpRequestIdToken { get; init; }
+            /// <summary>Transport/session scope that owns this request.</summary>
+            public string McpSessionId { get; init; } = "stdio";
+            /// <summary>
+            /// The progress token supplied by the MCP client. The worker receives a
+            /// private operation id for correlation, but that id must never replace
+            /// this token on the client-facing wire.
+            /// </summary>
+            public JToken? ClientProgressToken { get; init; }
+            /// <summary>Resolved KB used by the worker request, for diagnostics and routing audits.</summary>
+            public string? KbAlias { get; init; }
+            /// <summary>Timestamp before worker acquisition/readiness wait.</summary>
+            public DateTime RequestStartedAtUtc { get; init; } = DateTime.UtcNow;
+            /// <summary>Time spent waiting for the Worker SDK-ready boundary.</summary>
+            public long StartupWaitMs { get; init; }
+            /// <summary>UTF-8 bytes in the raw worker response envelope.</summary>
+            public long ResponseBytes { get; set; }
+            // PERFORMANCE (perf-review): parsed response envelope. WorkerProcess already
+            // parses every line to route it (notifications vs responses + in-flight
+            // bookkeeping); HandleWorkerResponse stashes the JObject here so the await
+            // sites in SendWorkerCommandAsync don't re-parse the raw json — this was
+            // 3 full JObject.Parse per response, now 1. Large search/read responses are
+            // exactly the ones that make the extra parses expensive.
+            public JObject? ParsedResponse { get; set; }
+        }
+
+        /// <summary>
+        /// A lifecycle status long-poll is owned by the MCP request that opened it,
+        /// but it does not go through the worker pending-request table. Keep a
+        /// separate, short-lived cancellation bridge so a later
+        /// notifications/cancelled frame can interrupt that wait without allowing
+        /// another session or a different JSON-RPC id type to cancel it.
+        /// </summary>
+        private sealed class PendingLongPollRequest
+        {
+            public CancellationTokenSource CancellationSource { get; init; } = new CancellationTokenSource();
+            public JToken? McpRequestIdToken { get; init; }
+            public string McpSessionId { get; init; } = "stdio";
+            public DateTime CreatedAtUtc { get; init; } = DateTime.UtcNow;
         }
 
         private static ConcurrentDictionary<string, PendingWorkerRequest> _pendingRequests = new ConcurrentDictionary<string, PendingWorkerRequest>();
-        private static ConcurrentDictionary<string, JObject> _semanticCache = new ConcurrentDictionary<string, JObject>();
-        private static HttpSessionRegistry _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(10));
-        private static IdempotencyCache _idempotencyCache = new IdempotencyCache(15, 1000);
+        private static ConcurrentDictionary<string, PendingLongPollRequest> _pendingLongPollRequests = new ConcurrentDictionary<string, PendingLongPollRequest>();
+
+        internal static bool RequestIdentityMatches(string pendingSessionId, JToken? pendingRequestId, string cancellationSessionId, JToken? cancelledRequestId)
+        {
+            return string.Equals(pendingSessionId ?? "stdio", cancellationSessionId ?? "stdio", StringComparison.Ordinal)
+                && pendingRequestId != null && cancelledRequestId != null
+                && JToken.DeepEquals(pendingRequestId, cancelledRequestId);
+        }
+
+        private static string RegisterPendingLongPoll(
+            string sessionId,
+            JToken? requestId,
+            CancellationToken transportCancellation,
+            out CancellationToken cancellationToken)
+        {
+            var source = transportCancellation.CanBeCanceled
+                ? CancellationTokenSource.CreateLinkedTokenSource(transportCancellation)
+                : new CancellationTokenSource();
+            var pending = new PendingLongPollRequest
+            {
+                McpSessionId = sessionId ?? "stdio",
+                McpRequestIdToken = requestId?.DeepClone(),
+                CancellationSource = source
+            };
+            string key = Guid.NewGuid().ToString("N");
+            _pendingLongPollRequests[key] = pending;
+            cancellationToken = pending.CancellationSource.Token;
+            return key;
+        }
+
+        private static void UnregisterPendingLongPoll(string key)
+        {
+            if (_pendingLongPollRequests.TryRemove(key, out var pending))
+            {
+                pending.CancellationSource.Dispose();
+            }
+        }
+
+        private static int CancelPendingLongPolls(string sessionId, JToken cancelledRequestId)
+        {
+            int cancelled = 0;
+            foreach (var kvp in _pendingLongPollRequests.ToArray())
+            {
+                if (!RequestIdentityMatches(
+                        kvp.Value.McpSessionId,
+                        kvp.Value.McpRequestIdToken,
+                        sessionId,
+                        cancelledRequestId))
+                {
+                    continue;
+                }
+
+                if (_pendingLongPollRequests.TryGetValue(kvp.Key, out var pending)
+                    && !pending.CancellationSource.IsCancellationRequested)
+                {
+                    try { pending.CancellationSource.Cancel(); }
+                    catch (ObjectDisposedException) { }
+                    cancelled++;
+                }
+            }
+
+            return cancelled;
+        }
+
+        private static int CleanupStalePendingLongPolls(DateTime cutoff)
+        {
+            int removed = 0;
+            foreach (var kvp in _pendingLongPollRequests.ToArray())
+            {
+                if (kvp.Value.CreatedAtUtc > cutoff
+                    || !_pendingLongPollRequests.TryRemove(kvp.Key, out var pending))
+                {
+                    continue;
+                }
+
+                try { pending.CancellationSource.Cancel(); }
+                catch (ObjectDisposedException) { }
+                removed++;
+            }
+
+            return removed;
+        }
+        private static readonly SemanticCacheStore _semanticCache = new SemanticCacheStore();
+        // C1 (race fix): bumped for global/unknown semantic-cache invalidations. In-flight
+        // reads capture the epoch before dispatching to the worker and must skip the cache
+        // store when it moved on — otherwise a read completing after a mutation would
+        // repopulate the cache with its pre-mutation envelope. Per-KB invalidations use
+        // SemanticCacheStore generations so unrelated KBs keep their warm entries.
+        internal static int SemanticCacheEpoch;
+        private static HttpSessionRegistry _httpSessions = CreateHttpSessionRegistry(TimeSpan.FromMinutes(10));
+
+        private static HttpSessionRegistry CreateHttpSessionRegistry(TimeSpan timeout)
+        {
+            var registry = new HttpSessionRegistry(timeout);
+            registry.SessionRemoved += OnHttpSessionRemoved;
+            return registry;
+        }
+
+        private static void OnHttpSessionRemoved(string sessionId)
+        {
+            _sessionKbContexts.Clear(sessionId);
+            if (_sseChannels.TryRemove(sessionId, out var channel)) channel.Writer.TryComplete();
+        }
+        private static IdempotencyCache _idempotencyCache = new IdempotencyCache(
+            15,
+            1000,
+            TimeSpan.FromSeconds(30),
+            Path.Combine(AppContext.BaseDirectory, "state", "mutation-operations.json"));
         private static readonly OperationTracker _operationTracker = new OperationTracker(TimeSpan.FromMinutes(60));
+        private static readonly MutationRecoveryRegistry _mutationRecovery =
+            new MutationRecoveryRegistry(Path.Combine(AppContext.BaseDirectory, "state", "mutation-recovery.json"));
         internal static OperationTracker OperationTracker => _operationTracker;
 
         // User-macro storage: <configRoot>/recipes/user-macros/<name>.json.
@@ -83,7 +320,19 @@ namespace GxMcp.Gateway
         }
         internal static BackgroundJobRegistry JobRegistry = new BackgroundJobRegistry(600);
         private static int _workerWarmupStarted;
-        private static int _indexBootstrapStarted;
+        internal static readonly TaskCompletionSource<bool> WorkerWarmupCompleted =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private static readonly ConcurrentDictionary<string, byte> _indexBootstrapStartedByKb =
+            new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        internal static void ResetIndexBootstrapForAlias(string? alias)
+        {
+            string key = NormalizeKbAlias(alias) ?? "__default__";
+            _indexBootstrapStartedByKb.TryRemove(key, out _);
+        }
+        // Test seams for deterministic worker-lifecycle coverage. Production leaves
+        // these null, preserving the real asynchronous bootstrap and backoff.
+        internal static Action? IndexBootstrapTriggerForTest;
+        internal static Func<TimeSpan, Task>? RespawnDelayForTest;
         // v2.6.8 (review C6): incremented before any planned worker exit
         // (worker_reload, KB switch, shutdown) so OnWorkerExited can skip the
         // eager respawn — RestartWorker is already orchestrating a fresh spawn.
@@ -106,7 +355,8 @@ namespace GxMcp.Gateway
         // an honest "respawn_failed" with the real cause + a recovery hint, instead of a
         // perpetual, misleading "respawning" while no process is actually coming up.
         private static readonly ConcurrentDictionary<string, (DateTime AtUtc, string Error)> _respawnFailures =
-            new ConcurrentDictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
+                    new ConcurrentDictionary<string, (DateTime, string)>(StringComparer.OrdinalIgnoreCase);
+        private static CancellationTokenSource _respawnTestCancellation = new CancellationTokenSource();
         private static bool _stdioActive;
         // #3: the client request that triggered a proxy→master promotion, buffered so the new
         // master can replay it once instead of dropping it across the takeover.
@@ -156,6 +406,14 @@ namespace GxMcp.Gateway
         private static readonly object _logLock = new object();
         private static readonly System.Threading.SemaphoreSlim _stdoutGate = new System.Threading.SemaphoreSlim(1, 1);
         private static Configuration? _activeConfig;
+        internal static Configuration? ActiveConfig => _activeConfig;
+        // .gx_mirror watcher: rooted in a static field for the process lifetime (same
+        // pattern as the tool_definitions watcher in McpRouter) and disposed on
+        // ProcessExit. Debounce state lives with it — editors fire multiple Changed
+        // events per save and each one must not clear the whole semantic cache.
+        private static FileSystemWatcher? _gxMirrorWatcher;
+        private static readonly object _gxMirrorWatcherLock = new object();
+        private static System.Threading.Timer? _gxMirrorDebounceTimer;
 
         public static void TryWriteStderr(string message)
         {
@@ -176,6 +434,24 @@ namespace GxMcp.Gateway
             } catch { }
         }
 
+        public static async Task TryWriteStdout(JObject json)
+        {
+            if (json == null) return;
+            try {
+                await _stdoutGate.WaitAsync().ConfigureAwait(false);
+                try {
+                    using (var jsonWriter = new JsonTextWriter(Console.Out) { CloseOutput = false })
+                    {
+                        json.WriteTo(jsonWriter);
+                    }
+                    await Console.Out.WriteLineAsync().ConfigureAwait(false);
+                    await Console.Out.FlushAsync().ConfigureAwait(false);
+                } finally {
+                    _stdoutGate.Release();
+                }
+            } catch { }
+        }
+
         private static void InitializeLogging()
         {
             try
@@ -188,6 +464,15 @@ namespace GxMcp.Gateway
             catch { /* fall back to no-op if the file is unavailable */ }
             Log("=== Gateway starting (Stdio Mode) ===");
         }
+
+        // PERFORMANCE (perf-review): per-request instrumentation logs ([Cache] HIT,
+        // [Cache] Invalidation, [TOOL-LATENCY]) each pay DateTime.Now formatting + a
+        // lock + an AutoFlush disk write — measurable contention on high-throughput
+        // pipelines. Default ON (preserves existing behavior and the diagnostics
+        // scripts that grep [TOOL-LATENCY]); set GXMCP_VERBOSE_LOGS=0 to drop the
+        // per-request noise. Cold-start / lifecycle / error logs are unaffected.
+        internal static readonly bool _verboseRequestLogs =
+            !string.Equals(Environment.GetEnvironmentVariable("GXMCP_VERBOSE_LOGS"), "0", StringComparison.OrdinalIgnoreCase);
 
         public static void Log(string msg)
         {
@@ -282,6 +567,26 @@ namespace GxMcp.Gateway
                     AddCheck("in_process_build_assembly", "warn", $"Genexus.MsBuild.Tasks.dll missing — build will fall back to MSBuild.exe spawn");
             }
 
+            // 4b. Worker binary — issue #112: a fresh npm/npx install can land with an empty
+            // publish/worker/ folder, and every KB tool call then fails with "Worker NOT
+            // FOUND". Surface it here with the exact remediation instead.
+            try
+            {
+                var res = WorkerProcess.ResolveWorkerExecutable(config ?? new Configuration());
+                if (res.ResolvedPath != null)
+                    AddCheck("worker_binary", "pass", $"GxMcp.Worker.exe present at {res.ResolvedPath}");
+                else
+                    AddCheck("worker_binary", "fail",
+                        "GxMcp.Worker.exe NOT found. Configured GeneXus.WorkerExecutable: '"
+                        + (string.IsNullOrWhiteSpace(res.ConfiguredPath) ? "(not set)" : res.ConfiguredPath)
+                        + "'. Locations checked: " + string.Join("; ", res.TriedPaths)
+                        + ". Fix an incomplete npm/npx extraction with: npm cache clean --force && npm uninstall -g genexus-mcp && npm install -g genexus-mcp@latest");
+            }
+            catch (Exception ex)
+            {
+                AddCheck("worker_binary", "warn", $"Worker binary probe failed: {ex.Message}");
+            }
+
             // 5. KB path(s).
             string? kbPath = config?.Environment?.KBPath;
             if (string.IsNullOrWhiteSpace(kbPath))
@@ -325,6 +630,19 @@ namespace GxMcp.Gateway
             Environment.Exit(failCount == 0 ? 0 : 1);
         }
 
+        internal static bool ShouldKeepStdioAliveForLegacyMaster(Configuration config, bool explicitSharedGateway = false)
+        {
+            var server = config?.Server;
+            string? mode = config?.GatewayMode ?? server?.TransportMode;
+            bool sharedGatewayExplicit = explicitSharedGateway
+                || server?.SharedGateway == true
+                || string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Environment.GetEnvironmentVariable("GX_MCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase);
+            return (string.Equals(config?.GatewayMode, "legacy", StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(mode, "legacy", StringComparison.OrdinalIgnoreCase) && sharedGatewayExplicit))
+                && server?.HttpPort > 0;
+        }
+
         public static async Task Main(string[] args)
         {
             // Short-circuit self-test before any I/O setup. The CLI installer calls this
@@ -346,7 +664,7 @@ namespace GxMcp.Gateway
                 try { File.AppendAllText("gateway_panic.log", msg); } catch { }
             };
 
-            // Register encoding provider for Windows-1252 support in .NET 8
+            // Register encoding provider for Windows-1252 support in .NET 10
             System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 
             try
@@ -369,6 +687,13 @@ namespace GxMcp.Gateway
 
             var config = Configuration.Load();
             _activeConfig = config;
+            bool isStdio = config.Server?.McpStdio ?? true;
+            bool isStdioIsolated = string.Equals(config.GatewayMode ?? config.Server?.TransportMode, "stdio-isolated", StringComparison.OrdinalIgnoreCase);
+            bool sharedGatewayExplicit = (config.Server?.SharedGateway == true)
+                || string.Equals(Environment.GetEnvironmentVariable("GXMCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Environment.GetEnvironmentVariable("GX_MCP_SHARED_GATEWAY"), "1", StringComparison.OrdinalIgnoreCase)
+                || (args != null && args.Any(a => string.Equals(a, "--shared-gateway", StringComparison.OrdinalIgnoreCase)));
+            bool useSharedLease = !isStdioIsolated && (!isStdio || sharedGatewayExplicit);
             LogGeneXusVersionCheck(config);
             try { RecipeCatalog.ConfigureUserMacroDirectory(GetUserMacroDir()); }
             catch (Exception ex) { Log("[RecipeCatalog] User-macro discovery skipped: " + ex.Message); }
@@ -376,63 +701,85 @@ namespace GxMcp.Gateway
             AppDomain.CurrentDomain.ProcessExit += (_, __) =>
             {
                 try { _gatewayLifetime.Cancel(); } catch { }
-                if (_activeConfig != null)
+                try
+                {
+                    // Dispose the .gx_mirror watcher (and its pending debounce timer) on
+                    // shutdown so the process doesn't keep file handles open during teardown.
+                    lock (_gxMirrorWatcherLock)
+                    {
+                        _gxMirrorDebounceTimer?.Dispose();
+                        _gxMirrorDebounceTimer = null;
+                    }
+                    _gxMirrorWatcher?.Dispose();
+                    _gxMirrorWatcher = null;
+                }
+                catch { }
+                try { _workerPool?.StopAll(WorkerStopReason.GatewayShutdown); } catch { }
+                if (useSharedLease && _activeConfig != null)
                 {
                     GatewayProcessLease.ReleaseCurrentProcess(_activeConfig);
                 }
             };
 
-            var leaseRegistration = GatewayProcessLease.TryRegisterCurrentProcess(config);
-            bool isMaster = leaseRegistration.Success;
-
-            if (!isMaster)
+            bool isMaster = true;
+            if (useSharedLease)
             {
-                if (leaseRegistration.IsDuplicate && leaseRegistration.Lease != null)
+                var leaseRegistration = GatewayProcessLease.TryRegisterCurrentProcess(config);
+                isMaster = leaseRegistration.Success;
+
+                if (!isMaster)
                 {
-                    Log($"[Gateway] existing_master_detected currentPid={Environment.ProcessId} masterPid={leaseRegistration.Lease.ProcessId}");
-                    
-                    if (leaseRegistration.Lease.HttpPort > 0)
+                    if (leaseRegistration.IsDuplicate && leaseRegistration.Lease != null)
                     {
-                        int masterPort = leaseRegistration.Lease.HttpPort;
-                        while (true)
+                        Log($"[Gateway] existing_master_detected currentPid={Environment.ProcessId} masterPid={leaseRegistration.Lease.ProcessId}");
+
+                        if (leaseRegistration.Lease.HttpPort > 0)
                         {
-                            bool shouldPromote = await RunMcpProxyAsync(leaseRegistration.Lease, config);
-                            if (!shouldPromote) return;
-
-                            // Defense-in-depth (#2): the proxy asked to promote because it saw
-                            // the master as unresponsive. Before stealing the lease — which via
-                            // port recovery would hard-kill whatever holds the port, tree and all —
-                            // re-verify the master is really down. If it's still accepting
-                            // connections this was a false alarm; stay a proxy rather than cause a
-                            // split-brain that kills a live master's worker.
-                            if (await IsPortListeningAsync(masterPort, 2000))
+                            int masterPort = leaseRegistration.Lease.HttpPort;
+                            while (true)
                             {
-                                Log($"[Gateway] Promotion aborted — master on port {masterPort} still listening. Resuming proxy mode.");
-                                await Task.Delay(1000);
-                                continue;
-                            }
+                                bool shouldPromote = await RunMcpProxyAsync(leaseRegistration.Lease, config);
+                                if (!shouldPromote) return;
 
-                            Log("[Gateway] Starting promotion to Master...");
-                            var forced = GatewayProcessLease.ForceRegisterCurrentProcess(config);
-                            if (!forced.Success) {
-                                Log("[Gateway] Promotion failed: lease acquisition blocked.");
-                                return;
+                                // Defense-in-depth (#2): the proxy asked to promote because it saw
+                                // the master as unresponsive. Before stealing the lease — which via
+                                // port recovery would hard-kill whatever holds the port, tree and all —
+                                // re-verify the master is really down. If it's still accepting
+                                // connections this was a false alarm; stay a proxy rather than cause a
+                                // split-brain that kills a live master's worker.
+                                if (await IsPortListeningAsync(masterPort, 2000))
+                                {
+                                    Log($"[Gateway] Promotion aborted — master on port {masterPort} still listening. Resuming proxy mode.");
+                                    await Task.Delay(1000);
+                                    continue;
+                                }
+
+                                Log("[Gateway] Starting promotion to Master...");
+                                var forced = GatewayProcessLease.ForceRegisterCurrentProcess(config);
+                                if (!forced.Success) {
+                                    Log("[Gateway] Promotion failed: lease acquisition blocked.");
+                                    return;
+                                }
+                                isMaster = true;
+                                break;
                             }
-                            isMaster = true;
-                            break;
+                        }
+                        else
+                        {
+                            Log($"[Gateway] Existing master (PID {leaseRegistration.Lease.ProcessId}) has no HTTP port. Reusing or exiting.");
+                            return;
                         }
                     }
                     else 
                     {
-                        Log($"[Gateway] Existing master (PID {leaseRegistration.Lease.ProcessId}) has no HTTP port. Reusing or exiting.");
+                        Log($"[Gateway] Registration failed: {leaseRegistration.FailureReason}");
                         return;
                     }
                 }
-                else 
-                {
-                    Log($"[Gateway] Registration failed: {leaseRegistration.FailureReason}");
-                    return;
-                }
+            }
+            else
+            {
+                Log($"[Gateway] Stdio isolated mode active (useSharedLease=false, isStdio={isStdio}, sharedGatewayExplicit={sharedGatewayExplicit}).");
             }
 
             AppDomain.CurrentDomain.UnhandledException += (s, e) => {
@@ -446,10 +793,12 @@ namespace GxMcp.Gateway
 
             Log("=== Gateway starting (Stdio Mode) ===");
             
-            _httpSessions = new HttpSessionRegistry(TimeSpan.FromMinutes(config.Server?.SessionIdleTimeoutMinutes ?? 10));
+            _httpSessions = CreateHttpSessionRegistry(TimeSpan.FromMinutes(config.Server?.SessionIdleTimeoutMinutes ?? 10));
             _idempotencyCache = new IdempotencyCache(
                 config.Server?.IdempotencyTtlMinutes ?? 15,
-                config.Server?.IdempotencyCacheSize ?? 1000);
+                config.Server?.IdempotencyCacheSize ?? 1000,
+                TimeSpan.FromSeconds(30),
+                Path.Combine(AppContext.BaseDirectory, "state", "mutation-operations.json"));
             
             // Subscribing to Configuration Changes
             Configuration.OnConfigurationChanged += (newConfig) => {
@@ -457,11 +806,13 @@ namespace GxMcp.Gateway
                     newConfig.GeneXus?.InstallationPath != config.GeneXus?.InstallationPath ||
                     newConfig.Environment?.GX_SHADOW_PATH != config.Environment?.GX_SHADOW_PATH ||
                     newConfig.Server?.HttpPort != config.Server?.HttpPort ||
-                    newConfig.Server?.WorkerIdleTimeoutMinutes != config.Server?.WorkerIdleTimeoutMinutes) {
+                    newConfig.Server?.WorkerIdleTimeoutMinutes != config.Server?.WorkerIdleTimeoutMinutes ||
+                    newConfig.Server?.WorkerSharingMode != config.Server?.WorkerSharingMode) {
                     Log($"[Gateway] Core configuration changed! Restarting Worker process...");
                     config = newConfig; // Update reference
                     _activeConfig = config;
-                    GatewayProcessLease.RefreshCurrentProcess(config);
+                    if (useSharedLease)
+                        GatewayProcessLease.RefreshCurrentProcess(config);
                     RestartWorker(config);
                     BroadcastResourcesListChanged("core_configuration_changed");
                 } else {
@@ -470,7 +821,7 @@ namespace GxMcp.Gateway
             };
 
             // 1. Start HTTP Server first (it's critical for VS Code communication)
-            if (config.Server?.HttpPort > 0)
+            if (useSharedLease && config.Server?.HttpPort > 0)
             {
                 Log($"[Gateway] Starting HTTP server on port {config.Server.HttpPort}...");
                 _ = Task.Run(async () => {
@@ -503,20 +854,46 @@ namespace GxMcp.Gateway
             if (!string.IsNullOrEmpty(config.Environment?.KBPath))
             {
                 Log("[Gateway] Setting up .gx_mirror watcher...");
-                try 
+                try
                 {
                     string mirrorPath = Path.Combine(config.Environment.KBPath, ".gx_mirror");
+                    string? watchedKbAlias = ResolveConfiguredKbAlias(config, config.Environment.KBPath);
                     if (!Directory.Exists(mirrorPath)) Directory.CreateDirectory(mirrorPath);
-                    var watcher = new FileSystemWatcher(mirrorPath) 
+                    _gxMirrorWatcher = new FileSystemWatcher(mirrorPath)
                     {
-                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName,
-                        EnableRaisingEvents = true
+                        NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName
                     };
-                    watcher.Changed += (s, e) => {
-                        Log($"[Cache] Invalidation triggered by external change: {e.Name}");
-                        _semanticCache.Clear();
-                        BroadcastResourceUpdated("genexus://objects", "external_kb_change");
+                    FileSystemEventHandler onMirrorChange = (s, e) =>
+                    {
+                        // Coalesce the editor's event burst into a single invalidation
+                        // 300ms after the last event (same debounce pattern as
+                        // tool_definitions.json in McpRouter.SetupToolDefinitionsWatcher).
+                        lock (_gxMirrorWatcherLock)
+                        {
+                            _gxMirrorDebounceTimer?.Dispose();
+                            _gxMirrorDebounceTimer = new System.Threading.Timer(_ =>
+                            {
+                                try
+                                {
+                                    string scope = watchedKbAlias ?? string.Empty;
+                                    Log($"[Cache] Invalidation triggered by external change for scope '{scope}'.");
+                                    _semanticCache.InvalidateScope(scope);
+                                    if (string.IsNullOrWhiteSpace(scope))
+                                        System.Threading.Interlocked.Increment(ref SemanticCacheEpoch);
+                                    BroadcastResourceUpdated(
+                                        "genexus://objects",
+                                        "external_kb_change",
+                                        scope,
+                                        _semanticCache.GetRevision(scope));
+                                }
+                                catch (Exception exInval) { Log($"[Cache] Invalidation error: {exInval.Message}"); }
+                            }, null, 300, System.Threading.Timeout.Infinite);
+                        }
                     };
+                    _gxMirrorWatcher.Changed += onMirrorChange;
+                    _gxMirrorWatcher.Created += onMirrorChange;
+                    _gxMirrorWatcher.Renamed += (_, e) => onMirrorChange(_, e);
+                    _gxMirrorWatcher.EnableRaisingEvents = true;
                     Log("[Gateway] .gx_mirror watcher active.");
                 } catch (Exception ex) { Log($"[Cache] Watcher error: {ex.Message}"); }
             }
@@ -541,7 +918,8 @@ namespace GxMcp.Gateway
                         {
                             var req = JObject.Parse(replayLine);
                             var resp = await ProcessMcpRequest(req);
-                            if (resp != null) await TryWriteStdout(resp.ToString(Formatting.None));
+                            if (resp != null && !IsJsonRpcNotification(req))
+                                await TryWriteStdout(resp);
                         }
                         catch (Exception ex) { Log("[Gateway] Promotion replay failed: " + ex.Message); }
                     });
@@ -553,11 +931,17 @@ namespace GxMcp.Gateway
 
                     if (line == null)
                     {
-                        if (config.Server?.HttpPort > 0)
+                        // A dedicated stdio gateway owns its Worker lifetime through the
+                        // parent pipe. Once the client closes stdin there is no caller left
+                        // to serve, so keeping the process alive would retain the KB lease
+                        // indefinitely. The legacy transport is the only mode that keeps a
+                        // stdio loop alive for its shared HTTP master.
+                        if (ShouldKeepStdioAliveForLegacyMaster(config, sharedGatewayExplicit))
                         {
-                            Log("Stdio closed, keeping alive for HTTP...");
+                            Log("Stdio closed, keeping legacy HTTP master alive...");
                             await Task.Delay(-1);
                         }
+                        Log("Stdio closed; shutting down isolated gateway.");
                         break;
                     }
 
@@ -595,14 +979,15 @@ namespace GxMcp.Gateway
                                     ["id"] = JValue.CreateNull(),
                                     ["error"] = new JObject { ["code"] = -32700, ["message"] = "Parse error" }
                                 };
-                                await TryWriteStdout(parseErr.ToString(Formatting.None));
+                                await TryWriteStdout(parseErr);
                                 return;
                             }
                             capturedId = request["id"];
+                            bool notification = IsJsonRpcNotification(request);
                             var response = await ProcessMcpRequest(request);
-                            if (response != null)
+                            if (response != null && !notification)
                             {
-                                await TryWriteStdout(response.ToString(Formatting.None));
+                                await TryWriteStdout(response);
                             }
                         }
                         catch (WorkerPoolFullException poolEx)
@@ -614,12 +999,13 @@ namespace GxMcp.Gateway
                                 ["id"] = capturedId?.DeepClone() ?? JValue.CreateNull(),
                                 ["error"] = new JObject { ["code"] = -32000, ["message"] = poolEx.Message }
                             };
-                            await TryWriteStdout(errResp.ToString(Formatting.None));
+                            if (capturedId != null && capturedId.Type != JTokenType.Null)
+                                await TryWriteStdout(errResp);
                         }
                         catch (Exception ex)
                         {
                             Log("MCP Error: " + ex.Message);
-                            if (capturedId != null)
+                            if (capturedId != null && capturedId.Type != JTokenType.Null)
                             {
                                 var errResp = new JObject
                                 {
@@ -627,7 +1013,7 @@ namespace GxMcp.Gateway
                                     ["id"] = capturedId.DeepClone(),
                                     ["error"] = new JObject { ["code"] = -32603, ["message"] = "Internal error" }
                                 };
-                                await TryWriteStdout(errResp.ToString(Formatting.None));
+                                await TryWriteStdout(errResp);
                             }
                         }
                     });
@@ -671,7 +1057,8 @@ namespace GxMcp.Gateway
             string baseUrl = $"http://localhost:{master.HttpPort}/mcp";
             using var httpClient = new HttpClient();
             httpClient.Timeout = TimeSpan.FromSeconds(30); // Do not let proxy hang forever if master is dead
-            httpClient.DefaultRequestHeaders.Add("MCP-Protocol-Version", McpRouter.SupportedProtocolVersion);
+            httpClient.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+            httpClient.DefaultRequestHeaders.Accept.ParseAdd("text/event-stream");
             
             string? sessionId = null;
             // issue #38 defect #3: cache the client's `initialize` line so a dropped/expired
@@ -684,6 +1071,7 @@ namespace GxMcp.Gateway
             // initialize — without the persisted copy we could never re-handshake and every call
             // 400'd ("Missing MCP-Session-Id") forever until a full client restart.
             string? cachedInitializeLine = _proxyCachedInitializeLine;
+            string negotiatedProtocolVersion = ResolveProxyProtocolVersion(cachedInitializeLine);
             var reader = Console.In;
             var cts = new CancellationTokenSource();
             var ct = cts.Token;
@@ -705,26 +1093,41 @@ namespace GxMcp.Gateway
                         string body = line;
                         var request = JObject.Parse(body);
                         string requestId = request["id"]?.ToString() ?? "unknown";
+                        bool isInitialize = string.Equals(request["method"]?.ToString(), "initialize", StringComparison.Ordinal);
+                        bool isModern = McpRouter.IsModernRequest(request);
+                        string requestProtocolVersion = McpHttpProtocol.GetRequestProtocolVersion(request)
+                            ?? negotiatedProtocolVersion;
                         // A JSON-RPC notification has no id and expects NO response — the
                         // master answers it with HTTP 204/empty, which is correct, not a fault.
                         bool isNotification = request["id"] == null || request["id"]!.Type == JTokenType.Null;
                         // Remember the initialize handshake so we can replay it if the master
                         // session later expires (issue #38 defect #3).
-                        if (string.Equals(request["method"]?.ToString(), "initialize", StringComparison.Ordinal))
+                        if (isInitialize && !isModern)
                         {
                             cachedInitializeLine = line;
                             _proxyCachedInitializeLine = line; // survive proxy re-entry (issue #43 #6)
+                            negotiatedProtocolVersion = McpRouter.NegotiateProtocolVersion(
+                                (request["params"] as JObject)?["protocolVersion"]?.ToString());
                         }
                         var content = new StringContent(body, Encoding.UTF8, "application/json");
                         
-                        if (sessionId != null) content.Headers.Add("MCP-Session-Id", sessionId);
+                        if (!isModern && sessionId != null) content.Headers.Add("MCP-Session-Id", sessionId);
 
                         using var requestMessage = new HttpRequestMessage(HttpMethod.Post, baseUrl) { Content = content };
-                        if (sessionId != null) requestMessage.Headers.Add("MCP-Session-Id", sessionId);
+                        requestMessage.Headers.Add("MCP-Protocol-Version", requestProtocolVersion);
+                        if (!isModern && sessionId != null) requestMessage.Headers.Add("MCP-Session-Id", sessionId);
+                        if (isModern)
+                        {
+                            string method = request["method"]?.ToString() ?? string.Empty;
+                            requestMessage.Headers.Add("Mcp-Method", method);
+                            string? headerName = McpHttpProtocol.GetStandardHeaderName(request);
+                            if (headerName != null)
+                                requestMessage.Headers.Add("Mcp-Name", McpHttpProtocol.EncodeHeaderValue(headerName));
+                        }
 
                         var response = await httpClient.SendAsync(requestMessage, ct);
                         
-                        if (sessionId == null && response.Headers.TryGetValues("MCP-Session-Id", out var values))
+                        if (!isModern && sessionId == null && response.Headers.TryGetValues("MCP-Session-Id", out var values))
                         {
                             sessionId = values.FirstOrDefault();
                             if (sessionId != null)
@@ -732,7 +1135,7 @@ namespace GxMcp.Gateway
                                 Log($"[Proxy] Handshake complete. ID: {sessionId}");
                                 // Wait a moment for master to stabilize before streaming notifications
                                 await Task.Delay(2000);
-                                _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, cts.Token));
+                                _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, negotiatedProtocolVersion, cts.Token));
                             }
                         }
 
@@ -782,17 +1185,17 @@ namespace GxMcp.Gateway
                             // included). Re-establish a session by replaying the cached initialize, then
                             // resend the original request. This is distinct from the connection-failure
                             // promotion path below, which must NOT fire while the master is alive.
-                            if (response.StatusCode == System.Net.HttpStatusCode.NotFound
+                            if (!isModern && response.StatusCode == System.Net.HttpStatusCode.NotFound
                                 && sessionId != null && !isNotification)
                             {
                                 Log($"[Proxy] Master 404 (session {sessionId} expired/unknown). Re-initializing session...");
                                 sessionId = null;
-                                string? newSessionId = await ProxyRehandshakeAsync(httpClient, baseUrl, cachedInitializeLine, ct);
+                                string? newSessionId = await ProxyRehandshakeAsync(httpClient, baseUrl, cachedInitializeLine, negotiatedProtocolVersion, ct);
                                 if (newSessionId != null)
                                 {
                                     sessionId = newSessionId;
                                     Log($"[Proxy] Re-handshake complete. New ID: {sessionId}");
-                                    _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, cts.Token));
+                                    _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, negotiatedProtocolVersion, cts.Token));
                                     retryCount++;
                                     continue; // resend the original request with the fresh session
                                 }
@@ -807,7 +1210,7 @@ namespace GxMcp.Gateway
                             // Recover exactly like the 404 case: replay the (persisted) initialize to mint a
                             // fresh session, then resend the original request. Gated on the session-missing
                             // signal so a genuine bad-request 400 still surfaces to the client.
-                            if (response.StatusCode == System.Net.HttpStatusCode.BadRequest
+                            if (!isModern && response.StatusCode == System.Net.HttpStatusCode.BadRequest
                                 && !isNotification
                                 && !string.IsNullOrEmpty(cachedInitializeLine)
                                 && remoteError != null
@@ -815,16 +1218,34 @@ namespace GxMcp.Gateway
                             {
                                 Log("[Proxy] Master 400 (session missing). Re-initializing session...");
                                 sessionId = null;
-                                string? newSessionId = await ProxyRehandshakeAsync(httpClient, baseUrl, cachedInitializeLine, ct);
+                                string? newSessionId = await ProxyRehandshakeAsync(httpClient, baseUrl, cachedInitializeLine, negotiatedProtocolVersion, ct);
                                 if (newSessionId != null)
                                 {
                                     sessionId = newSessionId;
                                     Log($"[Proxy] Re-handshake complete (after 400). New ID: {sessionId}");
-                                    _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, cts.Token));
+                                    _ = Task.Run(() => RunProxySseForwarderAsync(master.HttpPort, sessionId, negotiatedProtocolVersion, cts.Token));
                                     retryCount++;
                                     continue; // resend the original request with the fresh session
                                 }
                                 Log("[Proxy] Re-handshake after 400 failed; returning error to client.");
+                            }
+
+                            // Modern transport errors are already JSON-RPC responses. Preserve
+                            // their protocol error code/data instead of flattening them into a
+                            // transport-shaped "Master error: BadRequest" envelope.
+                            if (isModern && !isNotification)
+                            {
+                                try
+                                {
+                                    var jsonError = JObject.Parse(remoteError ?? string.Empty);
+                                    if (jsonError["jsonrpc"] != null && jsonError["error"] != null)
+                                    {
+                                        await TryWriteStdout(jsonError.ToString(Formatting.None));
+                                        success = true;
+                                        continue;
+                                    }
+                                }
+                                catch { /* fall through to the generic proxy error */ }
                             }
 
                             Log($"[Proxy] Master status {response.StatusCode}: {remoteError}");
@@ -869,13 +1290,14 @@ namespace GxMcp.Gateway
         // session id, or null when there is nothing to replay or the master refused. The
         // initialize response body is intentionally discarded — the client already received
         // its initialize reply; this handshake is an internal session refresh.
-        private static async Task<string?> ProxyRehandshakeAsync(HttpClient httpClient, string baseUrl, string? cachedInitializeLine, CancellationToken ct)
+        private static async Task<string?> ProxyRehandshakeAsync(HttpClient httpClient, string baseUrl, string? cachedInitializeLine, string protocolVersion, CancellationToken ct)
         {
             if (string.IsNullOrEmpty(cachedInitializeLine)) return null;
             try
             {
                 var content = new StringContent(cachedInitializeLine!, Encoding.UTF8, "application/json");
                 using var msg = new HttpRequestMessage(HttpMethod.Post, baseUrl) { Content = content };
+                msg.Headers.Add("MCP-Protocol-Version", protocolVersion);
                 var resp = await httpClient.SendAsync(msg, ct);
                 if (resp.IsSuccessStatusCode && resp.Headers.TryGetValues("MCP-Session-Id", out var values))
                     return values.FirstOrDefault();
@@ -885,13 +1307,27 @@ namespace GxMcp.Gateway
             return null;
         }
 
-        private static async Task RunProxySseForwarderAsync(int port, string sessionId, CancellationToken ct)
+        private static string ResolveProxyProtocolVersion(string? initializeLine)
+        {
+            try
+            {
+                var request = JObject.Parse(initializeLine ?? string.Empty);
+                return McpRouter.NegotiateProtocolVersion(McpHttpProtocol.GetRequestProtocolVersion(request));
+            }
+            catch
+            {
+                return McpRouter.SupportedProtocolVersion;
+            }
+        }
+
+        private static async Task RunProxySseForwarderAsync(int port, string sessionId, string protocolVersion, CancellationToken ct)
         {
             string url = $"http://localhost:{port}/mcp";
             using var client = new HttpClient();
             client.Timeout = Timeout.InfiniteTimeSpan;
             client.DefaultRequestHeaders.Add("MCP-Session-Id", sessionId);
-            client.DefaultRequestHeaders.Add("MCP-Protocol-Version", McpRouter.SupportedProtocolVersion);
+            client.DefaultRequestHeaders.Add("MCP-Protocol-Version", protocolVersion);
+            client.DefaultRequestHeaders.Accept.ParseAdd("text/event-stream");
 
             try
             {

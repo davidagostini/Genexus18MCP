@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "gxmcp-capability-release-report/1",
+  "releaseVersion": "3.1.0-rc.1",
+  "sourceCommit": "d77c20f1d5336a3c604dcf65538c9e91a0dcb5e0",
+  "generatedAtUtc": "2026-09-10T15:00:00Z",
+  "freshnessPolicy": {
+    "contractDays": 30,
+    "sdkProbeDays": 14,
+    "liveKbDays": 7
+  },
+  "capabilities": [
+    {
+      "capability": "authoring.transaction",
+      "state": "live-kb-verified",
+      "scope": "write",
+      "evidence": [
+        {
+          "kind": "contract-test",
+          "collectedAtUtc": "2026-09-10T10:00:00Z",
+          "expiresAtUtc": "2026-10-10T10:00:00Z",
+          "sourceCommit": "d77c20f1d5336a3c604dcf65538c9e91a0dcb5e0",
+          "command": "dotnet test src/GxMcp.Gateway.Tests --filter CapabilityContract",
+          "result": "pass"
+        },
+        {
+          "kind": "sdk-probe",
+          "collectedAtUtc": "2026-09-10T10:05:00Z",
+          "expiresAtUtc": "2026-09-24T10:05:00Z",
+          "sourceCommit": "d77c20f1d5336a3c604dcf65538c9e91a0dcb5e0",
+          "command": "genexus_sdk_probe action=capabilities",
+          "result": "pass",
+          "sdkVersion": "18.0.154261"
+        },
+        {
+          "kind": "live-kb",
+          "collectedAtUtc": "2026-09-10T10:20:00Z",
+          "expiresAtUtc": "2026-09-17T10:20:00Z",
+          "sourceCommit": "d77c20f1d5336a3c604dcf65538c9e91a0dcb5e0",
+          "command": "scripts/test-live.ps1 -RequireBuildAll -FixtureManifest scratchpad/synthetic-small.fixture.json",
+          "result": "pass",
+          "sdkVersion": "18.0.154261",
+          "fixtureId": "synthetic-small-r1",
+          "fixtureRevision": "seed-2026-09-05"
+        }
+      ]
+    },
+    {
+      "capability": "data.business_components",
+      "state": "unsupported",
+      "scope": "write",
+      "reason": "Generated application runtime is outside the design-time SDK scope.",
+      "nextAction": "Re-evaluate when a supported generated-runtime harness exists.",
+      "evidence": [
+        {
+          "kind": "sdk-probe",
+          "collectedAtUtc": "2026-09-10T10:05:00Z",
+          "sourceCommit": "d77c20f1d5336a3c604dcf65538c9e91a0dcb5e0",
+          "command": "genexus_sdk_probe action=capabilities",
+          "result": "unavailable",
+          "reason": "runtime-boundary"
+        }
+      ]
+    },
+    {
+      "capability": "authoring.translations",
+      "state": "unavailable",
+      "scope": "write",
+      "reason": "fixture-not-configured",
+      "nextAction": "Configure GXMCP_TEST_KB and GXMCP_TEST_FIXTURE on the self-hosted Windows runner.",
+      "evidence": [
+        {
+          "kind": "live-kb",
+          "collectedAtUtc": "2026-09-10T10:20:00Z",
+          "sourceCommit": "d77c20f1d5336a3c604dcf65538c9e91a0dcb5e0",
+          "command": "scripts/test-live.ps1 -RequireBuildAll",
+          "result": "unavailable",
+          "reason": "fixture-not-configured"
+        }
+      ]
+    }
+  ],
+  "releaseGate": {
+    "status": "unavailable",
+    "requiredCapabilities": ["authoring.transaction", "authoring.translations"],
+    "preflightCommand": "scripts/release-preflight.ps1 -RequireBuildAll -SummaryPath $env:TEMP/gxmcp-release-preflight.json"
+  }
+}

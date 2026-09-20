@@ -1,0 +1,130 @@
+{
+  "schemaVersion": "visual-authoring-acceptance/1",
+  "status": "DESIGN_NOT_EXECUTED",
+  "scope": "typed visual authoring design spike; no MCP or SDK behavior change",
+  "fixturePolicy": {
+    "kind": "disposable-synthetic-kb",
+    "productionDataAllowed": false,
+    "requiredAttestation": ["kbPath", "sdkBuild", "datastoreIsolation", "fixtureRevision"]
+  },
+  "executionContract": {
+    "mode": "deterministic-replay-then-live",
+    "requiresLiveSdk": true,
+    "requiresBrowserEvidence": false,
+    "requiresPatternEngine": false,
+    "missingPrerequisite": "SKIPPED",
+    "modelEvaluation": "not_executed"
+  },
+  "typedContracts": {
+    "request": {
+      "name": "VisualAuthoringRequest",
+      "required": ["contractVersion", "target", "surface", "baseline", "operations", "mode", "rollbackOnFailure"],
+      "contractVersion": "visual-authoring/1",
+      "operationKinds": ["setProperty", "bindEvent", "addControl", "removeControl", "applyPattern"],
+      "valueTypes": ["string", "boolean", "int", "enum", "color", "expression"]
+    },
+    "receipt": {
+      "name": "VisualAuthoringReceipt",
+      "required": ["contractVersion", "status", "target", "baselineRevision", "intentHash", "mutationRoute", "validation", "persistence", "evidence"],
+      "mutationRoutes": ["sdk-typed", "rejected"],
+      "persistenceBooleans": ["attempted", "committed", "verified", "rolledBack"]
+    },
+    "previewEvidence": {
+      "name": "PreviewEvidence",
+      "required": ["capturedAtUtc", "url", "screenshot", "accessibilityTree", "renderHash", "baselineRenderHash", "browser", "build", "sourceRevision"],
+      "artifactHashes": ["sha256"],
+      "artifactPathsMustBeRelativeTo": ".gx/visual-evidence/"
+    }
+  },
+  "validationStages": [
+    "authoritative-surface",
+    "typed-intent",
+    "sdk-mutation",
+    "schema-and-gotchas",
+    "generate-build",
+    "browser-preview",
+    "persist-readback"
+  ],
+  "scenarios": [
+    {
+      "id": "VA01",
+      "name": "Property mutation uses authoritative SDK surface",
+      "fixture": "synthetic WebPanel with named button and untouched control",
+      "operations": ["setProperty"],
+      "requiredStages": ["authoritative-surface", "typed-intent", "sdk-mutation", "schema-and-gotchas", "persist-readback"],
+      "oracle": ["mutationRoute is sdk-typed", "requested property changes", "untouched control is preserved", "read-back verifies revision"]
+    },
+    {
+      "id": "VA02",
+      "name": "Event binding updates internal event table",
+      "fixture": "synthetic html-form WebPanel with gxButton",
+      "operations": ["bindEvent"],
+      "requiredStages": ["authoritative-surface", "typed-intent", "sdk-mutation", "generate-build", "persist-readback"],
+      "oracle": ["event identity is typed", "generated output contains the requested event binding", "attribute-only XML write is not accepted as evidence"]
+    },
+    {
+      "id": "VA03",
+      "name": "Invalid form/control combination is rejected",
+      "fixture": "synthetic html-form containing a radio-button request",
+      "operations": ["addControl", "setProperty"],
+      "requiredStages": ["authoritative-surface", "typed-intent", "schema-and-gotchas"],
+      "oracle": ["status is rejected", "stable code is InvalidVisualCombination", "persistence.attempted is false"]
+    },
+    {
+      "id": "VA04",
+      "name": "Stale baseline blocks persistence",
+      "fixture": "two writers against one synthetic WebPanel revision",
+      "operations": ["setProperty"],
+      "requiredStages": ["authoritative-surface", "typed-intent"],
+      "oracle": ["status is rejected", "stable code is BaselineConflict", "SDK mutation is not attempted"]
+    },
+    {
+      "id": "VA05",
+      "name": "Failure rolls back and verifies the typed baseline",
+      "fixture": "synthetic WebPanel with injected post-mutation validation failure",
+      "operations": ["setProperty"],
+      "requiredStages": ["sdk-mutation", "schema-and-gotchas", "persist-readback"],
+      "oracle": ["rolledBack is true only after read-back matches baseline", "rollback uses SDK typed route", "unverified rollback is terminal failure"]
+    },
+    {
+      "id": "VA06",
+      "name": "Preview evidence is complete and content-addressed",
+      "fixture": "synthetic WebPanel with authorized test URL and browser driver",
+      "operations": ["setProperty"],
+      "requiredStages": ["browser-preview"],
+      "oracle": ["screenshot and accessibility tree have sha256", "paths stay under .gx/visual-evidence/", "render hashes identify baseline and candidate"]
+    },
+    {
+      "id": "VA07",
+      "name": "Browser absence is an honest skip",
+      "fixture": "synthetic WebPanel without browser driver",
+      "operations": ["setProperty"],
+      "requiredStages": ["browser-preview"],
+      "oracle": ["stage is SKIPPED", "code is BrowserDriverUnavailable", "skip is not counted as pass"]
+    },
+    {
+      "id": "VA08",
+      "name": "Pattern application records license and revision",
+      "fixture": "synthetic transaction with installed pattern engine",
+      "operations": ["applyPattern"],
+      "requiredStages": ["authoritative-surface", "typed-intent", "sdk-mutation", "schema-and-gotchas", "persist-readback"],
+      "oracle": ["pattern id/version/license/template revision are recorded", "owned children match semantic oracle", "GUID and attribute-order variance is tolerated"]
+    },
+    {
+      "id": "VA09",
+      "name": "Unavailable pattern never falls back to XML",
+      "fixture": "synthetic transaction without licensed pattern engine",
+      "operations": ["applyPattern"],
+      "requiredStages": ["authoritative-surface", "typed-intent"],
+      "oracle": ["status is rejected", "stable code is PatternUnavailable", "mutationRoute is rejected", "persistence.attempted is false"]
+    },
+    {
+      "id": "VA10",
+      "name": "Live read-back preserves unrelated authoring state",
+      "fixture": "attested disposable KB with rules, theme class, event, and pattern-owned child",
+      "operations": ["setProperty", "bindEvent"],
+      "requiredStages": ["authoritative-surface", "typed-intent", "sdk-mutation", "schema-and-gotchas", "generate-build", "persist-readback"],
+      "oracle": ["all unrelated state is preserved", "generated behavior matches the receipt", "live evidence records sdkBuild and fixtureRevision"]
+    }
+  ]
+}

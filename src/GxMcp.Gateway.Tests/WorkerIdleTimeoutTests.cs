@@ -5,7 +5,7 @@ namespace GxMcp.Gateway.Tests
 {
     // The worker's cold start is ~90s (intrinsic GxServiceManager activation), so idle
     // reaping trades a warm worker for a 90s re-pay on the next call. These pin the
-    // resolved idle window: a generous default, a working "disable" path (0), and no
+    // resolved idle window: a 30-minute default, a working "disable" path (0), and no
     // silent floor forcing 0 up to 1 minute (the old Math.Max(1,…) bug).
     public class WorkerIdleTimeoutTests
     {
@@ -17,20 +17,20 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void Default_IsSixtyMinutes()
+        public void Default_IsThirtyMinutes()
         {
             // ServerConfig's own default...
-            Assert.Equal(60, new ServerConfig().WorkerIdleTimeoutMinutes);
+            Assert.Equal(30, new ServerConfig().WorkerIdleTimeoutMinutes);
             // ...and the resolved window with an explicit default Server.
-            Assert.Equal(TimeSpan.FromMinutes(60), Make(null).IdleTimeoutForTest);
+            Assert.Equal(TimeSpan.FromMinutes(30), Make(null).IdleTimeoutForTest);
         }
 
         [Fact]
-        public void NullServer_ResolvesToSixtyMinutes()
+        public void NullServer_ResolvesToThirtyMinutes()
         {
-            // Server is null by default; the ctor fallback must still yield 60, not 0/crash.
+            // Server is null by default; the ctor fallback must still yield 30, not 0/crash.
             var worker = new WorkerProcess(new Configuration(), new KbHandle("test", "C:\\fake\\path"));
-            Assert.Equal(TimeSpan.FromMinutes(60), worker.IdleTimeoutForTest);
+            Assert.Equal(TimeSpan.FromMinutes(30), worker.IdleTimeoutForTest);
         }
 
         [Fact]

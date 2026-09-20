@@ -53,6 +53,17 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ContentFingerprint_ChangesForEverySourceState()
+        {
+            string first = WriteService.ComputeContentFingerprint("// state 1");
+            string second = WriteService.ComputeContentFingerprint("// state 2");
+
+            Assert.NotEqual(first, second);
+            Assert.Equal(first, WriteService.ComputeContentFingerprint("// state 1"));
+            Assert.Equal(64, first.Length);
+        }
+
+        [Fact]
         public void NormalizeFacadeArgs_PatchMode_UnwrapsFindReplaceShape()
         {
             var normalized = WriteService.NormalizeFacadeArgs(new JObject
@@ -108,6 +119,94 @@ namespace GxMcp.Worker.Tests
 
             Assert.True(normalized.DryRun);
             Assert.Equal("only", normalized.Validate);
+        }
+
+        [Fact]
+        public void NormalizeFacadeArgs_ParsesVerifyModeAndRollbackOnFailure()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["mode"] = "patch",
+                ["part"] = "Source",
+                ["context"] = "old",
+                ["content"] = "new",
+                ["verifyMode"] = "exact",
+                ["rollbackOnFailure"] = true
+            });
+
+            Assert.Equal("exact", normalized.VerifyMode);
+            Assert.True(normalized.RollbackOnFailure);
+        }
+
+        [Fact]
+        public void NormalizeFacadeArgs_ConcurrencyPolicy_DefaultsToWarn()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["part"] = "Source",
+                ["content"] = "parm();"
+            });
+
+            Assert.Equal("warn", normalized.ConcurrencyPolicy);
+        }
+
+        [Fact]
+        public void NormalizeFacadeArgs_ConcurrencyPolicy_ParsesCustomValue()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["part"] = "Source",
+                ["content"] = "parm();",
+                ["concurrencyPolicy"] = "fail_if_open"
+            });
+
+            Assert.Equal("fail_if_open", normalized.ConcurrencyPolicy);
+        }
+
+        [Fact]
+        public void NormalizeFacadeArgs_ParsesRequireObjectSave()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["mode"] = "patch",
+                ["part"] = "Events",
+                ["requireObjectSave"] = true
+            });
+
+            Assert.True(normalized.RequireObjectSave);
+        }
+
+        [Fact]
+        public void ValidateRequireObjectSave_FullMode_IsRejected()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["mode"] = "full",
+                ["part"] = "Events",
+                ["content"] = "Event Enter\nEndevent",
+                ["requireObjectSave"] = true
+            });
+
+            var response = JObject.Parse(WriteService.ValidateRequireObjectSaveArgs("SamplePanel", normalized));
+
+            Assert.Equal("RequireObjectSaveUnsupportedMode", response["error"]?["code"]?.ToString());
+        }
+
+        [Fact]
+        public void ValidateRequireObjectSave_NonEventsPatch_IsRejected()
+        {
+            var normalized = WriteService.NormalizeFacadeArgs(new JObject
+            {
+                ["mode"] = "patch",
+                ["part"] = "Source",
+                ["context"] = "old",
+                ["content"] = "new",
+                ["requireObjectSave"] = true
+            });
+
+            var response = JObject.Parse(WriteService.ValidateRequireObjectSaveArgs("SamplePanel", normalized));
+
+            Assert.Equal("RequireObjectSaveUnsupportedPart", response["error"]?["code"]?.ToString());
         }
     }
 }

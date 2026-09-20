@@ -270,29 +270,29 @@ export class StructureView {
                 let iconClass = item.isLevel ? 'level-icon' : (item.isKey ? 'key-icon' : 'attr-icon');
 
                 const nameEditable = !isReadOnly ? 'contenteditable="true"' : '';
-                html += '<td class="item-name-cell">' + indentSpace + '<span class="icon ' + iconClass + '" onclick="toggleKey(\'' + id + '\')">' + iconHtml + '</span><span class="editable" ' + nameEditable + ' onblur="updateLocalData(\'' + id + '\', \'name\', this.innerText)">' + esc(item.name) + '</span></td>';
+                html += \`<td class="item-name-cell">\${indentSpace}<span class="icon \${iconClass}" onclick="toggleKey('\${id}')">\${iconHtml}</span><span class="editable" \${nameEditable} onblur="updateLocalData('\${id}', 'name', this.innerText)">\${esc(item.name)}</span></td>\`;
 
                 const typeDisabled = isReadOnly || item.isLevel ? "readonly" : "";
-                html += '<td style="position: relative"><input type="text" list="gx-types" class="type-input" value="' + esc(item.type || '') + '" onchange="updateLocalData(\'' + id + '\', \'type\', this.value)" ' + typeDisabled + ' autocomplete="off"/></td>';
+                html += \`<td style="position: relative"><input type="text" list="gx-types" class="type-input" value="\${esc(item.type || '')}" onchange="updateLocalData('\${id}', 'type', this.value)" \${typeDisabled} autocomplete="off"/></td>\`;
 
                 const descEditable = !isReadOnly && !item.isLevel;
-                html += '<td class="editable" contenteditable="' + descEditable + '" onblur="updateLocalData(\'' + id + '\', \'description\', this.innerText)">' + esc(item.description || '') + '</td>';
+                html += '<td class="editable" contenteditable="' + descEditable + '" onblur="updateLocalData(' + quote + id + quote + ', ' + quote + 'description' + quote + ', this.innerText)">' + esc(item.description || '') + '</td>';
 
                 const formulaEditable = !isReadOnly && !item.isLevel;
-                html += '<td class="editable formula-text" contenteditable="' + formulaEditable + '" onblur="updateLocalData(\'' + id + '\', \'formula\', this.innerText)">' + esc(item.formula || '') + '</td>';
+                html += '<td class="editable formula-text" contenteditable="' + formulaEditable + '" onblur="updateLocalData(' + quote + id + quote + ', ' + quote + 'formula' + quote + ', this.innerText)">' + esc(item.formula || '') + '</td>';
                 
                 if (item.isLevel) {
                   html += '<td></td>';
                 } else {
                   const val = item.nullable || 'No';
-                  html += '<td><select class="nullable-select" ' + (isReadOnly ? 'disabled' : '') + ' onchange="updateLocalData(\'' + id + '\', \'nullable\', this.value)">' +
+                  html += '<td><select class="nullable-select" ' + (isReadOnly ? 'disabled' : '') + ' onchange="updateLocalData(' + quote + id + quote + ', ' + quote + 'nullable' + quote + ', this.value)">' +
                       '<option value="No" ' + (val === 'No' ? 'selected' : '') + '>No</option>' +
                       '<option value="Yes" ' + (val === 'Yes' ? 'selected' : '') + '>Yes</option>' +
                       '<option value="Managed" ' + (val === 'Managed' || val === 'Compatible' ? 'selected' : '') + '>Mng</option>' +
                     '</select></td>';
                 }
                 
-                html += '<td class="actions-cell">' + (!isReadOnly ? '<button class="btn-del" onclick="deleteRow(\'' + id + '\')">×</button>' : '') + '</td>';
+                html += '<td class="actions-cell">' + (!isReadOnly ? '<button class="btn-del" onclick="deleteRow(' + quote + id + quote + ')">×</button>' : '') + '</td>';
                 html += '</tr>';
                 
                 if (item.children && item.children.length > 0) {

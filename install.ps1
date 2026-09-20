@@ -1,8 +1,7 @@
-# GeneXus 18 MCP Server installer
+# GeneXus MCP Server installer
 
 [CmdletBinding()]
 param(
-    [string]$KBPath,
     [string]$GeneXusPath,
     # Skip AI client MCP registration (delegated to the genexus-mcp CLI).
     # Replaces the legacy -SkipClaudeConfig / -SkipCodexConfig / -SkipVsCodeMcp
@@ -23,6 +22,8 @@ $cliRunPath = Join-Path $root "cli\run.js"
 # Cursor, OpenCode, Codex, VS Code) is delegated to the genexus-mcp CLI, which is
 # the single source of truth for agent paths/detection (see cli/lib/config.js).
 # This installer no longer writes client configs itself.
+. (Join-Path $root "scripts\gx-version-catalog.ps1")
+$gxCatalog = Get-GxVersionCatalog -Root $root
 
 function Write-Step([string]$message) {
     Write-Host ""
@@ -49,22 +50,29 @@ function Check-Prerequisites {
 
     $missing = New-Object System.Collections.Generic.List[string]
 
-    # .NET 8 SDK
+    # .NET 10 SDK (Gateway target; Worker remains .NET Framework 4.8)
     $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
     if (-not $dotnet) {
-        Write-Warn ".NET SDK not found. Gateway build requires .NET 8 SDK."
-        Write-Host "    Download from: https://dotnet.microsoft.com/download/dotnet/8.0" -ForegroundColor Gray
-        $missing.Add(".NET 8 SDK")
+        Write-Warn ".NET SDK not found. Gateway build requires .NET 10 SDK."
+        Write-Host "    Download from: https://dotnet.microsoft.com/download/dotnet/10.0" -ForegroundColor Gray
+        $missing.Add(".NET 10 SDK")
     } else {
         $version = dotnet --version
-        Write-Ok ".NET SDK found: $version"
+        $major = 0
+        [void][int]::TryParse(($version -split '\.')[0], [ref]$major)
+        if ($major -lt 10) {
+            Write-Warn ".NET SDK $version found, but Gateway v3 requires .NET 10 SDK."
+            $missing.Add(".NET 10 SDK (found $version)")
+        } else {
+            Write-Ok ".NET SDK found: $version"
+        }
     }
 
     # Node.js (needed for AI client MCP registration via the genexus-mcp CLI)
     $node = Get-Command node -ErrorAction SilentlyContinue
     if (-not $node) {
         if (-not $SkipClientConfig) {
-            Write-Warn "Node.js not found. AI client registration requires Node.js 18+."
+            Write-Warn "Node.js not found. AI client registration requires Node.js 22+."
             Write-Host "    Download from: https://nodejs.org/" -ForegroundColor Gray
             Write-Warn "Build will still proceed; pass -SkipClientConfig to register clients manually later."
         } else {
@@ -101,17 +109,43 @@ function Get-ExistingPathOrPrompt([string]$label, [string]$currentValue) {
         return $currentValue
     }
 
-    # Auto-detect GeneXus 18 from registry if label is "GeneXus installation path".
-    # Probes BOTH known key/value shapes (kept in sync with cli/lib/config.js
-    # discoverGeneXusFromRegistry): the modern `Artech\GeneXus 18` +
-    # `InstallationDirectory`, and the legacy `Artech\GeneXus\18.0` + `InstallPath`.
+    # Auto-detect any supported GeneXus major from registry if label is
+    # "GeneXus installation path". Probe both known registry shapes.
     # Only accepts a hit whose folder actually contains genexus.exe.
     if ($label -eq "GeneXus installation path") {
         $hives = @("HKLM:\SOFTWARE\WOW6432Node\Artech", "HKLM:\SOFTWARE\Artech", "HKCU:\SOFTWARE\Artech")
-        $probes = @(
-            @{ Sub = "GeneXus 18";   Value = "InstallationDirectory" },
-            @{ Sub = "GeneXus\18.0"; Value = "InstallPath" }
-        )
+        $probes = @()
+        foreach ($entry in @($gxCatalog.supportedMajors)) {
+            $displayProperty = $entry.PSObject.Properties['displayName']
+            $displayName = if ($null -ne $displayProperty -and
+                -not [string]::IsNullOrWhiteSpace([string]$displayProperty.Value)) {
+                [string]$displayProperty.Value
+            } else {
+                "GeneXus $($entry.major)"
+            }
+            $registryProperty = $entry.PSObject.Properties['registryNames']
+            $registryNames = if ($null -ne $registryProperty) {
+                @($registryProperty.Value)
+            } else {
+                @("GeneXus $($entry.major)")
+            }
+            foreach ($name in $registryNames) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$name)) {
+                    $probes += @{ Sub = [string]$name; Value = "InstallationDirectory"; Display = $displayName }
+                }
+            }
+            $legacyProperty = $entry.PSObject.Properties['legacyRegistryVersions']
+            $legacyVersions = if ($null -ne $legacyProperty) {
+                @($legacyProperty.Value)
+            } else {
+                @()
+            }
+            foreach ($legacyVersion in $legacyVersions) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$legacyVersion)) {
+                    $probes += @{ Sub = "GeneXus\$legacyVersion"; Value = "InstallPath"; Display = $displayName }
+                }
+            }
+        }
         foreach ($hive in $hives) {
             foreach ($probe in $probes) {
                 $keyPath = Join-Path $hive $probe.Sub
@@ -120,7 +154,7 @@ function Get-ExistingPathOrPrompt([string]$label, [string]$currentValue) {
                 if (-not $detected) { continue }
                 $dir = $detected.$($probe.Value)
                 if ($dir -and (Test-Path (Join-Path $dir "genexus.exe"))) {
-                    Write-Ok "Auto-detected GeneXus 18 at: $dir"
+                    Write-Ok "Auto-detected $($probe.Display) at: $dir"
                     return $dir
                 }
             }
@@ -163,6 +197,12 @@ function Save-JsonFile([string]$path, [object]$value) {
     [System.IO.File]::WriteAllText($path, $json, [System.Text.Encoding]::UTF8)
 }
 
+function Remove-StagedConfig([string]$path) {
+    if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path -LiteralPath $path)) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Resolve-CommandPath([string[]]$names) {
     foreach ($name in $names) {
         $command = Get-Command $name -ErrorAction SilentlyContinue
@@ -177,42 +217,33 @@ function Resolve-CommandPath([string[]]$names) {
 Check-Prerequisites
 
 if (-not (Test-Path $configPath)) {
-    Write-Warn "config.json not found at $configPath. Creating from template..."
-    $defaultConfig = @{
-        GeneXus = @{
-            InstallationPath = "C:\\Program Files (x86)\\GeneXus\\GeneXus18"
+    Write-Warn "config.json not found at $configPath. Creating a neutral runtime config after the build..."
+    $config = [pscustomobject]@{
+        ConfigSchemaVersion = 2
+        GatewayMode = "stdio-isolated"
+        GeneXus = [pscustomobject]@{
+            InstallationPath = Get-GxPrimaryInstallPath -Catalog $gxCatalog
             WorkerExecutable = "$publishDir\\worker\\GxMcp.Worker.exe"
         }
-        Server = @{
-            HttpPort = 5000
+        Server = [pscustomobject]@{
+            HttpPort = 0
             McpStdio = $true
+            SessionIdleTimeoutMinutes = 10
+            WorkerIdleTimeoutMinutes = 5
+            EmitStructuredContent = $false
+            TerseResponses = $true
         }
-        Logging = @{
-            Level = "Debug"
-            Path = "logs"
-        }
-        Environment = @{
-            KBPath = "C:\\KBs\\YourKB"
-        }
+        Environment = [pscustomobject]@{ ResolutionPolicy = "strict" }
     }
-    Save-JsonFile $configPath $defaultConfig
+} else {
+    $config = Get-Content $configPath -Raw | ConvertFrom-Json
 }
-
-$config = Get-Content $configPath -Raw | ConvertFrom-Json
 
 if ($PSBoundParameters.ContainsKey("GeneXusPath")) {
     $config.GeneXus.InstallationPath = $GeneXusPath
 }
-if ($PSBoundParameters.ContainsKey("KBPath")) {
-    $config.Environment.KBPath = $KBPath
-}
 
 $config.GeneXus.InstallationPath = Get-ExistingPathOrPrompt "GeneXus installation path" $config.GeneXus.InstallationPath
-$config.Environment.KBPath = Get-ExistingPathOrPrompt "Knowledge Base path" $config.Environment.KBPath
-
-Backup-File $configPath
-Save-JsonFile $configPath $config
-Write-Ok "config.json updated."
 
 Write-Step "[1/2] Building gateway and worker"
 & (Join-Path $root "build.ps1")
@@ -230,37 +261,94 @@ if ($SkipClientConfig) {
     Write-Step "[2/2] Registering MCP with detected AI clients (via genexus-mcp CLI)"
     $node = Resolve-CommandPath @("node.exe", "node")
     if (-not $node) {
-        Write-Warn "node was not found in PATH - cannot register AI clients automatically."
-        Write-Warn "Install Node.js 18+ and run: node `"$cliRunPath`" init --write-clients --gx `"$($config.GeneXus.InstallationPath)`" --kb `"$($config.Environment.KBPath)`""
+        Fail "node was not found in PATH - cannot register AI clients automatically. Use -SkipClientConfig to build without registration."
     } elseif (-not (Test-Path $gatewayExePath)) {
-        Write-Warn "Gateway exe not found at $gatewayExePath - skipping client registration."
+        Fail "Gateway exe not found at $gatewayExePath - cannot register AI clients."
     } else {
+        # Stage the runtime config outside config.json so a failed registration
+        # cannot leave a partial install behind. The CLI only needs a resolvable
+        # config path for `clients add`; commit it after the complete envelope
+        # confirms that no client failed.
+        $stagedConfigPath = "$configPath.pending-$([guid]::NewGuid().ToString('N'))"
+        $clientStdoutPath = "$stagedConfigPath.stdout"
+        $clientStderrPath = "$stagedConfigPath.stderr"
         # Point the CLI at the freshly-built gateway exe so the client launcher is a
         # direct exe path (not npx). getLauncher() in cli/lib/config.js honors this.
         $prevGatewayExe = $env:GENEXUS_MCP_GATEWAY_EXE
-        $env:GENEXUS_MCP_GATEWAY_EXE = $gatewayExePath
+        $prevConfigPath = $env:GX_CONFIG_PATH
         try {
-            $initArgs = @(
-                "`"$cliRunPath`"", "init", "--write-clients", "--no-smoke", "--format", "json",
-                "--gx", "`"$($config.GeneXus.InstallationPath)`"",
-                "--kb", "`"$($config.Environment.KBPath)`""
+            Save-JsonFile $stagedConfigPath $config
+            Write-Ok "Staged runtime config for transactional client registration."
+
+            $env:GENEXUS_MCP_GATEWAY_EXE = $gatewayExePath
+            $env:GX_CONFIG_PATH = $stagedConfigPath
+            $clientArgs = @(
+                $cliRunPath, "clients", "add", "--all-clients", "--format", "json"
             )
-            & $node @initArgs | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                Write-Ok "AI clients registered (Claude Desktop/Code, Antigravity, Gemini CLI, Cursor, OpenCode, Codex, VS Code - whichever are installed)."
+            & $node @clientArgs 1> $clientStdoutPath 2> $clientStderrPath
+            $clientExitCode = $LASTEXITCODE
+            $clientOutputText = if (Test-Path -LiteralPath $clientStdoutPath) {
+                [IO.File]::ReadAllText($clientStdoutPath)
             } else {
-                Write-Warn "genexus-mcp init exited with code $LASTEXITCODE. Re-run manually to see details."
+                ''
             }
+            $clientErrorText = if (Test-Path -LiteralPath $clientStderrPath) {
+                [IO.File]::ReadAllText($clientStderrPath)
+            } else {
+                ''
+            }
+            if (-not [string]::IsNullOrWhiteSpace($clientErrorText)) {
+                Write-Host $clientErrorText
+            }
+            if (-not [string]::IsNullOrWhiteSpace($clientOutputText)) {
+                Write-Host $clientOutputText
+            }
+
+            $clientEnvelope = $null
+            if (-not [string]::IsNullOrWhiteSpace($clientOutputText)) {
+                try { $clientEnvelope = $clientOutputText | ConvertFrom-Json } catch { }
+            }
+            if ($null -eq $clientEnvelope) {
+                throw "genexus-mcp returned no valid JSON envelope (exit code $clientExitCode)."
+            }
+            $failedClients = @()
+            if ($null -ne $clientEnvelope -and $null -ne $clientEnvelope.meta -and $null -ne $clientEnvelope.meta.failedClients) {
+                $failedClients = @($clientEnvelope.meta.failedClients)
+            }
+            if ($clientExitCode -ne 0 -or $failedClients.Count -gt 0) {
+                $failureDetail = if ($failedClients.Count -gt 0) {
+                    "$($failedClients.Count) client(s) failed"
+                } else {
+                    "exit code $clientExitCode"
+                }
+                throw "genexus-mcp client registration failed ($failureDetail). See the CLI envelope above for details."
+            }
+
+            Backup-File $configPath
+            Move-Item -LiteralPath $stagedConfigPath -Destination $configPath -Force
+            $stagedConfigPath = $null
+            Write-Ok "AI clients registered with the neutral runtime (Claude Desktop/Code, Antigravity, Gemini CLI, Cursor, OpenCode, Codex, VS Code - whichever are installed)."
         } catch {
-            Write-Warn "AI client registration failed: $($_.Exception.Message)"
+            Remove-StagedConfig $stagedConfigPath
+            Fail "AI client registration failed: $($_.Exception.Message)"
         } finally {
+            Remove-Item -LiteralPath $clientStdoutPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $clientStderrPath -Force -ErrorAction SilentlyContinue
             if ($null -ne $prevGatewayExe) { $env:GENEXUS_MCP_GATEWAY_EXE = $prevGatewayExe }
             else { Remove-Item env:GENEXUS_MCP_GATEWAY_EXE -ErrorAction SilentlyContinue }
+            if ($null -ne $prevConfigPath) { $env:GX_CONFIG_PATH = $prevConfigPath }
+            else { Remove-Item env:GX_CONFIG_PATH -ErrorAction SilentlyContinue }
         }
     }
 }
 
-Write-Host ""
+# When client registration was skipped, persist the prepared runtime now. The
+# normal registration path already committed its staged config above.
+if ($SkipClientConfig) {
+    Backup-File $configPath
+    Save-JsonFile $configPath $config
+    Write-Ok "neutral config.json updated."
+}
 Write-Ok "Installation complete."
 Write-Host ""
 Write-Host "Artifacts:" -ForegroundColor Cyan
@@ -270,7 +358,7 @@ Write-Host ""
 Write-Host "Manual MCP snippet (for any client not auto-registered):" -ForegroundColor Cyan
 Write-Host '{'
 Write-Host '  "mcpServers": {'
-Write-Host '    "genexus": {'
+Write-Host '    "genexus18mcp": {'
 Write-Host "      ""command"": ""$($gatewayExePath -replace '\\', '\\')"","
 Write-Host '      "args": []'
 Write-Host '    }'
@@ -278,6 +366,6 @@ Write-Host '  }'
 Write-Host '}'
 Write-Host ""
 Write-Host "Re-run client registration anytime with:" -ForegroundColor Cyan
-Write-Host "  `$env:GENEXUS_MCP_GATEWAY_EXE='$gatewayExePath'; node `"$cliRunPath`" init --write-clients --gx `"$($config.GeneXus.InstallationPath)`" --kb `"$($config.Environment.KBPath)`""
+Write-Host "  `$env:GENEXUS_MCP_GATEWAY_EXE='$gatewayExePath'; node `"$cliRunPath`" clients add --all-clients --format json"
 Write-Host ""
 Write-Host "If any AI client was open, restart it to pick up the new MCP configuration."

@@ -51,7 +51,100 @@ namespace GxMcp.Gateway.Tests
             Assert.True(Program.IsAsyncMutationTool("genexus_add_variable"));
             Assert.True(Program.IsAsyncMutationTool("genexus_delete_variable"));
             Assert.True(Program.IsAsyncMutationTool("genexus_modify_variable"));
+            Assert.True(Program.IsAsyncMutationTool("genexus_io"));
             Assert.False(Program.IsAsyncMutationTool("genexus_read"));
+        }
+
+        [Fact]
+        public void ShouldRunMutationAsync_DryRunNeverBecomesBackgroundWrite()
+        {
+            var args = new JObject
+            {
+                ["async"] = true,
+                ["dryRun"] = true
+            };
+
+            Assert.False(Program.ShouldRunMutationAsync("genexus_edit", args));
+            Assert.False(Program.ShouldRunMutationAsync("genexus_variable", args));
+        }
+
+        [Fact]
+        public void ShouldRunMutationAsync_ValidateOnlyNeverBecomesBackgroundWrite()
+        {
+            Assert.False(Program.ShouldRunMutationAsync("genexus_edit", new JObject
+            {
+                ["async"] = true,
+                ["validate"] = "only"
+            }));
+        }
+
+        [Fact]
+        public void ChangeSetPreviewAndValidateRemainReadOnlyForRecoveryGates()
+        {
+            Assert.True(Program.IsMutationPreview(new JObject
+            {
+                ["changeSet"] = new JObject { ["action"] = "preview" }
+            }));
+            Assert.True(Program.IsMutationPreview(new JObject
+            {
+                ["changeSet"] = new JObject { ["action"] = "validate" }
+            }));
+            Assert.False(Program.IsMutationPreview(new JObject
+            {
+                ["changeSet"] = new JObject { ["action"] = "apply" }
+            }));
+        }
+
+        [Fact]
+        public void ShouldRunMutationAsync_RealEditRemainsAsyncWhenRequested()
+        {
+            Assert.True(Program.ShouldRunMutationAsync("genexus_edit", new JObject
+            {
+                ["async"] = true,
+                ["dryRun"] = false
+            }));
+        }
+
+        [Theory]
+        [InlineData("export_kb_to_text")]
+        [InlineData("import_text_to_kb")]
+        [InlineData("delete_kb_objects")]
+        public void ShouldRunMutationAsync_ObjectTextBatchIsCancellable(string action)
+        {
+            Assert.True(Program.ShouldRunMutationAsync("genexus_io", new JObject
+            {
+                ["action"] = action,
+                ["async"] = true,
+                ["dryRun"] = false
+            }));
+        }
+
+        [Fact]
+        public void ShouldRunMutationAsync_ObjectTextPreviewRemainsSynchronous()
+        {
+            Assert.False(Program.ShouldRunMutationAsync("genexus_io", new JObject
+            {
+                ["action"] = "import_text_to_kb",
+                ["async"] = true,
+                ["dryRun"] = true
+            }));
+            Assert.False(Program.ShouldRunMutationAsync("genexus_io", new JObject
+            {
+                ["action"] = "validate_kb_text_files",
+                ["async"] = true
+            }));
+        }
+
+        [Fact]
+        public void BuildWorkerRpcRequest_UsesTheLifecycleOperationIdentity()
+        {
+            JObject rpc = Program.BuildWorkerRpcRequest(
+                new JObject { ["module"] = "Write", ["action"] = "Source", ["target"] = "SyntheticProcedure" },
+                requestId: "transport-request",
+                operationId: "one-operation-id");
+
+            Assert.Equal("transport-request", rpc["id"]?.ToString());
+            Assert.Equal("one-operation-id", rpc["_meta"]?["progressToken"]?.ToString());
         }
 
         [Fact]
@@ -60,6 +153,7 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("Variable update succeeded", Program.BuildAsyncMutationCompletionSummary("genexus_variable", success: true));
             Assert.Equal("Variable update failed", Program.BuildAsyncMutationCompletionSummary("genexus_modify_variable", success: false));
             Assert.Equal("Edit succeeded", Program.BuildAsyncMutationCompletionSummary("genexus_edit", success: true));
+            Assert.Equal("Object Text operation failed", Program.BuildAsyncMutationCompletionSummary("genexus_io", success: false));
         }
 
         [Fact]
@@ -88,6 +182,22 @@ namespace GxMcp.Gateway.Tests
                 ["result"] = new JObject
                 {
                     ["status"] = "Running"
+                }
+            };
+
+            Assert.False(Program.IsSuccessfulBackgroundToolCompletion(workerEnvelope));
+        }
+
+        [Fact]
+        public void IsSuccessfulBackgroundToolCompletion_RejectsCancelledObjectTextResult()
+        {
+            var workerEnvelope = new JObject
+            {
+                ["result"] = new JObject
+                {
+                    ["status"] = "ok",
+                    ["code"] = "Cancelled",
+                    ["cancelled"] = true
                 }
             };
 

@@ -265,5 +265,24 @@ namespace GxMcp.Worker.Tests
             // top of the already-indented content (would produce a 4-tab line).
             Assert.DoesNotContain("\t\t\t\tif (x) {", result);
         }
+
+        [Fact]
+        public void TryReplace_ExactContextWithTerminalNewline_DoesNotDuplicateTerminator()
+        {
+            var patchService = new PatchService(null, null, null);
+            var method = typeof(PatchService).GetMethod("TryReplace",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.NotNull(method);
+
+            string[] sourceLines = "old one\nold two\nnext".Split('\n');
+            string[] contextLines = "old one\nold two\n".Split('\n');
+            object[] parameters = { sourceLines, contextLines, "new one\n", 1, null, null, 0, false };
+
+            string result = (string)method!.Invoke(patchService, parameters);
+
+            Assert.Equal("Applied", (string)parameters[4]);
+            Assert.Equal(1, (int)parameters[6]);
+            Assert.Equal("new one\nnext", result);
+        }
     }
 }

@@ -67,7 +67,9 @@ namespace GxMcp.Worker.Models
             string target = null,
             JObject extra = null,
             int? retryAfterMs = null,
-            JObject errorExtra = null)
+            JObject errorExtra = null,
+            bool? retryable = null,
+            bool? reconciliationRequired = null)
         {
             string enMsg = GxMcp.Worker.Helpers.ErrorMessages.Translate(message);
             string enHint = GxMcp.Worker.Helpers.ErrorMessages.Translate(hint);
@@ -82,6 +84,8 @@ namespace GxMcp.Worker.Models
             // capable LLM stops hammering in a tight loop and waits the
             // recommended interval. Caller passes ms; never negative.
             if (retryAfterMs.HasValue && retryAfterMs.Value > 0) err["retryAfterMs"] = retryAfterMs.Value;
+            if (retryable.HasValue) err["retryable"] = retryable.Value;
+            if (reconciliationRequired.HasValue) err["reconciliationRequired"] = reconciliationRequired.Value;
             // v2.8.0 — additional error-specific structured fields. Merged
             // into the `error` sub-object so error-related context lives
             // alongside code/message/hint/nextSteps rather than at the

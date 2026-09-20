@@ -15,7 +15,7 @@ namespace GxMcp.Worker.Services
     // (plan TECHDEBT-03). Pure move, no logic changes — see plans/README.md TECHDEBT-03.
     public partial class LayoutService
     {
-        private string PersistVisualXml(KBObject obj, LayoutContextResult context, string target, string normalizedXml, string compositionRepairToken = null)
+        private string PersistVisualXml(KBObject obj, LayoutContextResult context, string target, string normalizedXml, string baselineXml = null, string compositionRepairToken = null)
         {
             var kb = _objectService.GetKbService().GetKB();
             if (kb == null)
@@ -70,7 +70,7 @@ namespace GxMcp.Worker.Services
                                 target: target);
                         }
 
-                        if (!ReportLayoutHelper.WriteLayout(context.VisualPart, normalizedXml))
+                        if (!ReportLayoutHelper.WriteLayout(context.VisualPart, normalizedXml, baselineXml))
                         {
                             transaction.Rollback();
                             return Models.McpResponse.Err(
@@ -423,6 +423,42 @@ namespace GxMcp.Worker.Services
 
                     updated = source + insertion + lineEnding;
                 }
+            }
+
+            sourcePart.Source = updated;
+            return true;
+        }
+
+        private bool TryRemovePrintCommandFromSourceInMemory(KBObject obj, string printBlockName, out string error)
+        {
+            error = null;
+            if (obj == null)
+            {
+                error = "Object was not available for source synchronization.";
+                return false;
+            }
+
+            var sourcePart = PartAccessor.GetPart(obj, "Source") as ISource;
+            if (sourcePart == null)
+            {
+                // No Source part to synchronize — nothing to remove.
+                return true;
+            }
+
+            string source = sourcePart.Source ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return true;
+            }
+
+            string pattern = @"(?im)^[ 	]*print[ 	]+" + Regex.Escape(printBlockName) + @"[ 	]*(?
+|$)";;
+            string updated = Regex.Replace(source, pattern, string.Empty);
+
+            if (string.Equals(updated, source, StringComparison.Ordinal))
+            {
+                // No print command referencing this block — acceptable.
+                return true;
             }
 
             sourcePart.Source = updated;

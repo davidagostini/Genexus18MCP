@@ -93,7 +93,7 @@ For each Customer, Purchase
 EndFor
 ~~~
 
-Constraints:
+Rules:
 - Same attribute name across transactions refers to same data (extended attributes)
 - Relationships inferred from FK; explicit joins forbidden
 
@@ -211,7 +211,7 @@ For each Customer
 EndFor
 ~~~
 
-Constraints:
+Rules:
 - DataSelector must exist and be applicable to transaction
 - Combines with other clauses (Where, Order)
 
@@ -321,10 +321,13 @@ For each Customer
 EndFor
 ~~~
 
-Constraints:
+Rules:
 - Conditions exclusively for filtering; never for linking transactions (automatic via FK)
 - No subqueries allowed (use DataSelector instead)
 - Extended attributes usable in conditions
+
+Notes:
+- See [common-filter](./common-filter.md) for optimization details
 
 ---
 

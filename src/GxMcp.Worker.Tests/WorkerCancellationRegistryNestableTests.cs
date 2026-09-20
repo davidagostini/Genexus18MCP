@@ -25,6 +25,19 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Cancel_BeforeRegister_CancelsTheNextRegistration()
+        {
+            const string token = "pre-cancelled-job";
+            Assert.False(WorkerCancellationRegistry.Cancel(token));
+            using (WorkerCancellationRegistry.Register(token, out var ct))
+            {
+                Assert.True(ct.IsCancellationRequested);
+            }
+            Assert.Equal(0, WorkerCancellationRegistry.ActiveCount);
+            WorkerCancellationRegistry.Reset();
+        }
+
+        [Fact]
         public void Register_Then_Cancel_SignalsToken()
         {
             using (WorkerCancellationRegistry.Register("job-1", out var ct))

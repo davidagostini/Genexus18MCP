@@ -33,14 +33,39 @@ namespace GxMcp.Worker.Services
         // starts at -1 so a clean index still gets one real write on FlushNow().
         private long _dirtyGeneration = 0;
         private long _flushedGeneration = -1;
+        // Last non-source mutation. A source-only flush may carry forward the previous
+        // enrichment certificate; any ordinary index mutation must create an uncertified
+        // body until its caller explicitly writes a new sidecar.
+        private long _lastNonSourceDirtyGeneration = 0;
 
         // Plan 003: bare MarkDirty() (no key known at the call site) conservatively marks
         // every shard dirty — used by whole-index replace paths (ReplaceAll/UpdateIndex).
         // MarkDirtyForKey is the precise per-object path (UpdateEntry/RemoveEntry/…) that
         // only dirties the one shard the mutated storage key falls into, which is what
         // lets FlushToDisk skip clean shards instead of re-serializing everything.
-        internal void MarkDirty() { System.Threading.Interlocked.Increment(ref _dirtyGeneration); MarkAllShardsDirty(); }
-        internal void MarkDirtyForKey(string storageKey) { System.Threading.Interlocked.Increment(ref _dirtyGeneration); MarkShardDirty(storageKey); }
+        // Ordem importa: shard primeiro, geração depois. Um flush que capturar a geração
+        // após o Increment tem garantia (fence do Interlocked) de enxergar os shards já
+        // marcados; na ordem inversa, um flush podia capturar a geração nova sem o shard
+        // e gravar _flushedGeneration sem a mutação (stale-index-forever).
+        private long MarkNonSourceDirty()
+        {
+            long generation = System.Threading.Interlocked.Increment(ref _dirtyGeneration);
+            System.Threading.Interlocked.Exchange(ref _lastNonSourceDirtyGeneration, generation);
+            return generation;
+        }
+
+        internal void MarkDirty() { MarkAllShardsDirty(); MarkNonSourceDirty(); }
+        internal void MarkDirtyForKey(string storageKey) { MarkShardDirty(storageKey); MarkNonSourceDirty(); }
+
+        // FullSource is already a complete primary source read. It does not change the
+        // object set, lifecycle high-water-mark, or enrichment state, so this narrow dirty
+        // path may retain the previous sidecar and make the promotion useful after restart.
+        internal void MarkSourceDirtyForKey(string storageKey)
+        {
+            MarkShardDirty(storageKey);
+            System.Threading.Interlocked.Increment(ref _dirtyGeneration);
+        }
+
         internal long DirtyGeneration => System.Threading.Interlocked.Read(ref _dirtyGeneration);
 
         // ── Sharded on-disk snapshot (plan 003) ─────────────────────────────────
@@ -73,9 +98,11 @@ namespace GxMcp.Worker.Services
             unchecked
             {
                 uint hash = 2166136261;
-                foreach (char c in storageKey)
+                for (int i = 0; i < storageKey.Length; i++)
                 {
-                    hash ^= char.ToUpperInvariant(c);
+                    char c = storageKey[i];
+                    char upper = (c >= 'a' && c <= 'z') ? (char)(c - 32) : char.ToUpperInvariant(c);
+                    hash ^= upper;
                     hash *= 16777619;
                 }
                 return (int)(hash % ShardCount);
@@ -85,6 +112,17 @@ namespace GxMcp.Worker.Services
         // Test observability: per-shard write counter so a shard-isolation test can assert
         // that dirtying one entry only rewrites that entry's shard file.
         private readonly ConcurrentDictionary<int, long> _shardWriteCounts = new ConcurrentDictionary<int, long>();
+        // Mutations observed while the lite walk builds its replacement list.
+        private readonly ConcurrentDictionary<string, byte> _liteWalkMutations = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, byte> _liteWalkRemovals = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        private volatile bool _liteWalkActive;
+        internal void BeginLiteWalk()
+        {
+            _liteWalkMutations.Clear();
+            _liteWalkRemovals.Clear();
+            _liteWalkActive = true;
+        }
+        internal void EndLiteWalk() => _liteWalkActive = false;
         internal long ShardWriteCountForTest(int shardId) => _shardWriteCounts.TryGetValue(shardId, out var v) ? v : 0;
         internal void ResetShardWriteCountsForTest() => _shardWriteCounts.Clear();
 
@@ -106,8 +144,12 @@ namespace GxMcp.Worker.Services
         // Plan 003: sharded snapshot directory + manifest, derived from _indexPath the same
         // way _indexPathGz is so the paths never drift relative to each other.
         private string _shardDirPath => string.IsNullOrEmpty(_indexPath) ? null : _indexPath + "_shards";
-        private string _shardManifestPath => string.IsNullOrEmpty(_shardDirPath) ? null : Path.Combine(_shardDirPath, "manifest.json");
-        private string ShardFilePath(int shardId) => Path.Combine(_shardDirPath, string.Format("shard_{0:00}.json.gz", shardId));
+        private string _shardManifestPath => string.IsNullOrEmpty(ActiveShardDirPath) ? null : Path.Combine(ActiveShardDirPath, "manifest.json");
+        private string _snapshotSlotsPath => string.IsNullOrEmpty(_indexPath) ? null : _indexPath + "_slots";
+        private string _snapshotPointerPath => string.IsNullOrEmpty(_snapshotSlotsPath) ? null : Path.Combine(_snapshotSlotsPath, "certified.json");
+        private string _certifiedSlotPath;
+        private string ActiveShardDirPath => _certifiedSlotPath ?? _shardDirPath;
+        private string ShardFilePath(int shardId) => Path.Combine(ActiveShardDirPath, string.Format("shard_{0:00}.json.gz", shardId));
 
         // Test observability only — lets tests locate on-disk shard/manifest files without
         // duplicating the path-derivation logic above.
@@ -116,9 +158,15 @@ namespace GxMcp.Worker.Services
         internal string ShardFilePathForTest(int shardId) => ShardFilePath(shardId);
         internal string IndexPathForTest => _indexPath;
         internal string IndexPathGzForTest => _indexPathGz;
+        internal string SnapshotSlotsPathForTest => _snapshotSlotsPath;
+        internal string SnapshotPointerPathForTest => _snapshotPointerPath;
+        internal string CertifiedSlotPathForTest => _certifiedSlotPath;
         private BuildService _buildService;
         private bool _initialized = false;
         private readonly object _lock = new object();
+        private TaskCompletionSource<SearchIndex> _loadState;
+        private int _loadInvocationCount;
+        internal int LoadInvocationCountForTest => System.Threading.Volatile.Read(ref _loadInvocationCount);
         private DateTime _lastFlushTime = DateTime.MinValue;
         private bool _savingInProgress = false;
         // PERFORMANCE (W-M2): track consecutive flush failures so a silently failing
@@ -187,12 +235,15 @@ namespace GxMcp.Worker.Services
 
         public IndexState GetState()
         {
+            IndexState snapshot;
             lock (_stateLock)
             {
-                return new IndexState
+                snapshot = new IndexState
                 {
                     Status = _state.Status,
+                    Freshness = _state.Freshness,
                     LastIndexedAt = _state.LastIndexedAt,
+                    LastSuccessfulScanAt = _state.LastSuccessfulScanAt,
                     TotalObjects = _state.TotalObjects,
                     Progress = _state.Progress,
                     EtaMs = _state.EtaMs,
@@ -200,6 +251,25 @@ namespace GxMcp.Worker.Services
                     EnrichmentStartedUtc = _state.EnrichmentStartedUtc
                 };
             }
+
+            // KbService owns the worker activity lease; keep it out of the cache
+            // state machine so a stalled build remains observable without changing
+            // Ready/Reindexing availability semantics.
+            var kb = KbService;
+            if (kb != null)
+            {
+                var activity = kb.GetIndexOperationSnapshot();
+                snapshot.OperationId = activity.OperationId;
+                snapshot.OperationState = activity.State;
+                snapshot.WorkerAlive = activity.WorkerAlive;
+                snapshot.Recoverable = activity.Recoverable
+                    || (string.Equals(snapshot.Status, "Cold", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(activity.State, "Idle", StringComparison.OrdinalIgnoreCase));
+                snapshot.Stalled = activity.Stalled;
+                snapshot.LastProgressAtUtc = kb.IndexLastProgressAtUtc;
+                snapshot.StalledAtUtc = activity.StalledAtUtc;
+            }
+            return snapshot;
         }
 
         public void MarkReindexStarted(int totalEstimated)
@@ -207,6 +277,7 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Reindexing";
+                _state.Freshness = "refreshing";
                 _state.Progress = 0;
                 _state.EtaMs = null;
                 _state.LastIndexedAt = null;
@@ -240,8 +311,43 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Cold";
+                _state.Freshness = "stale";
                 _state.Progress = null;
                 _state.EtaMs = null;
+            }
+            SignalStateChanged();
+        }
+
+        /// <summary>
+        /// Publishes a validated on-disk index without claiming that the current KB
+        /// has been scanned in this worker lifetime. The snapshot timestamp is the
+        /// last known successful scan, while Freshness remains stale until a delta
+        /// or full scan completes.
+        /// </summary>
+        public void MarkIndexRestored(int totalObjects, DateTime? snapshotCapturedAtUtc)
+        {
+            DateTime? captured = snapshotCapturedAtUtc.HasValue
+                ? SdkTimestampNormalizer.NormalizeUtc(snapshotCapturedAtUtc.Value)
+                : (DateTime?)null;
+            lock (_stateLock)
+            {
+                _state.Status = "Ready";
+                _state.Freshness = "stale";
+                _state.LastIndexedAt = captured;
+                _state.LastSuccessfulScanAt = captured;
+                _state.TotalObjects = totalObjects;
+                _state.Progress = null;
+                _state.EtaMs = null;
+            }
+            SignalStateChanged();
+        }
+
+        /// <summary>Marks a usable snapshot as being checked against the open KB.</summary>
+        public void MarkIndexRefreshing()
+        {
+            lock (_stateLock)
+            {
+                _state.Freshness = "refreshing";
             }
             SignalStateChanged();
         }
@@ -251,7 +357,9 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Ready";
+                _state.Freshness = "current";
                 _state.LastIndexedAt = DateTime.UtcNow;
+                _state.LastSuccessfulScanAt = _state.LastIndexedAt;
                 _state.TotalObjects = totalObjects;
                 _state.Progress = null;
                 _state.EtaMs = null;
@@ -270,8 +378,10 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "LiteReady";
+                _state.Freshness = "current";
                 _state.TotalObjects = totalObjects;
                 _state.LitePassCompletedUtc = DateTime.UtcNow;
+                _state.LastSuccessfulScanAt = _state.LitePassCompletedUtc;
                 _state.Progress = 1.0;
                 _state.EtaMs = 0;
             }
@@ -297,6 +407,7 @@ namespace GxMcp.Worker.Services
                 if (_state.Status == "LiteReady" || _state.Status == "Enriching" || _state.Status == "Ready")
                     return;
                 _state.Status = "UltraLiteReady";
+                _state.Freshness = "refreshing";
                 _state.TotalObjects = objectsSoFar;
                 _state.Progress = null;
                 _state.EtaMs = null;
@@ -314,6 +425,7 @@ namespace GxMcp.Worker.Services
             lock (_stateLock)
             {
                 _state.Status = "Enriching";
+                _state.Freshness = "current";
                 _state.EnrichmentStartedUtc = DateTime.UtcNow;
                 _state.Progress = 0;
             }
@@ -376,6 +488,7 @@ namespace GxMcp.Worker.Services
                     }
                 }
                 idx.LastUpdated = DateTime.UtcNow;
+                idx.GraphRevision = 1;
                 _index = idx;
                 _initialized = true;
                 PrimeHierarchyCacheFromIndex(idx);
@@ -457,6 +570,22 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>Returns every typed entry sharing a bare name.</summary>
+        public IReadOnlyList<SearchIndex.IndexEntry> FindEntriesByName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return Array.Empty<SearchIndex.IndexEntry>();
+            try
+            {
+                var idx = GetIndex();
+                return idx?.FindByName(name) ?? (IReadOnlyList<SearchIndex.IndexEntry>)Array.Empty<SearchIndex.IndexEntry>();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[FindEntriesByName] lookup failed for '" + name + "': " + ex.Message);
+                return Array.Empty<SearchIndex.IndexEntry>();
+            }
+        }
+
          public bool IsIndexMissing
          {
              get
@@ -465,9 +594,13 @@ namespace GxMcp.Worker.Services
                  {
                      if (string.IsNullOrEmpty(_indexPath)) return true;
                      // PERFORMANCE (W-A3): accept the gzipped (legacy) snapshot, the plain
-                     // (older legacy) snapshot, or (plan 003) a sharded snapshot's manifest.
+                     // (older legacy) snapshot, a (plan 003) sharded snapshot's manifest,
+                     // or the certified-slot pointer published by the atomic snapshot path.
+                     // The latter is the normal post-sharding path; ignoring it forces a
+                     // full lite walk on every worker boot even though GetIndex() can load it.
+                     bool certifiedSlotPresent = TrySelectCertifiedSlot();
                      bool shardManifestPresent = !string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath);
-                     if (!File.Exists(_indexPathGz) && !File.Exists(_indexPath) && !shardManifestPresent) return true;
+                     if (!File.Exists(_indexPathGz) && !File.Exists(_indexPath) && !shardManifestPresent && !certifiedSlotPresent) return true;
 
                      var index = GetIndex();
                      return index == null || index.Objects.Count == 0;
@@ -516,18 +649,32 @@ namespace GxMcp.Worker.Services
                 string hash = GetHash(kbPath);
                 _indexPath = Path.Combine(cacheDir, string.Format("index_{0}.json", hash));
                 _initialized = true;
+                // Orphan sweep: historical KB paths leave dead index_<hash> families
+                // behind. Once per boot, best-effort, never breaks initialization.
+                try
+                {
+                    int swept = SweepOrphanSnapshots(cacheDir, hash);
+                    if (swept > 0) Logger.Info(string.Format("[INDEX-CACHE-SWEEP] removed {0} orphan snapshot families", swept));
+                }
+                catch { }
                 // Fase 1 diagnostic: log the resolved cache paths so a sidecar-not-found on warm
                 // start (metaPresent=False) can be traced to a hash/path mismatch between runs.
                 Logger.Info(string.Format("[INDEX-CACHE-PATHS] kbPathIn={0} hash={1} gz={2} meta={3}", kbPath, hash, _indexPathGz, _metaPath));
 
                 // PERFORMANCE: Pro-active loading in background. Skipped when proactiveLoad=false
                 // (force reindex) so it doesn't race the imminent Clear()/DeleteOnDiskSnapshot().
-                if (proactiveLoad) Task.Run(() => GetIndex());
+                if (proactiveLoad) StartLoadTask();
             }
             catch (Exception ex) { Logger.Error("IndexCache Init Error: " + ex.Message); }
         }
 
         private string GetHash(string input)
+        {
+            return ComputeKbHash(input);
+        }
+
+        // Static twin of GetHash for the orphan sweep (no instance needed).
+        internal static string ComputeKbHash(string input)
         {
             // Fase 1: canonicalize the KB path so the same KB always maps to the same cache
             // hash across worker runs — otherwise a sidecar written under one path-spelling
@@ -547,6 +694,62 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // Orphan snapshot sweep (cache disk weight). Every historical KB path leaves
+        // an index_<hash> family (meta/json/gz/shards/slots) under %LOCALAPPDATA%\GxMcp\Cache
+        // that nothing ever deletes. Runs once per worker boot from Initialize: for each
+        // meta file, delete the whole family ONLY when the meta names a KB path AND that
+        // path no longer exists (dir or file). Anything else — unreadable/corrupt meta,
+        // missing KbPath, live path, current KB hash — is left alone. Returns families
+        // removed. Total (never throws); disable with GXMCP_SNAPSHOT_SWEEP=0.
+        internal static int SweepOrphanSnapshots(string cacheDir, string keepHash)
+        {
+            int removed = 0;
+            try
+            {
+                if (string.IsNullOrEmpty(cacheDir) || !Directory.Exists(cacheDir)) return 0;
+                var raw = Environment.GetEnvironmentVariable("GXMCP_SNAPSHOT_SWEEP");
+                if (!string.IsNullOrWhiteSpace(raw) && raw.Trim() == "0") return 0;
+                foreach (var metaPath in Directory.GetFiles(cacheDir, "index_*.meta.json"))
+                {
+                    try
+                    {
+                        string file = Path.GetFileName(metaPath);
+                        if (!file.EndsWith(".meta.json", StringComparison.OrdinalIgnoreCase)) continue;
+                        string hash = file.Substring("index_".Length, file.Length - "index_".Length - ".meta.json".Length);
+                        if (hash.Length != 16) continue;
+                        if (!string.IsNullOrEmpty(keepHash) && string.Equals(hash, keepHash, StringComparison.OrdinalIgnoreCase)) continue;
+                        string kbPath = ReadSnapshotKbPath(metaPath);
+                        if (string.IsNullOrWhiteSpace(kbPath)) continue; // can't prove orphan — leave
+                        if (Directory.Exists(kbPath) || File.Exists(kbPath)) continue; // KB alive — leave
+                        DeleteSnapshotFamily(cacheDir, hash);
+                        removed++;
+                    }
+                    catch { /* per-family best-effort */ }
+                }
+            }
+            catch { }
+            return removed;
+        }
+
+        private static string ReadSnapshotKbPath(string metaPath)
+        {
+            try
+            {
+                var meta = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(metaPath));
+                return meta["KbPath"]?.ToString();
+            }
+            catch { return null; }
+        }
+
+        private static void DeleteSnapshotFamily(string cacheDir, string hash)
+        {
+            try { File.Delete(Path.Combine(cacheDir, "index_" + hash + ".meta.json")); } catch { }
+            try { File.Delete(Path.Combine(cacheDir, "index_" + hash + ".json")); } catch { }
+            try { File.Delete(Path.Combine(cacheDir, "index_" + hash + ".json.gz")); } catch { }
+            try { if (Directory.Exists(Path.Combine(cacheDir, "index_" + hash + ".json_shards"))) Directory.Delete(Path.Combine(cacheDir, "index_" + hash + ".json_shards"), true); } catch { }
+            try { if (Directory.Exists(Path.Combine(cacheDir, "index_" + hash + ".json_slots"))) Directory.Delete(Path.Combine(cacheDir, "index_" + hash + ".json_slots"), true); } catch { }
+        }
+
         private void BuildParentIndex(SearchIndex index)
         {
             var byParent = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.List<SearchIndex.IndexEntry>>(StringComparer.OrdinalIgnoreCase);
@@ -558,6 +761,10 @@ namespace GxMcp.Worker.Services
             // Plan 002: Type/BusinessDomain derived indexes, built in the same pass.
             var typeIndex = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var domainIndex = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            // PERF (perf-review): Name → storage keys multimap (all entries sharing a
+            // bare Name across types), so usedby:/name lookups skip the O(n) scan.
+            var nameIndex = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var sourceTokenIndex = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var kv in index.Objects)
             {
@@ -586,12 +793,221 @@ namespace GxMcp.Worker.Services
                 {
                     domainIndex.GetOrAdd(entry.BusinessDomain, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(storageKey);
                 }
+                if (!string.IsNullOrWhiteSpace(entry.Name))
+                {
+                    nameIndex.GetOrAdd(entry.Name, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)).Add(storageKey);
+                }
+                AddSourceTokens(sourceTokenIndex, entry);
             }
             index.ChildrenByParent = byParent;
             index.ChildKeysByParent = keysByParent;
             index.GuidToKey = guidToKey;
             index.TypeIndex = typeIndex;
             index.DomainIndex = domainIndex;
+            index.ByNameIndex = nameIndex;
+            index.SourceTokenIndex = sourceTokenIndex;
+            if (index.GraphRevision <= 0)
+            {
+                index.GraphRevision = 1;
+            }
+        }
+
+        private static void TouchGraph(SearchIndex index)
+        {
+            if (index != null)
+            {
+                System.Threading.Interlocked.Increment(ref index.GraphRevision);
+            }
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex SourceTokenRegex =
+            new System.Text.RegularExpressions.Regex(@"[A-Za-z0-9_]{3,}",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        private static void AddSourceTokens(
+            System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>> tokenIndex,
+            SearchIndex.IndexEntry entry)
+        {
+            if (tokenIndex == null || entry == null || entry.FullSource == null) return;
+            string storageKey = GetEntryStorageKeyStatic(entry);
+            foreach (System.Text.RegularExpressions.Match match in SourceTokenRegex.Matches(entry.FullSource))
+            {
+                string token = match.Value.ToLowerInvariant();
+                var set = tokenIndex.GetOrAdd(token, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                lock (set) { set.Add(storageKey); }
+            }
+        }
+
+        private static void RemoveSourceTokens(
+            System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>> tokenIndex,
+            SearchIndex.IndexEntry entry)
+        {
+            if (tokenIndex == null || entry == null || entry.FullSource == null) return;
+            string storageKey = GetEntryStorageKeyStatic(entry);
+            foreach (System.Text.RegularExpressions.Match match in SourceTokenRegex.Matches(entry.FullSource))
+            {
+                string token = match.Value.ToLowerInvariant();
+                if (!tokenIndex.TryGetValue(token, out var set)) continue;
+                lock (set)
+                {
+                    set.Remove(storageKey);
+                    if (set.Count == 0) tokenIndex.TryRemove(token, out _);
+                }
+            }
+        }
+
+        private static string GetEntryStorageKeyStatic(SearchIndex.IndexEntry entry)
+        {
+            if (entry == null) return string.Empty;
+            if (!string.IsNullOrEmpty(entry.StorageKey)) return entry.StorageKey;
+            string key = string.Equals(entry.Type, "Folder", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(entry.Type, "Module", StringComparison.OrdinalIgnoreCase)
+                ? (entry.Type ?? string.Empty) + ":" + (entry.Path ?? entry.Name ?? string.Empty)
+                : (entry.Type ?? string.Empty) + ":" + (entry.Name ?? string.Empty);
+            entry.StorageKey = key;
+            return key;
+        }
+
+        // LoadFromEntries is intentionally a small test seam and does not build all
+        // secondary indexes. Source search can request only this derived map without
+        // changing the existing fixture semantics for TypeIndex/ByNameIndex.
+        public void EnsureSourceTokenIndex()
+        {
+            var index = GetIndex();
+            if (index == null || index.SourceTokenIndex != null) return;
+            lock (_lock)
+            {
+                if (index.SourceTokenIndex != null) return;
+                var rebuilt = new System.Collections.Concurrent.ConcurrentDictionary<string, System.Collections.Generic.HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                if (index.Objects != null)
+                    foreach (var entry in index.Objects.Values) AddSourceTokens(rebuilt, entry);
+                index.SourceTokenIndex = rebuilt;
+            }
+        }
+
+        /// <summary>
+        /// Restores the explicit warm-reload snapshot captured by
+        /// <c>genexus_worker_reload mode=warm</c>. The normal cache loader remains
+        /// independent: this path is deliberately gated by the snapshot container,
+        /// worker DLL hash, index schema, KB identity and object count before anything
+        /// is published to readers. A failed validation returns a diagnostic envelope
+        /// and leaves the regular cold/warm cache path untouched.
+        /// </summary>
+        public Newtonsoft.Json.Linq.JObject TryRestoreWarmSnapshot(string kbPath)
+        {
+            string snapshotPath = WarmIndexSnapshot.DefaultPath(kbPath);
+            var response = new Newtonsoft.Json.Linq.JObject
+            {
+                ["attempted"] = !string.IsNullOrWhiteSpace(snapshotPath),
+                ["path"] = snapshotPath
+            };
+            if (string.IsNullOrWhiteSpace(snapshotPath))
+            {
+                response["fallback"] = true;
+                response["fallbackReason"] = "no-kb-path";
+                return response;
+            }
+
+            try
+            {
+                var loaded = WarmIndexSnapshot.TryLoad(snapshotPath);
+                if (!loaded.Loaded)
+                {
+                    response["fallback"] = true;
+                    response["fallbackReason"] = loaded.FallbackReason ?? "snapshot-rejected";
+                    if (loaded.Metadata != null)
+                    {
+                        response["snapshotObjectCount"] = loaded.Metadata.ObjectCount;
+                        response["snapshotSchemaVersion"] = loaded.Metadata.SchemaVersion;
+                    }
+                    return response;
+                }
+
+                var metadata = loaded.Metadata;
+                if (metadata == null)
+                    return WarmRestoreFallback(response, "metadata-missing");
+                if (metadata.SchemaVersion != CurrentSchemaVersion)
+                    return WarmRestoreFallback(response, "schema-mismatch");
+
+                string expectedKb = WarmIndexSnapshot.NormalizeKbPath(kbPath);
+                string snapshotKb = WarmIndexSnapshot.NormalizeKbPath(metadata.KbPath);
+                if (string.IsNullOrWhiteSpace(expectedKb)
+                    || !string.Equals(expectedKb, snapshotKb, StringComparison.OrdinalIgnoreCase))
+                    return WarmRestoreFallback(response, "kb-path-mismatch");
+
+                if (loaded.Payload == null || loaded.Payload.Length == 0)
+                    return WarmRestoreFallback(response, "payload-empty");
+
+                string json = Encoding.UTF8.GetString(loaded.Payload);
+                SearchIndex restored = SearchIndex.FromJson(json);
+                if (restored?.Objects == null)
+                    return WarmRestoreFallback(response, "payload-invalid");
+                if (metadata.ObjectCount != restored.Objects.Count)
+                    return WarmRestoreFallback(response, "object-count-mismatch");
+                if (restored.Objects.Count == 0)
+                    return WarmRestoreFallback(response, "snapshot-empty");
+
+                // Deserialization minted one string instance per occurrence — collapse
+                // shared vocabulary before publishing (still thread-local here).
+                SearchIndex.InternSharedStrings(restored);
+
+                lock (_lock)
+                {
+                    // A proactive regular-cache load may win the race between KB open
+                    // and this hook. Never replace a populated live index with an
+                    // equally-valid but older warm snapshot.
+                    if (_index != null && _index.Objects != null && _index.Objects.Count > 0)
+                    {
+                        response["loaded"] = false;
+                        response["alreadyLoaded"] = true;
+                        response["objectCount"] = _index.Objects.Count;
+                        return response;
+                    }
+
+                    NormalizeLegacyHierarchy(restored);
+                    NormalizeLifecycleTimestamps(restored);
+                    BuildParentIndex(restored);
+                    _index = restored;
+                    _initialized = true;
+                    PrimeHierarchyCacheFromIndex(restored);
+                    ResetHighWaterMark();
+                    if (SdkTimestampNormalizer.TryParseUtc(metadata.HighWaterMarkUtc, out var hwm)
+                        )
+                    {
+                        ObserveLastUpdate(hwm);
+                    }
+                }
+
+                DateTime? capturedAt = SdkTimestampNormalizer.TryParseUtc(metadata.CapturedAtUtc, out var captured)
+                    ? captured
+                    : (DateTime?)null;
+                MarkIndexRestored(restored.Objects.Count, capturedAt);
+                response["loaded"] = true;
+                response["fallback"] = false;
+                response["objectCount"] = restored.Objects.Count;
+                response["schemaVersion"] = metadata.SchemaVersion;
+                response["capturedAtUtc"] = metadata.CapturedAtUtc;
+                response["highWaterMarkUtc"] = metadata.HighWaterMarkUtc;
+                Logger.Info(string.Format("[WARM-RESTORE] restored {0} objects from {1}", restored.Objects.Count, snapshotPath));
+                return response;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[WARM-RESTORE] rejected snapshot: " + ex.Message);
+                response["fallback"] = true;
+                response["fallbackReason"] = "restore-failed";
+                response["error"] = ex.Message;
+                return response;
+            }
+        }
+
+        private static Newtonsoft.Json.Linq.JObject WarmRestoreFallback(
+            Newtonsoft.Json.Linq.JObject response, string reason)
+        {
+            response["loaded"] = false;
+            response["fallback"] = true;
+            response["fallbackReason"] = reason;
+            return response;
         }
 
         // Plan 002: maintain TypeIndex/DomainIndex in the same incremental hooks that
@@ -614,6 +1030,11 @@ namespace GxMcp.Worker.Services
                 var set = index.DomainIndex.GetOrAdd(entry.BusinessDomain, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase));
                 lock (set) { set.Add(entryKey); }
             }
+            if (index?.ByNameIndex != null && !string.IsNullOrWhiteSpace(entry.Name))
+            {
+                var set = index.ByNameIndex.GetOrAdd(entry.Name, _ => new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase));
+                lock (set) { set.Add(entryKey); }
+            }
         }
 
         private void RemoveEntryFromSecondaryIndexes(SearchIndex index, SearchIndex.IndexEntry entry)
@@ -630,6 +1051,11 @@ namespace GxMcp.Worker.Services
                 && index.DomainIndex.TryGetValue(entry.BusinessDomain, out var domainSet))
             {
                 lock (domainSet) { domainSet.Remove(entryKey); }
+            }
+            if (index?.ByNameIndex != null && !string.IsNullOrWhiteSpace(entry.Name)
+                && index.ByNameIndex.TryGetValue(entry.Name, out var nameSet))
+            {
+                lock (nameSet) { nameSet.Remove(entryKey); }
             }
         }
 
@@ -675,6 +1101,19 @@ namespace GxMcp.Worker.Services
                 {
                     entry.ParentFolderPath = ComposeParentFolderPath(entry.ParentPath);
                 }
+            }
+        }
+
+        private static void NormalizeLifecycleTimestamps(SearchIndex index)
+        {
+            if (index == null) return;
+            index.LastUpdated = SdkTimestampNormalizer.NormalizeUtc(index.LastUpdated);
+            if (index.Objects == null) return;
+            foreach (var entry in index.Objects.Values)
+            {
+                if (entry == null) continue;
+                entry.LastUpdate = SdkTimestampNormalizer.NormalizeUtc(entry.LastUpdate);
+                entry.CreatedAt = SdkTimestampNormalizer.NormalizeUtc(entry.CreatedAt);
             }
         }
 
@@ -744,14 +1183,24 @@ namespace GxMcp.Worker.Services
             lock (list)
             {
                 string entryKey = GetEntryStorageKey(entry);
-                // O(1) dedup via the companion key-set instead of an O(n) List.Any scan.
-                // HashSet.Add returns false when the key is already present. Fall back to the
-                // linear scan only if the companion set is somehow absent (defensive).
-                bool isNew = keys != null
-                    ? keys.Add(entryKey)
-                    : !list.Any(e => string.Equals(GetEntryStorageKey(e), entryKey, StringComparison.OrdinalIgnoreCase));
-                if (isNew)
+                // The primary map replaces entries at the same Type:Name key. Keep the
+                // parent projection in lockstep as well; merely deduplicating here leaves
+                // a deleted object's GUID in parent-filtered list_objects results.
+                int existingIndex = list.FindIndex(e =>
+                    string.Equals(GetEntryStorageKey(e), entryKey, StringComparison.OrdinalIgnoreCase));
+                if (existingIndex >= 0)
                 {
+                    list[existingIndex] = entry;
+                    for (int i = list.Count - 1; i >= 0; i--)
+                    {
+                        if (i != existingIndex && string.Equals(GetEntryStorageKey(list[i]), entryKey, StringComparison.OrdinalIgnoreCase))
+                            list.RemoveAt(i);
+                    }
+                    keys?.Add(entryKey);
+                }
+                else
+                {
+                    keys?.Add(entryKey);
                     list.Add(entry);
                 }
             }
@@ -773,6 +1222,7 @@ namespace GxMcp.Worker.Services
                 keys?.Remove(entryKey);
             }
             RemoveEntryFromSecondaryIndexes(index, entry);
+            RemoveSourceTokens(index.SourceTokenIndex, entry);
         }
 
         // Fase 2: remove an object by its (stable) Guid — used by the warm-start deletion
@@ -802,19 +1252,52 @@ namespace GxMcp.Worker.Services
 
         public void RemoveEntryByGuid(string guid)
         {
-            if (string.IsNullOrEmpty(guid)) return;
+            if (string.IsNullOrWhiteSpace(guid)) return;
             var index = GetIndex();
             string removedKey = null;
+            string requestedGuid = guid.Trim();
             lock (_lock)
             {
-                if (index.GuidToKey == null || !index.GuidToKey.TryGetValue(guid, out var key)) return;
+                if (index.GuidToKey == null || index.Objects == null) return;
+
+                string key = null;
+                if (!index.GuidToKey.TryGetValue(requestedGuid, out key))
+                {
+                    // Keep deletion safe even if an older snapshot was missing its
+                    // derived reverse map. This is a read-only fallback; normal paths
+                    // remain O(1) through GuidToKey.
+                    var fallback = index.Objects.FirstOrDefault(pair =>
+                        pair.Value != null && string.Equals(pair.Value.Guid, requestedGuid, StringComparison.OrdinalIgnoreCase));
+                    key = fallback.Key;
+                }
+                if (string.IsNullOrEmpty(key)) return;
+
+                // A Type:Name key can now belong to a newly-created object. A stale
+                // reverse mapping must never turn deletion of the old GUID into deletion
+                // of that replacement.
+                if (!index.Objects.TryGetValue(key, out var current)
+                    || current == null
+                    || !string.Equals(current.Guid, requestedGuid, StringComparison.OrdinalIgnoreCase))
+                {
+                    index.GuidToKey.TryRemove(requestedGuid, out _);
+                    if (current != null && !string.IsNullOrWhiteSpace(current.Guid))
+                        index.GuidToKey[current.Guid] = key;
+                    return;
+                }
+
                 if (index.Objects.TryRemove(key, out var removed))
                 {
                     removedKey = key;
+                    if (_liteWalkActive)
+                    {
+                        _liteWalkRemovals[key] = 1;
+                        _liteWalkMutations.TryRemove(key, out _);
+                    }
+                    TouchGraph(index);
                     if (index.ChildrenByParent != null) RemoveEntryFromParentIndex(index, removed);
-                    if (Guid.TryParse(guid, out var g)) _hierarchyCache.TryRemove(g, out _);
+                    if (Guid.TryParse(requestedGuid, out var g)) _hierarchyCache.TryRemove(g, out _);
                 }
-                index.GuidToKey.TryRemove(guid, out _);
+                index.GuidToKey.TryRemove(requestedGuid, out _);
             }
             MarkDirtyForKey(removedKey);
         }
@@ -912,6 +1395,15 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            // Some modular SDK objects expose Module but not the full Parent chain
+            // during the lite walk. Keep the module in the qualified path so identity
+            // lookup remains deterministic after a cache rebuild.
+            if (parentSegments.Count == 0 && !string.IsNullOrWhiteSpace(moduleName))
+            {
+                parentSegments.Add(moduleName);
+                parentName = moduleName;
+            }
+
             string parentPath = string.Join("/", parentSegments.Where(segment => !string.IsNullOrWhiteSpace(segment)));
             string path = parentPath;
             if (!string.IsNullOrWhiteSpace(obj?.Name))
@@ -945,7 +1437,7 @@ namespace GxMcp.Worker.Services
         {
             if (_index != null) return;
             try { EnsureInitialized(); } catch { /* best-effort */ }
-            try { System.Threading.Tasks.Task.Run(() => GetIndex()); } catch { /* best-effort */ }
+            try { StartLoadTask(); } catch { /* best-effort */ }
         }
 
         public SearchIndex GetIndex()
@@ -953,62 +1445,140 @@ namespace GxMcp.Worker.Services
             if (_index != null) return _index;
             EnsureInitialized();
 
+            var loadState = StartLoadTask();
+            try
+            {
+                return loadState.Task.GetAwaiter().GetResult();
+            }
+            catch (ShardedIntegrityException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Load Index Error: " + ex.Message);
+                System.Threading.Interlocked.CompareExchange(ref _loadState, null, loadState);
+                return new SearchIndex();
+            }
+        }
+
+        private TaskCompletionSource<SearchIndex> StartLoadTask()
+        {
+            var state = System.Threading.Volatile.Read(ref _loadState);
+            if (state != null) return state;
+
+            var candidate = new TaskCompletionSource<SearchIndex>(TaskCreationOptions.RunContinuationsAsynchronously);
+            state = System.Threading.Interlocked.CompareExchange(ref _loadState, candidate, null) ?? candidate;
+            if (ReferenceEquals(state, candidate))
+            {
+                Task.Run(() => CompleteLoad(candidate));
+            }
+            return state;
+        }
+
+        private sealed class ShardedIntegrityException : Exception
+        {
+            public ShardedIntegrityException(string message) : base(message) { }
+            public ShardedIntegrityException(string message, Exception inner) : base(message, inner) { }
+        }
+
+        private void CompleteLoad(TaskCompletionSource<SearchIndex> state)
+        {
+            try { state.TrySetResult(LoadIndexCore()); }
+            catch (Exception ex)
+            {
+                System.Threading.Interlocked.CompareExchange(ref _loadState, null, state);
+                if (!string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath)
+                    && !(ex is ShardedIntegrityException))
+                    ex = new ShardedIntegrityException("invalid sharded snapshot", ex);
+                state.TrySetException(ex);
+            }
+        }
+
+        private SearchIndex LoadIndexCore()
+        {
+            System.Threading.Interlocked.Increment(ref _loadInvocationCount);
+            // A certified pointer is the commit record for a complete shard set.
+            // Abandoned rebuild directories are intentionally never discovered here.
+            if (TrySelectCertifiedSlot())
+            {
+                Logger.Debug(string.Format("Loading certified index slot from disk: {0}", _certifiedSlotPath));
+                var certified = LoadShardedIndex();
+                return InstallLoadedIndex(certified);
+            }
+            // Plan 003: prefer the sharded snapshot (manifest present = the shard
+            // directory is trustworthy); fall back to the legacy single-file gz/plain
+            // snapshot so existing installs keep working without re-indexing.
+            SearchIndex loaded = null;
+            if (!string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath))
+            {
+                Logger.Debug(string.Format("Loading sharded index from disk: {0}", _shardDirPath));
+                loaded = LoadShardedIndex();
+            }
+            else
+            {
+                string json = null;
+                if (File.Exists(_indexPathGz))
+                {
+                    Logger.Debug(string.Format("Loading gzipped index from disk: {0}", _indexPathGz));
+                    json = ReadGzippedText(_indexPathGz);
+                }
+                else if (File.Exists(_indexPath))
+                {
+                    Logger.Debug(string.Format("Loading legacy plain index from disk: {0}", _indexPath));
+                    json = File.ReadAllText(_indexPath);
+                }
+                if (!string.IsNullOrEmpty(json)) loaded = SearchIndex.FromJson(json);
+            }
+
+            if (loaded == null) loaded = new SearchIndex();
+            return InstallLoadedIndex(loaded);
+        }
+
+        private SearchIndex InstallLoadedIndex(SearchIndex loaded)
+        {
+            if (loaded == null) loaded = new SearchIndex();
+            SearchIndex.InternSharedStrings(loaded);
+            NormalizeLegacyHierarchy(loaded);
+            NormalizeLifecycleTimestamps(loaded);
+            BuildParentIndex(loaded);
+            PrimeHierarchyCacheFromIndex(loaded);
             lock (_lock)
             {
                 if (_index != null) return _index;
-                try
-                {
-                    // Plan 003: prefer the sharded snapshot (manifest present = the shard
-                    // directory is trustworthy); fall back to the legacy single-file gz/plain
-                    // snapshot so existing installs keep working without re-indexing. Loading
-                    // the legacy body doesn't clear any shard's dirty flag, so the very next
-                    // flush re-emits it as a sharded snapshot (silent migration).
-                    SearchIndex loaded = null;
-                    if (!string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath))
-                    {
-                        Logger.Debug(string.Format("Loading sharded index from disk: {0}", _shardDirPath));
-                        loaded = LoadShardedIndex();
-                    }
-                    else
-                    {
-                        string json = null;
-                        if (File.Exists(_indexPathGz))
-                        {
-                            Logger.Debug(string.Format("Loading gzipped index from disk: {0}", _indexPathGz));
-                            json = ReadGzippedText(_indexPathGz);
-                        }
-                        else if (File.Exists(_indexPath))
-                        {
-                            Logger.Debug(string.Format("Loading legacy plain index from disk: {0}", _indexPath));
-                            json = File.ReadAllText(_indexPath);
-                        }
-                        if (!string.IsNullOrEmpty(json)) loaded = SearchIndex.FromJson(json);
-                    }
-
-                    if (loaded != null)
-                    {
-                        _index = loaded;
-                        NormalizeLegacyHierarchy(_index);
-                        BuildParentIndex(_index);
-                        PrimeHierarchyCacheFromIndex(_index);
-                        Logger.Info(string.Format("Index loaded. Objects: {0}", _index.Objects.Count));
-                        // v2.3.8 (post-Task 1.2 fix): when we hydrate the in-memory index
-                        // from the on-disk cache (warm start), publish Ready to IndexState
-                        // so whoami doesn't keep reporting Cold while list/search hit a
-                        // fully-populated index. Without this the state machine only
-                        // transitioned via BulkIndex's MarkIndexComplete, which is skipped
-                        // on warm starts (AlreadyIndexed path in KbService.BulkIndex).
-                        if (_index.Objects.Count > 0)
-                        {
-                            MarkIndexComplete(_index.Objects.Count);
-                        }
-                    }
-                }
-                catch (Exception ex) { Logger.Error("Load Index Error: " + ex.Message); }
-
-                if (_index == null) _index = new SearchIndex();
-                return _index;
+                _index = loaded;
             }
+            Logger.Info(string.Format("Index loaded. Objects: {0}", loaded.Objects.Count));
+            if (loaded.Objects.Count > 0)
+            {
+                DateTime? snapshotAt = loaded.LastUpdated == DateTime.MinValue ? (DateTime?)null : loaded.LastUpdated;
+                MarkIndexRestored(loaded.Objects.Count, snapshotAt);
+            }
+            return loaded;
+        }
+
+        private bool TrySelectCertifiedSlot()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_snapshotPointerPath) || !File.Exists(_snapshotPointerPath)) return false;
+                var pointer = Newtonsoft.Json.JsonConvert.DeserializeObject<SnapshotPointer>(File.ReadAllText(_snapshotPointerPath));
+                if (pointer == null || string.IsNullOrEmpty(pointer.Slot) || string.IsNullOrEmpty(pointer.Generation)
+                    || !string.Equals(pointer.Slot, pointer.Generation, StringComparison.Ordinal)) return false;
+                string root = Path.GetFullPath(_snapshotSlotsPath);
+                string slot = Path.GetFullPath(Path.Combine(root, pointer.Slot));
+                if (!slot.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    || !Directory.Exists(slot) || !File.Exists(Path.Combine(slot, "manifest.json"))) return false;
+                _certifiedSlotPath = slot;
+                return true;
+            }
+            catch (Exception ex) { Logger.Warn("Invalid certified snapshot pointer: " + ex.Message); return false; }
+        }
+
+        private sealed class SnapshotPointer
+        {
+            public string Generation { get; set; }
+            public string Slot { get; set; }
         }
 
         private static string ReadGzippedText(string path)
@@ -1029,21 +1599,55 @@ namespace GxMcp.Worker.Services
         private SearchIndex LoadShardedIndex()
         {
             var idx = new SearchIndex();
+            var manifest = ReadAndValidateShardedSnapshot();
+            var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (int id = 0; id < ShardCount; id++)
             {
                 string shardPath = ShardFilePath(id);
-                if (!File.Exists(shardPath)) continue;
-                try
+                var root = Newtonsoft.Json.Linq.JObject.Parse(ReadGzippedText(shardPath));
+                foreach (var property in root.Properties())
                 {
-                    string json = ReadGzippedText(shardPath);
-                    if (string.IsNullOrEmpty(json)) continue;
-                    var bucket = Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, SearchIndex.IndexEntry>>(json);
-                    if (bucket == null) continue;
-                    foreach (var kv in bucket) idx.Objects[kv.Key] = kv.Value;
+                    if (!keys.Add(property.Name)) throw new ShardedIntegrityException("duplicate shard key: " + property.Name);
+                    var entry = property.Value.ToObject<SearchIndex.IndexEntry>();
+                    if (entry == null || string.IsNullOrEmpty(entry.Name) || string.IsNullOrEmpty(entry.Type))
+                        throw new ShardedIntegrityException("invalid shard entry: " + property.Name);
+                    string derivedKey = GetEntryStorageKeyStatic(entry);
+                    if (!string.Equals(property.Name, derivedKey, StringComparison.OrdinalIgnoreCase)
+                        || ShardOf(property.Name) != id)
+                        throw new ShardedIntegrityException("key stored in wrong shard: " + property.Name);
+                    idx.Objects[property.Name] = entry;
                 }
-                catch (Exception ex) { Logger.Warn(string.Format("Shard {0} load failed ({1}): {2}", id, shardPath, ex.Message)); }
             }
+            if (idx.Objects.Count != manifest.ObjectCount)
+                throw new ShardedIntegrityException("shard object count does not match manifest");
             return idx;
+        }
+
+        private ShardManifest ReadAndValidateShardedSnapshot()
+        {
+            if (string.IsNullOrEmpty(_shardManifestPath) || !File.Exists(_shardManifestPath))
+                throw new ShardedIntegrityException("shard manifest is missing");
+            var manifest = Newtonsoft.Json.JsonConvert.DeserializeObject<ShardManifest>(File.ReadAllText(_shardManifestPath));
+            DateTime captured;
+            if (manifest == null || manifest.ShardCount != ShardCount || manifest.SchemaVersion != CurrentSchemaVersion
+                || manifest.ObjectCount < 0 || string.IsNullOrEmpty(manifest.CapturedAtUtc)
+                || !DateTime.TryParse(manifest.CapturedAtUtc, null, System.Globalization.DateTimeStyles.RoundtripKind, out captured))
+                throw new ShardedIntegrityException("invalid shard manifest");
+            for (int id = 0; id < ShardCount; id++)
+                if (!File.Exists(ShardFilePath(id))) throw new ShardedIntegrityException("missing shard: " + id);
+            if (manifest.ShardHashes != null)
+            {
+                if (manifest.ShardHashes.Count != ShardCount)
+                    throw new ShardedIntegrityException("shard hash manifest is incomplete");
+                for (int id = 0; id < ShardCount; id++)
+                {
+                    string actual = GetFileSha256(ShardFilePath(id));
+                    if (!manifest.ShardHashes.TryGetValue(id, out var expected)
+                        || !string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+                        throw new ShardedIntegrityException("shard hash mismatch: " + id);
+                }
+            }
+            return manifest;
         }
 
         public bool LooksLikeAttributeName(string term)
@@ -1057,6 +1661,7 @@ namespace GxMcp.Worker.Services
             lock (_lock)
             {
                 BuildParentIndex(index);
+                TouchGraph(index);
                 _index = index;
             }
             MarkDirty();
@@ -1159,6 +1764,29 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // Issue #208: the sidecar stamps the persisted high-water-mark, so it may only be
+        // written for a body the flush actually certified. Ignoring FlushNow()'s verdict let a
+        // timed-out flush stamp a hwm the body did not contain, and the next warm start's delta
+        // then skipped those objects until they were edited again. Returning false leaves the
+        // previous sidecar (and its older hwm) in place, so the next warm start re-delivers the
+        // delta — the same degradation used when a worker dies mid-enrichment (body, no sidecar).
+        // Only the PERSISTED claim is held back: the in-memory index (and therefore this session's
+        // reads) stays current, because the refresh did merge its objects; it is the on-disk body
+        // that lags until the next flush or warm-start delta re-delivers them.
+        public bool FlushAndStampSidecar(int objectCount, string label = null, int timeoutMs = 30000)
+        {
+            if (!FlushNow(timeoutMs))
+            {
+                Logger.Warn(
+                    "[INDEX-META] sidecar NOT stamped" + (string.IsNullOrEmpty(label) ? string.Empty : " (" + label + ")")
+                    + ": flush did not certify the dirty state within " + timeoutMs + "ms"
+                    + (string.IsNullOrEmpty(LastFlushErrorMessage) ? string.Empty : " (" + LastFlushErrorMessage + ")")
+                    + " — keeping the previous sidecar so the next warm start re-processes this refresh (see whoami index.flushHealth).");
+                return false;
+            }
+            return WriteMetaSidecar(objectCount);
+        }
+
         // ===== Fase 1: persistible incremental index (version stamp + high-water-mark + delta-on-open) =====
 
         // Bump whenever IndexEntry's serialized shape changes. A mismatch on warm start
@@ -1171,7 +1799,9 @@ namespace GxMcp.Worker.Services
         // refresh — never on the throttled mid-enrichment body flushes. So the sidecar's presence
         // means "the body on disk is fully enriched and this hwm is trustworthy"; a worker that
         // dies mid-enrichment leaves a body but no sidecar → next warm start does a full rebuild.
-        private string _metaPath => string.IsNullOrEmpty(_indexPath) ? null : _indexPath.Replace(".json", ".meta.json");
+        private string LegacyMetaPath => string.IsNullOrEmpty(_indexPath) ? null : _indexPath.Replace(".json", ".meta.json");
+        private string _metaPath => string.IsNullOrEmpty(ActiveShardDirPath) ? null :
+            (_certifiedSlotPath == null ? LegacyMetaPath : Path.Combine(ActiveShardDirPath, "meta.json"));
 
         // High-water-mark: max KBObject.LastUpdate observed. Stored as ticks for lock-free CAS.
         // Instance field (per index / per KB) — not process-global.
@@ -1180,7 +1810,7 @@ namespace GxMcp.Worker.Services
         /// <summary>Advance the high-water-mark if <paramref name="lastUpdate"/> is newer. Lock-free.</summary>
         public void ObserveLastUpdate(DateTime lastUpdate)
         {
-            long t = lastUpdate.Ticks;
+            long t = SdkTimestampNormalizer.NormalizeUtc(lastUpdate).Ticks;
             long cur;
             while (true)
             {
@@ -1252,12 +1882,17 @@ namespace GxMcp.Worker.Services
 
         /// <summary>
         /// Persist the validation sidecar. Call AFTER a body flush, only when the body is in a
-        /// trustworthy (fully-enriched or delta-merged) state. Atomic temp-then-move.
+        /// trustworthy (fully-enriched or delta-merged) state. Atomic temp-then-Replace/Move.
         /// </summary>
-        public void WriteMetaSidecar(int objectCount)
+        public bool WriteMetaSidecar(int objectCount)
         {
-            string metaPath = _metaPath;
-            if (string.IsNullOrEmpty(metaPath)) return;
+            return WriteMetaSidecarAt(Path.GetDirectoryName(_metaPath), objectCount, Path.GetFileName(_metaPath));
+        }
+
+        private bool WriteMetaSidecarAt(string directory, int objectCount, string fileName = "meta.json")
+        {
+            string metaPath = string.IsNullOrEmpty(directory) ? null : Path.Combine(directory, fileName);
+            if (string.IsNullOrEmpty(metaPath)) return false;
             try
             {
                 var meta = new WarmIndexSnapshotMetadata
@@ -1274,11 +1909,19 @@ namespace GxMcp.Worker.Services
                 if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                 string tmp = metaPath + ".tmp";
                 File.WriteAllText(tmp, json, new UTF8Encoding(false));
-                if (File.Exists(metaPath)) File.Delete(metaPath);
-                File.Move(tmp, metaPath);
+                // Atomic swap: File.Replace replaces the destination in one NTFS operation,
+                // so there is no Delete→Move window where the sidecar is missing — a crash
+                // in that window used to lose the sidecar and force a full reindex on the
+                // next warm start. Mirrors MemoryService.WriteCompacted. First write has
+                // no destination yet, so it falls back to a plain Move (Replace throws).
+                if (File.Exists(metaPath))
+                    File.Replace(tmp, metaPath, null);   // atomic swap on NTFS; consumes tmp
+                else
+                    File.Move(tmp, metaPath);
                 Logger.Info($"[INDEX-META] sidecar written: schema={CurrentSchemaVersion} hwm={meta.HighWaterMarkUtc ?? "<none>"} objects={objectCount}");
+                return true;
             }
-            catch (Exception ex) { Logger.Warn("WriteMetaSidecar failed: " + ex.Message); }
+            catch (Exception ex) { Logger.Warn("WriteMetaSidecar failed: " + ex.Message); return false; }
         }
 
         /// <summary>Result of validating the on-disk cache against the current worker + schema.</summary>
@@ -1288,19 +1931,10 @@ namespace GxMcp.Worker.Services
             public bool MetaPresent;
             public bool SchemaMatch;
             public bool DllMatch;
+            public bool ShardedIntegrity = true;
             public DateTime HighWaterMark = DateTime.MinValue;
-            // Delta-on-open is only safe when the body is present AND a trustworthy sidecar
-            // (matching schema + worker DLL) accompanies it. Anything else → full rebuild.
-            public bool CanDelta => BodyPresent && MetaPresent && SchemaMatch && DllMatch && HighWaterMark != DateTime.MinValue;
-
-            // Relaxed predicate for the post-upgrade case: the worker DLL changed (DllMatch=False)
-            // but the index LAYOUT is unchanged (SchemaMatch=True), so the on-disk body is still
-            // structurally readable. Gated by Configuration.DeltaAcrossWorkerDll in the caller —
-            // running a bounded delta here (and re-baselining the sidecar's DLL hash) avoids the
-            // full 38k re-walk that would otherwise block writes for minutes after every upgrade.
-            // The only thing skipped vs. a full rebuild is retro-applying enrichment-LOGIC changes
-            // to objects that didn't change on disk; a forced reindex still does that.
-            public bool CanDeltaAcrossDll => BodyPresent && MetaPresent && SchemaMatch && HighWaterMark != DateTime.MinValue;
+            public bool CanDelta => BodyPresent && MetaPresent && SchemaMatch && DllMatch && ShardedIntegrity && HighWaterMark != DateTime.MinValue;
+            public bool CanDeltaAcrossDll => BodyPresent && MetaPresent && SchemaMatch && ShardedIntegrity && HighWaterMark != DateTime.MinValue;
         }
 
         /// <summary>
@@ -1313,9 +1947,18 @@ namespace GxMcp.Worker.Services
             try
             {
                 EnsureInitialized();
-                v.BodyPresent = (!string.IsNullOrEmpty(_indexPathGz) && File.Exists(_indexPathGz))
-                                 || (!string.IsNullOrEmpty(_indexPath) && File.Exists(_indexPath))
-                                 || (!string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath));
+                TrySelectCertifiedSlot();
+                bool hasManifest = !string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath);
+                v.ShardedIntegrity = !hasManifest;
+                if (hasManifest)
+                {
+                    try { ReadAndValidateShardedSnapshot(); v.ShardedIntegrity = true; }
+                    catch (Exception ex) { v.ShardedIntegrity = false; Logger.Warn("Invalid sharded cache: " + ex.Message); }
+                }
+                v.BodyPresent = hasManifest
+                    ? v.ShardedIntegrity
+                    : ((!string.IsNullOrEmpty(_indexPathGz) && File.Exists(_indexPathGz))
+                       || (!string.IsNullOrEmpty(_indexPath) && File.Exists(_indexPath)));
                 string metaPath = _metaPath;
                 v.MetaPresent = !string.IsNullOrEmpty(metaPath) && File.Exists(metaPath);
                 Logger.Info(string.Format("[INDEX-CACHE-PATHS] validate: bodyPresent={0} metaPresent={1} gz={2} meta={3}", v.BodyPresent, v.MetaPresent, _indexPathGz, metaPath));
@@ -1347,12 +1990,16 @@ namespace GxMcp.Worker.Services
             public int SchemaVersion { get; set; }
             public int ObjectCount { get; set; }
             public string CapturedAtUtc { get; set; }
+            // Optional for compatibility with manifests written before integrity
+            // hashes were introduced. New manifests certify every shard's bytes.
+            public Dictionary<int, string> ShardHashes { get; set; }
         }
 
-        private void WriteShardManifest(int objectCount)
+        private bool WriteShardManifest(int objectCount)
         {
             string manifestPath = _shardManifestPath;
-            if (string.IsNullOrEmpty(manifestPath)) return;
+            if (string.IsNullOrEmpty(manifestPath)) return false;
+            string tmp = manifestPath + ".tmp-" + Guid.NewGuid().ToString("N");
             try
             {
                 var manifest = new ShardManifest
@@ -1360,29 +2007,116 @@ namespace GxMcp.Worker.Services
                     ShardCount = ShardCount,
                     SchemaVersion = CurrentSchemaVersion,
                     ObjectCount = objectCount,
-                    CapturedAtUtc = DateTime.UtcNow.ToString("o")
+                    CapturedAtUtc = DateTime.UtcNow.ToString("o"),
+                    ShardHashes = Enumerable.Range(0, ShardCount).ToDictionary(id => id, id => GetFileSha256(ShardFilePath(id)))
                 };
-                string json = Newtonsoft.Json.JsonConvert.SerializeObject(manifest);
                 string dir = Path.GetDirectoryName(manifestPath);
                 if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                string tmp = manifestPath + ".tmp";
-                File.WriteAllText(tmp, json, new UTF8Encoding(false));
-                if (File.Exists(manifestPath)) File.Delete(manifestPath);
-                File.Move(tmp, manifestPath);
+                File.WriteAllText(tmp, Newtonsoft.Json.JsonConvert.SerializeObject(manifest), new UTF8Encoding(false));
+                if (File.Exists(manifestPath)) File.Replace(tmp, manifestPath, null);
+                else File.Move(tmp, manifestPath);
+                return true;
             }
-            catch (Exception ex) { Logger.Warn("WriteShardManifest failed: " + ex.Message); }
+            catch (Exception ex) { Logger.Warn("WriteShardManifest failed: " + ex.Message); return false; }
+            finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
         }
 
-        // Returns true when this call wrote a snapshot to disk that is at least as new
-        // as the dirty generation captured before serialization started; false when it
-        // skipped (flush already in flight / no index) or failed. Never throws.
-        //
         // Plan 003 (sharded flush): only shards dirtied since the last successful flush
         // are (re)serialized — clean shards are left untouched on disk, so cost scales
         // with dirty-entry count rather than total index size. Each dirty shard id is
         // popped from _dirtyShards BEFORE its content is read/written, so any mutation
         // landing concurrently (even mid-write) re-marks the shard dirty for the next
         // round instead of being silently dropped by an end-of-round clear.
+        private void FlushVersionedSlot(SearchIndex snapshot, List<int> idsToWrite, long generation, bool preservePreviousMeta)
+        {
+            string slots = _snapshotSlotsPath;
+            if (string.IsNullOrEmpty(slots)) throw new InvalidOperationException("Index snapshot path is not initialized.");
+            string slotName = "generation-" + generation + "-" + Guid.NewGuid().ToString("N");
+            string tempSlot = Path.Combine(slots, ".rebuild-" + Guid.NewGuid().ToString("N"));
+            string finalSlot = Path.Combine(slots, slotName);
+            try
+            {
+                Directory.CreateDirectory(slots);
+                Directory.CreateDirectory(tempSlot);
+                var sourceDir = _certifiedSlotPath;
+                if (sourceDir == null && File.Exists(_shardManifestPath)) sourceDir = _shardDirPath;
+                var buckets = new Dictionary<int, Dictionary<string, SearchIndex.IndexEntry>>();
+                foreach (var id in Enumerable.Range(0, ShardCount))
+                    buckets[id] = new Dictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in snapshot.Objects)
+                    buckets[ShardOf(kv.Key)][kv.Key] = kv.Value;
+
+                var settings = new Newtonsoft.Json.JsonSerializerSettings {
+                    NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore,
+                    DefaultValueHandling = Newtonsoft.Json.DefaultValueHandling.Ignore,
+                    Formatting = Newtonsoft.Json.Formatting.None
+                };
+                var serializer = Newtonsoft.Json.JsonSerializer.Create(settings);
+                foreach (int id in Enumerable.Range(0, ShardCount))
+                {
+                    string destination = Path.Combine(tempSlot, string.Format("shard_{0:00}.json.gz", id));
+                    string previous = sourceDir == null ? null : Path.Combine(sourceDir, string.Format("shard_{0:00}.json.gz", id));
+                    if (!idsToWrite.Contains(id) && previous != null && File.Exists(previous))
+                    {
+                        File.Copy(previous, destination);
+                        continue;
+                    }
+                    using (var fs = File.Create(destination))
+                    using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
+                    using (var writer = new StreamWriter(gz, new UTF8Encoding(false)))
+                    using (var jsonWriter = new Newtonsoft.Json.JsonTextWriter(writer))
+                        serializer.Serialize(jsonWriter, buckets[id]);
+                    if (idsToWrite.Contains(id)) _shardWriteCounts.AddOrUpdate(id, 1, (k, v) => v + 1);
+                }
+
+                WriteShardManifestAt(tempSlot, snapshot.Objects.Count);
+                // A source-only promotion does not invalidate the previous enrichment
+                // baseline. Carry its sidecar into this new generation; ordinary mutations
+                // deliberately leave the new body uncertified until an explicit sidecar write.
+                if (preservePreviousMeta && sourceDir != null)
+                {
+                    string previousMeta = Path.Combine(sourceDir, "meta.json");
+                    if (File.Exists(previousMeta))
+                        File.Copy(previousMeta, Path.Combine(tempSlot, "meta.json"));
+                }
+                Directory.Move(tempSlot, finalSlot);
+                string pointerTemp = _snapshotPointerPath + ".tmp-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    File.WriteAllText(pointerTemp, Newtonsoft.Json.JsonConvert.SerializeObject(new SnapshotPointer { Generation = slotName, Slot = slotName }), new UTF8Encoding(false));
+                    if (File.Exists(_snapshotPointerPath)) File.Replace(pointerTemp, _snapshotPointerPath, null);
+                    else File.Move(pointerTemp, _snapshotPointerPath);
+                }
+                finally { try { if (File.Exists(pointerTemp)) File.Delete(pointerTemp); } catch { } }
+                _certifiedSlotPath = finalSlot;
+                try { if (File.Exists(_indexPathGz)) File.Delete(_indexPathGz); } catch { }
+                try { if (File.Exists(_indexPath)) File.Delete(_indexPath); } catch { }
+                try
+                {
+                    foreach (var directory in Directory.GetDirectories(slots))
+                        if (!string.Equals(Path.GetFullPath(directory), Path.GetFullPath(finalSlot), StringComparison.OrdinalIgnoreCase))
+                            Directory.Delete(directory, true);
+                }
+                catch (Exception cleanup) { Logger.Warn("Snapshot slot cleanup deferred: " + cleanup.Message); }
+            }
+            finally { try { if (Directory.Exists(tempSlot)) Directory.Delete(tempSlot, true); } catch { } }
+        }
+
+        private void WriteShardManifestAt(string directory, int objectCount)
+        {
+            var manifest = new ShardManifest
+            {
+                ShardCount = ShardCount,
+                SchemaVersion = CurrentSchemaVersion,
+                ObjectCount = objectCount,
+                CapturedAtUtc = DateTime.UtcNow.ToString("o"),
+                ShardHashes = Enumerable.Range(0, ShardCount).ToDictionary(id => id, id => GetFileSha256(Path.Combine(directory, string.Format("shard_{0:00}.json.gz", id))))
+            };
+            File.WriteAllText(Path.Combine(directory, "manifest.json"), Newtonsoft.Json.JsonConvert.SerializeObject(manifest), new UTF8Encoding(false));
+        }
+
+        // Returns true only after publishing the captured generation. Failures retain
+        // dirty shards for retry and return false; they never certify the old bytes.
         private bool FlushToDisk()
         {
             if (_savingInProgress) return false;
@@ -1403,6 +2137,8 @@ namespace GxMcp.Worker.Services
             // happened-before this read is visible to the serializer below, so on
             // success the on-disk body provably contains generation `gen`.
             long gen = System.Threading.Interlocked.Read(ref _dirtyGeneration);
+            long flushedBefore = System.Threading.Interlocked.Read(ref _flushedGeneration);
+            bool sourceOnly = System.Threading.Interlocked.Read(ref _lastNonSourceDirtyGeneration) <= flushedBefore;
 
             var idsToWrite = new List<int>();
             foreach (var id in _dirtyShards.Keys.ToArray())
@@ -1410,100 +2146,19 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                string dir = _shardDirPath;
-                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
-
-                var settings = new Newtonsoft.Json.JsonSerializerSettings {
-                    NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore,
-                    DefaultValueHandling = Newtonsoft.Json.DefaultValueHandling.Ignore,
-                    Formatting = Newtonsoft.Json.Formatting.None
-                };
-                var serializer = Newtonsoft.Json.JsonSerializer.Create(settings);
-
-                // Single O(N) pass bucketing entries into the shards we're about to write
-                // (clean shards are never even visited for bucketing, let alone written).
-                var buckets = new Dictionary<int, Dictionary<string, SearchIndex.IndexEntry>>();
-                foreach (var id in idsToWrite) buckets[id] = new Dictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
-                if (idsToWrite.Count > 0)
-                {
-                    foreach (var kv in snapshot.Objects)
-                    {
-                        if (buckets.TryGetValue(ShardOf(kv.Key), out var bucket)) bucket[kv.Key] = kv.Value;
-                    }
-                }
-
-                var flushSw = System.Diagnostics.Stopwatch.StartNew();
-                bool allOk = true;
-                long totalGzBytes = 0;
-
-                foreach (var id in idsToWrite)
-                {
-                    try
-                    {
-                        string shardPath = ShardFilePath(id);
-                        string tmpPath = shardPath + ".tmp";
-                        // PERFORMANCE (W-A3): write gzipped via a temp file + atomic move so
-                        // partial writes never leave a corrupt shard on disk. LOH fix carried
-                        // over from the single-file design: stream straight through gzip
-                        // instead of building the whole shard as one JSON string first.
-                        using (var fs = File.Create(tmpPath))
-                        using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
-                        using (var writer = new StreamWriter(gz, new UTF8Encoding(false)))
-                        using (var jsonWriter = new Newtonsoft.Json.JsonTextWriter(writer))
-                        {
-                            serializer.Serialize(jsonWriter, buckets[id]);
-                        }
-                        try { totalGzBytes += new FileInfo(tmpPath).Length; } catch { }
-                        if (File.Exists(shardPath)) File.Delete(shardPath);
-                        File.Move(tmpPath, shardPath);
-                        _shardWriteCounts.AddOrUpdate(id, 1, (k, v) => v + 1);
-                    }
-                    catch (Exception exShard)
-                    {
-                        allOk = false;
-                        _dirtyShards[id] = 1; // not durable yet — retry this shard next round
-                        Logger.Error(string.Format("[INDEX-SAVE] shard {0} flush failed: {1}", id, exShard.Message));
-                    }
-                }
-
-                long totalMs = flushSw.ElapsedMilliseconds;
-                int entryCount = snapshot.Objects?.Count ?? 0;
-                // Fase 3 measurement: piggyback the running enrichment sub-step split on the
-                // throttled flush so the SDK-bound (refScan/typeExtract) vs CPU-only
-                // (embedding/textualScan) proportion is observable without waiting for the
-                // (pathologically slow) full drain to reach [ENRICH-DONE].
-                Logger.Info($"[INDEX-SAVE] shardsWritten={idsToWrite.Count}/{ShardCount} gzKB={totalGzBytes / 1024} totalMs={totalMs} entries={entryCount} gen={gen} | {GetEnrichTimingSummary()}");
-
-                if (!allOk)
-                {
-                    // Partial round: some shards durable, some not. Don't certify `gen`,
-                    // don't touch the legacy files or manifest — the next flush retries
-                    // only the shards still marked dirty above.
-                    int nFail = System.Threading.Interlocked.Increment(ref _consecutiveFlushFailures);
-                    _lastFlushErrorMessage = "partial shard flush failure";
-                    Logger.Error($"Flush Error (consecutive={nFail}): {_lastFlushErrorMessage}");
-                    return false;
-                }
-
-                WriteShardManifest(entryCount);
-                // Migration cleanup: once the sharded body is confirmed fully durable, the
-                // legacy single-file snapshot (if any) is no longer needed for warm start.
-                try { if (File.Exists(_indexPathGz)) File.Delete(_indexPathGz); } catch { }
-                try { if (File.Exists(_indexPath)) File.Delete(_indexPath); } catch { }
-
+                FlushVersionedSlot(snapshot, idsToWrite, gen, sourceOnly);
                 System.Threading.Interlocked.Exchange(ref _consecutiveFlushFailures, 0);
                 _lastFlushSuccessUtc = DateTime.UtcNow;
                 _lastFlushErrorMessage = null;
-                // Publish the confirmed-on-disk generation (monotonic max).
-                long cur;
-                while ((cur = System.Threading.Interlocked.Read(ref _flushedGeneration)) < gen
-                       && System.Threading.Interlocked.CompareExchange(ref _flushedGeneration, gen, cur) != cur) { }
+                long published;
+                while ((published = System.Threading.Interlocked.Read(ref _flushedGeneration)) < gen
+                    && System.Threading.Interlocked.CompareExchange(ref _flushedGeneration, gen, published) != published) { }
                 System.Threading.Interlocked.Increment(ref _flushWriteCount);
                 return true;
             }
             catch (Exception ex) {
-                // Round-level failure (e.g. directory creation) before/around the per-shard
-                // loop — restore every popped id so nothing is lost.
+                // Includes failed certified-pointer publication: the old generation is
+                // still current, so every popped shard must be retried with its new bytes.
                 foreach (var id in idsToWrite) _dirtyShards[id] = 1;
                 int n = System.Threading.Interlocked.Increment(ref _consecutiveFlushFailures);
                 _lastFlushErrorMessage = ex.Message;
@@ -1525,12 +2180,19 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        private string GetFileSha256(string path)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var stream = File.OpenRead(path))
+                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+        }
+
         // v2.6.8: defensive reads for KBObject SDK accessors that can throw on
         // partially-loaded objects. Callers want a sentinel ("unknown") rather than
         // a crashed indexer.
         private static DateTime SafeReadDate(Func<DateTime> read)
         {
-            try { return read(); } catch { return DateTime.MinValue; }
+            try { return SdkTimestampNormalizer.NormalizeUtc(read()); } catch { return DateTime.MinValue; }
         }
 
         private static string SafeReadString(Func<string> read)
@@ -1538,22 +2200,71 @@ namespace GxMcp.Worker.Services
             try { return read(); } catch { return null; }
         }
 
+        // SourceSearchService already paid the SDK read for this complete primary source.
+        // Promote it into the existing index snapshot so a later worker process can
+        // answer the same literal search without reopening every candidate source.
+        // Keep persisted source memory bounded: each source is capped at 2 MiB and the
+        // aggregate FullSource budget is capped at 8 MiB. An empty string is a valid
+        // complete-source marker when the SDK confirmed that this object has no source part.
+        private const int PersistedFullSourceMaxChars = 2 * 1024 * 1024;
+        private const long PersistedFullSourceBudgetChars = 8L * 1024 * 1024;
+        internal bool PromoteSourceForSearch(SearchIndex.IndexEntry entry, string source)
+        {
+            if (entry == null || source == null || source.Length > PersistedFullSourceMaxChars) return false;
+            var index = TryGetLoadedIndex();
+            if (index?.Objects == null) return false;
+
+            string key = GetEntryStorageKeyStatic(entry);
+            if (!index.Objects.TryGetValue(key, out var current) || current == null) return false;
+            if (!string.IsNullOrEmpty(entry.Guid)
+                && !string.Equals(current.Guid, entry.Guid, StringComparison.OrdinalIgnoreCase)) return false;
+            long storedChars = 0;
+            foreach (var candidate in index.Objects.Values)
+            {
+                if (candidate?.FullSource != null) storedChars += candidate.FullSource.Length;
+            }
+            if (storedChars + source.Length > PersistedFullSourceBudgetChars) return false;
+            lock (current)
+            {
+                if (current.FullSource != null) return false;
+                current.FullSource = source;
+            }
+
+            // EnsureSourceTokenIndex creates this map before a literal source search;
+            // if a caller used a non-literal regex, the next literal search rebuilds it
+            // from the now-persisted FullSource field.
+            if (index.SourceTokenIndex != null) AddSourceTokens(index.SourceTokenIndex, current);
+            MarkSourceDirtyForKey(key);
+            if (_initialized) ScheduleThrottledFlush();
+            return true;
+        }
+
         public void UpdateEntry(global::Artech.Architecture.Common.Objects.KBObject obj)
         {
             var index = GetIndex();
+            // The watcher may observe an external move/rename while the lite walk is
+            // running; do not reuse the hierarchy cached by the earlier SDK view.
+            _hierarchyCache.TryRemove(obj.Guid, out _);
             var hierarchy = ResolveHierarchy(obj);
 
             var entry = new SearchIndex.IndexEntry
             {
                 Guid = obj.Guid.ToString(),
+                EntityKey = SafeEntityKey(obj),
+                EntityTypeGuid = SafeEntityTypeGuid(obj),
+                EntityId = SafeEntityId(obj),
                 Name = obj.Name,
-                Type = obj.TypeDescriptor.Name,
+                // Low-cardinality shared vocabulary (~dozens of types/modules, not
+                // per-object uniques): intern at creation so 38k entries share one
+                // instance each instead of 38k copies. Name/Guid/Description stay
+                // plain — interning uniques would pin them forever with zero sharing.
+                Type = SearchIndex.InternShared(obj.TypeDescriptor.Name),
                 Description = obj.Description,
-                Parent = hierarchy.ParentName,
-                ParentPath = hierarchy.ParentPath,
-                ParentFolderPath = ComposeParentFolderPath(hierarchy.ParentPath),
-                Path = hierarchy.Path,
-                Module = hierarchy.ModuleName,
+                Parent = SearchIndex.InternShared(hierarchy.ParentName),
+                ParentPath = SearchIndex.InternShared(hierarchy.ParentPath),
+                ParentFolderPath = SearchIndex.InternShared(ComposeParentFolderPath(hierarchy.ParentPath)),
+                Path = SearchIndex.InternShared(hierarchy.Path),
+                Module = SearchIndex.InternShared(hierarchy.ModuleName),
                 LastUpdate = SafeReadDate(() => obj.LastUpdate),
                 CreatedAt = SafeReadDate(() => obj.VersionDate),
                 LastModifiedBy = SafeReadString(() => obj.UserName),
@@ -1571,14 +2282,14 @@ namespace GxMcp.Worker.Services
             long teStart = System.Diagnostics.Stopwatch.GetTimestamp();
             if (obj is global::Artech.Genexus.Common.Objects.Attribute attr)
             {
-                entry.DataType = attr.Type.ToString();
+                entry.DataType = SearchIndex.InternShared(attr.Type.ToString());
                 entry.Length = attr.Length;
                 entry.Decimals = attr.Decimals;
                 entry.IsFormula = attr.Formula != null;
             }
             else if (obj is global::Artech.Genexus.Common.Objects.Table tbl)
             {
-                entry.RootTable = tbl.Name;
+                entry.RootTable = SearchIndex.InternShared(tbl.Name);
                 try {
                     var children = new Newtonsoft.Json.Linq.JArray();
                     dynamic dStructure = ((dynamic)tbl).TableStructure;
@@ -1591,7 +2302,7 @@ namespace GxMcp.Worker.Services
             }
             else if (obj is global::Artech.Genexus.Common.Objects.Transaction trn)
             {
-                entry.RootTable = trn.Structure.Root.Name;
+                entry.RootTable = SearchIndex.InternShared(trn.Structure.Root.Name);
                 try { entry.ParmRule = trn.Rules.Source.Split('\n').FirstOrDefault(l => l.Trim().StartsWith("parm(", StringComparison.OrdinalIgnoreCase)); } catch { }
             }
             else if (obj is global::Artech.Genexus.Common.Objects.SDT sdt)
@@ -1604,6 +2315,21 @@ namespace GxMcp.Worker.Services
                 }
             }
 
+            // Keep the primary textual part in the derived source index for every
+            // object kind that exposes ISource, not only Procedure/DataProvider.
+            // WebPanel/Transaction source searches can therefore avoid an SDK round
+            // trip as well; virtual WebForm/layout scopes continue using their normal
+            // projection path.
+            if (entry.FullSource == null)
+            {
+                try
+                {
+                    var primarySource = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is ISource) as ISource;
+                    if (primarySource != null) entry.FullSource = primarySource.Source ?? string.Empty;
+                }
+                catch { }
+            }
+
             // Calculate Complexity for Procedures/DataProviders
             if (obj is global::Artech.Genexus.Common.Objects.Procedure || obj is global::Artech.Genexus.Common.Objects.DataProvider)
             {
@@ -1611,6 +2337,7 @@ namespace GxMcp.Worker.Services
                     dynamic sourcePart = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is ISource);
                     if (sourcePart != null) {
                         string src = sourcePart.Source ?? "";
+                        entry.FullSource = src;
                         entry.Complexity = src.Split('\n').Length;
                         // Source is already in hand here — extract code metrics for KB-wide
                         // analytics (genexus_analyze mode=code_metrics) at ~no extra cost.
@@ -1622,6 +2349,37 @@ namespace GxMcp.Worker.Services
             System.Threading.Interlocked.Add(ref _enrichTypeExtractTicks, System.Diagnostics.Stopwatch.GetTimestamp() - teStart);
 
             string key = GetEntryStorageKey(entry);
+
+            SearchIndex.IndexEntry previousEntry = null;
+            try { index.Objects.TryGetValue(key, out previousEntry); } catch { }
+            if (previousEntry != null && index.ChildrenByParent != null
+                && (!string.Equals(previousEntry.ParentPath, entry.ParentPath, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(previousEntry.Path, entry.Path, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(previousEntry.Module, entry.Module, StringComparison.OrdinalIgnoreCase)))
+            {
+                RemoveEntryFromParentIndex(index, previousEntry);
+            }
+            if (previousEntry != null)
+            {
+                // Secondary indexes are set-based, so replacing the primary entry must
+                // first remove its old domain/name membership. Parent changes already
+                // performed this removal above; repeating it is harmless and keeps the
+                // same-key replacement path correct too.
+                RemoveEntryFromSecondaryIndexes(index, previousEntry);
+                if (index.GuidToKey != null
+                    && !string.IsNullOrEmpty(previousEntry.Guid)
+                    && !string.Equals(previousEntry.Guid, entry.Guid, StringComparison.OrdinalIgnoreCase)
+                    && index.GuidToKey.TryGetValue(previousEntry.Guid, out var mappedKey)
+                    && string.Equals(mappedKey, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    index.GuidToKey.TryRemove(previousEntry.Guid, out _);
+                }
+            }
+            if (index.SourceTokenIndex != null)
+            {
+                RemoveSourceTokens(index.SourceTokenIndex, previousEntry);
+                AddSourceTokens(index.SourceTokenIndex, entry);
+            }
 
             // Compute Embedding
             string semanticText = $"{entry.Name} {entry.Type} {entry.Description} {entry.RootTable} {entry.ParmRule}";
@@ -1638,13 +2396,25 @@ namespace GxMcp.Worker.Services
             {
                 if (index.Objects.TryRemove(oldKey, out var stale))
                 {
+                    if (_liteWalkActive)
+                    {
+                        _liteWalkRemovals[oldKey] = 1;
+                        _liteWalkMutations.TryRemove(oldKey, out _);
+                    }
                     if (index.ChildrenByParent != null) RemoveEntryFromParentIndex(index, stale);
+                    RemoveSourceTokens(index.SourceTokenIndex, stale);
                     MarkShardDirty(oldKey); // the old key's shard lost an entry too
                 }
             }
 
             // Atomic update using ConcurrentDictionary
             index.Objects.AddOrUpdate(key, entry, (k, existing) => entry);
+            if (_liteWalkActive)
+            {
+                _liteWalkMutations[key] = 1;
+                _liteWalkRemovals.TryRemove(key, out _);
+            }
+            TouchGraph(index);
             if (index.ChildrenByParent != null)
             {
                 AddOrUpdateEntryInParentIndex(index, entry);
@@ -1661,6 +2431,7 @@ namespace GxMcp.Worker.Services
             // CALLERS get enriched. So in lazy mode impact analysis (callers) correctly relies on
             // the live SDK cross-check rather than the index — see AnalyzeService.
             Guid objGuid = obj.Guid;
+            var objKey = obj.Key;
             Program.EnqueueBackground(() => {
                 try {
                     var kb = _buildService.KbService?.GetKB();
@@ -1669,7 +2440,8 @@ namespace GxMcp.Worker.Services
                     // dispatcher thread must not interleave them with other apartments.
                     using (SdkGate.Enter())
                     {
-                        var bgObj = kb.DesignModel.Objects.Get(objGuid);
+                        var bgObj = kb.DesignModel.Objects.Get(objKey);
+                        if (bgObj == null) bgObj = kb.DesignModel.Objects.Get(objGuid);
                         if (bgObj == null) return;
                         EnrichEdges((global::Artech.Architecture.Common.Objects.KBObject)bgObj, entry, index);
                     }
@@ -1679,6 +2451,24 @@ namespace GxMcp.Worker.Services
             MarkDirtyForKey(key);
             // Fire and forget save to disk (throttled — see ScheduleThrottledFlush)
             ScheduleThrottledFlush();
+        }
+
+        internal (string ParentName, string ParentPath, string Path, string ModuleName) ResolveHierarchyForIndex(global::Artech.Architecture.Common.Objects.KBObject obj)
+            => ResolveHierarchy(obj);
+
+        private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.ToString(); } catch { return null; }
+        }
+
+        private static string SafeEntityTypeGuid(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Type.ToString(); } catch { return null; }
+        }
+
+        private static int? SafeEntityId(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Id; } catch { return null; }
         }
 
         // ── Copy-on-write edge lists ────────────────────────────────────────────
@@ -1696,16 +2486,66 @@ namespace GxMcp.Worker.Services
             string value)
         {
             if (entry == null || string.IsNullOrEmpty(value)) return false;
+            // Memory weight: the same callee/table name repeats in hundreds of
+            // callers' edge lists (one fresh instance per occurrence). The CLR
+            // intern pool collapses each distinct name to a single shared instance;
+            // the vocabulary is bounded by the KB's object names, so nothing
+            // unbounded is pinned. Value-equality semantics below are unaffected.
+            value = string.Intern(value);
             lock (entry)
             {
-                var current = get(entry) ?? new List<string>();
-                if (current.Contains(value, StringComparer.OrdinalIgnoreCase)) return false;
+                var current = get(entry);
+                // PERFORMANCE (perf-review): hub entries (popular Tables/SDTs referenced
+                // by hundreds of procedures) made each duplicate-check a linear
+                // List.Contains over a list holding thousands of names — and the check
+                // runs once per referencing caller during enrichment, O(k²) per hub.
+                // A per-entry companion HashSet (lazily built once the list passes a
+                // small threshold; invalidated when the published list instance changes
+                // or its count no longer matches) turns the duplicate check into O(1).
+                var cache = SeenFor(get);
+                HashSet<string> hashSet = null;
+                if (cache != null && cache.TryGetValue(entry, out hashSet)
+                    && (hashSet == null || hashSet.Count != (current?.Count ?? 0)))
+                {
+                    hashSet = null; // replaced/stale — rebuild below
+                }
+                if (hashSet == null && current != null && current.Count > 8)
+                {
+                    hashSet = new HashSet<string>(current, StringComparer.OrdinalIgnoreCase);
+                    cache.Remove(entry);
+                    cache.Add(entry, hashSet);
+                }
+                if (current == null) current = new List<string>();
+                if (hashSet != null)
+                {
+                    if (!hashSet.Add(value)) return false;
+                }
+                else if (current.Contains(value, StringComparer.OrdinalIgnoreCase)) return false;
                 var next = new List<string>(current.Count + 1);
                 next.AddRange(current);
                 next.Add(value);
                 set(entry, next);
                 return true;
             }
+        }
+
+        // One companion-set table per edge kind (Calls/Tables/CalledBy), keyed by the
+        // getter delegate identity so AddEdgeCow can find its cache without touching
+        // the entry model. Unknown getters return null → falls back to List.Contains.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SearchIndex.IndexEntry, HashSet<string>> _callsSeen = new();
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SearchIndex.IndexEntry, HashSet<string>> _tablesSeen = new();
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SearchIndex.IndexEntry, HashSet<string>> _calledBySeen = new();
+        private static readonly Func<SearchIndex.IndexEntry, List<string>> GetCallsFn = x => x.Calls;
+        private static readonly Func<SearchIndex.IndexEntry, List<string>> GetTablesFn = x => x.Tables;
+        private static readonly Func<SearchIndex.IndexEntry, List<string>> GetCalledByFn = x => x.CalledBy;
+
+        private static System.Runtime.CompilerServices.ConditionalWeakTable<SearchIndex.IndexEntry, HashSet<string>> SeenFor(
+            Func<SearchIndex.IndexEntry, List<string>> get)
+        {
+            if (ReferenceEquals(get, GetCallsFn)) return _callsSeen;
+            if (ReferenceEquals(get, GetTablesFn)) return _tablesSeen;
+            if (ReferenceEquals(get, GetCalledByFn)) return _calledBySeen;
+            return null;
         }
 
         internal static bool AddCallCow(SearchIndex.IndexEntry e, string name)
@@ -1750,8 +2590,15 @@ namespace GxMcp.Worker.Services
                         }
 
                         // Inverted Index (CalledBy) — copy-on-write, see AddEdgeCow.
-                        string targetIndexKey = $"{targetType}:{targetName}";
-                        if (index.Objects.TryGetValue(targetIndexKey, out var targetEntry)) {
+                        // E4: resolve the target's REAL storage key instead of assuming the bare
+                        // "Type:Name" shape — GetEntryStorageKey scopes Folder/Module keys with
+                        // their path (Type:Path), so a direct lookup silently missed those
+                        // targets and their CalledBy edges were dropped.
+                        string targetGuid = null;
+                        try { object g = targetKey.Guid; if (g != null) targetGuid = g.ToString(); } catch { /* key shape without Guid */ }
+                        string targetIndexKey = ResolveTargetStorageKey(index, targetType, targetName, targetGuid);
+                        if (!string.IsNullOrEmpty(targetIndexKey)
+                            && index.Objects.TryGetValue(targetIndexKey, out var targetEntry)) {
                             if (AddCalledByCow(targetEntry, entry.Name)) { changed = true; MarkShardDirty(targetIndexKey); }
                         }
                     } catch { }
@@ -1776,7 +2623,50 @@ namespace GxMcp.Worker.Services
             // Plan 003: entry's own shard was marked already (or is marked below); target
             // shards touched via CalledBy were marked inline above / in the textual scan.
             // Only bump the generation here — precise per-shard marking already happened.
-            if (changed) { System.Threading.Interlocked.Increment(ref _dirtyGeneration); MarkShardDirty(GetEntryStorageKey(entry)); ScheduleThrottledFlush(); }
+            if (changed) { TouchGraph(index); System.Threading.Interlocked.Increment(ref _dirtyGeneration); MarkShardDirty(GetEntryStorageKey(entry)); ScheduleThrottledFlush(); }
+        }
+
+        // E4: resolve an edge target to its REAL storage key (the shape GetEntryStorageKey
+        // produces), so CalledBy no longer silently drops matches when the stored key isn't
+        // the bare Type:Name (Folder/Module keys are scoped with their path). Preference:
+        // 1) the maintained Guid→storage-key map (authoritative, rename-safe), guarded by a
+        //    presence check so a stale guid mapping can never shadow a live direct key;
+        // 2) the direct Type:Name key — Objects' comparer is OrdinalIgnoreCase, so original
+        //    casing differences are already covered there;
+        // 3) the ByNameIndex multimap filtered by type as a deterministic fallback.
+        // Read-only: never mutates the stored key format (on-disk cache stays compatible).
+        private static string ResolveTargetStorageKey(SearchIndex index, string targetType, string targetName, string targetGuid)
+        {
+            if (index?.Objects == null || string.IsNullOrEmpty(targetName)) return null;
+
+            if (!string.IsNullOrEmpty(targetGuid)
+                && index.GuidToKey != null
+                && index.GuidToKey.TryGetValue(targetGuid, out var byGuid)
+                && !string.IsNullOrEmpty(byGuid)
+                && index.Objects.ContainsKey(byGuid))
+            {
+                return byGuid;
+            }
+
+            string direct = string.Format("{0}:{1}", targetType, targetName);
+            if (index.Objects.ContainsKey(direct)) return direct;
+
+            if (index.ByNameIndex != null && index.ByNameIndex.TryGetValue(targetName, out var candidates))
+            {
+                lock (candidates)
+                {
+                    foreach (var candidate in candidates)
+                    {
+                        if (index.Objects.TryGetValue(candidate, out var entry) && entry != null
+                            && string.Equals(entry.Type, targetType, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+
+            return null;
         }
 
         // FR#3 (friction-report 2026-05-14): textual call-site scan that augments the SDK
@@ -1848,17 +2738,41 @@ namespace GxMcp.Worker.Services
             var removedKeys = new List<string>();
             lock (_lock)
             {
-                var keysToRemove = index.Objects
-                    .Where(pair =>
-                        string.Equals(pair.Value.Type, type, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(pair.Value.Name, name, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
+                // PERFORMANCE (perf-review): resolve candidate keys through the
+                // ByNameIndex multimap instead of scanning all ~38k entries while
+                // holding _lock. Type filter still applies (a name can exist across
+                // types); the old full scan is kept as a fallback for indexes that
+                // haven't built the multimap yet.
+                List<KeyValuePair<string, SearchIndex.IndexEntry>> keysToRemove = null;
+                if (index.ByNameIndex != null && !string.IsNullOrEmpty(name)
+                    && index.ByNameIndex.TryGetValue(name, out var candidateKeys) && candidateKeys != null)
+                {
+                    keysToRemove = new List<KeyValuePair<string, SearchIndex.IndexEntry>>();
+                    lock (candidateKeys)
+                    {
+                        foreach (var key in candidateKeys)
+                        {
+                            if (!index.Objects.TryGetValue(key, out var entry) || entry == null) continue;
+                            if (string.Equals(entry.Type, type, StringComparison.OrdinalIgnoreCase))
+                                keysToRemove.Add(new KeyValuePair<string, SearchIndex.IndexEntry>(key, entry));
+                        }
+                    }
+                }
+                else
+                {
+                    keysToRemove = index.Objects
+                        .Where(pair =>
+                            string.Equals(pair.Value.Type, type, StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(pair.Value.Name, name, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                }
 
                 foreach (var pair in keysToRemove)
                 {
                     if (index.Objects.TryRemove(pair.Key, out var removedEntry))
                     {
                         removed = true;
+                        TouchGraph(index);
                         removedKeys.Add(pair.Key);
                         // Surgical removal (mirrors RemoveEntryByGuid) — the previous
                         // implementation rebuilt the ENTIRE parent index via UpdateIndex
@@ -1901,8 +2815,12 @@ namespace GxMcp.Worker.Services
             lock (_lock)
             {
                 _index = null;
+                _initialized = false;
+                ResetHighWaterMark();
+                _pendingEnrichCache = null;
                 _hierarchyCache.Clear(); // PERFORMANCE (W-M5): drop stale hierarchy on KB unload.
             }
+            MarkIndexFailed();
         }
 
         // SP6.T6 — fast-index lite pass uses this to bulk-replace the in-memory index with
@@ -1923,6 +2841,7 @@ namespace GxMcp.Worker.Services
                     {
                         if (e == null || string.IsNullOrEmpty(e.Name)) continue;
                         string key = GetEntryStorageKey(e);
+                        if (_liteWalkRemovals.ContainsKey(key)) continue;
                         if (!e.IsEnriched && previous != null
                             && previous.Objects.TryGetValue(key, out var existing)
                             && existing != null && existing.IsEnriched)
@@ -1933,6 +2852,20 @@ namespace GxMcp.Worker.Services
                         idx.Objects[key] = e;
                     }
                 }
+                // Preserve live mutations that happened during the lite walk. Explicit
+                // removals win, preventing a stale walk entry from being resurrected.
+                if (previous != null)
+                {
+                    foreach (var mutation in _liteWalkMutations.Keys)
+                    {
+                        if (_liteWalkRemovals.ContainsKey(mutation)) continue;
+                        if (previous.Objects.TryGetValue(mutation, out var live) && live != null)
+                            idx.Objects[mutation] = live;
+                    }
+                }
+                _liteWalkMutations.Clear();
+                _liteWalkRemovals.Clear();
+                _liteWalkActive = false;
                 idx.LastUpdated = DateTime.UtcNow;
                 BuildParentIndex(idx);
                 _index = idx;
@@ -1956,7 +2889,8 @@ namespace GxMcp.Worker.Services
             {
                 if (_index == null) _index = new SearchIndex();
                 idx = _index;
-                if (idx.ChildrenByParent == null || idx.GuidToKey == null) BuildParentIndex(idx);
+                if (idx.ChildrenByParent == null || idx.GuidToKey == null || idx.ByNameIndex == null
+                    || idx.SourceTokenIndex == null) BuildParentIndex(idx);
                 _initialized = true;
             }
 
@@ -1965,21 +2899,34 @@ namespace GxMcp.Worker.Services
             {
                 if (e == null || string.IsNullOrEmpty(e.Name)) continue;
                 string key = GetEntryStorageKey(e);
+                if (_liteWalkActive)
+                {
+                    _liteWalkMutations[key] = 1;
+                    _liteWalkRemovals.TryRemove(key, out _);
+                }
                 if (!e.IsEnriched && idx.Objects.TryGetValue(key, out var existing)
                     && existing != null && existing.IsEnriched)
                 {
                     continue; // never demote an enriched entry to a stub
                 }
+                SearchIndex.IndexEntry priorEntry = null;
+                idx.Objects.TryGetValue(key, out priorEntry);
                 idx.Objects[key] = e;
                 if (idx.ChildrenByParent != null) AddOrUpdateEntryInParentIndex(idx, e);
                 if (idx.GuidToKey != null && !string.IsNullOrEmpty(e.Guid)) idx.GuidToKey[e.Guid] = key;
+                if (idx.SourceTokenIndex != null)
+                {
+                    RemoveSourceTokens(idx.SourceTokenIndex, priorEntry);
+                    AddSourceTokens(idx.SourceTokenIndex, e);
+                }
                 MarkShardDirty(key);
                 any = true;
             }
             if (any)
             {
                 idx.LastUpdated = DateTime.UtcNow;
-                System.Threading.Interlocked.Increment(ref _dirtyGeneration);
+                TouchGraph(idx);
+                MarkNonSourceDirty();
             }
         }
 
@@ -2003,6 +2950,10 @@ namespace GxMcp.Worker.Services
                 try { if (!string.IsNullOrEmpty(_indexPath) && File.Exists(_indexPath)) File.Delete(_indexPath); } catch (Exception ex) { Logger.Warn("Delete plain snapshot failed: " + ex.Message); }
                 // Plan 003: drop the sharded snapshot directory too.
                 try { if (!string.IsNullOrEmpty(_shardDirPath) && Directory.Exists(_shardDirPath)) Directory.Delete(_shardDirPath, true); } catch (Exception ex) { Logger.Warn("Delete shard dir failed: " + ex.Message); }
+                // Versioned slots are append-only until publication; remove both the
+                // certified generation and abandoned rebuild generations on a forced reset.
+                try { if (!string.IsNullOrEmpty(_snapshotSlotsPath) && Directory.Exists(_snapshotSlotsPath)) Directory.Delete(_snapshotSlotsPath, true); } catch (Exception ex) { Logger.Warn("Delete snapshot slots failed: " + ex.Message); }
+                _certifiedSlotPath = null;
                 // Fase 1: drop the validation sidecar + hwm so a forced rebuild starts clean.
                 try { if (!string.IsNullOrEmpty(_metaPath) && File.Exists(_metaPath)) File.Delete(_metaPath); } catch (Exception ex) { Logger.Warn("Delete meta sidecar failed: " + ex.Message); }
                 ResetHighWaterMark();

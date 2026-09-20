@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://genexus18mcp.local/schemas/conversion-bundle/1.0.0",
+  "title": "GeneXus deterministic conversion bundle",
+  "description": "Reviewable, versioned input/output contract for a conversion run. This schema does not authorize a Business Component call.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "bundleId", "source", "target", "artifacts", "diagnostics", "acceptance"],
+  "properties": {
+    "schemaVersion": { "const": "conversion-bundle/1.0" },
+    "bundleId": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$" },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "kbAlias", "objectName", "objectType", "snapshotSha256"],
+      "properties": {
+        "kind": { "const": "genexus-object" },
+        "kbAlias": { "type": "string", "minLength": 1 },
+        "objectName": { "type": "string", "minLength": 1 },
+        "objectType": { "type": "string", "minLength": 1 },
+        "snapshotSha256": { "$ref": "#/$defs/sha256" },
+        "sourceRevision": { "type": "string", "minLength": 1 },
+        "parts": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+      }
+    },
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "language", "generatorVersion", "assumptions"],
+      "properties": {
+        "kind": { "const": "business-component" },
+        "language": { "type": "string", "enum": ["csharp", "typescript"] },
+        "generatorVersion": { "type": "string", "minLength": 1 },
+        "assumptions": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+        "sdkCompatibility": { "type": "string", "minLength": 1 }
+      }
+    },
+    "artifacts": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path", "mediaType", "sha256", "bytes"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^[^/\\\\][^:]*$" },
+          "mediaType": { "type": "string", "minLength": 1 },
+          "sha256": { "$ref": "#/$defs/sha256" },
+          "bytes": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "items"],
+      "properties": {
+        "status": { "type": "string", "enum": ["success", "warning", "failed", "blocked"] },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["severity", "code", "message"],
+            "properties": {
+              "severity": { "type": "string", "enum": ["info", "warning", "error"] },
+              "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_.-]+$" },
+              "message": { "type": "string", "minLength": 1 },
+              "path": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "acceptance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["humanApproval", "fixtureId", "checks"],
+      "properties": {
+        "humanApproval": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "fixtureId": { "type": "string", "minLength": 1 },
+        "checks": {
+          "type": "array", "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["name", "status", "evidence"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "status": { "type": "string", "enum": ["pending", "passed", "failed", "not-run"] },
+              "evidence": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "determinism": {
+      "type": "object", "additionalProperties": false,
+      "required": ["canonicalSha256", "oracleVersion"],
+      "properties": {
+        "canonicalSha256": { "$ref": "#/$defs/sha256" },
+        "oracleVersion": { "type": "string", "const": "conversion-oracle/1" }
+      }
+    }
+  },
+  "$defs": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+}

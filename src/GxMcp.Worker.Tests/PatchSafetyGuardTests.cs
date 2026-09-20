@@ -54,9 +54,138 @@ namespace GxMcp.Worker.Tests
         public void IsPatchWriteSafe_EmptyPayload_NonEmptyOriginal_Rejects()
         {
             string original = "lots of content\nspanning many\nlines\n";
-            bool ok = WriteService.IsPatchWriteSafe(original, "", anyOpApplied: true, out string reason);
+            bool ok = WriteService.IsPatchWriteSafe(original, "", anyOpApplied: false, out string reason);
             Assert.False(ok);
             Assert.Equal("patch_no_match", reason);
+        }
+
+        [Fact]
+        public void IsPatchWriteSafe_EmptyPayload_WithConfirmedReplace_Allows()
+        {
+            bool ok = WriteService.IsPatchWriteSafe("the complete source", "", anyOpApplied: true, out string reason);
+            Assert.True(ok);
+            Assert.Null(reason);
+        }
+
+        [Fact]
+        public void ApplyFindReplace_CompleteSource_WithEmptyReplacement_ReturnsIntentionalEmptyResult()
+        {
+            string source = "line one\r\nline two\r\n";
+            var patch = new JObject
+            {
+                ["find"] = source,
+                ["replace"] = ""
+            };
+
+            var (ok, result, reason) = PatchService.ApplyFindReplace(source, patch);
+
+            Assert.True(ok);
+            Assert.Equal(string.Empty, result);
+            Assert.Null(reason);
+        }
+
+        [Fact]
+        public void PatchService_TextWritesUseTransactionalPartSaveAndExposeVerificationReceipt_ViaConvention()
+        {
+            string repoRoot = TestFixtures.FindRepoRoot();
+            string patchSource = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(repoRoot, "src", "GxMcp.Worker", "Services", "PatchService.cs"));
+            string receiptSource = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(repoRoot, "src", "GxMcp.Worker", "Services", "PatchPersistenceReceipt.cs"));
+
+            Assert.DoesNotContain("preferFastSourceSave: true", patchSource);
+            Assert.Contains("preferFastSourceSave: false", patchSource);
+            Assert.Contains("writePayload[\"saved\"]", patchSource);
+            Assert.Contains("writePayload[\"verified\"]", patchSource);
+            Assert.Contains("payload[\"persistedMatchCount\"]", receiptSource);
+            Assert.Contains("payload[\"oldContentPresent\"]", receiptSource);
+            Assert.Contains("writePayload[\"versionToken\"]", patchSource);
+            Assert.Contains("BaseVersionRequired", patchSource);
+            Assert.Contains("CommentOnlyWriteNotPersisted", receiptSource);
+            Assert.Contains("implicitOperations", patchSource);
+            Assert.Contains("StringSplitOptions.None", patchSource);
+            Assert.DoesNotContain("context?.Split(new[] { '\\n' }, StringSplitOptions.RemoveEmptyEntries)", patchSource);
+        }
+
+        [Fact]
+        public void PatchService_RefusesStaleOrIndeterminatePersistenceEvidence_ViaConvention()
+        {
+            string repoRoot = TestFixtures.FindRepoRoot();
+            string patchSource = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(repoRoot, "src", "GxMcp.Worker", "Services", "PatchService.cs"));
+            string objectSource = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(repoRoot, "src", "GxMcp.Worker", "Services", "ObjectService.cs"));
+            string patternSource = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(repoRoot, "src", "GxMcp.Worker", "Services", "PatternAnalysisService.cs"));
+            string writeSource = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(repoRoot, "src", "GxMcp.Worker", "Services", "WriteService.cs"));
+            string patchUtilsSource = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(repoRoot, "src", "GxMcp.Worker", "Services", "WriteService.PatchUtils.cs"));
+
+            Assert.Contains("ReadObjectSourceForVerification(target, partName, typeFilter)", patchSource);
+            Assert.Contains("TryReadCompleteSource", patchSource);
+            Assert.Contains("ReadObjectSourceForVerification(target, resolvedPart, typeFilter)", writeSource);
+            Assert.Contains("FreshReadUnavailable", objectSource);
+            Assert.Contains("same in-memory object", objectSource);
+            Assert.Contains("ReadPatternPartXmlFresh", objectSource);
+            Assert.Contains("FindObjectFresh(instanceName,\"WorkWithPlus\")", patternSource.Replace(" ", ""));
+            Assert.Contains("WriteVerificationUnavailable", patchUtilsSource);
+            Assert.Contains("json[\"error\"]", patchUtilsSource);
+            Assert.Contains("serializedPart", objectSource);
+            Assert.Contains("IsPostSaveVerificationIndeterminate", patchUtilsSource);
+            Assert.Contains("baseVersion: rollbackBaseVersion", patchSource);
+            Assert.Contains("post-save version token was unavailable", patchSource);
+        }
+
+        [Fact]
+        public void PatchService_CompleteSourceGuardRejectsUnknownReadsBeforeWrite()
+        {
+            string[] incompleteReads =
+            {
+                "{\"status\":\"error\",\"error\":\"read failed\"}",
+                "{\"source\":\"partial\",\"truncated\":true}",
+                "{\"source\":\"partial\",\"isTruncatedByWorker\":true}",
+                "{\"source\":\"encoded\",\"isBase64\":true}",
+                "{\"source\":\"<Properties />\",\"serializedPart\":true}",
+                "{\"source\":\"<Properties />\",\"projected\":true}",
+                "{\"source\":{\"value\":\"not text\"}}",
+                "not-json"
+            };
+
+            foreach (string response in incompleteReads)
+            {
+                bool complete = PatchService.TryReadCompleteSource(
+                    response, out _, out string source, out string error);
+
+                Assert.False(complete, response);
+                Assert.Null(source);
+                Assert.False(string.IsNullOrWhiteSpace(error), response);
+            }
+
+            bool emptySourceIsComplete = PatchService.TryReadCompleteSource(
+                "{\"status\":\"ok\",\"source\":\"\"}",
+                out _, out string emptySource, out string emptyError);
+
+            Assert.True(emptySourceIsComplete);
+            Assert.Equal(string.Empty, emptySource);
+            Assert.Null(emptyError);
+        }
+
+        [Fact]
+        public void FullWriteVerificationAllowsSerializedPartsButPatchReadsDoNot()
+        {
+            const string serialized = "{\"status\":\"ok\",\"source\":\"<Properties />\",\"serializedPart\":true}";
+
+            bool patchReadComplete = PatchService.TryReadCompleteSource(
+                serialized, out _, out _, out string patchReadError);
+            bool fullWriteReadComplete = WriteService.TryReadCompleteVerificationSource(
+                serialized, "Layout", out string source, out _, out _, out string fullWriteError, allowSerializedPart: true);
+
+            Assert.False(patchReadComplete);
+            Assert.False(string.IsNullOrWhiteSpace(patchReadError));
+            Assert.True(fullWriteReadComplete);
+            Assert.Equal("<Properties />", source);
+            Assert.Null(fullWriteError);
         }
 
         [Fact]

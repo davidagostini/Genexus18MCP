@@ -59,6 +59,7 @@ namespace GxMcp.Worker.Services
 
         private readonly UIService _uiService;
         private readonly NavigationService _navigationService;
+        private readonly ContextBundleService _contextBundleService = new ContextBundleService();
 
         // v2.3.8 (Task 1.4): unified graph navigation. ImpactAnalysis used to
         // run an inline BFS over CalledBy here; it now delegates to
@@ -430,37 +431,27 @@ namespace GxMcp.Worker.Services
                 return direct;
             }
 
-            // Stage 2: EndsWith on the key suffix, type-priority ordering.
-            var possibleKeys = index.Objects.Keys
-                .Where(k => k.EndsWith(":" + targetName, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (possibleKeys.Count > 0)
+            // Stage 2: index lookup with type-priority ordering
+            var candidates = index.FindByName(targetName);
+            if (candidates.Count == 0 && targetName != null && targetName.Trim() != targetName)
             {
-                foundKey = possibleKeys.FirstOrDefault(k => k.StartsWith("Procedure:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("Transaction:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("WebPanel:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("DataProvider:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.FirstOrDefault(k => k.StartsWith("Table:", StringComparison.OrdinalIgnoreCase))
-                         ?? possibleKeys.First();
-                if (index.Objects.TryGetValue(foundKey, out var byKey)) return byKey;
+                candidates = index.FindByName(targetName.Trim());
+            }
+            if (candidates.Count > 0)
+            {
+                var preferred = candidates.FirstOrDefault(c => string.Equals(c.Type, "Procedure", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates.FirstOrDefault(c => string.Equals(c.Type, "Transaction", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates.FirstOrDefault(c => string.Equals(c.Type, "WebPanel", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates.FirstOrDefault(c => string.Equals(c.Type, "DataProvider", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates.FirstOrDefault(c => string.Equals(c.Type, "Table", StringComparison.OrdinalIgnoreCase))
+                             ?? candidates[0];
+                foundKey = preferred.Type + ":" + preferred.Name;
+                return preferred;
             }
 
-            // Stage 3: exact Name match on the values (handles entries whose
-            // stored Type is empty/null so the EndsWith on the key missed).
-            foreach (var kv in index.Objects)
-            {
-                if (kv.Value != null && string.Equals(kv.Value.Name, targetName, StringComparison.OrdinalIgnoreCase))
-                {
-                    foundKey = kv.Key;
-                    return kv.Value;
-                }
-            }
-
-            // Stage 4: trimmed match — last resort for whitespace/encoding drift
-            // on the entry side. Runs unconditionally on miss; the caller's name
-            // might be clean while the index entry's Name carries SDK whitespace.
-            var trimmed = targetName.Trim();
-            if (trimmed.Length > 0)
+            // Fallback for objects whose index entry Name might have stored whitespace
+            var trimmed = targetName?.Trim();
+            if (!string.IsNullOrEmpty(trimmed))
             {
                 foreach (var kv in index.Objects)
                 {
@@ -482,16 +473,8 @@ namespace GxMcp.Worker.Services
         {
             entry = null;
             if (index?.Objects == null || string.IsNullOrEmpty(bareName)) return false;
-            foreach (var kv in index.Objects)
-            {
-                var v = kv.Value;
-                if (v != null && string.Equals(v.Name, bareName, StringComparison.OrdinalIgnoreCase))
-                {
-                    entry = v;
-                    return true;
-                }
-            }
-            return false;
+            entry = index.FindByName(bareName).FirstOrDefault();
+            return entry != null;
         }
 
         // v2.8.5: container for SDK reference-graph cross-check results.
@@ -832,6 +815,21 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        private string FormatInspectNotFound(string name)
+        {
+            var diagnostic = _objectService?.GetLastResolutionDiagnostic();
+            if (diagnostic != null)
+            {
+                return Models.McpResponse.Err(
+                    code: "IndexedObjectUnavailable",
+                    message: "The search index contains the object, but the active SDK could not resolve its native identity.",
+                    hint: diagnostic["hint"]?.ToString(),
+                    target: name,
+                    errorExtra: diagnostic);
+            }
+            return HealingService.FormatNotFoundError(name, _indexCacheService.GetIndex());
+        }
+
         // KB-wide source analytics over the index (zero SDK reads). Aggregates the per-object
         // CodeMetrics captured at enrichment: totals + optimization candidates (nested for-each,
         // where-heavy procedures). typeFilter defaults to Procedure+DataProvider.
@@ -853,12 +851,13 @@ namespace GxMcp.Worker.Services
                 int objects = 0, withMetrics = 0, missing = 0;
                 var withM = new List<Models.SearchIndex.IndexEntry>();
 
-                foreach (var e in index.Objects.Values)
+                IEnumerable<Models.SearchIndex.IndexEntry> candidatesSource = typed
+                    ? (IEnumerable<Models.SearchIndex.IndexEntry>)index.FindByType(typeFilter)
+                    : index.FindByTypes(new[] { "Procedure", "DataProvider" });
+
+                foreach (var e in candidatesSource)
                 {
                     if (e == null) continue;
-                    if (typed) { if (!string.Equals(e.Type, typeFilter, StringComparison.OrdinalIgnoreCase)) continue; }
-                    else if (!(string.Equals(e.Type, "Procedure", StringComparison.OrdinalIgnoreCase)
-                            || string.Equals(e.Type, "DataProvider", StringComparison.OrdinalIgnoreCase))) continue;
                     objects++;
                     if (e.Metrics == null) { missing++; continue; }
                     withMetrics++;
@@ -910,7 +909,8 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string GetConversionContext(string name, JArray include = null, string typeFilter = null, string projection = "standard")
+        public string GetConversionContext(string name, JArray include = null, string typeFilter = null, string projection = "standard",
+            string guid = null, string entityKey = null, string path = null)
         {
             // Wire the long-advertised (but previously unimplemented) projection knob:
             //   minimal  = name/type/description/lifecycle only (cheapest orient)
@@ -928,7 +928,8 @@ namespace GxMcp.Worker.Services
                                           .Where(s => s.Length > 0)
                                           .OrderBy(s => s, System.StringComparer.OrdinalIgnoreCase));
             // projection must partition the cache — minimal/standard/verbose payloads differ.
-            string inspectKey = (name ?? "") + "|" + includeKey + "|" + (typeFilter ?? "") + "|" + projection;
+            string inspectKey = (name ?? "") + "|" + includeKey + "|" + (typeFilter ?? "") + "|" + projection
+                + "|" + (guid ?? "") + "|" + (entityKey ?? "") + "|" + (path ?? "");
             if (_inspectCache.TryGetValue(inspectKey, out var cached) && cached != null)
             {
                 bool ttlOk = (System.DateTime.UtcNow - cached.FilledAtUtc) < InspectCacheTtl;
@@ -943,12 +944,13 @@ namespace GxMcp.Worker.Services
             }
             try
             {
-                var obj = _objectService.FindObject(name, typeFilter);
-                if (obj == null) return HealingService.FormatNotFoundError(name, _indexCacheService.GetIndex());
+                var obj = _objectService.FindObject(name, typeFilter, guid, entityKey, path);
+                if (obj == null) return FormatInspectNotFound(name);
 
                 var result = new JObject();
                 result["name"] = obj.Name;
                 result["type"] = obj.TypeDescriptor.Name;
+                result["identity"] = _objectService.BuildObjectIdentity(obj);
                 result["description"] = obj.Description;
 
                 // v2.8.5: ambiguity disclosure. When a name resolves across multiple
@@ -964,12 +966,9 @@ namespace GxMcp.Worker.Services
                     {
                         var others = new JArray();
                         var seenTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { obj.TypeDescriptor.Name ?? string.Empty };
-                        foreach (var kv in ambIndex.Objects)
+                        foreach (var e in ambIndex.FindByName(obj.Name))
                         {
-                            var e = kv.Value;
-                            if (e == null || string.IsNullOrEmpty(e.Type)) continue;
-                            if (string.Equals(e.Name, obj.Name, StringComparison.OrdinalIgnoreCase)
-                                && seenTypes.Add(e.Type))
+                            if (e != null && !string.IsNullOrEmpty(e.Type) && seenTypes.Add(e.Type))
                             {
                                 others.Add(new JObject { ["name"] = e.Name, ["type"] = e.Type });
                             }
@@ -1067,7 +1066,7 @@ namespace GxMcp.Worker.Services
                         var life = new JObject();
                         DateTime lu = default;
                         string lub = null;
-                        try { lu = obj.LastUpdate; } catch { }
+                        try { lu = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate); } catch { }
                         try { lub = obj.UserName; } catch { }
                         if (lu > DateTime.MinValue) life["lastUpdate"] = lu.ToUniversalTime().ToString("o");
                         if (!string.IsNullOrEmpty(lub)) life["lastModifiedBy"] = lub;
@@ -1356,8 +1355,8 @@ namespace GxMcp.Worker.Services
                         var life = new JObject();
                         DateTime lu = default, ca = default;
                         string lub = null;
-                        try { lu = obj.LastUpdate; } catch { }
-                        try { ca = obj.VersionDate; } catch { }
+                        try { lu = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate); } catch { }
+                        try { ca = SdkTimestampNormalizer.NormalizeUtc(obj.VersionDate); } catch { }
                         try { lub = obj.UserName; } catch { }
                         if (lu > DateTime.MinValue) life["lastUpdate"] = lu.ToUniversalTime().ToString("o");
                         if (ca > DateTime.MinValue) life["createdAt"] = ca.ToUniversalTime().ToString("o");
@@ -1517,6 +1516,230 @@ namespace GxMcp.Worker.Services
             if (string.IsNullOrEmpty(src) || src.Length <= cap) return src;
             truncated = true;
             return src.Substring(0, cap) + "\n\n// ... [inspect source truncated — use genexus_read for the full part] ...";
+        }
+
+        /// <summary>
+        /// SOTA 360-degree task context: returns the complete target object +
+        /// signatures of all called procedures/panels + schemas and PKs of referenced tables +
+        /// structures of referenced SDTs + top callers in a single roundtrip.
+        /// </summary>
+        public string Get360Context(string target, string typeFilter = null,
+            string guid = null, string entityKey = null, string path = null,
+            int? maxBytes = null, string cursor = null)
+        {
+            try
+            {
+                var obj = _objectService.FindObject(target, typeFilter, guid, entityKey, path);
+                if (obj == null) return FormatInspectNotFound(target);
+
+                // 1. Read full object
+                string fullObjJson = _objectService.ReadFullObject(target, typeFilter, guid, entityKey, path);
+                JObject fullObjResult = null;
+                try
+                {
+                    var parsed = JObject.Parse(fullObjJson);
+                    fullObjResult = (parsed["result"] as JObject) ?? parsed;
+                }
+                catch
+                {
+                    fullObjResult = new JObject { ["name"] = obj.Name, ["type"] = obj.TypeDescriptor?.Name };
+                }
+
+                var result = new JObject
+                {
+                    ["object"] = fullObjResult
+                };
+
+                // 2. Discover called procedures / webpanels and their parm signatures
+                var calledSignatures = new JArray();
+                var referencedTables = new JArray();
+                var referencedSDTs = new JArray();
+                var callers = new JArray();
+
+                var seenCalled = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var seenTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var seenSdts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                dynamic kb = _kbService?.GetKB();
+
+                // 2a. Outgoing references from SDK
+                if (kb != null)
+                {
+                    try
+                    {
+                        foreach (var reference in obj.GetReferences())
+                        {
+                            try
+                            {
+                                var refObj = kb.DesignModel.Objects.Get(reference.To);
+                                if (refObj == null) continue;
+
+                                string rName = refObj.Name;
+                                string rType = refObj.TypeDescriptor?.Name;
+
+                                if (rType == "Procedure" || rType == "WebPanel" || rType == "DataProvider" || rType == "WebComponent")
+                                {
+                                    if (seenCalled.Add(rName) && !rName.Equals(obj.Name, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        var calleeObj = _objectService.FindObject(rName, rType) ?? (KBObject)refObj;
+                                        var pResult = _objectService.GetParametersInternal(calleeObj);
+                                        var cObj = new JObject
+                                        {
+                                            ["name"] = rName,
+                                            ["type"] = rType
+                                        };
+                                        if (!string.IsNullOrEmpty(pResult.parmRule)) cObj["parmRule"] = pResult.parmRule;
+                                        calledSignatures.Add(cObj);
+                                    }
+                                }
+                                else if (rType == "Table" || rType == "Transaction")
+                                {
+                                    string tblName = rName;
+                                    if (seenTables.Add(tblName))
+                                    {
+                                        var tObj = _objectService.FindObject(tblName) as Table;
+                                        if (tObj == null && refObj is Transaction trn)
+                                        {
+                                            tObj = _objectService.FindObject(trn.Name, "Table") as Table;
+                                        }
+
+                                        if (tObj != null)
+                                        {
+                                            var tblStruct = GetTableStructureCompact(tObj);
+                                            if (tblStruct != null) referencedTables.Add(tblStruct);
+                                        }
+                                    }
+                                }
+                                else if (rType == "SDT")
+                                {
+                                    if (seenSdts.Add(rName))
+                                    {
+                                        var sdtStruct = GetSdtStructureCompact(refObj);
+                                        if (sdtStruct != null) referencedSDTs.Add(sdtStruct);
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { }
+                }
+
+                // 2b. Also scan variables for SDT references that might not be in Direct References
+                var vars = fullObjResult["variables"] as JArray;
+                if (vars != null)
+                {
+                    foreach (var v in vars)
+                    {
+                        string sdtName = v["sdt"]?.ToString();
+                        if (!string.IsNullOrEmpty(sdtName) && seenSdts.Add(sdtName))
+                        {
+                            var sdtObj = _objectService.FindObject(sdtName, "SDT");
+                            if (sdtObj != null)
+                            {
+                                var sdtStruct = GetSdtStructureCompact(sdtObj);
+                                if (sdtStruct != null) referencedSDTs.Add(sdtStruct);
+                            }
+                        }
+                    }
+                }
+
+                // 2c. Discover incoming callers (top 10)
+                if (kb != null)
+                {
+                    try
+                    {
+                        var seenCallerNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var reference in obj.GetReferencesTo())
+                        {
+                            try
+                            {
+                                var sourceObj = kb.DesignModel.Objects.Get(reference.From);
+                                if (sourceObj != null && seenCallerNames.Add(sourceObj.Name))
+                                {
+                                    callers.Add(new JObject
+                                    {
+                                        ["name"] = sourceObj.Name,
+                                        ["type"] = sourceObj.TypeDescriptor?.Name
+                                    });
+                                    if (callers.Count >= 10) break;
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { }
+                }
+
+                result["calledSignatures"] = calledSignatures;
+                result["referencedTables"] = referencedTables;
+                result["referencedSDTs"] = referencedSDTs;
+                result["callers"] = callers;
+
+                string envelope = Models.McpResponse.Ok(target: obj.Name, code: "360ContextRead", result: result);
+                return _contextBundleService.Apply(envelope, obj.Name, maxBytes, cursor);
+            }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "Context360Failed",
+                    message: ex.Message,
+                    hint: "Check that the KB is open and the object is accessible.",
+                    target: target);
+            }
+        }
+
+        private JObject GetTableStructureCompact(Table tbl)
+        {
+            try
+            {
+                var res = new JObject
+                {
+                    ["name"] = tbl.Name,
+                    ["description"] = tbl.Description
+                };
+
+                var pkArr = new JArray();
+                var colsArr = new JArray();
+
+                foreach (var attr in tbl.TableStructure.Attributes)
+                {
+                    if (attr.IsKey) pkArr.Add(attr.Name);
+                    var col = new JObject
+                    {
+                        ["name"] = attr.Name,
+                        ["type"] = attr.Attribute?.Type.ToString()
+                    };
+                    if (attr.IsKey) col["isKey"] = true;
+                    colsArr.Add(col);
+                }
+
+                res["primaryKey"] = pkArr;
+                res["columns"] = colsArr;
+                return res;
+            }
+            catch { return null; }
+        }
+
+        private JObject GetSdtStructureCompact(KBObject sdtObj)
+        {
+            try
+            {
+                var res = new JObject
+                {
+                    ["name"] = sdtObj.Name
+                };
+                dynamic sdt = sdtObj;
+                try { res["isCollection"] = (bool)sdt.IsCollection; } catch { }
+                try
+                {
+                    string dsl = StructureParser.SerializeToText(sdtObj);
+                    if (!string.IsNullOrWhiteSpace(dsl)) res["structure"] = dsl;
+                }
+                catch { }
+                return res;
+            }
+            catch { return null; }
         }
 
         public string GetSignature(string name, string typeFilter = null)
@@ -1926,11 +2149,9 @@ namespace GxMcp.Worker.Services
 
         public string ExplainCode(string target, string codeSnippet)
         {
-            // analyze mode=explain was a placeholder that returned a hardcoded
-            // "Code analysis simulation" string regardless of input. The mode is
-            // now removed from the public tool schema; if an old client still
-            // dispatches here, return a clear NotImplemented envelope so the
-            // agent doesn't trust a fake answer.
+            // Keep the legacy explain route as an explicit compatibility
+            // envelope. It is intentionally not a fabricated explanation: old
+            // clients get a typed NotImplemented result and a supported-mode hint.
             return Models.McpResponse.Err(code: "ModeNotImplemented",
                 message: "analyze mode=explain is not implemented.",
                 hint: "Use mode=summary, linter, navigation, data_context, or pattern_metadata instead.");
@@ -2083,6 +2304,14 @@ namespace GxMcp.Worker.Services
                 try { typeStr = item.Type != null ? item.Type.ToString() : null; } catch { }
                 if (!string.IsNullOrEmpty(typeStr)) node["type"] = typeStr;
 
+                // issue #109: surface basedOnAttribute if member is based on an Attribute.
+                try
+                {
+                    string attrName = GxMcp.Worker.Helpers.DomainPropertyApplier.GetAttributeBasedOnName((object)item);
+                    if (!string.IsNullOrEmpty(attrName)) node["basedOnAttribute"] = attrName;
+                }
+                catch { }
+
                 // issue #51: surface basedOnDomain if member is based on a Domain.
                 try
                 {
@@ -2130,6 +2359,42 @@ namespace GxMcp.Worker.Services
         // Enumerates every caller from the index and scans their source for
         // actual call sites, returning line number + 3-line surrounding context.
         // ----------------------------------------------------------------
+        private JArray ScanSdkCallerSources(IEnumerable<string> callerNames, string canonicalName)
+        {
+            var sites = new JArray();
+            if (_objectService == null || callerNames == null) return sites;
+            foreach (var callerName in callerNames.Distinct(StringComparer.OrdinalIgnoreCase).Take(50))
+            {
+                foreach (var partName in new[] { "Source", "Events", "Rules" })
+                {
+                    string source = null;
+                    try { source = _objectService.ReadObjectSource(callerName, partName); } catch { }
+                    if (string.IsNullOrWhiteSpace(source)) continue;
+                    var trimmed = source.TrimStart();
+                    if (trimmed.StartsWith("{") && trimmed.IndexOf("\"error\"", StringComparison.OrdinalIgnoreCase) >= 0)
+                        continue;
+                    var lines = source.Split('\n');
+                    foreach (var call in SourceParser.ParseCalls(source, false))
+                    {
+                        var callee = call.Callee ?? string.Empty;
+                        var unqualified = callee.Substring(callee.LastIndexOf('.') + 1);
+                        if (!string.Equals(callee, canonicalName, StringComparison.OrdinalIgnoreCase)
+                            && !string.Equals(unqualified, canonicalName, StringComparison.OrdinalIgnoreCase)) continue;
+                        int index = Math.Max(0, call.LineNumber - 1);
+                        sites.Add(new JObject
+                        {
+                            ["object"] = callerName,
+                            ["part"] = partName,
+                            ["line"] = call.LineNumber,
+                            ["lineText"] = index < lines.Length ? lines[index] : string.Empty,
+                            ["provenance"] = "sdk-reference-cross-check"
+                        });
+                    }
+                }
+            }
+            return sites;
+        }
+
         public string FindCallerSites(string targetName)
         {
             try
@@ -2246,6 +2511,15 @@ namespace GxMcp.Worker.Services
                         var sdkCallers = new JArray();
                         foreach (var c in sdk.Callers) sdkCallers.Add(c);
                         zeroResult["sdkCallers"] = sdkCallers;
+                        var sdkSites = ScanSdkCallerSources(sdk.Callers, canonicalName);
+                        if (sdkSites.Count > 0)
+                        {
+                            zeroResult["callSiteCount"] = sdkSites.Count;
+                            zeroResult["callerSites"] = sdkSites;
+                            zeroResult["provenance"] = "sdk-reference-cross-check+source-scan";
+                            zeroResult["hint"] = "The index lacked incoming edges; line-level sites were recovered by scanning callers returned by the live SDK reference graph.";
+                            return McpResponse.Ok(target: canonicalName, code: "CallerSitesFound", result: zeroResult);
+                        }
                         zeroResult["verifiedZero"] = false;
                         zeroResult["hint"] = "The index had no caller edges yet, but the live SDK reference graph found callers (listed under sdkCallers). Line-level call sites weren't resolved because the index isn't enriched — re-run shortly, or use genexus_read on the listed callers.";
                         return McpResponse.Ok(target: canonicalName, code: "CallerSitesUnconfirmed", result: zeroResult);

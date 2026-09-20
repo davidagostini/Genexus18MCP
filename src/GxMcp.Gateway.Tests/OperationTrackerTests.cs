@@ -71,9 +71,31 @@ namespace GxMcp.Gateway.Tests
             Assert.False(tracker.IsProgressTokenActive(opId));
         }
 
+        [Fact]
+        public void CancellationRequest_RemainsNonTerminal_UntilWorkerCompletes()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            const string requestId = "req-cancel-requested";
+            string opId = tracker.StartOperation(requestId, "genexus_edit", null, "cid");
+
+            Assert.True(tracker.MarkCancellationRequested(opId, "waiting for SDK"));
+            Assert.Equal("CancellationRequested", tracker.BuildOperationStatus(opId)["status"]?.ToString());
+
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["status"] = "ok" }
+            });
+
+            Assert.Equal("Completed", tracker.BuildOperationStatus(opId)["status"]?.ToString());
+        }
+
         // BUG-05 regression: on JSON-RPC id reuse within the retention window,
         // StartOperation overwrites _requestToOperation to the new op. CleanupExpired
         // of the OLD op must not then delete the mapping now pointing at the NEW op.
+        // The old age-based sweep could also expire a RUNNING op when the thread was
+        // descheduled past the tiny 1ms retention — a genuine CI flake. Running ops
+        // are now immune to time-based expiry (only completed ops age out).
         [Fact]
         public void CleanupExpired_DoesNotDropMappingForReusedRequestId()
         {
@@ -95,6 +117,91 @@ namespace GxMcp.Gateway.Tests
 
             Assert.Equal("Completed", (string)tracker.BuildOperationStatus(op2)["status"]!);
             Assert.NotEqual(op1, op2);
+        }
+
+        // Running operations must never be swept by time-based expiry, even when their
+        // age exceeds the retention window (tiny retention + thread descheduling used to
+        // drop the request->operation mapping mid-flight, making the op NotFound).
+        [Fact]
+        public void CleanupExpired_DoesNotSweepRunningOperation_PastRetentionWindow()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMilliseconds(1));
+            string requestId = "long-running-op";
+            string opId = tracker.StartOperation(requestId, "genexus_edit", null, "cid");
+
+            System.Threading.Thread.Sleep(30); // far past the 1ms retention
+            tracker.CleanupExpired();
+
+            // Still running and still resolvable via its request mapping.
+            Assert.Equal("Running", (string)tracker.BuildOperationStatus(opId)["status"]!);
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["status"] = "ok" }
+            });
+            Assert.Equal("Completed", (string)tracker.BuildOperationStatus(opId)["status"]!);
+        }
+
+        [Fact]
+        public void Timeout_KeepsOperationLiveAndExposesAmbiguousState()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            string requestId = "timeout-request";
+            string opId = tracker.StartOperation(requestId, "genexus_edit", null, "cid");
+
+            tracker.MarkTimeout(opId);
+
+            var status = tracker.BuildOperationStatus(opId);
+            Assert.Equal("Running", status["status"]?.ToString());
+            Assert.True(status["timedOut"]?.ToObject<bool>());
+            Assert.True(status["timeoutCount"]?.ToObject<int>() > 0);
+            Assert.Contains("may still be finishing", status["hint"]?.ToString());
+
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["status"] = "ok" }
+            });
+
+            Assert.Equal("Completed", tracker.BuildOperationStatus(opId)["status"]?.ToString());
+        }
+
+        [Fact]
+        public void ToolStats_ExposeCacheHitsAndErrorCodes()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+            tracker.RecordCacheHit("genexus_query");
+            string requestId = "error-metric-request";
+            tracker.StartOperation(requestId, "genexus_query", null, "cid");
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["error"] = new JObject { ["code"] = "IndexCold", ["message"] = "cold" }
+            });
+
+            var tools = (JObject)tracker.BuildToolStatsBlock()["tools"]!;
+            var stats = (JObject)tools["genexus_query"]!;
+            Assert.Equal(1L, stats["cacheHits"]!.ToObject<long>());
+            Assert.Equal(1L, stats["errorsByCode"]!["IndexCold"]!.ToObject<long>());
+        }
+
+        // Completed operations DO age out after the retention window (memory bound).
+        [Fact]
+        public void CleanupExpired_SweepsCompletedOperation_PastRetentionWindow()
+        {
+            var tracker = new OperationTracker(TimeSpan.FromMilliseconds(1));
+            string requestId = "completed-op";
+            string opId = tracker.StartOperation(requestId, "genexus_read", null, "cid");
+            tracker.CompleteFromWorker(requestId, new JObject
+            {
+                ["id"] = requestId,
+                ["result"] = new JObject { ["ok"] = true }
+            });
+
+            System.Threading.Thread.Sleep(30); // past the 1ms retention
+            tracker.CleanupExpired();
+
+            Assert.Equal("NotFound", (string)tracker.BuildOperationStatus(opId)["status"]!);
         }
 
         // Regression: a worker-crash retry drives both MarkFailedByRequest (the crash) and,

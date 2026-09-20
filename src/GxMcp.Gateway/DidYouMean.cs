@@ -10,20 +10,43 @@ namespace GxMcp.Gateway
         {
             if (string.IsNullOrEmpty(a)) return b?.Length ?? 0;
             if (string.IsNullOrEmpty(b)) return a.Length;
-            var prev = new int[b.Length + 1];
-            var curr = new int[b.Length + 1];
-            for (int j = 0; j <= b.Length; j++) prev[j] = j;
-            for (int i = 1; i <= a.Length; i++)
+
+            if (b.Length <= 128)
             {
-                curr[0] = i;
-                for (int j = 1; j <= b.Length; j++)
+                Span<int> prev = stackalloc int[b.Length + 1];
+                Span<int> curr = stackalloc int[b.Length + 1];
+                for (int j = 0; j <= b.Length; j++) prev[j] = j;
+                for (int i = 1; i <= a.Length; i++)
                 {
-                    int cost = char.ToLowerInvariant(a[i - 1]) == char.ToLowerInvariant(b[j - 1]) ? 0 : 1;
-                    curr[j] = Math.Min(Math.Min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+                    curr[0] = i;
+                    char ca = char.ToLowerInvariant(a[i - 1]);
+                    for (int j = 1; j <= b.Length; j++)
+                    {
+                        int cost = ca == char.ToLowerInvariant(b[j - 1]) ? 0 : 1;
+                        curr[j] = Math.Min(Math.Min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+                    }
+                    curr.CopyTo(prev);
                 }
-                Array.Copy(curr, prev, curr.Length);
+                return prev[b.Length];
             }
-            return prev[b.Length];
+            else
+            {
+                var prev = new int[b.Length + 1];
+                var curr = new int[b.Length + 1];
+                for (int j = 0; j <= b.Length; j++) prev[j] = j;
+                for (int i = 1; i <= a.Length; i++)
+                {
+                    curr[0] = i;
+                    char ca = char.ToLowerInvariant(a[i - 1]);
+                    for (int j = 1; j <= b.Length; j++)
+                    {
+                        int cost = ca == char.ToLowerInvariant(b[j - 1]) ? 0 : 1;
+                        curr[j] = Math.Min(Math.Min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+                    }
+                    Array.Copy(curr, prev, curr.Length);
+                }
+                return prev[b.Length];
+            }
         }
 
         public static string? Suggest(string input, IEnumerable<string> candidates, int maxDistance = 2)
@@ -33,11 +56,14 @@ namespace GxMcp.Gateway
             int bestDist = int.MaxValue;
             foreach (var candidate in candidates)
             {
+                if (candidate == null) continue;
+                if (Math.Abs(input.Length - candidate.Length) > maxDistance) continue;
                 int d = Levenshtein(input, candidate);
                 if (d < bestDist)
                 {
                     bestDist = d;
                     best = candidate;
+                    if (d == 0) break;
                 }
             }
             return bestDist <= maxDistance ? best : null;

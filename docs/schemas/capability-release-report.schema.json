@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://genexus18mcp.dev/schemas/capability-release-report.schema.json",
+  "title": "Genexus MCP capability release report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseVersion",
+    "sourceCommit",
+    "generatedAtUtc",
+    "freshnessPolicy",
+    "capabilities"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "gxmcp-capability-release-report/1"
+    },
+    "releaseVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{7,64}$"
+    },
+    "generatedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "freshnessPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractDays", "sdkProbeDays", "liveKbDays"],
+      "properties": {
+        "contractDays": { "type": "integer", "minimum": 1 },
+        "sdkProbeDays": { "type": "integer", "minimum": 1 },
+        "liveKbDays": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/capability" }
+    },
+    "releaseGate": {
+      "$ref": "#/$defs/releaseGate"
+    }
+  },
+  "$defs": {
+    "state": {
+      "type": "string",
+      "enum": [
+        "contract-tested",
+        "sdk-probed",
+        "live-kb-verified",
+        "release-gated",
+        "unsupported",
+        "unavailable",
+        "expired"
+      ]
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "state", "evidence"],
+      "properties": {
+        "capability": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:\\.[a-z0-9_-]+)+$"
+        },
+        "state": { "$ref": "#/$defs/state" },
+        "scope": {
+          "type": "string",
+          "enum": ["read", "write", "build", "release"]
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "nextAction": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "collectedAtUtc",
+        "sourceCommit",
+        "command",
+        "result"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["contract-test", "sdk-probe", "live-kb", "release-gate"]
+        },
+        "collectedAtUtc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expiresAtUtc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "sourceCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{7,64}$"
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "not": { "pattern": "([Pp]assword|[Ss]ecret|[Tt]oken|[Cc]onnection[Ss]tring|[Aa][Pp][Ii][Kk][Ee][Yy])" }
+        },
+        "result": {
+          "type": "string",
+          "enum": ["pass", "fail", "skipped", "unavailable"]
+        },
+        "sdkVersion": { "type": "string", "minLength": 1 },
+        "fixtureId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "fixtureRevision": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "reportDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$"
+        },
+        "artifactDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$"
+        },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "releaseGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "requiredCapabilities", "preflightCommand"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pass", "fail", "unavailable"]
+        },
+        "requiredCapabilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "preflightCommand": { "type": "string", "minLength": 1 },
+        "reportDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$"
+        }
+      }
+    }
+  }
+}

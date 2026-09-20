@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
@@ -110,7 +111,69 @@ namespace GxMcp.Worker.Services
             return merged;
         }
 
-        private string WriteVisualPart(global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName, string xml, bool dryRun = false, bool strictVerify = true)
+        private static JArray ToValidationDiagnostics(IEnumerable<WebFormPreSaveValidator.ValidationMessage> messages)
+        {
+            var result = new JArray();
+            if (messages == null) return result;
+            foreach (var message in messages)
+            {
+                if (message == null) continue;
+                var item = new JObject
+                {
+                    ["severity"] = message.Severity ?? "Information",
+                    ["message"] = message.Message ?? string.Empty
+                };
+                if (!string.IsNullOrWhiteSpace(message.Source)) item["source"] = message.Source;
+                result.Add(item);
+            }
+            return result;
+        }
+
+        private static void AttachWebFormValidation(JObject payload, WebFormPreSaveValidator.ValidationReport report)
+        {
+            if (payload == null || report == null) return;
+            payload["validationAvailable"] = report.ValidatorAvailable;
+            payload["validationDiagnostics"] = ToValidationDiagnostics(report.Messages);
+            if (!string.IsNullOrWhiteSpace(report.Error)) payload["validationError"] = report.Error;
+        }
+
+        private WebFormPreSaveValidator.ValidationReport ValidateProspectiveWebForm(
+            global::Artech.Architecture.Common.Objects.KBObjectPart webFormPart,
+            string normalizedInput,
+            string baselineXml)
+        {
+            var unavailable = new WebFormPreSaveValidator.ValidationReport();
+            try
+            {
+                var kb = _objectService.GetKbService().GetKB();
+                if (kb == null)
+                {
+                    unavailable.Error = "KB not opened.";
+                    return unavailable;
+                }
+
+                using (var transaction = kb.BeginTransaction())
+                {
+                    try
+                    {
+                        WebFormXmlHelper.ApplyEditableXml(webFormPart, normalizedInput, baselineXml: baselineXml);
+                        return WebFormPreSaveValidator.ValidateDetailed(webFormPart);
+                    }
+                    finally
+                    {
+                        try { transaction.Rollback(); } catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                unavailable.Error = ex.InnerException?.Message ?? ex.Message;
+                Logger.Debug("[WebFormValidate] prospective validation skipped: " + unavailable.Error);
+                return unavailable;
+            }
+        }
+
+        private string WriteVisualPart(global::Artech.Architecture.Common.Objects.KBObject obj, string target, string partName, string xml, bool dryRun = false, bool strictVerify = true, bool forceWrite = false)
         {
             var webFormPart = WebFormXmlHelper.GetWebFormPart(obj);
             if (webFormPart == null)
@@ -195,18 +258,47 @@ namespace GxMcp.Worker.Services
                 Logger.Debug("[GOTCHA-PREVIEW] scan failed: " + scanEx.Message);
             }
 
+            string currentXml = null;
             try
             {
-                string currentXml = WebFormXmlHelper.ReadEditableXml(obj);
+                currentXml = WebFormXmlHelper.ReadEditableXml(obj);
                 currentFormType = TryExtractFormType(currentXml);
                 incomingFormType = TryExtractFormType(normalizedInput);
                 if (XmlEquivalence.AreEquivalent(currentXml, normalizedInput, out _))
                 {
+                    WebFormPreSaveValidator.ValidationReport noChangeValidation = null;
+                    if (dryRun)
+                    {
+                        noChangeValidation = ValidateProspectiveWebForm(webFormPart, currentXml, currentXml);
+                        if (WebFormPreSaveValidator.HasErrors(noChangeValidation.Messages) && !forceWrite)
+                        {
+                            var validationError = new JObject
+                            {
+                                ["part"] = partName,
+                                ["validationAvailable"] = noChangeValidation.ValidatorAvailable,
+                                ["validationDiagnostics"] = ToValidationDiagnostics(noChangeValidation.Messages),
+                                ["persisted"] = false
+                            };
+                            if (!string.IsNullOrWhiteSpace(noChangeValidation.Error)) validationError["validationError"] = noChangeValidation.Error;
+                            return Models.McpResponse.Err(
+                                code: "WebFormValidationFailed",
+                                message: "The WebForm SDK validator found errors in the current visual XML.",
+                                hint: "Fix the listed controls/attributes and retry. Pass forceWrite=true only when you explicitly accept the SDK validation errors.",
+                                target: target,
+                                extra: validationError);
+                        }
+                    }
                     var noChangeResp = new JObject
                     {
                         ["part"] = partName,
                         ["details"] = dryRun ? "Dry-run: no change would be applied." : "No change"
                     };
+                    if (noChangeValidation != null)
+                    {
+                        AttachWebFormValidation(noChangeResp, noChangeValidation);
+                        if (forceWrite && WebFormPreSaveValidator.HasErrors(noChangeValidation.Messages))
+                            noChangeResp["validationOverridden"] = true;
+                    }
                     var noChangeHtmlWarnings = BuildHtmlFormatWarnings(prospectiveGotchas);
                     AttachWarnings(noChangeResp, MergeWarnings(patternShadowWarnings, noChangeHtmlWarnings));
                     if (prospectiveGotchas != null) noChangeResp["layoutGotchas"] = prospectiveGotchas;
@@ -214,11 +306,32 @@ namespace GxMcp.Worker.Services
                 }
                 if (dryRun)
                 {
+                    var dryValidation = ValidateProspectiveWebForm(webFormPart, normalizedInput, currentXml);
+                    if (WebFormPreSaveValidator.HasErrors(dryValidation.Messages) && !forceWrite)
+                    {
+                        var validationError = new JObject
+                        {
+                            ["part"] = partName,
+                            ["validationAvailable"] = dryValidation.ValidatorAvailable,
+                            ["validationDiagnostics"] = ToValidationDiagnostics(dryValidation.Messages),
+                            ["persisted"] = false
+                        };
+                        if (!string.IsNullOrWhiteSpace(dryValidation.Error)) validationError["validationError"] = dryValidation.Error;
+                        return Models.McpResponse.Err(
+                            code: "WebFormValidationFailed",
+                            message: "The WebForm SDK validator found errors in the requested visual XML.",
+                            hint: "Fix the listed controls/attributes and retry. Pass forceWrite=true only when you explicitly accept the SDK validation errors.",
+                            target: target,
+                            extra: validationError);
+                    }
                     var dryResp = new JObject
                     {
                         ["part"] = partName,
-                        ["details"] = "Dry-run: input parsed and would update visual XML. Save skipped."
+                        ["details"] = "Dry-run: input parsed and would update visual XML. Save skipped.",
+                        ["verified"] = new JArray("xmlParse", "layoutGotchas", "diffVsCurrent"),
+                        ["savePathExercised"] = false
                     };
+                    AttachWebFormValidation(dryResp, dryValidation);
                     var dryHtmlWarnings = BuildHtmlFormatWarnings(prospectiveGotchas);
                     AttachWarnings(dryResp, MergeWarnings(patternShadowWarnings, dryHtmlWarnings));
                     var suspects = GxMcp.Worker.Helpers.WebFormSchemaHints.ScanForRejectedAttributes(normalizedInput);
@@ -239,14 +352,13 @@ namespace GxMcp.Worker.Services
                 Logger.Debug("[DEBUG-SAVE] Visual no-change precheck skipped: " + ex.Message);
                 if (dryRun)
                 {
-                    return Models.McpResponse.Ok(
-                        target: target,
-                        code: "WriteDryRun",
-                        result: new JObject
-                        {
-                            ["part"] = partName,
-                            ["details"] = "Dry-run: input parsed; current visual read failed (" + ex.Message + "). Save skipped."
-                        });
+                    return CreateWriteError(
+                        "Visual dry-run precheck failed",
+                        target,
+                        partName,
+                        "Dry-run input parsed, but reading current visual part failed (" + ex.Message + "). State comparison skipped.",
+                        obj,
+                        code: "VisualReadFailed");
                 }
             }
 
@@ -260,7 +372,27 @@ namespace GxMcp.Worker.Services
             {
                 try
                 {
-                    WebFormXmlHelper.ApplyEditableXml(webFormPart, normalizedInput);
+                    WebFormXmlHelper.ApplyEditableXml(webFormPart, normalizedInput, baselineXml: currentXml);
+
+                    var validationReport = WebFormPreSaveValidator.ValidateDetailed(webFormPart);
+                    if (WebFormPreSaveValidator.HasErrors(validationReport.Messages) && !forceWrite)
+                    {
+                        transaction.Rollback();
+                        var validationError = new JObject
+                        {
+                            ["part"] = partName,
+                            ["validationAvailable"] = validationReport.ValidatorAvailable,
+                            ["validationDiagnostics"] = ToValidationDiagnostics(validationReport.Messages),
+                            ["persisted"] = false
+                        };
+                        if (!string.IsNullOrWhiteSpace(validationReport.Error)) validationError["validationError"] = validationReport.Error;
+                        return Models.McpResponse.Err(
+                            code: "WebFormValidationFailed",
+                            message: "The WebForm SDK validator found errors; the visual write was not persisted.",
+                            hint: "Fix the listed controls/attributes and retry. Pass forceWrite=true only when you explicitly accept the SDK validation errors.",
+                            target: target,
+                            extra: validationError);
+                    }
 
                     // ── DIAGNOSTIC: byte-level state RIGHT BEFORE obj.Save ────────────────
                     Helpers.WebFormSaveDiagnostics.DumpState(webFormPart, obj, "BEFORE-SAVE");
@@ -419,6 +551,11 @@ namespace GxMcp.Worker.Services
                             ? "Visual XML updated and verified."
                             : "Visual XML updated (post-write verify skipped: validate=best-effort). Build to confirm generation."
                     };
+                    AttachWebFormValidation(okResp, validationReport);
+                    if (forceWrite && WebFormPreSaveValidator.HasErrors(validationReport.Messages))
+                    {
+                        okResp["validationOverridden"] = true;
+                    }
                     // Item 6 (friction-report 2026-05-22): promote GotchaHtmlFormatScriptStripped
                     // gotchas into the top-level warnings[] so callers that only inspect "warnings"
                     // (not "layoutGotchas") still see the HTML-escape advisory on success.
@@ -531,32 +668,6 @@ namespace GxMcp.Worker.Services
 
         // Walks ex.InnerException so the deepest message — usually the real SDK
         // diagnostic — ends up in the response. Outer wrappers are still surfaced
-        // Friction 2026-05-28 — surface the PatternChildOrderReconciler
-        // report on both DryRun and verify-failed envelopes so the caller
-        // sees which parents the reconciler had to fix (or skip) without
-        // needing live worker logs. validate=only callers rely on this to
-        // catch malformed childrenOrderedList before paying for a write.
-        private static void AttachReconcileReport(
-            JObject envelope,
-            GxMcp.Worker.Helpers.PatternChildOrderReconciler.Report report)
-        {
-            if (envelope == null || report == null || !report.HasContent) return;
-            var jo = new JObject
-            {
-                ["parentsUpdated"] = report.ParentsUpdated
-            };
-            if (report.Changes != null && report.Changes.Count > 0)
-            {
-                jo["changes"] = new JArray(report.Changes);
-            }
-            if (report.Skips != null && report.Skips.Count > 0)
-            {
-                jo["skips"] = new JArray(report.Skips);
-                jo["skipsHint"] = "Reconciler refused to rebuild childrenOrderedList for these parents — the XML is missing identifiers (controlName/Name/attribute) or has an unknown child kind. Fix those entries before retrying.";
-            }
-            envelope["childOrderReconcile"] = jo;
-        }
-
         // but only when they add information beyond the inner message.
         internal static string TryExtractFormType(string xml)
         {

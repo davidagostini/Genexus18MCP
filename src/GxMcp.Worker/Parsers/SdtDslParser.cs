@@ -292,6 +292,14 @@ namespace GxMcp.Worker.Parsers
                     }
                 }
 
+                // issue #109: surface Attribute-based member names (parity with IDE Attribute:<Name> picker)
+                string attrName = GxMcp.Worker.Helpers.DomainPropertyApplier.GetAttributeBasedOnName((object)level);
+                if (!string.IsNullOrEmpty(attrName))
+                {
+                    sb.AppendLine($"{indentStr}{level.Name} : Attribute:{attrName}{collectionMarker}");
+                    return;
+                }
+
                 // issue #51: surface Domain-based member names so domain typing survives text reads
                 string domName = GxMcp.Worker.Helpers.DomainPropertyApplier.GetDomainBasedOnName((object)level);
                 if (!string.IsNullOrEmpty(domName))
@@ -456,16 +464,25 @@ namespace GxMcp.Worker.Parsers
 
             foreach (var pNode in parsedNodes)
             {
-                // issue #33 & issue #51: resolve SDT or Domain references
+                // issue #33, #51 & #109: resolve SDT, Domain, or Attribute references
                 KBObject sdtMemberObj = null;
                 KBObject domainMemberObj = null;
-                if (!pNode.IsCompound && _model != null && !LooksLikePrimitive(pNode.TypeStr))
+                KBObject attributeMemberObj = null;
+                if (!pNode.IsCompound && _model != null)
                 {
-                    var resolved = VariableInjector.ResolveTypeObject(_model, pNode.TypeStr);
-                    if (resolved != null)
+                    if (pNode.TypeStr != null && pNode.TypeStr.StartsWith("Attribute:", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (resolved.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)) sdtMemberObj = resolved;
-                        else if (resolved is Artech.Genexus.Common.Objects.Domain || resolved.TypeDescriptor.Name.Equals("Domain", StringComparison.OrdinalIgnoreCase)) domainMemberObj = resolved;
+                        string rawAttrName = pNode.TypeStr.Substring("Attribute:".Length).Trim();
+                        attributeMemberObj = VariableInjector.FindAttribute(_model, rawAttrName);
+                    }
+                    else if (!LooksLikePrimitive(pNode.TypeStr))
+                    {
+                        var resolved = VariableInjector.ResolveTypeObject(_model, pNode.TypeStr);
+                        if (resolved != null)
+                        {
+                            if (resolved.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase)) sdtMemberObj = resolved;
+                            else if (resolved is Artech.Genexus.Common.Objects.Domain || resolved.TypeDescriptor.Name.Equals("Domain", StringComparison.OrdinalIgnoreCase)) domainMemberObj = resolved;
+                        }
                     }
                 }
 
@@ -499,9 +516,15 @@ namespace GxMcp.Worker.Parsers
                         else
                         {
                             Type eDBTypeT = nodeType.Assembly.GetType("Artech.Genexus.Common.eDBType");
-                            object dbType = sdtMemberObj != null && eDBTypeT != null
-                                ? Enum.Parse(eDBTypeT, "GX_SDT")
-                                : ResolveDbType(eDBTypeT, pNode.TypeStr);
+                            object dbType;
+                            if (sdtMemberObj != null && eDBTypeT != null) dbType = Enum.Parse(eDBTypeT, "GX_SDT");
+                            else if (attributeMemberObj != null && eDBTypeT != null)
+                            {
+                                try { dbType = ((dynamic)attributeMemberObj).Type; }
+                                catch { dbType = Enum.Parse(eDBTypeT, "VARCHAR"); }
+                            }
+                            else dbType = ResolveDbType(eDBTypeT, pNode.TypeStr);
+
                             MethodInfo addItem = nodeType.GetMethod("AddItem", new Type[] { typeof(string), eDBTypeT });
                             if (addItem != null && eDBTypeT != null && dbType != null)
                             {
@@ -539,6 +562,11 @@ namespace GxMcp.Worker.Parsers
                         if (!VariableInjector.BindSdtItemToSdt((object)targetChild, sdtMemberObj))
                             Logger.Error($"[SDT PARSE] Failed to bind member '{pNode.Name}' to SDT '{sdtMemberObj.Name}'");
                     }
+                    else if (attributeMemberObj != null)
+                    {
+                        // issue #109: bind attribute reference to SDT member
+                        DomainPropertyApplier.ApplyAttributeBasedOn((object)targetChild, attributeMemberObj);
+                    }
                     else if (domainMemberObj != null)
                     {
                         // issue #51: bind domain reference to SDT member
@@ -546,6 +574,8 @@ namespace GxMcp.Worker.Parsers
                     }
                     else
                     {
+                        DomainPropertyApplier.ClearAttributeBasedOn((object)targetChild);
+                        DomainPropertyApplier.ClearDomainBasedOn((object)targetChild);
                         try {
                             Type eDBType = targetChild.GetType().Assembly.GetType("Artech.Genexus.Common.eDBType");
                             if (pNode.TypeStr.StartsWith("Numeric", StringComparison.OrdinalIgnoreCase)) targetChild.Type = Enum.Parse(eDBType, "NUMERIC");

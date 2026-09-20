@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Xml;
+using GxMcp.Worker.Compatibility;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
@@ -54,6 +55,31 @@ namespace GxMcp.Worker.Services
         private static readonly string[] AssemblyPrefixes = new[]
         {
             "Artech.", "Genexus.", "DVelop.", "GeneXus."
+        };
+
+        private sealed class CapabilityDefinition
+        {
+            public string Name;
+            public string[] TypeAliases;
+            public bool Deferred;
+            public string DeferredReason;
+        }
+
+        private static readonly CapabilityDefinition[] CapabilityDefinitions =
+        {
+            new CapabilityDefinition { Name = "authoring.attribute_properties", TypeAliases = new[] { "Attribute", "KBObject" } },
+            new CapabilityDefinition { Name = "authoring.transaction", TypeAliases = new[] { "Transaction" } },
+            new CapabilityDefinition { Name = "authoring.sdt", TypeAliases = new[] { "SDT", "StructuredDataType" } },
+            new CapabilityDefinition { Name = "authoring.patterns", TypeAliases = new[] { "Pattern", "PatternInstance" } },
+            new CapabilityDefinition { Name = "authoring.layout", TypeAliases = new[] { "Form", "WebPanel" } },
+            new CapabilityDefinition { Name = "authoring.translations", TypeAliases = new[] { "Translation", "Translations" } },
+            new CapabilityDefinition
+            {
+                Name = "data.business_components",
+                TypeAliases = new string[0],
+                Deferred = true,
+                DeferredReason = "Business Components execute in a generated application runtime, not the design-time SDK worker."
+            }
         };
 
         /// <summary>
@@ -145,6 +171,131 @@ namespace GxMcp.Worker.Services
 
             _methodCache[cacheKey] = payload;
             return payload.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        /// <summary>
+        /// Returns a stable, read-only capability matrix. A reflected type only
+        /// proves that a signature is present; persistence and IDE parity remain
+        /// explicitly unverified until a fixture test certifies them.
+        /// </summary>
+        public string Capabilities()
+        {
+            var capabilities = new JArray();
+            SdkIdentity sdk = SdkIdentity.Detect();
+            foreach (var definition in CapabilityDefinitions)
+            {
+                var matches = definition.Deferred
+                    ? new List<Type>()
+                    : ResolveTypes(definition.TypeAliases).ToList();
+                string status;
+                if (definition.Deferred)
+                    status = "deferred";
+                else if (sdk.CatalogSupported == false)
+                    status = "unsupported_catalog";
+                else if (matches.Count == 0)
+                    status = "unavailable";
+                else
+                    status = "available_unverified";
+
+                var evidence = new JObject
+                {
+                    ["kind"] = definition.Deferred ? "runtime_boundary" : "signature_probe",
+                    ["persistenceVerified"] = false
+                };
+                if (!string.IsNullOrWhiteSpace(definition.DeferredReason)) evidence["reason"] = definition.DeferredReason;
+                if (matches.Count > 0)
+                {
+                    evidence["matchedTypes"] = new JArray(matches
+                        .Select(type => type.FullName)
+                        .Where(name => !string.IsNullOrWhiteSpace(name))
+                        .Distinct(StringComparer.Ordinal)
+                        .OrderBy(name => name, StringComparer.Ordinal));
+                }
+
+                capabilities.Add(new JObject
+                {
+                    ["capability"] = definition.Name,
+                    ["status"] = status,
+                    ["scope"] = new JObject { ["designTimeSdk"] = !definition.Deferred },
+                    ["evidence"] = evidence
+                });
+            }
+
+            string sdkVersion = AppDomain.CurrentDomain.GetAssemblies()
+                .Where(assembly =>
+                {
+                    try { return AssemblyPrefixes.Any(prefix => assembly.GetName().Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)); }
+                    catch { return false; }
+                })
+                .Select(assembly =>
+                {
+                    try { return assembly.GetName().Version?.ToString(); }
+                    catch { return null; }
+                })
+                .Where(version => !string.IsNullOrWhiteSpace(version))
+                .OrderByDescending(version => version, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            return new JObject
+            {
+                ["schemaVersion"] = "genexus-sdk-capabilities/1",
+                ["installedSdkVersion"] = sdkVersion ?? "unknown",
+                ["sdk"] = sdk.ToJson(),
+                ["contract"] = new JObject
+                {
+                    ["catalogVersion"] = "genexus-mcp/version-catalog/1",
+                    ["evidenceLevel"] = "signature_probe",
+                    ["persistenceVerified"] = false,
+                    ["parityVerified"] = false
+                },
+                ["compatibility"] = new JObject
+                {
+                    ["designSystem"] = BuildDesignSystemCapability(sdk)
+                },
+                ["capabilities"] = capabilities,
+                ["note"] = "Signature availability is not proof of a successful save. Run the certified fixture before enabling an authoring path."
+            }.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        private static JObject BuildDesignSystemCapability(SdkIdentity sdk)
+        {
+            Type helper = ResolveTypes(new[] { "DesignSystemHelper" }).FirstOrDefault();
+            string[] requiredMethods =
+            {
+                "GetTokensNames", "GetClassesNames", "GetAllImagesNames", "GetAllDSOsNames"
+            };
+            var availableMethods = new JArray();
+            if (helper != null)
+            {
+                foreach (string methodName in requiredMethods)
+                {
+                    try
+                    {
+                        if (helper.GetMethod(methodName, PublicFlags) != null)
+                            availableMethods.Add(methodName);
+                    }
+                    catch { }
+                }
+            }
+
+            bool nativeComplete = availableMethods.Count == requiredMethods.Length;
+            string status;
+            if (sdk.CatalogSupported == false)
+                status = "unsupported_catalog";
+            else if (nativeComplete)
+                status = "native";
+            else
+                status = "source_parts_fallback";
+            return new JObject
+            {
+                ["status"] = status,
+                ["helperTypeAvailable"] = helper != null,
+                ["nativeMethods"] = availableMethods,
+                ["sourcePartsFallback"] = true,
+                ["fallbackParts"] = new JArray("Tokens", "Styles"),
+                ["evidenceLevel"] = "signature_probe",
+                ["persistenceVerified"] = false
+            };
         }
 
         private const BindingFlags PublicFlags =

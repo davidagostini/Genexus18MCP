@@ -45,7 +45,7 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
-        public void Status_ClampsWaitTo300()
+        public void Status_ClampsWaitTo600()
         {
             var router = new SystemRouter();
             var args = new JObject
@@ -56,7 +56,20 @@ namespace GxMcp.Gateway.Tests
             };
 
             var command = JObject.FromObject(router.ConvertToolCall("genexus_lifecycle", args)!);
-            Assert.Equal(300, command["wait"]?.ToObject<int>());
+            Assert.Equal(600, command["wait"]?.ToObject<int>());
+        }
+
+        [Fact]
+        public void Status_MapsWaitSecondsAlias()
+        {
+            var router = new SystemRouter();
+            var command = JObject.FromObject(router.ConvertToolCall("genexus_lifecycle", new JObject
+            {
+                ["action"] = "status",
+                ["target"] = "abcd1234",
+                ["wait_seconds"] = 45
+            })!);
+            Assert.Equal(45, command["wait"]?.ToObject<int>());
         }
 
         [Fact]

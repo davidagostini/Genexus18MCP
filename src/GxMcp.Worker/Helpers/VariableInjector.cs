@@ -19,9 +19,14 @@ namespace GxMcp.Worker.Helpers
             "Pgmname", "Pgmdesc", "Today", "Time", "Mode", "Message", "EventName", "CtlName"
         };
 
+        private static bool IsWordChar(char c)
+        {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+        }
+
         public static void InjectVariables(KBObject obj, string code, Models.SearchIndex index = null)
         {
-            var variablesPart = obj.Parts.Get<VariablesPart>();
+            var variablesPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj) ?? obj.Parts.Get<VariablesPart>();
             if (variablesPart == null) return;
 
             // Scan for &-tokens on source with string literals and comments blanked out, so an
@@ -31,30 +36,78 @@ namespace GxMcp.Worker.Helpers
             // the name-extraction view is masked.
             string scanCode = StripLiteralsAndComments(code);
 
-            var matches = System.Text.RegularExpressions.Regex.Matches(scanCode, @"&(\w+)");
-            var varNames = matches.Cast<System.Text.RegularExpressions.Match>()
-                .Select(m => m.Groups[1].Value)
-                .Distinct()
-                .ToList();
-
-            // Detect &var.Field usage — these vars are likely SDTs/BCs, not scalars
+            var varNamesSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var varNamesList = new List<string>();
             var sdtCandidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(scanCode, @"&(\w+)\."))
+
+            int n = scanCode.Length;
+            int i = 0;
+            while (i < n)
             {
-                sdtCandidates.Add(m.Groups[1].Value);
+                if (scanCode[i] == '&')
+                {
+                    int start = i + 1;
+                    int j = start;
+                    while (j < n && IsWordChar(scanCode[j]))
+                    {
+                        j++;
+                    }
+
+                    if (j > start)
+                    {
+                        string name = scanCode.Substring(start, j - start);
+                        if (varNamesSet.Add(name))
+                        {
+                            varNamesList.Add(name);
+                        }
+
+                        if (j < n && scanCode[j] == '.')
+                        {
+                            sdtCandidates.Add(name);
+                        }
+
+                        i = j;
+                        continue;
+                    }
+                }
+                i++;
             }
 
-            foreach (var varName in varNames)
+            var existingVars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var v in variablesPart.Variables)
             {
-                if (!variablesPart.Variables.Any(v => v.Name.Equals(varName, StringComparison.OrdinalIgnoreCase)))
+                if (!string.IsNullOrEmpty(v.Name)) existingVars.Add(v.Name);
+            }
+
+            bool injectedAny = false;
+            foreach (var varName in varNamesList)
+            {
+                if (!existingVars.Contains(varName))
                 {
                     global::Artech.Genexus.Common.Variable v = CreateVariable(variablesPart, varName, index, sdtCandidates.Contains(varName));
                     if (v != null)
                     {
                         variablesPart.Variables.Add(v);
+                        existingVars.Add(varName);
+                        injectedAny = true;
                         Logger.Info($"Injected variable: {varName} into {obj.Name}");
                     }
                 }
+            }
+
+            if (injectedAny)
+            {
+                try
+                {
+                    var pType = variablesPart.GetType();
+                    var pDirtyProp = pType.GetProperty("Dirty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                                  ?? pType.GetProperty("IsDirty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (pDirtyProp != null && pDirtyProp.CanWrite)
+                    {
+                        pDirtyProp.SetValue(variablesPart, true);
+                    }
+                }
+                catch { /* best-effort */ }
             }
         }
 
@@ -490,6 +543,15 @@ namespace GxMcp.Worker.Helpers
                         v.DomainBasedOn = null; 
                         v.SetPropertyValue("DataType", null); // Reset user type if it was set
                     }
+                    else if (ResolveDomain(part.Model, typeStr, part.KBObject?.Module) is global::Artech.Genexus.Common.Objects.Domain textDomain)
+                    {
+                        // Resolve Domains before the generic type registry. The registry represents
+                        // a Domain as GX_DOM_REF/ATTCUSTOMTYPE (displayed as dom:<name>), which is a
+                        // parser/display token and is not a valid persisted variable reference.
+                        if (!BindVariableToDomain(v, textDomain, out var domainFailure))
+                            throw new InvalidOperationException("VariableTypeNotPersisted: " + domainFailure);
+                        Logger.Info($"Resolved variable {name} type to Domain: {textDomain.QualifiedName}");
+                    }
                     else if (TryBindGenexusDataType(v, typeStr))
                     {
                         // Built-in GeneXus data types (HttpClient, WebSession, Location, ...) via the
@@ -509,7 +571,10 @@ namespace GxMcp.Worker.Helpers
                         if (targetObj != null)
                         {
                             if (targetObj is global::Artech.Genexus.Common.Objects.Domain dom)
-                                v.DomainBasedOn = dom;
+                            {
+                                if (!BindVariableToDomain(v, dom, out var domainFailure))
+                                    throw new InvalidOperationException("VariableTypeNotPersisted: " + domainFailure);
+                            }
                             else if (targetObj.TypeDescriptor.Name.Equals("SDT", StringComparison.OrdinalIgnoreCase))
                             {
                                 BindVariableToSdt(v, targetObj);
@@ -560,6 +625,120 @@ namespace GxMcp.Worker.Helpers
                 catch (Exception ex) { Logger.Error("[BindVariableToSdt] SetPropertyValue ATTCUSTOMTYPE failed: " + ex.Message); }
             }
             else Logger.Error("[BindVariableToSdt] Could not construct AttCustomType for " + sdtObj.Name);
+        }
+
+        // Bind a variable to a Domain using both SDK references.
+        //
+        // DomainBasedOn is the IDE-facing relationship, while DomainKey is the stable
+        // entity identity required by some GX18 builds. The generic data-type provider
+        // returns a GX_DOM_REF AttCustomType whose parser/display form is dom:<name>;
+        // persisting that token in ATTCUSTOMTYPE produces a non-importable XPZ.
+        public static bool BindVariableToDomain(global::Artech.Genexus.Common.Variable v,
+            global::Artech.Genexus.Common.Objects.Domain domain, out string failure)
+        {
+            failure = null;
+            if (v == null || domain == null)
+            {
+                failure = "Variable or Domain is null.";
+                return false;
+            }
+
+            try
+            {
+                v.DomainBasedOn = domain;
+                v.DomainKey = domain.Key;
+                string customTypeToken = null;
+                try { customTypeToken = v.GetPropertyValue("ATTCUSTOMTYPE")?.ToString(); } catch { }
+
+                if (!IsNativeDomainReference(domain.Key, v.DomainKey, customTypeToken, out failure))
+                {
+                    try { v.DomainBasedOn = null; } catch { }
+                    try { v.DomainKey = null; } catch { }
+                    return false;
+                }
+
+                Logger.Info($"[BindVariableToDomain] Bound {v.Name} -> {domain.QualifiedName} by EntityKey {domain.Key}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failure = ex.InnerException?.Message ?? ex.Message;
+                Logger.Warn("[BindVariableToDomain] " + failure);
+                try { v.DomainBasedOn = null; } catch { }
+                try { v.DomainKey = null; } catch { }
+                return false;
+            }
+        }
+
+        // Domain resolution is intentionally separate from ResolveTypeObject and from the generic
+        // DataTypeProvider. Domain.ResolveName applies GeneXus module visibility rules and accepts
+        // qualified names; model.Objects.GetByName alone can miss a Domain in a named Module.
+        public static global::Artech.Genexus.Common.Objects.Domain ResolveDomain(
+            KBModel model, string domainName, global::Artech.Architecture.Common.Objects.Module contextModule = null)
+        {
+            if (model == null || string.IsNullOrWhiteSpace(domainName)) return null;
+            string name = domainName.Trim();
+            try
+            {
+                var fromModule = contextModule ?? model.RootModule;
+                var resolved = global::Artech.Genexus.Common.Objects.Domain.ResolveName(fromModule, name);
+                if (resolved != null) return resolved;
+            }
+            catch { /* fall through to the root/object lookup for SDK-version resilience */ }
+
+            if (contextModule != model.RootModule)
+            {
+                try
+                {
+                    var resolved = global::Artech.Genexus.Common.Objects.Domain.ResolveName(model.RootModule, name);
+                    if (resolved != null) return resolved;
+                }
+                catch { }
+            }
+
+            try { return ResolveTypeObject(model, name) as global::Artech.Genexus.Common.Objects.Domain; }
+            catch { return null; }
+        }
+
+        // Pure comparison seam used by regression tests and by the post-save verifier.
+        // A matching key is authoritative; a friendly dom:/domain: token in the raw
+        // custom type is always rejected even if the formatted Variables view looks OK.
+        internal static bool IsNativeDomainReference(
+            global::Artech.Udm.Framework.EntityKey expectedKey,
+            global::Artech.Udm.Framework.EntityKey actualKey,
+            string customTypeToken,
+            out string failure)
+        {
+            return IsNativeDomainReferenceParts(
+                expectedKey?.Type, expectedKey?.Id,
+                actualKey?.Type, actualKey?.Id,
+                customTypeToken, out failure);
+        }
+
+        internal static bool IsNativeDomainReferenceParts(
+            Guid? expectedType, int? expectedId,
+            Guid? actualType, int? actualId,
+            string customTypeToken,
+            out string failure)
+        {
+            if (!expectedType.HasValue || !expectedId.HasValue
+                || !actualType.HasValue || !actualId.HasValue
+                || expectedType.Value != actualType.Value || expectedId.Value != actualId.Value)
+            {
+                failure = "The persisted DomainKey does not match the requested Domain entity.";
+                return false;
+            }
+
+            string token = (customTypeToken ?? string.Empty).Trim();
+            if (token.StartsWith("dom:", StringComparison.OrdinalIgnoreCase)
+                || token.StartsWith("domain:", StringComparison.OrdinalIgnoreCase))
+            {
+                failure = "ATTCUSTOMTYPE contains a display-only Domain token ('" + token + "') instead of a native SDK reference.";
+                return false;
+            }
+
+            failure = null;
+            return true;
         }
 
         // Built-in GeneXus "user-defined" effective types that live in eDBType.GX_USRDEFTYP,
@@ -615,6 +794,15 @@ namespace GxMcp.Worker.Helpers
                 if (provider == null) return false;
                 var att = provider.GetTypeByName(typeName.Trim(), model);
                 if (att == null) return false;
+                // A Domain is not a generic custom data type for Variables. Persisting this
+                // GX_DOM_REF AttCustomType writes the friendly dom:<name> token into
+                // ATTCUSTOMTYPE, producing an XPZ the GeneXus importer cannot read. Callers must
+                // resolve the Domain entity and assign Variable.DomainKey instead.
+                if (att.DataType == (int)global::Artech.Genexus.Common.eDBType.GX_DOM_REF)
+                {
+                    Logger.Warn($"[TryBindGenexusDataType] Refusing display-only Domain token for '{typeName}'; bind by DomainKey instead.");
+                    return false;
+                }
                 v.Type = (global::Artech.Genexus.Common.eDBType)att.DataType;
                 try { v.SetPropertyValue("ATTCUSTOMTYPE", att); }
                 catch (Exception ex) { Logger.Warn("[TryBindGenexusDataType] SetPropertyValue ATTCUSTOMTYPE failed: " + ex.Message); return false; }
@@ -750,9 +938,167 @@ namespace GxMcp.Worker.Helpers
 
         public static void BindVariableToBC(global::Artech.Genexus.Common.Variable v, KBObject bcObj)
         {
+            string module = null;
+            try { module = bcObj.Module?.Name; } catch { }
+            bool root = string.IsNullOrWhiteSpace(module)
+                || string.Equals(module, "Root Module", StringComparison.OrdinalIgnoreCase);
+            string displayName = root ? bcObj.Name : bcObj.Name + ", " + module;
+            string qualifiedName = root ? bcObj.Name : module + "." + bcObj.Name;
+
+            var provider = Artech.Genexus.Common.Types.DataTypeProvider.GetProvider(v.Model)
+                ?? throw new InvalidOperationException("The GeneXus data type provider is unavailable.");
+            global::Artech.Genexus.Common.CustomTypes.AttCustomType nativeType = null;
+            foreach (string candidate in new[] { displayName, qualifiedName, bcObj.Name }.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var resolved = provider.GetTypeByName(candidate, v.Model);
+                    if (resolved != null
+                        && resolved.DataType == (int)global::Artech.Genexus.Common.eDBType.GX_BUSCOMP)
+                    {
+                        nativeType = resolved;
+                        displayName = candidate;
+                        break;
+                    }
+                }
+                catch { }
+            }
+            if (nativeType == null)
+                throw new InvalidOperationException("The GeneXus type provider did not expose the requested Business Component.");
+
             v.Type = global::Artech.Genexus.Common.eDBType.GX_BUSCOMP;
             v.SetPropertyValue("DataType", bcObj.Key);
-            try { v.SetPropertyValue("DataTypeString", bcObj.Name); } catch { }
+            v.SetPropertyValue("ATTCUSTOMTYPE", nativeType);
+            try { v.SetPropertyValue("DataTypeString", displayName); } catch { }
+        }
+
+        /// <summary>
+        /// Resolves a Business Component by native Transaction identity.  The module is
+        /// matched separately instead of being folded into a display type string, because
+        /// <c>GetByName</c> does not resolve <c>Module.Object</c> as an object name.
+        /// </summary>
+        public static Transaction ResolveBusinessComponent(KBModel model, string objectName,
+            string moduleName, out string error)
+        {
+            error = null;
+            if (model == null || string.IsNullOrWhiteSpace(objectName))
+            {
+                error = "objectName is required.";
+                return null;
+            }
+
+            if (!TryNormalizeBusinessComponentReference(objectName, moduleName,
+                out string simpleName, out string requestedModule, out error)) return null;
+
+            var matches = new List<Transaction>();
+            try
+            {
+                foreach (var candidate in model.Objects.GetByName(null, null, simpleName))
+                {
+                    var trn = candidate as Transaction;
+                    if (trn == null || !trn.IsBusinessComponent) continue;
+                    string actualModule = null;
+                    try { actualModule = trn.Module?.Name; } catch { }
+                    if (requestedModule == null
+                        || string.Equals(actualModule, requestedModule, StringComparison.OrdinalIgnoreCase))
+                        matches.Add(trn);
+                }
+            }
+            catch (Exception ex)
+            {
+                error = "Business Component lookup failed: " + ex.Message;
+                return null;
+            }
+
+            if (matches.Count == 1) return matches[0];
+            if (matches.Count == 0)
+            {
+                error = requestedModule == null
+                    ? "Business Component '" + simpleName + "' was not found."
+                    : "Business Component '" + requestedModule + "." + simpleName + "' was not found.";
+                return null;
+            }
+
+            error = "Business Component name is ambiguous; pass module explicitly.";
+            return null;
+        }
+
+        internal static bool TryNormalizeBusinessComponentReference(string objectName, string moduleName,
+            out string simpleName, out string requestedModule, out string error)
+        {
+            simpleName = objectName?.Trim();
+            requestedModule = string.IsNullOrWhiteSpace(moduleName) ? null : moduleName.Trim();
+            error = null;
+            if (string.IsNullOrWhiteSpace(simpleName))
+            {
+                error = "objectName is required.";
+                return false;
+            }
+            int separator = simpleName.LastIndexOf('.');
+            if (separator <= 0) return true;
+
+            string qualifiedModule = simpleName.Substring(0, separator);
+            string qualifiedName = simpleName.Substring(separator + 1);
+            if (requestedModule != null
+                && !string.Equals(requestedModule, qualifiedModule, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "module conflicts with the module-qualified objectName.";
+                return false;
+            }
+            requestedModule = qualifiedModule;
+            simpleName = qualifiedName;
+            return true;
+        }
+
+        /// <summary>Returns the KB object referenced by a persisted structural variable.</summary>
+        public static KBObject ResolveBoundTypeObject(global::Artech.Genexus.Common.Variable variable, KBModel model)
+        {
+            if (variable == null || model == null) return null;
+            string[] keyProperties = { "DataType", "DataTypeKey", "BasedOnKey", "TypeKey", "ObjectKey" };
+            foreach (string property in keyProperties)
+            {
+                try
+                {
+                    var resolved = TryGetObjectFromKey(model, variable.GetPropertyValue(property));
+                    if (resolved != null) return resolved;
+                }
+                catch { }
+            }
+            try
+            {
+                object custom = variable.GetPropertyValue("ATTCUSTOMTYPE");
+                if (custom != null)
+                {
+                    string token = custom.GetType().GetProperty("Guid")?.GetValue(custom) as string
+                        ?? custom.GetType().GetField("m_guid", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(custom) as string;
+                    var resolved = TryGetObjectFromKey(model, token);
+                    if (resolved != null) return resolved;
+                }
+            }
+            catch { }
+
+            // GX18 U16 persists modular BC variables as GX_BUSCOMP plus DataTypeString;
+            // ATTCUSTOMTYPE intentionally has no object key. Resolve the name in the
+            // variable owner's module, which is the same native scope used by GeneXus.
+            try
+            {
+                string typeName = variable.GetPropertyValue("DataTypeString") as string;
+                string ownerModule = variable.KBObject?.Module?.Name;
+                int comma = typeName?.LastIndexOf(',') ?? -1;
+                if (comma > 0)
+                {
+                    ownerModule = typeName.Substring(comma + 1).Trim();
+                    typeName = typeName.Substring(0, comma).Trim();
+                }
+                else if (typeName?.IndexOf('.') >= 0) ownerModule = null;
+                if (!string.IsNullOrWhiteSpace(typeName))
+                {
+                    var resolved = ResolveBusinessComponent(model, typeName, ownerModule, out _);
+                    if (resolved != null) return resolved;
+                }
+            }
+            catch { }
+            return null;
         }
 
         public static bool TryParseDbType(string typeStr, out global::Artech.Genexus.Common.eDBType type)
@@ -826,11 +1172,17 @@ namespace GxMcp.Worker.Helpers
             return null;
         }
 
-        private static global::Artech.Genexus.Common.Objects.Attribute FindAttribute(global::Artech.Architecture.Common.Objects.KBModel model, string name)
+        public static global::Artech.Genexus.Common.Objects.Attribute FindAttribute(global::Artech.Architecture.Common.Objects.KBModel model, string name)
         {
+            if (model == null || string.IsNullOrWhiteSpace(name)) return null;
+            string clean = name.Trim();
+            if (clean.StartsWith("Attribute:", StringComparison.OrdinalIgnoreCase))
+                clean = clean.Substring("Attribute:".Length).Trim();
+            if (clean.StartsWith("&"))
+                clean = clean.TrimStart('&');
             try
             {
-                foreach (var result in model.Objects.GetByName(null, null, name))
+                foreach (var result in model.Objects.GetByName(null, null, clean))
                 {
                     if (result is global::Artech.Genexus.Common.Objects.Attribute attr) return attr;
                 }

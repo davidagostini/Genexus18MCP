@@ -94,9 +94,116 @@ namespace GxMcp.Gateway.Tests
             //   + reworked genexus_create folder/module copy (now creates-then-moves
             //   instead of rejecting). Measured ~16629; ~71 headroom.
             //   2026-07-24 (issue #52): 16700 → 16900 for genexus_structure update_visual
+            //   2026-07-31 (issues #58-#62): 16900 → 17700 for WorkWithPlus actions,
+            //   atomic authoring, validated edit persistence, and reorg-preview schemas.
             //   SDT support (description + payload docs for isCollection/collectionItemName/
             //   basedOnDomain + an SDT example). Measured ~16760; ~140 headroom.
-            Assert.True(approxTokens < 16900, $"tool_definitions.json is ~{approxTokens} tokens; budget 16900.");
+            //   2026-07-31 (issues #59/#60): 16900 → 17700 for the validationMode=
+            //   "specify"/rollbackOnFailure params added to genexus_edit,
+            //   genexus_variable, genexus_properties, genexus_structure and
+            //   genexus_create. Measured ~17572; ~128 headroom.
+            //   2026-07-31 (issue #62): 17700 → 18200 for the genexus_create
+            //   action=object_atomic params (mode/variables/rules/parms/source/
+            //   properties/expectedVersion/validate) + the new action enum value and
+            //   description copy. Measured ~18077; ~123 headroom.
+            //   2026-07-31 (issue #58): 18200 → 19000 for the new genexus_wwp tool
+            //   (WorkWithPlus action groups: list/add_action/update_action/
+            //   move_action/remove_action + group/position/confirm/selection/
+            //   enabledWhen/procedure/dryRun params). Measured ~18938; ~62 headroom.
+            //   2026-08-01 (search-source continuation): 19000 → 19100 for the
+            //   opaque cursor parameter that resumes pages ending inside an object.
+            //   Measured ~19002; ~98 headroom.
+            //   2026-08-01 (merged atomic-authoring contracts): 19100 → 19500 for
+            //   the compatible mode/baseVersion and expectedVersion/updateExisting
+            //   aliases plus native Domain-binding guidance. Measured ~19350; ~150
+            //   headroom.
+            //   2026-08-12 (move_attribute): 19500 → 19800 for native Transaction
+            //   attribute reordering with before/after/position, nested level paths,
+            //   dry-run, module lookup and baseVersion. Measured ~19637; ~163 headroom.
+            //   2026-08-13 (create_index dry-run safety): 19800 → 20000 for the
+            //   get_indexes versionToken/baseVersion contract, projected diff,
+            //   exact post-save verification and rollback semantics. Measured ~19875.
+            //   2026-08-16 (issue #97): 20000 → 20300 for genexus_structure
+            //   remove_attribute / check_subtypes actions — native TransactionLevel.Items
+            //   attribute removal (lets agents drop + re-add a misclassified subtype
+            //   attribute) and the subtype-classification guard-rail. Measured ~20158;
+            //   ~142 headroom.
+            //   2026-08-16 (Items A, B, D): 20300 → 20500 for genexus_edit autoDeclareVariables,
+            //   genexus_refactor ExtractSubroutine, and genexus_transfer includeDependencies.
+            //   Measured ~20313; ~187 headroom.
+            //   2026-08-18 (native Data View authoring): 20500 → 21100 for
+            //   genexus_data_view inspect/dry_run/create/update/delete, typed
+            //   mappings, optimistic concurrency and atomic rollback. Measured
+            //   ~20932; ~168 headroom.
+            //   2026-08-20 (typed generator references): 21100 → 21700 for
+            //   genexus_generator_reference list/add/remove, dry-run, optimistic
+            //   concurrency and exact rollback. Measured ~21563; ~137 headroom.
+            //   2026-08-20 (batch properties & multi-part edit): 21700 → 21900 for
+            //   genexus_edit parts array and genexus_properties properties map
+            //   enabling single-pass atomic persistence. Measured ~21744; ~156 headroom.
+            //   2026-08-26 (literal line-break write guard): 21900 → 22200 for
+            //   the explicit real-line-break contract on full/patch/atomic text writes.
+            //   Measured ~22059; ~141 headroom.
+            //   2026-09-02 (native API routes): 22200 → 22500 for typed
+            //   API method inspection, clone/update preview and rollback fields.
+            //   Measured ~22380; ~120 headroom.
+            //   2026-09-04 (modular object identity): 22500 → 23000 for native
+            //   GUID, EntityKey, and qualified path resolution across genexus_read,
+            //   genexus_inspect, and genexus_search_source. Measured ~22782; ~218 headroom.
+            //   2026-09-04 (Issue #131 multi-action completeness & descriptions): 23000 → 24500
+            //   for undeclared lifecycle router parameters (part, page, pageSize, notifyOnFailure,
+            //   skipFullDeploy, fastIncremental), structure type parameter, recipe steps array,
+            //   and comprehensive property descriptions across layout, edit_form, refactor,
+            //   apply_pattern, versioning, create, security, and structure. Measured ~24200; ~300 headroom.
+            //   2026-09-04 (Issues #139/#140 action contract parity): 24500 → 25000
+            //   for explicit descriptions on all 31 action-bearing tool properties and
+            //   their machine-checked action inventory. Measured ~24666; ~334 headroom.
+            //   2026-09-04 (PR #133 typed Transaction records): 25000 → 25500 for
+            //   records_query/records_insert/records_update schemas and their safety
+            //   contract. Measured ~25165; ~335 headroom.
+            //   2026-09-05 (v3 change sets): 25500 → 25600 for the explicit
+            //   genexus_edit changeSet preview/validate/apply contract.
+            //   2026-09-05 (durable operation recovery): 25600 → 25850 for
+            //   lifecycle inspect/reconcile fields that expose redacted journal
+            //   state without replaying writes. Measured ~25763 tokens.
+            //   2026-09-06 (lifecycle structured output): 25850 → 26000 for the
+            //   additive outputSchema contract; text content remains compatible.
+            //   2026-09-07 (v2.43 compatibility): 26000 → 26300 for typed WWP
+            //   tab/grid operations and the API versionToken alias. Measured ~26079.
+            //   2026-09-09 (issue #146 decouple registration): 26300 → 26500 for
+            //   genexus_kb select/set_session_default actions and persist flag. Measured ~26327.
+            //   2026-09-10 (issue #146 inventory parity): 26500 → 27500 for the four
+            //   gateway-only RequestLoop tools: kb_diff, kb_import, sandbox, worker_pool.
+            //   The current schema also includes the independently landed Object Text
+            //   batch contracts from main; measured ~27279.
+            //   2026-09-10 (Pattern Settings): 27500 → 27750 for three Settings
+            //   actions, explicit identity, pagination and single-property preview fields.
+            //   Measured ~27549; real Settings saves remain blocked.
+            //   2026-09-10 (WWP native structural replacement): 27750 → 28250 for
+            //   the explicit WebComponent-to-DropDownComponent UserAction contract,
+            //   including target identity, preserved Gxobject, trigger/load metadata,
+            //   and the dry-run example. Measured ~27980.
+            //   2026-09-14 (native WWP table type): 28250 → 28600 for the typed
+            //   set_table_type operation, path identity, preservation guarantees,
+            //   and dry-run example. Measured ~28385.
+            //   2026-09-15 (issues #205/#206/#209 protections): 28600 → 29400 for the
+            //   genexus_edit patch={find,replace} object schema (scope anchors and
+            //   indentation validation, including their error codes and line evidence),
+            //   the top-level scope/indentation aliases the router consumes, and
+            //   genexus_lifecycle's freshness wait target. Measured ~29147.
+            //   2026-09-16 (KB creation): 29400 → 29800 for genexus_kb create action,
+            //   parameters (dbServer, dbName, dbUser, dbPassword, template, sdkPath,
+            //   major, openAfterCreate, dryRun), and examples. Measured ~29502.
+            //   2026-09-17 (SDK text/mirror/module tasks): 29800 → 30600 for the
+            //   native src/ref exchange, in-memory list/validation, watermark mirror,
+            //   Module Manager server/package actions, and OpenAPI task publication.
+            //   2026-09-17 (filesystem parity): 30600 → 31000 for recursive selectors,
+            //   listOnly/skip/stopOnError, forceSave, module.toml metadata and manifest
+            //   hash/file-reference validation. Measured ~30905 tokens.
+            //   2026-09-17 (typed WWP form UserAction): 31000 → 31500 for the
+            //   add_user_action operation, container/event contract, and rollback option.
+            //   Measured ~31229 tokens.
+            Assert.True(approxTokens < 31500, $"tool_definitions.json is ~{approxTokens} tokens; budget 31500.");
         }
     }
 }

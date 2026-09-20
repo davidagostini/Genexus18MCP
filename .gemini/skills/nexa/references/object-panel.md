@@ -10,7 +10,15 @@ Defines user interface screens for multiple platforms with layout, events, and d
 # DEFINITION
 A `Panel` object defines a screen for Android, Apple, Angular, or Web environments
 
-Types: `Panel` (or `SDPanel`), `WebPanel`, `MasterPanel`, `MasterPage`, `WebComponent`, `Stencil`
+Types:
+- `Panel` (or `SDPanel`): Build multi-platform screens; Android, Apple, and Angular
+- `WebPanel`: Build Web pages
+- `MasterPanel`: Share Panel layout
+- `MasterPage`: Share Web page layout
+- `WebComponent`: Reuse Web UI sections
+- `Stencil`: Reuse visual layouts
+
+See [Frontend Design](./frontend-design.md) for UI/UX guidelines
 
 ---
 
@@ -49,27 +57,127 @@ Types: `Panel` (or `SDPanel`), `WebPanel`, `MasterPanel`, `MasterPage`, `WebComp
 ~~~
 
 Where:
-- `<type>`: Object type: `SDPanel` (default), `WebPanel`, `WebComponent`, `MasterPage`, `MasterPanel`, `Stencil`
+- `<type>`: Object type: `Panel`, `WebPanel`, `WebComponent`, `MasterPage`, `MasterPanel`, `Stencil`
 - `<name>`: Object name using alphanumeric or underscore, starting with letter
-- `<events>`: Event handlers triggered by user actions
-- `<rules>`: Business rules (parm, etc.)
-- `<conditions>`: Boolean filters (comparisons, operators, functions, formulas); multiple lines imply `AND`
+- `<events>`: Event handlers triggered by user actions; see [EVENTS](#events) section
+- `<rules>`: Business rules (parm, etc.); see [RULES](#rules) section
+- `<conditions>`: Boolean filter predicates; multiple lines imply `AND` operations
 - `<variables>`: Variable definitions with `DataType`
-- `<layout>`: GXML layout definition (XML-based) for structure and control composition
+- `<layout>`: Hierarchical/composable XML-based layout definition; see [LAYOUT](#layout) section
 - `<properties>`: Optional object properties in TOML syntax; see [properties](./properties-object-panel.md)
-- `<documentation>`: Optional object documentation; check [common-markdown](./common-markdown.md)
+- `<documentation>`: Optional object documentation; see [markdown](./common-markdown.md)
 
+Notes:
+- See [common-filter](./common-filter.md) for optimization details
+
+---
+
+# EVENTS
+See [common-events](./common-events.md)
+
+Allowed event names / execution sequence:
+- Initialize (client-side)
+	* `ClientStart` (native-only): Native UI setup
+	* `<navigation>.Start` (native-only): Navigation UI setup
+- Initialize (server-side)
+	* `Start`: One-time data and Web UI setup
+- Refresh (server-side)
+	* `[<grid-name>.]Refresh`: Fixed data loading
+	* `[<grid-name>.]Load`: Grid loading; executed:
+		- For each row on grids with base table
+		- Only once on grids without base table
+- Interaction (client-side)
+	* `Enter` (web-only): Enter/confirm
+	* `Back` (native-only): Back action/gesture
+		- Use empty body for disabling the back action
+		- Use `Return` command for closing current screen
+	* `'<custom-name>'`: Custom action; required for buttons
+	* `<control-name>.<event-name>`: Control action/gesture
+	* `<external-object>.<event-name>`: External object event
+
+Navigation event names:
+- `Slide`,
+  `Split`,
+  `Cascade`,
+  `Flip`: Only for matching `NavigationStyle` value in [Platform WorkWithDevices settings](./model-work-with-devices.md#platform)
+- `Tabs`: Only for `Panel` objects referenced by [Menu object](./object-menu.md) having `Control` property with `Tabs` value
+
+Control event names:
+- Web:
+	* `Click`: Left click
+	* `DblClick`: Double click
+	* `RightButton`: Right-button click; input-based controls only
+- Native:
+	* `Tap`: Short touch
+	* `DoubleTap`: Two quick-touches
+	* `LongTap`: Touch and hold
+	* `Swipe`: Fast swipe in any direction
+	* `SwipeTop`: Upward swipe
+	* `SwipeLeft`: Leftward swipe
+	* `SwipeRight`: Rightward swipe
+	* `SwipeBottom`: Downward swipe
+	* `Drag`: Start drag; define dragged data
+	* `Drop(&arg)`: Drop dragged data
+	* `DropAccepted`: Before `Drop` when accepted
+	* `DragCanceled`: Drag cancelled
+	* `PullRelease`: Release pull-to-refresh gesture
+	* `SelectionChanged`: Grid item selection changed
+	* `ActivePageChanged`: Tab active page changed
+- Common:
+	* `IsValid`: After basic validation
+	* `ControlValueChanged`: After input value changed
+	* `ControlValueChanging(&arg)`: While input value change; receives new value
+
+Rules:
+- Use `Composite … EndComposite` blocks in native-only client-side events with multiple actions
+- Use `Refresh` command for `Form` refresh and subsequent `Refresh` event execution
+- Use `Load` command only in `Load` event for `Grid` controls without base table
+
+Example:
+~~~
+Event 'Calculate' /* button event */
+	&Total = &Price * &Quantity
+	msg(format(!"Total: %1", &Total), status)
+EndEvent
+
+Event &LanguageCombo.ControlValueChanged /* combobox event */
+	SetLanguage(&LanguageCombo)
+	Refresh
+EndEvent
+
+Event AppLifecycle.AppStateChanged(&oldApplicationState, &newApplicationState) /* external object event */
+	msg(format(!"Change from %1 to %2", &oldApplicationState, &newApplicationState), status)
+EndEvent
+~~~
+
+---
+
+# RULES
+See [common-rules](./common-rules.md)
+
+---
+
+# LAYOUT
+Declarative XML-based screen layout schema used in `#Layout` region
+
+Scopes:
+- Mirror HTML concepts with GeneXus-specific syntax
+- Define hirarchical structure and control composition
+- Define visual styling in `DesignSystem` object classes
+
+Rules:
+- See [GeneXus Layout](./frontend-layout.md) for available GXML syntax elements and attributes
+- Escape XML special characters; e.g. `&` (✘) → `&amp;` (✓), `"` (✘) → `&quote;` (✓)
+- Ensure all measures only use `px`, `dip`, or `%` units
+- Bind `action` controls with named events in `#Events` section
+- Prefer `smart` containers over other containers
+	* Use `table` for legacy alignment
+	* Use `canvas` for overlapping controls
 
 ---
 
 # OUTPUT
-Use [global-output](./global-output.md) with `<type>` value:
-- For `Panel` object → `panel`
-- For `WebPanel` object → `webpanel`
-- For `Stencil` object → `stencil`
-- For `WebComponent` object → `webcomponent`
-- For `MasterPanel` object → `masterpanel`
-- For `MasterPage` object → `masterpage`
+Use [global-output](./global-output.md)
 
 ---
 
@@ -77,164 +185,29 @@ Use [global-output](./global-output.md) with `<type>` value:
 - Use [global-constraints](./global-constraints.md)
 - Include [common-standard-variables](./common-standard-variables.md) according to panel context
 - Place code only inside `Panel` object sections
-- Allow only `#Layout`, `#Variables`, `#Properties`, `#Documentation` in `Stencil` object
+- Forbid `#Rules` and `#Conditions` sections in `Stencil` object definition
 - Events use qualifiers when needed: `[WEB]`, `[WIN]`, `[TEXT]`
+- Ensure all classes from `Layout` section exist in linked `DesignSystem` object
+	* Create linked `DesignSystem` object when missing
+	* Add missing classes required by `Layout` section
 
 ---
 
 # CONVENTIONS
-- Define screen purpose, primary actions, and navigation path before `#Layout`
-- Define UI states per screen: `Default`, `Loading`, `Empty`, `Error`, `Success`
-- Define interaction trigger and feedback for each actionable control
-- Define responsive adaptations for mobile, tablet, and desktop
-- Define layout structure in `Panel` object; define visual styling in `DesignSystem` object
-- Reference only pre-defined style classes from `DesignSystem` object
-- Set `Style` property to target `DesignSystem` object when style contract applies
-- Use semantic class names in layout; avoid visual names
-- Build clear visual hierarchy in layout: `header`, `content`, `aside` (optional), `footer`
-- Keep progressive disclosure: show primary action first, defer secondary actions
-- Model perceived performance in layout: reserve space for skeleton/loading placeholders
-- Define accessibility in controls: readable labels, descriptive button captions, keyboard-safe interactions
-
----
-
-# CONTRACT
-A `Panel` object must expose semantic hooks styled by a [DesignSystem](./object-design-system.md) object
-
-Recommended semantic contract in `Panel` classes:
-- Page: `page`, `page-header`, `page-content`, `page-footer`
-- Surfaces: `surface`, `surface-elevated`, `surface-muted`
-- Typography: `text-title`, `text-subtitle`, `text-body`, `text-caption`
-- Actions: `btn-primary`, `btn-secondary`, `btn-readonly`, `btn-danger`
-- Controls: `field`, `field-label`, `field-help`, `field-error`
-- Feedback: `state-loading`, `state-empty`, `state-error`, `state-success`
-
-Checklist:
-- [ ] Keep one dominant CTA per section and group related controls in one surface
-- [ ] Keep density consistent and distribute content responsively across mobile/tablet/desktop
-- [ ] Reserve optional desktop areas instead of overloading a single column
-- [ ] Avoid hardcoded colors or spacing; rely on `DesignSystem` classes and tokens
-- [ ] Prefer `smart`, use `table` for legacy, and `canvas` for absolute/overlap only
-- [ ] Define each child  in `canvas` with `width`, `height`, and one axis anchor
-- [ ] Avoid mixing `canvas` heavy positioning with `smart` flow in one section
-- [ ] Reserve `Refresh` event for recalculation/filtering
-- [ ] Reserve `Load`/`Grid.Load` event for row-by-row population
-- [ ] Bind every action requires with explicit event that shows user feedback after execution
-- [ ] Verify `Style` property references the correct `DesignSystem` object and all classes exist
-- [ ] Reuse repeated screens through `Stencil` with `controlNameForStencil` mappings
-- [ ] Define `source` property for static images, and `attribute` property for bound data
-- [ ] Validate all layout units only use `px`, `dip`, or `%`
-
----
-
-# PATTERNS
-Use these structure patterns to get modern and scalable screens:
-
-Pattern `Hero + Action + Content`:
-- Top row: contextual title and supporting copy
-- Mid row: primary action block with strongest visual priority
-- Bottom rows: data/content cards or grid lists
-
-Pattern `Form + Live Feedback`:
-- Left/main: grouped fields and helper text
-- Right/bottom: preview, summary, or validation feedback
-- Include dedicated rows/cells for `field-error` and `state-success`
-
-Pattern `List + Detail` (responsive):
-- Desktop: two-column split (list/details)
-- Mobile: stacked flow with sticky key actions in footer row
-
-Pattern `Bottom Navigation + Top Context`:
-- Bottom area: persistent primary navigation (3-5 destinations)
-- Top area: contextual title and screen-level actions
-- Keep destination state stable when switching tabs
-
-Pattern `List + Filters + Refresh`:
-- Top area: quick filters and search entry
-- Main area: scrollable results list with progressive loading
-- Mobile-first refresh behavior: pull-to-refresh and explicit retry on failures
-
-Pattern `Multi-step Flow`:
-- Stepper/progress indicator visible across the flow
-- One primary CTA fixed at bottom per step
-- Validate incrementally and keep previous step data persisted
-
-Pattern `Offline + Retry`:
-- Dedicated empty/error surface for connectivity loss
-- Show last synchronized data when available
-- Provide explicit retry action and feedback after reconnection
-
----
-
-# EVENTS
-See [common-events](./common-events.md)
-
-Allowed event names:
-- `Start`
-- `ClientStart` (non-web)
-- `[<grid-name>.]Refresh`
-- `[<grid-name>.]Load`
-- `Enter` (web only)
-- `Back` (non-web only)
-- `'<custom-name>'` (for buttons)
-- `<control-name>.<event-name>`
-
-Common control event names:
-- Web: `Click`, `DblClick`
-- Native: `Tap`, `DoubleTap`, `LongTap`, `Swipe`, `SwipeTop`, `SwipeLeft`, `SwipeRight`, `SwipeBottom`
-
-Execution order:
-1. `Start`
-2. `Refresh` and then each `<grid>.Refresh`
-3. `Load` after `Refresh`, and `<grid>.Load` after each `<grid>.Refresh` (one execution per loaded row)
-4. User interaction events: `Enter`, `Back`, `'<custom-name>'`, `<control-name>.<event-name>`
-
-Note:
-- `Load` can refer to event name or command name depending on context
-
-Example:
-~~~
-Event 'Calculate'
-	&Total = &Price * &Quantity
-	msg(format(!"Total: %1", &Total), status)
-EndEvent
-~~~
-
----
-
-# LAYOUT
-Declarative XML-based screen layout schema used in `#Layout` section
-
-## Scopes
-- Define hirarchical structure and control composition
-- Define visual styling in `DesignSystem` object classes
-
-## Rules
-- Escape XML special characters; e.g. `&` (✘) → `&amp;` (✓)
-- Indent using tabs (`\t`); whitespaces forbidden
-- Indent attributes one tab deeper than the element
-- Expand element tags as multiline when more than two attributes
-- Place element name alone on opening line
-- Place one attribute per line
-- Define sizes only with these units:
-	* `px` (Web), `dip` (native) for absolute
-	* `%` for relative
-	* Any other unit is strictly forbidden
-- For `canvas`, each direct child must define:
-	* Both `width` and `height`
-	* At least one horizontal anchor (`left` or `right`)
-	* At least one vertical anchor (`top` or `bottom`)
-- For `smart` and `table`, `columnsStyle` and `rowsStyle` must not overflow or underflow container size
-- For `stencil`, each mapped child must define `controlNameForStencil`
-- For `image`, use `source` for static image objects and `attribute` for bound data
-
-## Elements
-- `<smart>`: Modern div-based responsive layout
-- `<table>`: Legacy table-based layout
-- `<canvas>`: Absolute positioning with overlapping
-- `<grid>`: Data grid with items
-- `<input>`, `<label>`, `<button>`, `<image>`: UI controls
-- `<stencil>`: Embedded reusable layout
+- Plan screen purpose, actions, and navigation before designing the screen layout
+- Give each actionable control an interaction trigger and feedback
+- Keep layout structure in `Panel` object; keep visual styling in `DesignSystem` object
+- Split layout into clear regions:
+	* Use `header` for context title and global actions
+	* Use `content` for primary task content
+	* Use `aside` as optional secondary/support content
+	* Use `footer` for persistent primary or closing actions
+- Place language selector for multi-language apps:
+	* Add `VarChar` variable in panel definition
+	* Put variable-bound `<combobox>` element in panel layout
+	* Set `Values` attribute in `<combobox>` with supported languages
+	* Use `GetLanguage` function in `Start` event to initialize language
+	* Use `SetLanguage` function in `ControlValueChanged` combo event to switch language
 
 ---
 
@@ -264,6 +237,10 @@ Panel CustomerList
 		Event 'NewCustomer'
 			NewCustomer()
 		EndEvent
+
+		Event Back
+			// disable back button or gesture
+		EndEvent
 	#End
 
 	#Rules
@@ -285,8 +262,8 @@ Panel CustomerList
 					class="page"
 					width="100%"
 					height="100%"
-					olumnsStyle="100%"
-					rowsStyle="96dip;100%;72dip">
+					columns="100%"
+					rows="96dip;100%;72dip">
 					<row>
 						<cell
 							class="page-header"
@@ -300,10 +277,9 @@ Panel CustomerList
 					</row>
 					<row>
 						<cell class="page-content">
-							<grid
+							<smartGrid
 								name="GridCustomers"
 								class="surface"
-								controlType="smart"
 								autoGrow="True">
 								<smart
 									name="GridCustomerItem"
@@ -313,13 +289,14 @@ Panel CustomerList
 									<row>
 										<cell>
 											<input
-												attribute="&amp;Customer.CustomerName"
+												name="ctlCustomerName"
+												data="&amp;Customer.Name"
 												readonly="True"
 												class="text-body"/>
 										</cell>
 									</row>
 								</smart>
-							</grid>
+							</smartGrid>
 						</cell>
 					</row>
 					<row>
@@ -327,11 +304,11 @@ Panel CustomerList
 							class="page-footer"
 							hAlign="Right"
 							vAlign="Middle">
-							<button
-								name="BtnNew"
+							<action
+								name="ButtonNew"
 								caption="New Customer"
-								event="'NewCustomer'"
-								class="btn-primary" />
+								onClickEvent="'NewCustomer'"
+								class="button-primary" />
 						</cell>
 					</row>
 				</smart>
@@ -369,6 +346,10 @@ Panel ProductDetail
 			AddToCart(&ProductId)
 			msg(!"Added to cart", status)
 		EndEvent
+
+		Event Back
+			Return // close current screen; back to CustomerList panel
+		EndEvent
 	#End
 
 	#Rules
@@ -393,12 +374,13 @@ Panel ProductDetail
 					name="Container"
 					width="100%"
 					height="100%"
-					columnsStyle="100%"
-					rowsStyle="200dip;60dip;60dip;100%">
+					columns="100%"
+					rows="200dip;60dip;60dip;100%">
 					<row>
 						<cell hAlign="Center">
 							<image
-								attribute="&amp;ProductImage"
+								name="ctlProductImage"
+								data="&amp;ProductImage"
 								width="100%"
 								height="200dip"/>
 						</cell>
@@ -406,7 +388,8 @@ Panel ProductDetail
 					<row>
 						<cell>
 							<input
-								attribute="&amp;ProductName"
+								name="ctlProductName"
+								data="&amp;ProductName"
 								readonly="True"
 								class="text-title"/>
 						</cell>
@@ -414,18 +397,19 @@ Panel ProductDetail
 					<row>
 						<cell>
 							<input
-								attribute="&amp;ProductPrice"
+								name="ctlProductPrice"
+								data="&amp;ProductPrice"
 								readonly="True"
 								class="text-body"/>
 						</cell>
 					</row>
 					<row>
 						<cell hAlign="Center" vAlign="Middle">
-							<button
-								name="BtnBuy"
+							<action
+								name="ButtonBuy"
 								caption="Buy Now"
-								event="'BuyNow'"
-								class="btn-primary"/>
+								onClickEvent="'BuyNow'"
+								class="button-primary"/>
 						</cell>
 					</row>
 				</smart>
@@ -435,6 +419,205 @@ Panel ProductDetail
 
 	#Properties
 		Caption = "Product Detail"
+		Style = "MyDesignSystem"
+	#End
+}
+~~~
+
+## Example 3
+Nested stencils and runtime event interaction
+~~~
+Stencil FieldStencil /* Module: Component.Common */
+{
+	#Variables
+		FieldValue [ DataType = 'VarChar(256)' ]
+	#End
+
+	#Layout
+		<layout>
+			<view>
+				<smart
+					name="FieldContainer"
+					width="100%"
+					class="field">
+					<row>
+						<cell
+							width="100%"
+							height="24dip">
+							<label
+								name="FieldTextBlock"
+								caption="Field"
+								class="field-label"/>
+						</cell>
+					</row>
+					<row>
+						<cell
+							width="100%"
+							height="40dip">
+							<input
+								name="ctlFieldValue"
+								data="&amp;FieldValue"
+								inviteMessage="Value..."
+								class="field"/>
+						</cell>
+					</row>
+				</smart>
+			</view>
+		</layout>
+	#End
+}
+~~~
+
+~~~
+Stencil FormStencil /* Module: Component.Common */
+{
+	#Variables
+		Name [ DataType = 'VarChar(128)' ]
+		Email [ DataType = 'Email, GeneXus' ]
+		Message [ DataType = 'LongVarChar(1M)' ]
+	#End
+
+	#Layout
+		<layout>
+			<view>
+				<smart
+					name="FormContainer"
+					width="100%"
+					class="surface">
+					<row>
+						<cell width="100%">
+							<stencil:Component.Common.FieldStencil name="NameField">
+								<label
+									name="FieldTextBlock"
+									caption="Full name"/>
+								<input
+									name="ctlName"
+									data="&amp;Name"
+									bind="&amp;FieldValue"
+									inviteMessage="Your name..."/>
+							</stencil:Component.Common.FieldStencil>
+						</cell>
+					</row>
+					<row>
+						<cell width="100%">
+							<stencil:Component.Common.FieldStencil name="EmailField">
+								<label
+									name="FieldTextBlock"
+									caption="Email address"/>
+								<input
+									name="ctlEmail"
+									data="&amp;Email"
+									bind="&amp;FieldValue"
+									inviteMessage="Your email..."/>
+							</stencil:Component.Common.FieldStencil>
+						</cell>
+					</row>
+					<row>
+						<cell width="100%">
+							<stencil:Component.Common.FieldStencil name="MessageField">
+								<label
+									name="FieldTextBlock"
+									caption="Message"/>
+								<input
+									name="ctlMessage"
+									data="&amp;Message"
+									bind="&amp;FieldValue"
+									inviteMessage="Your message..."/>
+							</stencil:Component.Common.FieldStencil>
+						</cell>
+					</row>
+					<row>
+						<cell width="100%">
+							<!-- button-like table with label -->
+							<table
+								name="SendFrame"
+								width="100%"
+								columns="100%"
+								rows="48dip"
+								class="action-table">
+								<row>
+									<cell
+										hAlign="Center"
+										vAlign="Middle">
+										<label
+											name="SendLabel"
+											caption="Send"
+											class="acton-label"/>
+									</cell>
+								</row>
+							</table>
+						</cell>
+					</row>
+				</smart>
+			</view>
+		</layout>
+	#End
+}
+~~~
+
+~~~
+WebPanel ContactWebPanel
+{
+	#Events
+		Event ContactForm.SendFrame.Click /* override caption and submit */
+			ContactForm.SendLabel.Caption = "Contact us again"
+			msg(!"Your message was sent.", status)
+		EndEvent
+	#End
+
+	#Variables
+		Contact [ DataType = 'ContactData' ] /* SDT with Name, Email, and Message fields */
+	#End
+
+	#Layout
+		<layout>
+			<view>
+				<smart
+					name="PageShell"
+					width="100%"
+					height="100%"
+					columns="100%"
+					rows="72dip;100%"
+					class="page">
+					<row>
+						<cell
+							class="page-header"
+							hAlign="Left"
+							vAlign="Middle">
+							<label
+								name="ContactTitle"
+								caption="Contact us"
+								class="text-title"/>
+						</cell>
+					</row>
+					<row>
+						<cell class="page-content">
+							<stencil:Component.Common.FormStencil name="ContactForm">
+								<input
+									name="ctlContactName"
+									data="&amp;Contact.Name"
+									bind="&amp;Name"/>
+								<input
+									name="ctlContactEmail"
+									data="&amp;Contact.Email"
+									bind="&amp;Email"/>
+								<input
+									name="ctlContactMessage"
+									data="&amp;Contact.Message"
+									bind="&amp;Message"/>
+								<label
+									name="SendLabel"
+									caption="Contact Us"/>
+							</stencil:Component.Common.FormStencil>
+						</cell>
+					</row>
+				</smart>
+			</view>
+		</layout>
+	#End
+
+	#Properties
+		Caption = "Contact"
 		Style = "MyDesignSystem"
 	#End
 }

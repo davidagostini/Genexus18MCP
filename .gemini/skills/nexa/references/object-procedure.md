@@ -53,12 +53,15 @@ Where:
 - `<variables>`: Variable definitions with `DataType`
 - `<layout>`: Optional report layout definition in GXML when using `Print`, `Header`, or `Footer`
 - `<properties>`: Optional object properties in TOML syntax; see [properties](./properties-object-procedure.md)
-- `<documentation>`: Optional object documentation; check [common-markdown](./common-markdown.md)
+- `<documentation>`: Optional object documentation; see [markdown](./common-markdown.md)
+
+Notes:
+- See [common-filter](./common-filter.md) for optimization details
 
 ---
 
 # OUTPUT
-Use [global-output](./global-output.md) with `<type>` value: `procedure`
+Use [global-output](./global-output.md)
 
 ---
 
@@ -79,7 +82,7 @@ Pass PK/FK attributes directly in `parm` (without `&`) as `in:` for implicit nav
 	* Use [FE](./common-commands-foreach.md) otherwise
 - Include [common-standard-variables](./common-standard-variables.md) according to procedure context
 - For subroutine-level DB/runtime error handling, include procedure error variables from [common-standard-variables](./common-standard-variables.md)
-- When `Output_File` rule is used, require `Print` command usage and set `Main Program = True` with `Call Protocol = HTTP`
+- When `Output_File` rule is used, require `Print` command usage and set `MainProgram = true` with `CallProtocol = "HTTP"`
 - Include `/* signature */` comment for each `Sub` definition
 - Subroutine invocation via `Do` command has no parameters (global variables)
 
@@ -134,12 +137,12 @@ Requires:
 - `MainProgram = true`
 - `CallProtocol = "Command Line"`
 
-Working directory resolution:
-1. Read `src.ns/Preferences/<ver-name>.version.main.gx` file
-2. Get `CurrentEnvironment` property value as `<env-name>`
-3. Read `src.ns/Preferences/<env-name>.environment.main.gx` file
-4. Get the `TargetPath` property value as `<target-path>`
-5. Navigate to `<kb-root>/<target-path>/web` as working directory
+Working directory resolution in order:
+- Read `src/#preferences/<ver-name>.kb.gx` file
+- Read `CurrentEnvironment` from `#Properties` section as `<env-name>`
+- Read `src/#preferences/<env-name>.env.gx` file
+- Get the `TargetPath` property value as `<target-path>`
+- Navigate to `<kb-root>/<target-path>/web` as working directory
 
 ## JAVA Environment
 ```
@@ -193,163 +196,192 @@ Layout elements with allowed attributes in XML definition
 Root report container
 
 - `type` (required)
-    * Description: Identifies layout type
-    * Type: `enum{"Report"}`
+	* Description: Identifies layout type
+	* Type: `enum{"Report"}`
 
 - `paperSize`
-    * Description: Physical paper size
-    * Type: `enum{"Custom","Letter","Legal","Executive","A3","A4","A5"}`
-    * Default: `"Custom"`
+	* Description: Physical paper size
+	* Type: `enum{"Custom","Letter","Legal","Executive","A3","A4","A5"}`
+	* Default: `"Custom"`
 
 - `paperOrientation`
-    * Description: Page orientation
-    * Type: `enum{"Portrait","Landscape"}`
-    * Default: `"Portrait"`
+	* Description: Page orientation
+	* Type: `enum{"Portrait","Landscape"}`
+	* Default: `"Portrait"`
 
 - `width`, `height`
-    * Description: Paper dimensions; only if `paperSize="Custom"`
-    * Type: `int`
+	* Description: Paper dimensions; only if `paperSize="Custom"`
+	* Type: `int`
 
 - `rightMargin`
-    * Description: Right margin size
-    * Type: `int`
+	* Description: Right margin size
+	* Type: `int`
 
 - `attributeFont`, `textBlockFont`
-    * Description: Default font for data‑bound / text controls
-    * Type: `string`, format `"<family>, <size>"`; e.g. `"Arial, 10"`
+	* Description: Default font for data‑bound / text controls
+	* Type: `string`, format `"<family>, <size>"`; e.g. `"Arial, 10"`
 
 ### printBlock
 Band printed by `Print <name>` command in source
 
 - `name` (required)
-    * Description: Unique block name
-    * Type: `string`
+	* Description: Unique block name
+	* Type: `string`
 
 - `height`
-    * Description: Fixed band height; auto if omitted
-    * Type: `int`
+	* Description: Fixed band height; auto if omitted
+	* Type: `int`
 
 ### label / attribute
 Static or dynamic (by Attribute value) text control
 
 - `name` (required)
-    * Description: Unique control name within block
-    * Type: `string`
+	* Description: Unique control name within block
+	* Type: `string`
 
 - `text` (required for `label` element)
-    * Description: Static text to display
-    * Type: `string`
+	* Description: Static text to display
+	* Type: `string`
 
 - `attribute` (required for `attribute` element)
-    * Description: Attribute or `&amp;`-prefixed Variable name to bind
-    * Type: `string`
+	* Description: Attribute or `&amp;`-prefixed Variable name to bind
+	* Type: `string`
 
 - `x`, `y`, `width`, `height`
-    * Description: Position and size
-    * Type: `int`
+	* Description: Position and size
+	* Type: `int`
 
 - `font`
-    * Description: Overrides block‑level font
-    * Type: `string` format `"<family>, <size>"`
+	* Description: Overrides block‑level font
+	* Type: `string` format `"<family>, <size>"`
 
 - `foreColor`, `backColor`, `borderColor`
-    * Description: Text, background, and border colors
-    * Type: `string`, format `"#RRGGBB"` (no alpha allowed); e.g. `"#FF0000"`
+	* Description: Text, background, and border colors
+	* Type: `string`, format `"#RRGGBB"` (no alpha allowed); e.g. `"#FF0000"`
 
 - `borderWidth`
-    * Description: Border thickness
-    * Type: `int`
+	* Description: Border thickness
+	* Type: `int`
 
 - `borders`
-    * Description: Which sides render border
-    * Type: `enum{"None","Top","Bottom","Left","Right","All"}`
-    * Default: `"None"`
+	* Description: Which sides render border
+	* Type: `enum{"None","Top","Bottom","Left","Right","All"}`
+	* Default: `"None"`
 
 - `alignment`
-    * Description: Content alignment within bounds
-    * Type: `enum{"TopLeft","TopCenter","TopRight","MiddleLeft","MiddleCenter","MiddleRight","BottomLeft","BottomCenter","BottomRight","TopJustify","MiddleJustify","BottomJustify"}`
-    * Default: `"TopLeft"`
+	* Description: Content alignment within bounds
+	* Type: `enum{"TopLeft","TopCenter","TopRight","MiddleLeft","MiddleCenter","MiddleRight","BottomLeft","BottomCenter","BottomRight","TopJustify","MiddleJustify","BottomJustify"}`
+	* Default: `"TopLeft"`
 
 - `format`
-    * Description: Text interpretation (`Text` or `HTML`)
-    * Type: `enum{"Text","HTML"}`
-    * Default: `"Text"`
+	* Description: Text interpretation (`Text` or `HTML`)
+	* Type: `enum{"Text","HTML"}`
+	* Default: `"Text"`
 
 - `wordWrap`
-    * Description: Wrap text when exceeding width
-    * Type: `enum{"False","True"}`
-    * Default: `"False"`
+	* Description: Wrap text when exceeding width
+	* Type: `enum{"False","True"}`
+	* Default: `"False"`
 
 ### image
 Image control
 
 - `name` (required)
-    * Description: Unique control name within block
-    * Type: `string`
+	* Description: Unique control name within block
+	* Type: `string`
 
 - `image` (required)
-    * Description: Image object name to render
-    * Type: `string`
+	* Description: Image object name to render
+	* Type: `string`
 
 - `x`, `y`, `width`, `height`
-    * Description: Same as in `label`
-    * Type: `int`
+	* Description: Same as in `label`
+	* Type: `int`
 
 ### line
 Line control
 
 - `name` (required)
-    * Description: Unique control name within block
-    * Type: `string`
+	* Description: Unique control name within block
+	* Type: `string`
 
 - `x`, `y`, `width`
-    * Description: Position and length
-    * Type: `int`
+	* Description: Position and length
+	* Type: `int`
 
 - `lineWidth`
-    * Description: Line thickness
-    * Type: `int`
+	* Description: Line thickness
+	* Type: `int`
 
 - `lineDirection`
-    * Description: Horizontal or vertical
-    * Type: `enum{"Horizontal","Vertical"}`
+	* Description: Horizontal or vertical
+	* Type: `enum{"Horizontal","Vertical"}`
 
 - `foreColor`
-    * Description: Line color
-    * Type: `string`, format `"#RRGGBB"` (no alpha allowed); e.g. `"#00FF00"`
+	* Description: Line color
+	* Type: `string`, format `"#RRGGBB"` (no alpha allowed); e.g. `"#00FF00"`
 
 - `borderStyle`
-    * Description: Dash style
-    * Type: `enum{"Solid","Dotted","Dashed","LongDashed","LongDotDashed"}`
+	* Description: Dash style
+	* Type: `enum{"Solid","Dotted","Dashed","LongDashed","LongDotDashed"}`
 	* Default: `"Solid"`
 
 ### rectangle
 Rectangle control
 
 - `name` (required)
-    * Description: Unique control name within block
-    * Type: `string`
+	* Description: Unique control name within block
+	* Type: `string`
 
 - `x`, `y`, `width`, `height`
-    * Description: Position and dimensions
-    * Type: `int`
+	* Description: Position and dimensions
+	* Type: `int`
 
 - `borderWidth`
-    * Description: Border thickness (all sides)
-    * Type: `int`
+	* Description: Border thickness (all sides)
+	* Type: `int`
 
 - `backColor`, `borderColor`
-    * Description: Fill and border colors
-    * Type: `string`, format `"#RRGGBB"` (no alpha allowed); e.g. `"#0000FF"`
+	* Description: Fill and border colors
+	* Type: `string`, format `"#RRGGBB"` (no alpha allowed); e.g. `"#0000FF"`
 
 - `borderStyle(Top|Bottom|Left|Right)`
-    * Description: Per‑side border dash style
-    * Type: `enum{"Solid","None","Dotted","Dashed","LongDashed","LongDotDashed"}`
+	* Description: Per‑side border dash style
+	* Type: `enum{"Solid","None","Dotted","Dashed","LongDashed","LongDotDashed"}`
 	* Default: `"Solid"`
 
 - `borderRadius(TopLeft|TopRight|BottomLeft|BottomRight)`
-    * Description: Per‑corner rounding radius
-    * Type: `int`
+	* Description: Per‑corner rounding radius
+	* Type: `int`
+
+---
+
+# STUB
+Named SOAP operation exposing multiple methods from one service endpoint
+
+Syntax:
+~~~
+Stub <name>([in:|out:|inout: &<arg>, …])
+	<code>
+EndStub
+~~~
+
+Where:
+- `<name>`: Stub method name, exposed as a SOAP operation
+- `<code>`: Logic executed when this method is invoked
+
+Rules:
+- Ensure `ExposeAsWebService = true` and `CallProtocol = 'SOAP'`; never for REST
+- Define only `Stub` blocks; main code is not allowed
+	* Write `Stub execute(…) … EndStub` only for compatibility:
+		- Move main code into `execute` body
+		- Move `parm` definition into `execute` signature
+	* Write custom logic inside specialized `Stub` definitions
+- Forbid duplicate `Stub` names; each name identifies a unique SOAP operation
+- Ensure each `Stub` only exposes SOAP entry points; place shared logic in other objects
+
+Availability:
+- ProductVersion: `>=11.2`
 
 ---
 
@@ -816,6 +848,31 @@ Procedure GetCurrentProcessId
 
 	#Variables
 		ProcessId [ DataType = 'Numeric(10.0)' ]
+	#End
+}
+~~~
+
+
+## Example 17
+Multiple web service operations
+~~~
+Procedure CustomerServices
+{
+	Stub BasicInformation(in: &CustomerId, out: &BasicInformation)
+		For Each
+			// Navigation to populate &BasicInformation
+		EndFor
+	EndStub
+
+	Stub PurchaseHistory(in: &CustomerId, out: &PurchaseHistory)
+		For Each
+			// Navigation to populate &PurchaseHistory
+		EndFor
+	EndStub
+
+	#Properties
+		ExposeAsWebService = true
+		WebServiceProtocol = "SOAP"
 	#End
 }
 ~~~

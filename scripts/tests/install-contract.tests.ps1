@@ -1,0 +1,159 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+. (Join-Path $PSScriptRoot '..\install-transaction.ps1')
+
+$root = Join-Path ([IO.Path]::GetTempPath()) ('gxmcp-install-contract-' + [guid]::NewGuid().ToString('N'))
+$passed = 0
+
+function Assert-True {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { throw "Assertion failed: $Message" }
+}
+
+function Assert-Fails {
+    param([scriptblock]$Action, [string]$Message)
+    $failed = $false
+    try { & $Action } catch { $failed = $true }
+    Assert-True $failed $Message
+}
+
+function New-TestArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [switch]$Manifest,
+        [string]$ManifestVersion = '3.0.0'
+    )
+
+    $payload = Join-Path $Directory ('payload-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path (Join-Path $payload 'worker') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $payload 'GxMcp.Gateway.exe') -Value 'gateway-v3' -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $payload 'worker\GxMcp.Worker.exe') -Value 'worker-v3' -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $payload 'tool_definitions.json') -Value '[]' -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $payload 'gxmcp-sbom.json') -Value '{}' -Encoding ascii
+
+    if ($Manifest) {
+        $artifacts = @()
+        foreach ($relative in @('GxMcp.Gateway.exe', 'worker\GxMcp.Worker.exe', 'tool_definitions.json', 'gxmcp-sbom.json')) {
+            $path = Join-Path $payload $relative
+            $item = Get-Item -LiteralPath $path
+            $artifacts += [ordered]@{
+                path = $relative.Replace('\', '/')
+                size = [int64]$item.Length
+                sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        }
+        [ordered]@{
+            schemaVersion = 'gxmcp-release-manifest/1'
+            version = $ManifestVersion
+            sourceCommit = 'fixture'
+            generatedAtUtc = [DateTime]::UtcNow.ToString('o')
+            runtime = [ordered]@{
+                gateway = 'net10.0-windows'
+                worker = 'net48-x86'
+                node = '>=22.0.0'
+                recommendedNode = '24 LTS'
+            }
+            protocolVersions = @('2025-11-25', '2026-07-28')
+            schema = 'tool_definitions.json'
+            schemaSha256 = (Get-FileHash -LiteralPath (Join-Path $payload 'tool_definitions.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+            provenance = 'gxmcp-sbom.json'
+            artifacts = $artifacts
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $payload 'gxmcp-manifest.json') -Encoding utf8
+    }
+
+    $zip = Join-Path $Directory ('fixture-' + [guid]::NewGuid().ToString('N') + '.zip')
+    Compress-Archive -Path (Join-Path $payload '*') -DestinationPath $zip -Force
+    return $zip
+}
+
+try {
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+
+    $validZip = New-TestArchive -Directory $root -Manifest
+    $staging = Join-Path $root 'valid-stage'
+    $valid = Test-InstallArchive -ZipPath $validZip -StagingDirectory $staging -ExpectedVersion 'v3.0.0' -RequireManifest
+    Assert-True (Test-Path -LiteralPath $valid.GatewayPath -PathType Leaf) 'valid archive gateway path'
+    Assert-True ($valid.Manifest.version -eq '3.0.0') 'manifest version is returned'
+    $passed++
+
+    $missingManifestZip = New-TestArchive -Directory $root
+    Assert-Fails { Test-InstallArchive -ZipPath $missingManifestZip -StagingDirectory (Join-Path $root 'missing-stage') -ExpectedVersion 'v3.0.0' -RequireManifest } 'missing manifest must fail closed'
+    $passed++
+
+    $wrongVersionZip = New-TestArchive -Directory $root -Manifest -ManifestVersion '3.0.1'
+    Assert-Fails { Test-InstallArchive -ZipPath $wrongVersionZip -StagingDirectory (Join-Path $root 'wrong-version-stage') -ExpectedVersion 'v3.0.0' -RequireManifest } 'manifest version mismatch must fail'
+    $passed++
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $traversalZip = Join-Path $root 'traversal.zip'
+    $archive = [System.IO.Compression.ZipFile]::Open($traversalZip, [System.IO.Compression.ZipArchiveMode]::Create)
+    try { $archive.CreateEntry('../escape.txt') | Out-Null } finally { $archive.Dispose() }
+    Assert-Fails { Test-InstallArchive -ZipPath $traversalZip -StagingDirectory (Join-Path $root 'traversal-stage') -ExpectedVersion 'v3.0.0' } 'zip traversal must fail before extraction'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $root 'escape.txt'))) 'zip traversal did not write outside staging'
+    $passed++
+
+    $install = Join-Path $root 'install'
+    $artifactRoot = Join-Path $root 'artifact-output'
+    $artifactFile = Join-Path $artifactRoot 'kb-demo\docs\Customer.md'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $artifactFile) -Force | Out-Null
+    Set-Content -LiteralPath $artifactFile -Value 'artifact-before-upgrade' -Encoding utf8
+    New-Item -ItemType Directory -Path $install -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $install 'GxMcp.Gateway.exe') -Value 'old-gateway' -Encoding ascii
+    $artifactConfigValue = $artifactRoot.Replace('\', '\\')
+    $artifactConfig = '{"kb":"operator","Server":{"ArtifactOutputDirectory":"' + $artifactConfigValue + '"}}'
+    Set-Content -LiteralPath (Join-Path $install 'config.json') -Value $artifactConfig -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $install 'version.txt') -Value 'v2.57.0' -Encoding ascii
+    $swap = Invoke-ValidatedInstall -ZipPath $validZip -InstallDirectory $install -Version 'v3.0.0' -RequireManifest -Probe { param($path) $true }
+    Assert-True ((Get-Content -LiteralPath (Join-Path $install 'GxMcp.Gateway.exe') -Raw).Trim() -eq 'gateway-v3') 'validated install swaps staged gateway'
+    Assert-True ((Get-Content -LiteralPath (Join-Path $install 'config.json') -Raw).Trim() -eq $artifactConfig) 'validated install preserves artifact output config'
+    Assert-True ((Get-Content -LiteralPath $artifactFile -Raw).Trim() -eq 'artifact-before-upgrade') 'validated upgrade leaves external artifacts in place'
+    Assert-True ($swap.BackupDirectory -and (Test-Path -LiteralPath $swap.BackupDirectory)) 'validated install retains previous directory'
+    $passed++
+
+    $rollbackInstall = Join-Path $root 'rollback-install'
+    New-Item -ItemType Directory -Path $rollbackInstall -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $rollbackInstall 'GxMcp.Gateway.exe') -Value 'rollback-old' -Encoding ascii
+    Assert-Fails { Invoke-ValidatedInstall -ZipPath $validZip -InstallDirectory $rollbackInstall -Version 'v3.0.0' -RequireManifest -Probe { param($path) $false } } 'failed staged probe must abort before swap'
+    Assert-True ((Get-Content -LiteralPath (Join-Path $rollbackInstall 'GxMcp.Gateway.exe') -Raw).Trim() -eq 'rollback-old') 'failed probe preserves old installation'
+    $passed++
+
+    $installerSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\install.ps1') -Raw
+    $localInstallerSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\..\install.ps1') -Raw
+    $releaseInstallerSource = $installerSource
+    Assert-True ($installerSource.Contains('Invoke-ValidatedInstall')) 'installer uses transactional staging helper'
+    Assert-True ($installerSource.Contains('-RequireManifest:$isV3Release')) 'installer gates v3 manifest validation'
+    Assert-True (-not $installerSource.Contains('Remove-Item -Path (Join-Path $InstallDir ''*'')')) 'installer does not destructively wipe the live directory'
+    Assert-True ($localInstallerSource.Contains('$cliRunPath, "clients", "add"')) 'local installer passes executable path as an array element'
+    Assert-True ($localInstallerSource.Contains('Save-JsonFile $stagedConfigPath $config')) 'local installer stages config before client registration'
+    Assert-True ($localInstallerSource.Contains('$env:GX_CONFIG_PATH = $stagedConfigPath')) 'client registration receives the staged config path'
+    Assert-True ($localInstallerSource.Contains('ConvertFrom-Json')) 'local installer parses the CLI envelope instead of hiding its output'
+    Assert-True ($localInstallerSource.Contains('1> $clientStdoutPath 2> $clientStderrPath')) 'local installer captures CLI stdout and stderr separately'
+    Assert-True ($localInstallerSource.Contains('no valid JSON envelope')) 'local installer fails closed when the CLI envelope is missing or invalid'
+    Assert-True ($localInstallerSource.Contains('Remove-StagedConfig $stagedConfigPath')) 'failed registration removes the staged config'
+    Assert-True ($localInstallerSource.Contains('Move-Item -LiteralPath $stagedConfigPath -Destination $configPath -Force')) 'successful registration commits the staged config'
+    $manualSnippetStart = $localInstallerSource.IndexOf('Write-Host "Manual MCP snippet', [StringComparison]::Ordinal)
+    $manualSnippetEnd = $localInstallerSource.IndexOf('Write-Host "Re-run client registration anytime with:', [StringComparison]::Ordinal)
+    Assert-True ($manualSnippetStart -ge 0 -and $manualSnippetEnd -gt $manualSnippetStart) 'manual MCP snippet block is present'
+    $manualSnippet = $localInstallerSource.Substring($manualSnippetStart, $manualSnippetEnd - $manualSnippetStart)
+    $hasDefaultName = $manualSnippet.Contains('Write-Host ''    "genexus18mcp": {''')
+    $hasLegacyName = $manualSnippet.Contains('Write-Host ''    "genexus": {''')
+    $usesPackagedGateway = $manualSnippet.Contains('$gatewayExePath')
+    $keepsEmptyArgs = $manualSnippet.Contains('Write-Host ''      "args": []''')
+    Assert-True ($hasDefaultName -and -not $hasLegacyName -and $usesPackagedGateway -and $keepsEmptyArgs) 'manual MCP snippet uses genexus18mcp with the packaged gateway and empty args'
+    $passed++
+    $stagePosition = $localInstallerSource.IndexOf('Save-JsonFile $stagedConfigPath $config', [StringComparison]::Ordinal)
+    $clientPosition = $localInstallerSource.IndexOf('$cliRunPath, "clients", "add"', [StringComparison]::Ordinal)
+    $commitPosition = $localInstallerSource.IndexOf('Move-Item -LiteralPath $stagedConfigPath -Destination $configPath -Force', [StringComparison]::Ordinal)
+    $completePosition = $localInstallerSource.IndexOf('Installation complete.', [StringComparison]::Ordinal)
+    Assert-True ($stagePosition -gt 0 -and $stagePosition -lt $clientPosition -and $commitPosition -gt $clientPosition -and $completePosition -gt $commitPosition) 'installation stages before registration and completes after the commit'
+    Assert-True ($localInstallerSource.Contains('client registration failed')) 'client registration failure is fatal'
+    Assert-True ($releaseInstallerSource.Contains('Test-StrictSemVer')) 'release installer validates strict semver'
+    Assert-True ($releaseInstallerSource.Contains('Refusing downgrade')) 'release installer rejects downgrade by default'
+    Assert-True ($releaseInstallerSource.Contains('$exitCode = $LASTEXITCODE')) 'uninstall checks LASTEXITCODE before claiming success'
+    $passed += 9
+
+    Write-Host "install-contract: $passed assertions passed" -ForegroundColor Green
+} finally {
+    if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+}

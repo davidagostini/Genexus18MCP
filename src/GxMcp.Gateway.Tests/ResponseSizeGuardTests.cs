@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Text;
 using GxMcp.Gateway;
 using Newtonsoft.Json.Linq;
@@ -220,44 +219,16 @@ namespace GxMcp.Gateway.Tests
         // ── oversize telemetry ───────────────────────────────────────────────
 
         /// <summary>
-        /// When Apply truncates a payload, it must emit an OVERSIZE log line via
-        /// Program.Log.  Program.Log appends to gateway_debug.log in
-        /// AppDomain.CurrentDomain.BaseDirectory; we snapshot the file length
-        /// before the call and check the newly appended bytes for the expected
-        /// marker.
+        /// When Apply truncates a payload, it must emit an OVERSIZE log line.
         /// </summary>
         [Fact]
         public void OversizedPayload_EmitsOversizeLogLine()
         {
-            string logPath = Path.Combine(
-                AppDomain.CurrentDomain.BaseDirectory,
-                "gateway_debug.log");
-
-            // Snapshot current end-of-file position (0 if file does not exist yet)
-            long positionBefore = File.Exists(logPath) ? new FileInfo(logPath).Length : 0L;
-
-            var guard = new ResponseSizeGuard(maxBytes: 220_000);
+            string? logged = null;
+            var guard = new ResponseSizeGuard(220_000, message => logged = message);
             guard.Apply(OversizedPayload(), "genexus_inspect", SomeArgs());
 
-            // Give the lock-based append a moment to flush (it's synchronous, so
-            // this is just a defensive yield).
-            System.Threading.Thread.Sleep(50);
-
-            // Read only the bytes appended after our snapshot
-            string appended = string.Empty;
-            if (File.Exists(logPath))
-            {
-                long positionAfter = new FileInfo(logPath).Length;
-                if (positionAfter > positionBefore)
-                {
-                    using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    fs.Seek(positionBefore, SeekOrigin.Begin);
-                    using var reader = new StreamReader(fs, Encoding.UTF8);
-                    appended = reader.ReadToEnd();
-                }
-            }
-
-            Assert.Contains("OVERSIZE tool=genexus_inspect", appended);
+            Assert.Contains("OVERSIZE tool=genexus_inspect", logged);
         }
     }
 }

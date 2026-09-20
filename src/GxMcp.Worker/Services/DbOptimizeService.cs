@@ -481,6 +481,25 @@ namespace GxMcp.Worker.Services
             @"\bFor\s+each\b|\bend(?:for)?\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+        private static readonly Regex WhereAnchorRegex = new Regex(
+            @"\bwhere\b(?<expr>[^\r\n]*)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex OrderAnchorRegex = new Regex(
+            @"\border\b(?<expr>[^\r\n]*)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex QuotedStringsRegex = new Regex(
+            @"""[^""]*""|'[^']*'",
+            RegexOptions.Compiled);
+
+        private static readonly Regex IdentifierTokenRegex = new Regex(
+            @"(?<!&)\b[A-Za-z][A-Za-z0-9_]*\b",
+            RegexOptions.Compiled);
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Regex> CustomAnchorRegexCache =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, Regex>(StringComparer.OrdinalIgnoreCase);
+
         public sealed class ParsedForEach
         {
             public string Transaction;
@@ -563,9 +582,10 @@ namespace GxMcp.Worker.Services
             int searchFrom = 0;
             while (searchFrom < sb.Length)
             {
-                var m = ForEachOpenRegex.Match(sb.ToString(), searchFrom);
+                string currentStr = sb.ToString();
+                var m = ForEachOpenRegex.Match(currentStr, searchFrom);
                 if (!m.Success) break;
-                int end = FindMatchingEndfor(sb.ToString(), m.Index + m.Length);
+                int end = FindMatchingEndfor(currentStr, m.Index + m.Length);
                 int spanEnd = end >= 0 ? end + 6 : sb.Length;
                 for (int i = m.Index; i < spanEnd && i < sb.Length; i++) sb[i] = ' ';
                 searchFrom = spanEnd;
@@ -663,10 +683,15 @@ namespace GxMcp.Worker.Services
         {
             var hits = new List<string>();
             if (string.IsNullOrEmpty(body)) return hits;
-            // Anchor regex: "where" or "order" at a word boundary, captures up to the
-            // next line that starts another clause (when/order/where) or "endfor".
-            var rx = new Regex(@"\b" + Regex.Escape(anchor) + @"\b(?<expr>[^\r\n]*)",
-                RegexOptions.IgnoreCase);
+
+            Regex rx;
+            if (string.Equals(anchor, "where", StringComparison.OrdinalIgnoreCase))
+                rx = WhereAnchorRegex;
+            else if (string.Equals(anchor, "order", StringComparison.OrdinalIgnoreCase))
+                rx = OrderAnchorRegex;
+            else
+                rx = CustomAnchorRegexCache.GetOrAdd(anchor, a => new Regex(@"\b" + Regex.Escape(a) + @"\b(?<expr>[^\r\n]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled));
+
             foreach (Match m in rx.Matches(body))
             {
                 string expr = m.Groups["expr"].Value;
@@ -681,13 +706,11 @@ namespace GxMcp.Worker.Services
 
         private static IEnumerable<string> TokeniseExpression(string expr)
         {
-            // Strip quoted strings.
-            var noStrings = Regex.Replace(expr ?? string.Empty, "\"[^\"]*\"|'[^']*'", " ");
-            // Identifiers: alpha[alnum_]*. Variables (&Foo) are excluded by &.
-            foreach (Match m in Regex.Matches(noStrings, @"(?<!&)\b[A-Za-z][A-Za-z0-9_]*\b"))
+            if (string.IsNullOrEmpty(expr)) yield break;
+            var noStrings = QuotedStringsRegex.Replace(expr, " ");
+            foreach (Match m in IdentifierTokenRegex.Matches(noStrings))
             {
                 string t = m.Value;
-                // Drop numerics (impossible per regex) and trivial 1-char names.
                 if (t.Length < 2) continue;
                 yield return t;
             }
@@ -858,34 +881,21 @@ namespace GxMcp.Worker.Services
             public IEnumerable<ObjectRef> EnumerateCallers()
             {
                 var index = _cache?.GetIndex();
-                if (index == null) yield break;
-                foreach (var entry in index.Objects.Values)
-                {
-                    if (string.IsNullOrEmpty(entry.Type)) continue;
-                    string t = entry.Type;
-                    if (t.Equals("Procedure", StringComparison.OrdinalIgnoreCase)
-                        || t.Equals("WebPanel", StringComparison.OrdinalIgnoreCase)
-                        || t.Equals("DataProvider", StringComparison.OrdinalIgnoreCase)
-                        || t.Equals("WorkPanel", StringComparison.OrdinalIgnoreCase)
-                        || t.Equals("SDPanel", StringComparison.OrdinalIgnoreCase))
-                    {
-                        yield return new ObjectRef { Name = entry.Name, Type = entry.Type };
-                    }
-                }
+                if (index == null) return Enumerable.Empty<ObjectRef>();
+
+                var targetTypes = new[] { "Procedure", "WebPanel", "DataProvider", "WorkPanel", "SDPanel" };
+                return index.FindByTypes(targetTypes)
+                    .Select(entry => new ObjectRef { Name = entry.Name, Type = entry.Type });
             }
 
             public IEnumerable<string> EnumerateTransactionNames()
             {
                 var index = _cache?.GetIndex();
-                if (index == null) yield break;
-                foreach (var entry in index.Objects.Values)
-                {
-                    if (entry.Type != null
-                        && entry.Type.Equals("Transaction", StringComparison.OrdinalIgnoreCase))
-                    {
-                        yield return entry.Name;
-                    }
-                }
+                if (index == null) return Enumerable.Empty<string>();
+
+                return index.FindByType("Transaction")
+                    .Where(entry => entry?.Name != null)
+                    .Select(entry => entry.Name);
             }
         }
 

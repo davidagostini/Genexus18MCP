@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using System.Collections.Generic;
@@ -9,9 +10,28 @@ using GxMcp.Gateway.Routers;
 
 namespace GxMcp.Gateway
 {
+    internal sealed class McpRouterError
+    {
+        public McpRouterError(int code, string message, JObject? data = null)
+        {
+            Code = code;
+            Message = message;
+            Data = data;
+        }
+
+        public int Code { get; }
+        public string Message { get; }
+        public JObject? Data { get; }
+    }
+
     public class McpRouter
     {
         public static readonly string ServerVersion = ResolveServerVersion();
+        // Keep the legacy default for initialize-based clients while also serving
+        // the sessionless per-request metadata protocol. A client that explicitly
+        // asks for the modern revision is negotiated onto it; old clients continue
+        // to receive the 2025-11-25 handshake shape.
+        public const string ModernProtocolVersion = "2026-07-28";
         public const string SupportedProtocolVersion = "2025-11-25";
 
         private static string ResolveServerVersion()
@@ -44,7 +64,21 @@ namespace GxMcp.Gateway
         private static readonly IReadOnlyDictionary<string, PromptDefinition> _promptDefinitions = BuildPromptDefinitions();
         private static readonly string[] _promptNames = _promptDefinitions.Keys.ToArray();
         private static readonly List<IMcpModuleRouter> _routers;
+        private static Dictionary<string, IMcpModuleRouter> _routerByTool = new Dictionary<string, IMcpModuleRouter>(StringComparer.OrdinalIgnoreCase);
+        private static HashSet<string> _declaredToolNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static JArray _toolDefinitions = new JArray();
+        private static JObject? _cachedToolsListResponse;
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JObject> _cachedProfileResponses =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+        private static readonly object _cachedResourcesListResponse = BuildResourcesListResponse();
+        private static readonly object _cachedResourceTemplatesListResponse = BuildResourceTemplatesListResponse();
+        private static readonly object _cachedPromptsListResponse = new
+        {
+            resultType = "complete",
+            prompts = BuildPromptCatalog(),
+            ttlMs = 3600000,
+            cacheScope = "public"
+        };
         // PERFORMANCE (G-B3): hot-reload tool_definitions.json without restarting the gateway.
         // The watcher is kept in a static field so it is rooted for the lifetime of the process.
         // Debounced with a System.Threading.Timer because editors (e.g. VS Code) often fire
@@ -117,12 +151,14 @@ namespace GxMcp.Gateway
             {
                 if (_toolDefinitions == null || _toolDefinitions.Count == 0) return;
                 var duplicates = new List<string>();
+                var routerByTool = new Dictionary<string, IMcpModuleRouter>(StringComparer.OrdinalIgnoreCase);
                 foreach (var def in _toolDefinitions.OfType<JObject>())
                 {
                     string toolName = def["name"]?.ToString();
                     if (string.IsNullOrEmpty(toolName)) continue;
                     int hits = 0;
                     var claimers = new List<string>();
+                    IMcpModuleRouter? claimingRouter = null;
                     foreach (var router in _routers)
                     {
                         try
@@ -130,13 +166,22 @@ namespace GxMcp.Gateway
                             // empty JObject probe — safer than null; routers that gate on
                             // required args will return null without throwing.
                             object result = router.ConvertToolCall(toolName, new JObject());
-                            if (result != null) { hits++; claimers.Add(router.GetType().Name); }
+                            if (result != null)
+                            {
+                                hits++;
+                                claimers.Add(router.GetType().Name);
+                                claimingRouter = router;
+                            }
                         }
                         catch { /* throwing router doesn't claim the tool */ }
                     }
                     if (hits > 1)
                     {
                         duplicates.Add(toolName + " → " + string.Join(", ", claimers));
+                    }
+                    else if (hits == 1 && claimingRouter != null)
+                    {
+                        routerByTool[toolName] = claimingRouter;
                     }
                 }
                 if (duplicates.Count > 0)
@@ -147,7 +192,8 @@ namespace GxMcp.Gateway
                     Program.Log(msg);
                     throw new InvalidOperationException(msg);
                 }
-                Program.Log($"[McpRouter] Router-dup guard OK ({_toolDefinitions.Count} tools, {_routers.Count} routers).");
+                _routerByTool = routerByTool;
+                Program.Log($"[McpRouter] Router-dup guard OK ({_toolDefinitions.Count} tools, {_routers.Count} routers, {_routerByTool.Count} mapped).");
             }
             catch (InvalidOperationException) { throw; }
             catch (Exception ex)
@@ -165,7 +211,27 @@ namespace GxMcp.Gateway
                 if (File.Exists(defPath))
                 {
                     string json = File.ReadAllText(defPath);
-                    _toolDefinitions = JArray.Parse(json);
+                    var parsed = JArray.Parse(json);
+                    ToolSchemaCompatibility.Apply(parsed);
+                    // MCP clients cache tools/list aggressively; deterministic ordering
+                    // keeps discovery diffs stable and avoids model-visible churn when
+                    // the source JSON is edited in a different order.
+                    _toolDefinitions = new JArray(parsed.OfType<JObject>()
+                        .OrderBy(definition => definition["name"]?.ToString() ?? string.Empty, StringComparer.Ordinal));
+                    _declaredToolNames = new HashSet<string>(
+                        _toolDefinitions.OfType<JObject>()
+                            .Select(d => d["name"]?.ToString() ?? string.Empty)
+                            .Where(n => !string.IsNullOrEmpty(n)),
+                        StringComparer.OrdinalIgnoreCase);
+                    _cachedToolsListResponse = new JObject
+                    {
+                        ["resultType"] = "complete",
+                        ["tools"] = _toolDefinitions,
+                        ["ttlMs"] = 3600000,
+                        ["cacheScope"] = "public"
+                    };
+                    _cachedProfileResponses.Clear();
+                    ToolProfileFilter.InvalidateCache();
                     Program.Log($"[McpRouter] Loaded {_toolDefinitions.Count} tool definitions from JSON.");
                 }
                 else
@@ -230,19 +296,41 @@ namespace GxMcp.Gateway
             "2024-11-05",
             "2025-03-26",
             "2025-06-18",
-            "2025-11-25"
+            "2025-11-25",
+            ModernProtocolVersion
         };
+
+        internal static bool IsModernProtocolVersion(string? version)
+        {
+            return string.Equals(version, ModernProtocolVersion, StringComparison.Ordinal);
+        }
+
+        internal static string? GetRequestProtocolVersion(JObject request)
+        {
+            var parameters = request["params"] as JObject;
+            return parameters?["protocolVersion"]?.ToString()
+                ?? (parameters?["_meta"] as JObject)?["io.modelcontextprotocol/protocolVersion"]?.ToString();
+        }
+
+        internal static bool IsModernRequest(JObject request)
+        {
+            return IsModernProtocolVersion(GetRequestProtocolVersion(request));
+        }
+
+        internal static string NegotiateProtocolVersion(string? clientRequestedVersion)
+        {
+            return !string.IsNullOrEmpty(clientRequestedVersion)
+                && Array.IndexOf(KnownProtocolVersions, clientRequestedVersion) >= 0
+                ? clientRequestedVersion
+                : SupportedProtocolVersion;
+        }
 
         private static JObject BuildInitializeResponse(string? clientRequestedVersion = null)
         {
             // Echo the client's requested version if it is one we support; otherwise
-            // fall back to the highest version we know about (SupportedProtocolVersion).
-            string negotiatedVersion = SupportedProtocolVersion;
-            if (!string.IsNullOrEmpty(clientRequestedVersion)
-                && Array.IndexOf(KnownProtocolVersions, clientRequestedVersion) >= 0)
-            {
-                negotiatedVersion = clientRequestedVersion;
-            }
+            // keep initialize-based clients on the legacy session protocol. The modern
+            // HTTP revision is discovered through server/discover instead.
+            string negotiatedVersion = NegotiateProtocolVersion(clientRequestedVersion);
 
             var removed = new JArray();
             foreach (var kvp in RemovedToolsRegistry.Map)
@@ -262,7 +350,7 @@ namespace GxMcp.Gateway
                 {
                     ["prompts"] = new JObject { ["listChanged"] = false },
                     ["tools"] = new JObject { ["listChanged"] = true },
-                    ["resources"] = new JObject { ["listChanged"] = true },
+                    ["resources"] = new JObject { ["listChanged"] = true, ["subscribe"] = true },
                     ["completion"] = new JObject()
                 },
                 ["serverInfo"] = new JObject
@@ -278,6 +366,38 @@ namespace GxMcp.Gateway
             };
         }
 
+        private static JObject BuildServerDiscoverResponse()
+        {
+            return new JObject
+            {
+                ["resultType"] = "complete",
+                ["supportedVersions"] = new JArray(KnownProtocolVersions),
+                ["capabilities"] = new JObject
+                {
+                    ["tools"] = new JObject { ["listChanged"] = true },
+                    ["resources"] = new JObject { ["listChanged"] = true, ["subscribe"] = true },
+                    ["prompts"] = new JObject { ["listChanged"] = false },
+                    ["completion"] = new JObject(),
+                    ["extensions"] = new JObject
+                    {
+                        ["io.modelcontextprotocol/tasks"] = new JObject()
+                    }
+                },
+                ["_meta"] = new JObject
+                {
+                    ["io.modelcontextprotocol/serverInfo"] = new JObject
+                    {
+                        ["name"] = "genexus-mcp-server",
+                        ["version"] = ServerVersion
+                    }
+                },
+                ["instructions"] = "Use genexus_whoami first, then discover and operate on the active GeneXus Knowledge Base with the narrowest read or write tool that fits.",
+                ["profiles"] = new JArray("exploration", "safe-edit", "ui", "build", "versioning", "deploy"),
+                ["ttlMs"] = 3600000,
+                ["cacheScope"] = "public"
+            };
+        }
+
         public static object? Handle(JObject request)
         {
             string? method = request["method"]?.ToString();
@@ -285,134 +405,73 @@ namespace GxMcp.Gateway
             {
                 case "initialize":
                     {
+                        // Modern protocol revisions replaced the initialize/session
+                        // handshake with per-request metadata and server/discover.
+                        // Returning null lets the normal JSON-RPC method-not-found path
+                        // produce the deterministic stdio error; HTTP applies its 404
+                        // binding-specific status before dispatching here.
+                        if (IsModernRequest(request)) return null;
                         string? clientVersion = (request["params"] as JObject)?["protocolVersion"]?.ToString();
                         return BuildInitializeResponse(clientVersion);
                     }
+                case "server/discover":
+                    return BuildServerDiscoverResponse();
                 case "tools/list":
-                    return new { tools = _toolDefinitions };
-                case "resources/list":
                     {
-                        // v2.8.0 — also surface curated, source-verified GeneXus
-                        // development skills (genexus://kb/skills/<key>) so the
-                        // LLM can read authoritative reference material before
-                        // guessing about properties / methods. Each skill body
-                        // is fact-checked against docs.genexus.com.
-                        var baseResources = new List<object>
+                        string activeProfile = ToolProfileFilter.ResolveActiveProfile(Program.ActiveConfig?.Server?.ToolProfile);
+                        if (string.IsNullOrEmpty(activeProfile) || activeProfile == "all")
                         {
-                            new { uri = "genexus://kb/index-status", name = "KB Index Status", description = "Current indexing status for the active Knowledge Base." },
-                            new { uri = "genexus://kb/health", name = "Gateway Health Report", description = "Health report for the GeneXus MCP worker and gateway." },
-                            new { uri = "genexus://kb/agent-playbook", name = "GeneXus Agent Playbook", description = "Recommended MCP workflow to operate this GeneXus server in an agent-native, Git-friendly way." },
-                            new { uri = "genexus://kb/llm-playbook", name = "LLM CLI+MCP Playbook", description = "Protocol-first guide for choosing CLI vs MCP, token-efficient calls, and timeout/lifecycle handling." },
-                            new { uri = "genexus://objects", name = "GeneXus Objects Index", description = "Browsable index of all objects in the KB." },
-                            new { uri = "genexus://attributes", name = "GeneXus Attributes", description = "Browsable list of all attributes." }
-                        };
-                        foreach (var skill in SkillCatalog.All)
-                        {
-                            baseResources.Add(new
+                            return _cachedToolsListResponse ?? new JObject
                             {
-                                uri = "genexus://kb/skills/" + skill.Key,
-                                name = skill.Title,
-                                description = skill.Description,
-                                mimeType = "text/markdown"
-                            });
+                                ["resultType"] = "complete",
+                                ["tools"] = _toolDefinitions,
+                                ["ttlMs"] = 3600000,
+                                ["cacheScope"] = "public"
+                            };
                         }
-                        return new { resources = baseResources };
+                        return _cachedProfileResponses.GetOrAdd(activeProfile, p => new JObject
+                        {
+                            ["resultType"] = "complete",
+                            ["tools"] = ToolProfileFilter.GetOrCreateFiltered(_toolDefinitions, p),
+                            ["profile"] = p,
+                            ["ttlMs"] = 3600000,
+                            ["cacheScope"] = "public"
+                        });
                     }
+                case "resources/list":
+                    return _cachedResourcesListResponse;
                 case "resources/read":
                     return BuildStaticResourceResponse(request);
                 case "resources/templates/list":
-                    return new
+                    return _cachedResourceTemplatesListResponse;
+                case "resources/subscribe":
                     {
-                        resourceTemplates = new[]
+                        var uri = (request["params"] as JObject)?["uri"]?.ToString();
+                        return new
                         {
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/part/{part}",
-                                name = "GeneXus Object Part",
-                                description = "Read a specific part of a GeneXus object such as Source, Rules, Events, Variables, Structure, or Layout."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/variables",
-                                name = "GeneXus Object Variables",
-                                description = "Read the variable declarations for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/navigation",
-                                name = "GeneXus Navigation",
-                                description = "Read the navigation analysis for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/hierarchy",
-                                name = "GeneXus Hierarchy",
-                                description = "Read the dependency hierarchy for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/data-context",
-                                name = "GeneXus Data Context",
-                                description = "Read attributes, variables, and inferred data context for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/ui-context",
-                                name = "GeneXus UI Context",
-                                description = "Read UI structure and controls for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/conversion-context",
-                                name = "GeneXus Conversion Context",
-                                description = "Read consolidated conversion context for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/pattern-metadata",
-                                name = "GeneXus Pattern Metadata",
-                                description = "Read pattern metadata detected for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/summary",
-                                name = "GeneXus Object Summary",
-                                description = "Read an LLM-oriented summary for a GeneXus object."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/indexes",
-                                name = "GeneXus Visual Indexes",
-                                description = "Read visual indexes for a Transaction or Table."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://objects/{name}/logic-structure",
-                                name = "GeneXus Logic Structure",
-                                description = "Read the logical structure for a Transaction or Table."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://attributes/{name}",
-                                name = "GeneXus Attribute Metadata",
-                                description = "Read metadata for a specific GeneXus attribute."
-                            },
-                            new
-                            {
-                                uriTemplate = "genexus://kb/tool-help/{name}",
-                                name = "GeneXus Tool Help",
-                                description = "Long-form help for a single MCP tool: prefixes, modes, examples, defaults."
-                            }
-                        }
-                    };
+                            resultType = "complete",
+                            subscribed = true,
+                            uri = uri
+                        };
+                    }
+                case "resources/unsubscribe":
+                    {
+                        var uri = (request["params"] as JObject)?["uri"]?.ToString();
+                        return new
+                        {
+                            resultType = "complete",
+                            subscribed = false,
+                            uri = uri
+                        };
+                    }
                 case "completion/complete":
                     return HandleCompletion(request);
                 case "prompts/list":
-                    return new { prompts = BuildPromptCatalog() };
+                    return _cachedPromptsListResponse;
                 case "prompts/get":
                     return BuildPromptResponse(request);
                 case "ping":
-                    return new { };
+                    return new { resultType = "complete" };
                 default:
                     return null;
             }
@@ -434,6 +493,20 @@ namespace GxMcp.Gateway
             {
                 values = _objectParts;
             }
+            else if (argumentName == "action")
+            {
+                // Prefer the published schema over a hand-maintained action list so
+                // completion cannot drift when a new umbrella action is added.
+                string toolName = refName;
+                var tool = _toolDefinitions
+                    .OfType<JObject>()
+                    .FirstOrDefault(item => string.Equals(item["name"]?.ToString(), toolName, StringComparison.OrdinalIgnoreCase));
+                values = tool?["inputSchema"]?["properties"]?["action"]?["enum"] is JArray actions
+                    ? actions.Values<string>().Where(value => !string.IsNullOrWhiteSpace(value))
+                    : refName == "genexus_asset"
+                        ? new[] { "find", "read", "write" }
+                        : Enumerable.Empty<string>();
+            }
             // v2.8.0 (S1) — autocomplete object names from the cached index.
             // 'name' / 'target' / 'targets' all carry object references in
             // various tools; offer the same shortlist. Falls back to empty
@@ -448,6 +521,27 @@ namespace GxMcp.Gateway
                 values = string.IsNullOrEmpty(kbAlias)
                     ? Enumerable.Empty<string>()
                     : AutoTypeInjector.CompleteName(kbAlias!, currentValue, cap: 25);
+            }
+            else if (argumentName == "attribute" || argumentName == "attributeName")
+            {
+                string? kbAlias = Program.GetCurrentKb()?.NormalizedAlias;
+                values = string.IsNullOrEmpty(kbAlias)
+                    ? Enumerable.Empty<string>()
+                    : AutoTypeInjector.CompleteNameByType(kbAlias!, currentValue, "Attribute", cap: 25);
+            }
+            else if (argumentName == "module" || argumentName == "moduleName")
+            {
+                string? kbAlias = Program.GetCurrentKb()?.NormalizedAlias;
+                values = string.IsNullOrEmpty(kbAlias)
+                    ? Enumerable.Empty<string>()
+                    : AutoTypeInjector.CompleteNameByType(kbAlias!, currentValue, "Module", cap: 25);
+            }
+            else if (argumentName == "environment" || argumentName == "environmentName")
+            {
+                string? activeEnvironment = Program.GetCurrentKb()?.ActiveEnvironment;
+                values = string.IsNullOrWhiteSpace(activeEnvironment)
+                    ? Enumerable.Empty<string>()
+                    : new[] { activeEnvironment };
             }
             else if (argumentName == "language" || argumentName == "targetLanguage")
             {
@@ -481,7 +575,7 @@ namespace GxMcp.Gateway
                 else if (refName == "genexus_forge")
                     values = _targetLanguages;
                 else if (refName == "genexus_lifecycle")
-                    values = new[] { "build", "rebuild", "reorg", "validate", "sync", "index", "status", "result" };
+                    values = new[] { "build", "build_all", "rebuild", "reorg", "validate", "sync", "index", "status", "result" };
                 else if (refName == "genexus_properties")
                     values = new[] { "get", "set", "move" };
                 else if (refName == "genexus_asset")
@@ -489,7 +583,7 @@ namespace GxMcp.Gateway
                 else if (refName == "genexus_history")
                     values = new[] { "list", "get_source", "save", "restore" };
                 else if (refName == "genexus_structure")
-                    values = new[] { "get_visual", "update_visual", "get_indexes", "get_logic" };
+                    values = new[] { "get_visual", "update_visual", "get_indexes", "get_logic", "move_attribute" };
                 else if (refName == "genexus_refactor")
                     values = new[] { "RenameAttribute", "RenameVariable", "RenameObject", "ExtractProcedure" };
                 else if (refName == "prompts/get")
@@ -504,10 +598,139 @@ namespace GxMcp.Gateway
 
             return new
             {
+                resultType = "complete",
                 completion = new
                 {
                     values = filteredValues
                 }
+            };
+        }
+
+        private static object BuildResourcesListResponse()
+        {
+            var baseResources = new List<object>
+            {
+                new { uri = "genexus://kb/index-status", name = "KB Index Status", description = "Current indexing status for the active Knowledge Base." },
+                new { uri = "genexus://kb/health", name = "Gateway Health Report", description = "Health report for the GeneXus MCP worker and gateway." },
+                new { uri = "genexus://kb/capabilities", name = "GeneXus SDK Capabilities", description = "Capability evidence for the active KB and installed GeneXus SDK; availability is queried explicitly and is not hidden in tools/list." },
+                new { uri = "genexus://kb/agent-playbook", name = "GeneXus Agent Playbook", description = "Recommended MCP workflow to operate this GeneXus server in an agent-native, Git-friendly way." },
+                new { uri = "genexus://kb/llm-playbook", name = "LLM CLI+MCP Playbook", description = "Protocol-first guide for choosing CLI vs MCP, token-efficient calls, and timeout/lifecycle handling." },
+                new { uri = "genexus://objects", name = "GeneXus Objects Index", description = "Browsable index of all objects in the KB." },
+                new { uri = "genexus://attributes", name = "GeneXus Attributes", description = "Browsable list of all attributes." }
+            };
+            foreach (var skill in SkillCatalog.All)
+            {
+                baseResources.Add(new
+                {
+                    uri = "genexus://kb/skills/" + skill.Key,
+                    name = skill.Title,
+                    description = skill.Description,
+                    mimeType = "text/markdown"
+                });
+            }
+            return new
+            {
+                resultType = "complete",
+                resources = baseResources,
+                ttlMs = 3600000,
+                cacheScope = "public"
+            };
+        }
+
+        private static object BuildResourceTemplatesListResponse()
+        {
+            return new
+            {
+                resultType = "complete",
+                resourceTemplates = new[]
+                {
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/part/{part}",
+                        name = "GeneXus Object Part",
+                        description = "Read a specific part of a GeneXus object such as Source, Rules, Events, Variables, Structure, or Layout."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/variables",
+                        name = "GeneXus Object Variables",
+                        description = "Read the variable declarations for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/navigation",
+                        name = "GeneXus Navigation",
+                        description = "Read the navigation analysis for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/hierarchy",
+                        name = "GeneXus Hierarchy",
+                        description = "Read the dependency hierarchy for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/data-context",
+                        name = "GeneXus Data Context",
+                        description = "Read attributes, variables, and inferred data context for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/ui-context",
+                        name = "GeneXus UI Context",
+                        description = "Read UI structure and controls for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/conversion-context",
+                        name = "GeneXus Conversion Context",
+                        description = "Read consolidated conversion context for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/pattern-metadata",
+                        name = "GeneXus Pattern Metadata",
+                        description = "Read pattern metadata detected for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/summary",
+                        name = "GeneXus Object Summary",
+                        description = "Read an LLM-oriented summary for a GeneXus object."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/indexes",
+                        name = "GeneXus Visual Indexes",
+                        description = "Read visual indexes for a Transaction or Table."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://objects/{name}/logic-structure",
+                        name = "GeneXus Logic Structure",
+                        description = "Read the logical structure for a Transaction or Table."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://attributes/{name}",
+                        name = "GeneXus Attribute Metadata",
+                        description = "Read metadata for a specific GeneXus attribute."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://kb/tool-help/{name}",
+                        name = "GeneXus Tool Help",
+                        description = "Long-form help for a single MCP tool: prefixes, modes, examples, defaults."
+                    },
+                    new
+                    {
+                        uriTemplate = "genexus://kb/skills/nexa/references/{name}",
+                        name = "Nexa Skill Reference",
+                        description = "Read one official Nexa Markdown reference for GeneXus object modeling, properties, commands, or workflows."
+                    }
+                },
+                ttlMs = 3600000,
+                cacheScope = "public"
             };
         }
 
@@ -537,31 +760,24 @@ namespace GxMcp.Gateway
             var args = paramsObj?["arguments"] as JObject ?? new JObject();
             if (!_promptDefinitions.TryGetValue(promptName, out var prompt))
             {
-                return new
-                {
-                    description = "Unknown prompt.",
-                    messages = new[]
-                    {
-                        CreatePromptMessage($"Prompt '{promptName}' is not defined by this server.")
-                    }
-                };
+                return new McpRouterError(
+                    -32602,
+                    $"Prompt '{promptName}' is not defined by this server.",
+                    new JObject { ["prompt"] = promptName });
             }
 
             string? validationError = ValidatePromptArguments(prompt, args);
             if (!string.IsNullOrWhiteSpace(validationError))
             {
-                return new
-                {
-                    description = "Invalid prompt arguments.",
-                    messages = new[]
-                    {
-                        CreatePromptMessage(validationError)
-                    }
-                };
+                return new McpRouterError(
+                    -32602,
+                    validationError,
+                    new JObject { ["prompt"] = prompt.Name });
             }
 
             return new
             {
+                resultType = "complete",
                 description = prompt.Description,
                 messages = new[]
                 {
@@ -798,12 +1014,16 @@ namespace GxMcp.Gateway
 
         private static object? BuildStaticResourceResponse(JObject request)
         {
-            string uri = request["params"]?["uri"]?.ToString() ?? string.Empty;
+            string requestedUri = request["params"]?["uri"]?.ToString() ?? string.Empty;
+            string uri = UnscopeResourceUri(requestedUri, out _);
 
             if (string.Equals(uri, "genexus://kb/health", StringComparison.OrdinalIgnoreCase))
             {
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 1000,
+                    cacheScope = "private",
                     contents = new[]
                     {
                         new
@@ -820,6 +1040,9 @@ namespace GxMcp.Gateway
             {
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new
@@ -836,6 +1059,9 @@ namespace GxMcp.Gateway
             {
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new
@@ -848,26 +1074,51 @@ namespace GxMcp.Gateway
                 };
             }
 
-            // v2.8.0 — curated, source-verified GeneXus development skills.
-            // Each entry is hand-authored and fact-checked against
-            // docs.genexus.com so an LLM that consults it before invoking a
-            // property/method has authoritative reference material instead
-            // of hallucinated method names.
+            // Curated and official GeneXus development skills. The Nexa entry
+            // also exposes its individual Markdown references below.
             const string skillPrefix = "genexus://kb/skills/";
             if (uri.StartsWith(skillPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 string skillKey = uri.Substring(skillPrefix.Length);
                 var skill = SkillCatalog.FindByKey(skillKey);
-                if (skill == null) return null;
+                if (skill != null)
+                {
+                    return new
+                    {
+                        resultType = "complete",
+                        ttlMs = 3600000,
+                        cacheScope = "public",
+                        contents = new[]
+                        {
+                            new
+                            {
+                                uri,
+                                mimeType = "text/markdown",
+                                text = skill.Body
+                            }
+                        }
+                    };
+                }
+
+                const string nexaPrefix = "nexa/";
+                if (!skillKey.StartsWith(nexaPrefix, StringComparison.OrdinalIgnoreCase)
+                    || !NexaSkillPack.TryRead(skillKey.Substring(nexaPrefix.Length), out var nexaBody))
+                {
+                    return null;
+                }
+
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new
                         {
                             uri,
                             mimeType = "text/markdown",
-                            text = skill.Body
+                            text = nexaBody
                         }
                     }
                 };
@@ -884,6 +1135,9 @@ namespace GxMcp.Gateway
                 string text = ToolHelpCatalog.GetGotchaHelp(code);
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new
@@ -905,6 +1159,9 @@ namespace GxMcp.Gateway
 
                 return new
                 {
+                    resultType = "complete",
+                    ttlMs = 3600000,
+                    cacheScope = "public",
                     contents = new[]
                     {
                         new
@@ -987,20 +1244,23 @@ namespace GxMcp.Gateway
                 "6. `schemaVersion=mcp-axi/2` is emitted once at `initialize` (`_meta.schemaVersion`), not per response. Expect additive metadata on responses: collection helpers (`returned`, `total`, `empty`, `hasMore`, `nextOffset`) when inferable, and `meta.{truncated,fields,totalByType}` when relevant.\n" +
                 "7. If `result.isError=true` and `operationId` is present, treat as running operation and poll `genexus_lifecycle(action='status'|'result', target='op:<operationId>')`.\n" +
                 "8. For safe mutation flows, use patch `dryRun` first, then apply and re-read for persistence confirmation.\n\n" +
+                "9. Before GeneXus modeling, property, or Object Text workflow changes, read `genexus://kb/skills/nexa` and then the specific reference from `genexus://kb/skills/nexa/references/{name}`.\n\n" +
                 "Recommended bootstrap sequence:\n" +
                 "- `tools/list`\n" +
                 "- `resources/list`\n" +
                 "- `prompts/list`\n" +
-                "- `resources/read` for `genexus://kb/llm-playbook`";
+                "- `resources/read` for `genexus://kb/llm-playbook`\n" +
+                "- For modeling tasks, `resources/read` for `genexus://kb/skills/nexa` and the relevant reference URI";
         }
 
         public static object? ConvertResourceCall(JObject request)
         {
-            string uri = request["params"]?["uri"]?.ToString() ?? "";
+            string uri = UnscopeResourceUri(request["params"]?["uri"]?.ToString() ?? "", out _);
             if (string.IsNullOrEmpty(uri)) return null;
 
             if (uri == "genexus://kb/index-status") return new { module = "KB", action = "GetIndexStatus" };
             if (uri == "genexus://kb/health") return new { module = "Health", action = "GetReport" };
+            if (uri == "genexus://kb/capabilities") return new { module = "SdkProbe", action = "Capabilities", target = "_self" };
             if (uri == "genexus://objects") return new { module = "Search", action = "Query", target = "", limit = 200 };
             if (uri == "genexus://attributes") return new { module = "Search", action = "Query", target = "type:Attribute", limit = 200 };
 
@@ -1014,6 +1274,42 @@ namespace GxMcp.Gateway
             }
 
             return null;
+        }
+
+        internal static bool TryGetScopedResourceKb(JObject request, out string? kbAlias)
+        {
+            string uri = request["params"]?["uri"]?.ToString() ?? string.Empty;
+            UnscopeResourceUri(uri, out kbAlias);
+            return !string.IsNullOrWhiteSpace(kbAlias);
+        }
+
+        private static string UnscopeResourceUri(string uri, out string? kbAlias)
+        {
+            kbAlias = null;
+            string trimmed = (uri ?? string.Empty).Trim();
+            const string prefix = "genexus://kb/";
+            if (!trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return trimmed;
+
+            string remainder = trimmed.Substring(prefix.Length);
+            int separator = remainder.IndexOf('/');
+            if (separator <= 0 || separator == remainder.Length - 1) return trimmed;
+
+            string candidateAlias = remainder.Substring(0, separator);
+            string scopedResource = remainder.Substring(separator + 1);
+            int rootSeparator = scopedResource.IndexOf('/');
+            string root = rootSeparator < 0 ? scopedResource : scopedResource.Substring(0, rootSeparator);
+            // `genexus://kb/skills/...` and the other existing KB resources are
+            // already unscoped legacy URIs. Only recognize the roots emitted by
+            // BuildScopedResourceUri so a skill named `foo` cannot be mistaken for
+            // a KB alias.
+            if (!string.Equals(root, "objects", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(root, "attributes", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(root, "kb", StringComparison.OrdinalIgnoreCase))
+                return trimmed;
+
+            try { kbAlias = Uri.UnescapeDataString(candidateAlias); }
+            catch { kbAlias = candidateAlias; }
+            return "genexus://" + scopedResource;
         }
 
         private static bool TryReadObjectResource(string uri, out object? resourceCall)
@@ -1105,10 +1401,39 @@ namespace GxMcp.Gateway
                 }
             }
 
-            foreach (var router in _routers)
+            if (RemovedToolsRegistry.Map.ContainsKey(toolName)) return null;
+
+            // PERFORMANCE (G-C1): O(1) direct router lookup instead of iterating all routers
+            if (_routerByTool.TryGetValue(toolName, out var matchedRouter))
             {
-                var converted = router.ConvertToolCall(toolName, args);
+                var converted = matchedRouter.ConvertToolCall(toolName, args);
                 if (converted != null) return converted;
+            }
+            else
+            {
+                foreach (var router in _routers)
+                {
+                    var converted = router.ConvertToolCall(toolName, args);
+                    if (converted != null) return converted;
+                }
+            }
+
+            // Direct declarative tool dispatch seam (Candidate 1 deepening)
+            // Forwards canonical tools declared in tool_definitions.json directly to Worker CommandHandlerRegistry.
+            bool isDeclared = _declaredToolNames != null
+                ? _declaredToolNames.Contains(toolName)
+                : (_toolDefinitions != null && _toolDefinitions.Any(t => string.Equals(t["name"]?.ToString(), toolName, StringComparison.OrdinalIgnoreCase)));
+            if (isDeclared)
+            {
+                return new
+                {
+                    tool = toolName,
+                    method = toolName,
+                    action = args?["action"]?.ToString() ?? args?["mode"]?.ToString() ?? args?["step"]?.ToString(),
+                    target = args?["target"]?.ToString() ?? args?["name"]?.ToString() ?? args?["object"]?.ToString() ?? args?["kb"]?.ToString(),
+                    payload = args?["payload"]?.ToString() ?? args?["content"]?.ToString() ?? args?["source"]?.ToString() ?? args?["code"]?.ToString(),
+                    @params = args ?? new JObject()
+                };
             }
 
             return null;
@@ -1123,33 +1448,37 @@ namespace GxMcp.Gateway
             out string newToolName,
             out JObject newArgs)
         {
-            newArgs = args is null ? new JObject() : (JObject)args.DeepClone();
-
             switch (toolName)
             {
                 // Umbrella: genexus_browser (smoke|a11y|wcag|capture|cross|preview).
                 case "genexus_smoke_test":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "smoke";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_a11y_audit":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "a11y";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_wcag_check":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "wcag";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_browser_capture":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "capture";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_cross_browser":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "cross";
                     newToolName = "genexus_browser";
                     return true;
                 case "genexus_preview":
                 {
+                    newArgs = CloneArgs(args);
                     // Preview's old sub-action (render|run) becomes the umbrella's `mode`.
                     var sub = newArgs["action"]?.ToString();
                     newArgs["mode"] = string.Equals(sub, "run", StringComparison.OrdinalIgnoreCase) ? "run" : "render";
@@ -1161,6 +1490,7 @@ namespace GxMcp.Gateway
                 // Umbrella: genexus_db (drift_*|optimize_*|sql_*|sample_data|types_*|translations_import).
                 case "genexus_db_drift":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString();
                     newArgs["action"] = string.Equals(sub, "report", StringComparison.OrdinalIgnoreCase) ? "drift_report" : "drift_check";
                     newToolName = "genexus_db";
@@ -1168,6 +1498,7 @@ namespace GxMcp.Gateway
                 }
                 case "genexus_db_optimize":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1180,6 +1511,7 @@ namespace GxMcp.Gateway
                 }
                 case "genexus_sql":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub == "navigation" ? "sql_navigation" : "sql_ddl";
                     newToolName = "genexus_db";
@@ -1187,6 +1519,7 @@ namespace GxMcp.Gateway
                 }
                 case "genexus_generate_sample_data":
                 {
+                    newArgs = CloneArgs(args);
                     if (newArgs["trn"] != null && newArgs["target"] == null)
                         newArgs["target"] = newArgs["trn"];
                     newArgs["action"] = "sample_data";
@@ -1195,6 +1528,7 @@ namespace GxMcp.Gateway
                 }
                 case "genexus_types":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1206,6 +1540,7 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_translations":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "translations_import";
                     newToolName = "genexus_db";
                     return true;
@@ -1213,6 +1548,7 @@ namespace GxMcp.Gateway
                 // Umbrella: genexus_versioning (history_*|undo|time_travel|blame|diff|diff_generated).
                 case "genexus_history":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1225,22 +1561,27 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_undo":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "undo";
                     newToolName = "genexus_versioning";
                     return true;
                 case "genexus_time_travel":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "time_travel";
                     newToolName = "genexus_versioning";
                     return true;
                 case "genexus_blame":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "blame";
                     newToolName = "genexus_versioning";
                     return true;
                 case "genexus_diff":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "diff";
                     newToolName = "genexus_versioning";
                     return true;
                 case "genexus_diff_generated":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "diff_generated";
                     newToolName = "genexus_versioning";
                     return true;
@@ -1248,6 +1589,7 @@ namespace GxMcp.Gateway
                 // Umbrella: genexus_io (asset_*|export_part|import_part|export_unified|screenshot_publish|ocr).
                 case "genexus_asset":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1259,66 +1601,80 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_export_object":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "export_part";
                     newToolName = "genexus_io";
                     return true;
                 case "genexus_import_object":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "import_part";
                     newToolName = "genexus_io";
                     return true;
                 case "genexus_export_unified":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "export_unified";
                     newToolName = "genexus_io";
                     return true;
                 case "genexus_screenshot_publish":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "screenshot_publish";
                     newToolName = "genexus_io";
                     return true;
                 case "genexus_ocr_screenshot":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "ocr";
                     newToolName = "genexus_io";
                     return true;
 
                 // Umbrella: genexus_variable (add|delete|modify).
                 case "genexus_add_variable":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "add";
                     newToolName = "genexus_variable";
                     return true;
                 case "genexus_delete_variable":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "delete";
                     newToolName = "genexus_variable";
                     return true;
                 case "genexus_modify_variable":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "modify";
                     newToolName = "genexus_variable";
                     return true;
 
                 // Umbrella: genexus_telemetry (executions|watch_event|friction_*|learning_report|logs|profile_*).
                 case "genexus_execution_history":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "executions";
                     newToolName = "genexus_telemetry";
                     return true;
                 case "genexus_watch_event":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "watch_event";
                     newToolName = "genexus_telemetry";
                     return true;
                 case "genexus_friction_log":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub == "tail" ? "friction_tail" : "friction_append";
                     newToolName = "genexus_telemetry";
                     return true;
                 }
                 case "genexus_learning":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "learning_report";
                     newToolName = "genexus_telemetry";
                     return true;
                 case "genexus_logs":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "logs";
                     newToolName = "genexus_telemetry";
                     return true;
                 case "genexus_profile":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1332,15 +1688,18 @@ namespace GxMcp.Gateway
 
                 // Umbrella: genexus_create (object|popup|sd_panel_*|save_as|scaffold|translate|sample|template).
                 case "genexus_create_object":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "object";
                     newToolName = "genexus_create";
                     return true;
                 case "genexus_create_popup":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "popup";
                     newToolName = "genexus_create";
                     return true;
                 case "genexus_sd_panel":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1352,11 +1711,13 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_save_as":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "save_as";
                     newToolName = "genexus_create";
                     return true;
                 case "genexus_forge":
                 {
+                    newArgs = CloneArgs(args);
                     var sub = newArgs["action"]?.ToString()?.ToLowerInvariant();
                     newArgs["action"] = sub switch
                     {
@@ -1368,14 +1729,19 @@ namespace GxMcp.Gateway
                     return true;
                 }
                 case "genexus_apply_template":
+                    newArgs = CloneArgs(args);
                     newArgs["action"] = "template";
                     newToolName = "genexus_create";
                     return true;
             }
 
             newToolName = toolName;
+            newArgs = args!;
             return false;
         }
+
+        private static JObject CloneArgs(JObject? args) =>
+            args is null ? new JObject() : (JObject)args.DeepClone();
 
         internal static void StripNulls(JObject obj)
         {
@@ -1400,7 +1766,13 @@ namespace GxMcp.Gateway
         internal static void PiggybackJobs(JObject toolResult, string sessionId, BackgroundJobRegistry registry)
         {
             var snapshot = registry.SnapshotForSession(sessionId);
-            if (snapshot.Count == 0) return;
+            if (snapshot.Count == 0) return; // early-out: no job to inject → zero parse/serialize cost
+
+            // PERF note: the JObject.Parse below cannot be avoided by reusing the caller's
+            // PendingWorkerRequest.ParsedResponse — that holds the RPC envelope whose `result`
+            // IS toolInnerResult (already reused upstream). The inner content[0].text payload
+            // only exists serialized here (built inside BuildToolResultContent), so one
+            // parse + serialize when a job actually exists is the structural minimum.
 
             var jobsArr = new JArray(snapshot.Select(j => new JObject
             {
@@ -1449,6 +1821,11 @@ namespace GxMcp.Gateway
         /// </summary>
         internal static void InjectMetaTokens(JObject toolResult)
         {
+            // Terse mode: the _meta.tokens used/limit block is UX sugar for LLM
+            // self-pagination; terse deployments opt out of paying ~60-90 bytes
+            // per response for it.
+            if (Program.TerseResponsesEnabled()) return;
+
             try
             {
                 var content = toolResult["content"] as JArray;
@@ -1466,31 +1843,33 @@ namespace GxMcp.Gateway
                 var meta = (JObject?)inner["_meta"] ?? new JObject();
                 if (meta["tokens"] == null)
                 {
-                    // Stamp the block first so the size estimate reflects the *emitted*
-                    // payload, not the pre-injection text — otherwise responses near the
-                    // 50% threshold are under-reported and never get the pagination hint.
-                    // `hint` is only attached when usage crosses 50% of the budget
-                    // (~95% of responses are well under). Omitting the field on the
-                    // common path saves ~15 bytes per response; clients that read
-                    // `hint` should treat a missing key as "no hint".
+                    // PERF: estimate the emitted size from the PRE-injection text (already in hand)
+                    // plus a constant for the injected block, instead of a throwaway full serialize.
+                    // The few-byte estimation error is immaterial against the 50% threshold
+                    // (~12500 tokens). Single serialize on the common path carries the REAL `used`.
+                    bool hadMeta = inner["_meta"] != null;
+                    int blockOverhead = (hadMeta ? 0 : "\"_meta\":{}".Length + 1)
+                                        + ",\"tokens\":{\"used\":1234567,\"limit\":".Length + MetaTokenLimit.ToString().Length + "}".Length;
+                    int used = Math.Max(1, (int)Math.Round((textStr.Length + blockOverhead) / 4.0));
                     var tokenBlock = new JObject
                     {
-                        ["used"] = 0,
+                        ["used"] = used,
                         ["limit"] = MetaTokenLimit
                     };
                     meta["tokens"] = tokenBlock;
                     inner["_meta"] = meta;
 
                     string emitted = inner.ToString(Newtonsoft.Json.Formatting.None);
-                    int used = (int)Math.Round(emitted.Length / 4.0);
-                    tokenBlock["used"] = used;
                     if (used > MetaTokenLimit / 2)
                     {
                         tokenBlock["hint"] = used > MetaTokenLimit
                             ? "Response exceeds token limit. Use fields/axiCompact=true, narrower filters, or pagination to reduce size."
                             : "Response is over 50% of the token limit. Consider fields/axiCompact=true or pagination for follow-up calls.";
+                        // Block changed after measurement — one re-serialize on this rare path only,
+                        // so the emitted text carries the hint; still a single assignment to first["text"].
+                        emitted = inner.ToString(Newtonsoft.Json.Formatting.None);
                     }
-                    first["text"] = inner.ToString(Newtonsoft.Json.Formatting.None);
+                    first["text"] = emitted;
                 }
             }
             catch { /* token injection must never break the response */ }
@@ -1582,7 +1961,24 @@ namespace GxMcp.Gateway
             // dropped `details` + `verifyDiff` so the agent saw only "Pattern
             // write verification failed" with no clue what was rejected.
             // Allowlist these when present — they're small structured objects.
-            string[] diagnosticKeys = { "details", "verifyDiff", "suggestion", "persistedSnippet", "requestedSnippet", "availableParts", "part", "objectName", "objectType" };
+            string[] diagnosticKeys = {
+                "details", "verifyDiff", "suggestion", "persistedSnippet", "requestedSnippet",
+                "availableParts", "part", "objectName", "objectType",
+                // Patch persistence receipt: these fields must survive terse error
+                // projection so WriteNotPersisted still tells the caller what the SDK
+                // saved, what the forced re-read proved, and whether rollback landed.
+                "saved", "verified", "persisted", "persistedVerified", "requestedHash",
+                "persistedHash", "normalizedRequestedHash", "normalizedPersistedHash",
+                "persistedMatchCount", "oldContentPresent", "verification", "rollback",
+                "rolledBack", "versionToken", "persistedVerifyError", "replacementPresent",
+                "reReadConfirmed", "commentOnly", "commentStyle", "before", "after",
+                "matchedCount", "implicitOperations", "diagnosticContext",
+                // Patch safety evidence: retain the distinction between a save attempt
+                // and verified persistence, plus the fresh-read failure envelope. These
+                // fields are part of the fail-closed patch contract, not debug-only detail.
+                "saveAttempted", "verificationUnavailable", "postSaveVerification",
+                "readCode", "readCompleted", "readError"
+            };
             foreach (var k in diagnosticKeys)
             {
                 if (error[k] != null) trimmed[k] = error[k];
@@ -1642,15 +2038,18 @@ namespace GxMcp.Gateway
                 };
             }
 
-            // KB_AMBIGUOUS — point at the kb parameter.
+            // KB_AMBIGUOUS / KB_CONTEXT_REQUIRED — point at the kb parameter or session selection.
             if (string.Equals(code, "KB_AMBIGUOUS", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(code, "KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase)
                 || (msg.IndexOf("KB_AMBIGUOUS", StringComparison.OrdinalIgnoreCase) >= 0)
-                || (msg.IndexOf("multiple KBs", StringComparison.OrdinalIgnoreCase) >= 0))
+                || (msg.IndexOf("KB_CONTEXT_REQUIRED", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("multiple KBs", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("Multiple Knowledge Bases", StringComparison.OrdinalIgnoreCase) >= 0))
             {
                 return new JObject
                 {
                     ["action"] = "specify_kb",
-                    ["hint"] = "More than one KB is open. Re-issue the tool call with kb=<alias>. genexus_whoami / genexus_kb action=list enumerate the open aliases. Set the alias from response.openKbs."
+                    ["hint"] = "Explicit KB context is required for this session. For a session-wide selection, run genexus_kb action=select alias=<alias> (or action=set_default alias=<alias>). For a one-off call, pass kb=<alias>. Use genexus_whoami or genexus_kb action=list to inspect available aliases."
                 };
             }
 
@@ -1664,6 +2063,31 @@ namespace GxMcp.Gateway
                     ["action"] = "recipe_extract_to_procedure",
                     ["hint"] = "spc0150 fires when a WebPanel Events block writes a transaction attribute inside For each. Call genexus_recipe { name: 'extract_to_procedure' } to get the step-by-step playbook for moving the attribute-write into a Procedure.",
                     ["recipe"] = "extract_to_procedure"
+                };
+            }
+
+            // PartNotFound — point at genexus_read omitting part (to get full object or availableParts)
+            if (string.Equals(code, "PartNotFound", StringComparison.OrdinalIgnoreCase)
+                || (msg.IndexOf("Part not found", StringComparison.OrdinalIgnoreCase) >= 0)
+                || (msg.IndexOf("part does not exist", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return new JObject
+                {
+                    ["action"] = "read_full_object",
+                    ["tool"] = "genexus_read",
+                    ["hint"] = "The requested part does not exist on this object type. Call genexus_read omitting 'part' (or part='all') to fetch all valid parts for this object in 1 call."
+                };
+            }
+
+            // ObjectNotFound — point at genexus_query to find candidate names
+            if (string.Equals(code, "ObjectNotFound", StringComparison.OrdinalIgnoreCase)
+                || (msg.IndexOf("Object not found", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return new JObject
+                {
+                    ["action"] = "search_objects",
+                    ["tool"] = "genexus_query",
+                    ["hint"] = "Object not found with this exact name. Call genexus_query to search for similar names or partial matches."
                 };
             }
 
@@ -1755,6 +2179,8 @@ namespace GxMcp.Gateway
         ///   <item>When no <paramref name="progressToken"/> is available the effective wait is capped at
         ///         <see cref="SafeLongPollSecondsWithoutProgress"/> regardless of the requested
         ///         <paramref name="waitSeconds"/> — callers re-poll to cover longer waits.</item>
+        ///   <item>When <paramref name="cancellationToken"/> is signalled, returns a typed
+        ///         request-cancelled envelope instead of waiting until the poll deadline.</item>
         /// </list>
         /// </summary>
         internal static async Task<JObject> LongPollJob(
@@ -1762,7 +2188,8 @@ namespace GxMcp.Gateway
             string jobId,
             int waitSeconds,
             JToken? progressToken = null,
-            Func<JObject, Task>? heartbeat = null)
+            Func<JObject, Task>? heartbeat = null,
+            CancellationToken cancellationToken = default)
         {
             // Clamp wait_seconds to [0, MaxLongPollSeconds]
             int requestedWaitSeconds = Math.Min(Math.Max(waitSeconds, 0), MaxLongPollSeconds);
@@ -1784,6 +2211,11 @@ namespace GxMcp.Gateway
 
             do
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return BuildRequestCancelledEnvelope(jobId);
+                }
+
                 job = registry.Get(jobId);
                 if (job == null || job.Status != "running" || effectiveWaitSeconds == 0)
                     break;
@@ -1808,7 +2240,14 @@ namespace GxMcp.Gateway
                     nextHeartbeatAt = DateTime.UtcNow.AddSeconds(HeartbeatIntervalSeconds);
                 }
 
-                await Task.Delay(250).ConfigureAwait(false);
+                try
+                {
+                    await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return BuildRequestCancelledEnvelope(jobId);
+                }
             }
             while (DateTime.UtcNow < deadline);
 
@@ -1841,6 +2280,20 @@ namespace GxMcp.Gateway
             }
 
             return envelope;
+        }
+
+        private static JObject BuildRequestCancelledEnvelope(string jobId)
+        {
+            return new JObject
+            {
+                ["error"] = new JObject
+                {
+                    ["code"] = -32800,
+                    ["message"] = "Request cancelled by client"
+                },
+                ["cancelled"] = true,
+                ["job_id"] = jobId
+            };
         }
 
         // v2.6.4 (#18): lifecycle action=result for op:<id> reads the stored
@@ -1877,14 +2330,22 @@ namespace GxMcp.Gateway
             };
             if (job.Result != null) terminal["result"] = job.Result;
             bool isErr = string.Equals(job.Status, "failed", StringComparison.OrdinalIgnoreCase)
-                      || string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase);
+                      || string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
+                      // issue #79: a watchdog-stalled job is terminal AND an error — the
+                      // SDK never answered, so the agent needs the recovery steps, not a
+                      // neutral status.
+                      || string.Equals(job.Status, "stalled", StringComparison.OrdinalIgnoreCase);
             // Friction 2026-05-22 item 10: when the inner BuildTaskStatus reports
             // 0 errors / 0 warnings / ExitCode=0 (or partial_success=true), respect
             // that over the registry's status flag. Race-safe: if the registry
             // stamped success=false but the build truly was a 0/0/0, the agent
             // would otherwise see an <e>error{}> envelope around "Build succeeded".
+            // cancelled/stalled are excluded: their terminal meaning is authoritative and
+            // must not be reclassified by the build-outcome heuristic (a stalled job's
+            // envelope has no build fields, which the classifier would read as 0/0/0).
             if (isErr && job.Result is JObject inner
-                && !string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(job.Status, "stalled", StringComparison.OrdinalIgnoreCase))
             {
                 var outcome = LifecycleResponseShaper.ClassifyBuildOutcome(inner);
                 if (outcome == LifecycleResponseShaper.BuildOutcome.Success)
@@ -1932,13 +2393,20 @@ namespace GxMcp.Gateway
             bool terminal = string.Equals(s, "Succeeded", StringComparison.OrdinalIgnoreCase)
                          || string.Equals(s, "Failed", StringComparison.OrdinalIgnoreCase)
                          || string.Equals(s, "Error", StringComparison.OrdinalIgnoreCase)
-                         || string.Equals(s, "Cancelled", StringComparison.OrdinalIgnoreCase);
+                         || string.Equals(s, "Cancelled", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(s, "ReorgRequired", StringComparison.OrdinalIgnoreCase);
             if (!terminal) return null; // still Running — genuinely in progress
 
-            bool success = string.Equals(s, "Succeeded", StringComparison.OrdinalIgnoreCase);
+            var outcome = LifecycleResponseShaper.ClassifyBuildOutcome(workerStatus);
+            bool success = outcome == LifecycleResponseShaper.BuildOutcome.Success
+                        || outcome == LifecycleResponseShaper.BuildOutcome.PartialSuccess;
             int errs = workerStatus["errorCount"]?.ToObject<int?>() ?? workerStatus["ErrorCount"]?.ToObject<int?>() ?? 0;
             int warns = workerStatus["warningCount"]?.ToObject<int?>() ?? workerStatus["WarningCount"]?.ToObject<int?>() ?? 0;
-            string summary = success
+            string summary = string.Equals(s, "ReorgRequired", StringComparison.OrdinalIgnoreCase)
+                ? "Build All stopped because the KB requires reorganization; run action=reorg explicitly and retry."
+                : outcome == LifecycleResponseShaper.BuildOutcome.Error
+                ? $"Build {s}: {errs} errors, {warns} warnings"
+                : success
                 ? $"Build succeeded: {warns} warnings, {errs} errors"
                 : $"Build {s}: {errs} errors, {warns} warnings";
             return (success, summary, workerStatus);

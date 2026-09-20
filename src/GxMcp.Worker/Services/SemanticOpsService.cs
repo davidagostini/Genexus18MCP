@@ -199,7 +199,7 @@ namespace GxMcp.Worker.Services
             return -1;
         }
 
-        private static string BuildDslAttrLine(string name, string type, bool key, string description)
+        private static string BuildDslAttrLine(string name, string type, bool key, string description, string formula = null)
         {
             var sb = new System.Text.StringBuilder();
             sb.Append(name);
@@ -207,6 +207,12 @@ namespace GxMcp.Worker.Services
             sb.Append(" : ").Append(type);
             if (!string.IsNullOrEmpty(description))
                 sb.Append(" // \"").Append(description).Append('"');
+            if (!string.IsNullOrWhiteSpace(formula))
+            {
+                if (string.IsNullOrEmpty(description)) sb.Append(" // ");
+                else sb.Append(", ");
+                sb.Append("[Formula: ").Append(formula.Trim()).Append(']');
+            }
             return sb.ToString();
         }
 
@@ -227,15 +233,27 @@ namespace GxMcp.Worker.Services
                         throw new UsageException("usage_error", "attribute '" + name + "' already exists");
                     bool key = op.Args["key"]?.ToObject<bool?>() ?? false;
                     string desc = op.Args["description"]?.ToString();
-                    string newLine = BuildDslAttrLine(name, type, key, desc);
-                    // Insert after the last root-level attribute line so nested sub-levels
-                    // (indented blocks) are left intact.
+                    string formula = op.Args["formula"]?.ToString();
+                    string after = op.Args["after"]?.ToString();
+                    string newLine = BuildDslAttrLine(name, type, key, desc, formula);
+                    // Insert after an explicit sibling when requested; otherwise append
+                    // after the last root-level attribute. Nested levels stay intact.
                     int insertAt = lines.Count;
-                    for (int i = 0; i < lines.Count; i++)
+                    if (!string.IsNullOrWhiteSpace(after))
                     {
-                        var m = _dslAttrLine.Match(lines[i]);
-                        if (m.Success && m.Groups["indent"].Value.Length == 0)
-                            insertAt = i + 1;
+                        int afterIndex = FindDslAttrLine(lines, after);
+                        if (afterIndex < 0)
+                            throw new UsageException("usage_error", "add_attribute: after attribute '" + after + "' not found");
+                        insertAt = afterIndex + 1;
+                    }
+                    else
+                    {
+                        for (int i = 0; i < lines.Count; i++)
+                        {
+                            var m = _dslAttrLine.Match(lines[i]);
+                            if (m.Success && m.Groups["indent"].Value.Length == 0)
+                                insertAt = i + 1;
+                        }
                     }
                     lines.Insert(insertAt, newLine);
                     break;
@@ -249,17 +267,18 @@ namespace GxMcp.Worker.Services
                     string type = op.Args["type"]?.ToString() ?? m.Groups["type"].Value.Trim();
                     bool key = m.Groups["key"].Value == "*";
                     string desc = op.Args["description"]?.ToString();
+                    string formula = op.Args["formula"]?.ToString();
                     if (desc == null)
                     {
                         // Preserve the existing inline comment when no new description is given.
                         string existingComment = m.Groups["comment"].Value;
-                        string rebuilt = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, null);
+                        string rebuilt = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, null, formula);
                         if (!string.IsNullOrEmpty(existingComment)) rebuilt += " " + existingComment;
                         lines[idx] = rebuilt;
                     }
                     else
                     {
-                        lines[idx] = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, desc);
+                        lines[idx] = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, desc, formula);
                     }
                     break;
                 }

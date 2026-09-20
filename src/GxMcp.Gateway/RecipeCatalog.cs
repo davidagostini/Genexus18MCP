@@ -308,7 +308,7 @@ namespace GxMcp.Gateway
                         ["prereq"] = new JArray("Object exists and is of type Transaction (verify with genexus_inspect.metadata)."),
                         ["steps"] = new JArray(
                             Step("genexus_inspect", new JObject { ["name"] = "<Trn>", ["include"] = new JArray("metadata") },
-                                 "Confirm parentType=Transaction. If WebPanel/SDPanel, switch to recipe 'wwp_on_webpanel'."),
+                                 "Confirm parentType=Transaction. If WebPanel/WebComponent/SDPanel, switch to recipe 'wwp_on_webpanel'."),
                             Step("genexus_apply_pattern", new JObject { ["name"] = "<Trn>", ["pattern"] = "WorkWithPlus" },
                                  "Engine generates WorkWithPlus<Trn> (host) + WW<Trn> + View<Trn> + Export* siblings. No template needed."),
                             Step("genexus_edit", new JObject { ["name"] = "WorkWithPlus<Trn>", ["part"] = "PatternInstance", ["mode"] = "patch", ["context"] = "<unique XML anchor>", ["operation"] = "Insert_After", ["content"] = "<new XML node>" },
@@ -321,14 +321,14 @@ namespace GxMcp.Gateway
                     }),
 
                 ["wwp_on_webpanel"] = new RecipeMeta(
-                    "Direct-attach a WorkWithPlus host onto an existing WebPanel/SDPanel.",
+                    "Direct-attach a WorkWithPlus host onto an existing WebPanel/WebComponent/SDPanel.",
                     "genexus_recipe { name: 'wwp_on_webpanel' }",
                     "v1",
                     () => new JObject
                     {
-                        ["goal"] = "Direct-attach a WorkWithPlus host onto an existing WebPanel/SDPanel (no transaction family).",
+                        ["goal"] = "Direct-attach a WorkWithPlus host onto an existing WebPanel/WebComponent/SDPanel (no transaction family).",
                         ["prereq"] = new JArray(
-                            "Object exists and is of type WebPanel or SDPanel (verify with genexus_inspect.metadata).",
+                            "Object exists and is of type WebPanel, WebComponent or SDPanel (verify with genexus_inspect.metadata).",
                             "Know which `WorkWithPlus for Web Template` to use; common ones: MatIsoTemplate, TransactionResp2, PopoverEmpty, TransactionPopUp. If unsure, omit settings.template — the MCP auto-discovers and returns availableTemplates."
                         ),
                         ["steps"] = new JArray(
@@ -340,7 +340,7 @@ namespace GxMcp.Gateway
                                  "Edits to the host auto-project onto the WebPanel's WebForm via UpdateParentObject.")
                         ),
                         ["pitfalls"] = new JArray(
-                            "WebPanel + Transaction take DIFFERENT apply paths. Never assume — always inspect first.",
+                            "Direct-attach parents (WebPanel/WebComponent/SDPanel) and Transaction take DIFFERENT apply paths. Never assume — always inspect first.",
                             "settings.template must match a registered `WorkWithPlus for Web Template` object; pass empty to let MCP auto-discover.",
                             "Other types (Procedure, SDT, Domain, …) are rejected upfront with parentType in the error envelope."
                         )

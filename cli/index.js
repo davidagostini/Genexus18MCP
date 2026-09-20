@@ -15,6 +15,8 @@ const {
     handleDoctor,
     handleToolsList,
     handleConfigShow,
+    handleConfigCreate,
+    handleConfigMigrate,
     handleInit,
     handleWhoami,
     handleUninstall,
@@ -24,10 +26,12 @@ const {
     handleLlmHelp,
     handleLayout,
     handleHelp,
+    handleVersion,
     usageEnvelope,
     commandHelpMap
 } = require('./commands/axi');
 const { startBackgroundUpdateCheck, handleUpdate } = require('./lib/update-check');
+const { createStderrTail, writeLastStdioError } = require('./lib/stdio-diagnostics');
 
 const EXIT_CODES = {
     OK: 0,
@@ -43,6 +47,8 @@ const GLOBAL_DEFAULTS = {
     writeClients: false,
     clients: null,
     allClients: false,
+    serverName: null,
+    force: false,
     mcpSmoke: false,
     dump: false,
     noSmoke: false,
@@ -58,7 +64,19 @@ const GLOBAL_DEFAULTS = {
     help: false
 };
 
-const KNOWN_COMMANDS = new Set(['status', 'doctor', 'tools', 'config', 'init', 'setup', 'whoami', 'uninstall', 'kb', 'clients', 'help', 'home', 'axi', 'llm', 'layout', 'update']);
+// Single source of truth for command routing: cli/run.js imports both sets so the
+// AXI-vs-passthrough decision (stdout vs stderr for unhandled errors) cannot drift
+// from the parser again — issue #207 was caused by two hand-synced copies.
+const KNOWN_COMMANDS = new Set(['status', 'doctor', 'tools', 'config', 'init', 'setup', 'whoami', 'uninstall', 'kb', 'clients', 'help', 'home', 'axi', 'llm', 'layout', 'update', 'version']);
+
+// Version query aliases. `-v` deliberately is NOT an alias of `--help`/`-h`: those
+// return immediately, while the version aliases are command tokens so that remaining
+// flags (`-v --format json`) are still parsed and honored (issue #207).
+const VERSION_ALIASES = new Set(['version', '-v', '--version']);
+
+function isKnownCommandToken(token) {
+    return KNOWN_COMMANDS.has(token) || VERSION_ALIASES.has(token);
+}
 
 function parseArgs(argv) {
     const result = {
@@ -74,7 +92,8 @@ function parseArgs(argv) {
     if (tokens.length === 0) return result;
 
     const first = tokens[0];
-    if (!KNOWN_COMMANDS.has(first) && !first.startsWith('--')) {
+    const versionIntent = VERSION_ALIASES.has(first);
+    if (!versionIntent && !KNOWN_COMMANDS.has(first) && !first.startsWith('--')) {
         return result;
     }
 
@@ -84,7 +103,13 @@ function parseArgs(argv) {
         return result;
     }
 
-    if (KNOWN_COMMANDS.has(first)) {
+    if (versionIntent) {
+        // Treat the alias as a consumed command token and keep parsing the remaining
+        // flags, so `version --format json`, `-v --format json` and `--version --format json`
+        // all reach the format validation instead of falling through to passthrough.
+        result.command = 'version';
+        tokens.shift();
+    } else if (KNOWN_COMMANDS.has(first)) {
         result.command = first === 'setup' ? 'init' : first;
         tokens.shift();
     }
@@ -94,8 +119,8 @@ function parseArgs(argv) {
         tokens.shift();
     }
 
-    if (result.command === 'config' && tokens[0] === 'show') {
-        result.subcommand = 'show';
+    if (result.command === 'config' && ['show', 'create', 'migrate'].includes(tokens[0])) {
+        result.subcommand = tokens[0];
         tokens.shift();
     }
 
@@ -172,6 +197,45 @@ function parseArgs(argv) {
                 else result.unknownFlags.push('--gx requires a value');
                 break;
             }
+            case 'from': {
+                const val = takeValue();
+                if (val) result.options.fromPath = val;
+                else result.unknownFlags.push('--from requires a value');
+                break;
+            }
+            case 'reject-non-migratable':
+                result.options.rejectNonMigratable = true;
+                break;
+            case 'output': {
+                const val = takeValue();
+                if (val) result.options.output = val;
+                else result.unknownFlags.push('--output requires a value');
+                break;
+            }
+            case 'worker': {
+                const val = takeValue();
+                if (val) result.options.worker = val;
+                else result.unknownFlags.push('--worker requires a value');
+                break;
+            }
+            case 'config-scope': {
+                const val = takeValue();
+                if (val) result.options.configScope = val;
+                else result.unknownFlags.push('--config-scope requires a value');
+                break;
+            }
+            case 'gateway-mode': {
+                const val = takeValue();
+                if (val) result.options.gatewayMode = val;
+                else result.unknownFlags.push('--gateway-mode requires a value');
+                break;
+            }
+            case 'resolution-policy': {
+                const val = takeValue();
+                if (val) result.options.resolutionPolicy = val;
+                else result.unknownFlags.push('--resolution-policy requires a value');
+                break;
+            }
             case 'name': {
                 const val = takeValue();
                 if (val) result.options.name = val;
@@ -206,6 +270,22 @@ function parseArgs(argv) {
             }
             case 'all-clients':
                 result.options.allClients = true;
+                break;
+            case 'server-name': {
+                const val = takeValue();
+                if (val) {
+                    if (!/^[a-zA-Z0-9_-]+$/.test(val)) {
+                        result.unknownFlags.push(`--server-name must be alphanumeric (letters, digits, _, -), got: "${val}"`);
+                    } else {
+                        result.options.serverName = val;
+                    }
+                } else {
+                    result.unknownFlags.push('--server-name requires a value');
+                }
+                break;
+            }
+            case 'force':
+                result.options.force = true;
                 break;
             case 'action': {
                 const val = takeValue();
@@ -271,6 +351,12 @@ function parseArgs(argv) {
             case 'interactive':
                 result.options.interactive = true;
                 break;
+            case 'global-config':
+                result.options.globalConfig = true;
+                break;
+            case 'neutral':
+                result.options.neutral = true;
+                break;
             case 'write-clients':
                 result.options.writeClients = true;
                 break;
@@ -332,49 +418,91 @@ function writeAppLockerHint(stderr, gatewayExePath) {
 }
 
 async function launchGateway(passthroughArgs, options) {
+    const stderrTail = createStderrTail();
+    const launcherStderr = {
+        write(chunk) {
+            stderrTail.append(chunk);
+            if (!options.quiet) process.stderr.write(chunk);
+            return true;
+        }
+    };
+    const recordStdioFailure = ({ gatewayExePath, exitCode = null, signal = null, error = null } = {}) => {
+        const logPath = writeLastStdioError({
+            gatewayExePath,
+            exitCode,
+            signal,
+            error,
+            stderrTail: stderrTail.toString()
+        });
+        if (logPath && !options.quiet) {
+            process.stderr.write(`[genexus-mcp] Last stdio error saved to ${logPath}\n`);
+        }
+    };
+
     const setup = applyLauncherConfigOrExit({
         cwd: process.cwd(),
-        stderr: process.stderr,
+        stderr: launcherStderr,
         quiet: options.quiet
     });
 
     if (!setup.ok) {
+        recordStdioFailure({ gatewayExePath: getGatewayExePath(), exitCode: EXIT_CODES.ERROR, error: 'Launcher setup failed.' });
         return EXIT_CODES.ERROR;
     }
 
     const gatewayExePath = getGatewayExePath();
     if (!require('fs').existsSync(gatewayExePath)) {
-        if (!options.quiet) {
-            process.stderr.write(`[genexus-mcp] ERROR: Gateway executable not found at ${gatewayExePath}\n`);
-        }
+        const message = `[genexus-mcp] ERROR: Gateway executable not found at ${gatewayExePath}`;
+        launcherStderr.write(`${message}\n`);
+        recordStdioFailure({ gatewayExePath, exitCode: EXIT_CODES.ERROR, error: 'Gateway executable not found.' });
         return EXIT_CODES.ERROR;
     }
 
     return await new Promise((resolve) => {
-        const child = spawn(gatewayExePath, passthroughArgs, {
-            stdio: 'inherit',
-            env: process.env,
-            windowsHide: true
-        });
+        let settled = false;
+        const finish = (code) => {
+            if (settled) return;
+            settled = true;
+            resolve(code);
+        };
+        const handleSpawnError = (err) => {
+            const message = `[genexus-mcp] ERROR: Failed to start gateway process: ${err.message}`;
+            launcherStderr.write(`${message}\n`);
+            const code = err && (err.code || err.errno);
+            const accessDenied = code === 'EACCES' || code === 'EPERM' || /access is denied|access denied|acesso negado/i.test(err.message || '');
+            if (accessDenied) writeAppLockerHint(launcherStderr, gatewayExePath);
+            recordStdioFailure({ gatewayExePath, error: err.message || 'Failed to start gateway process.' });
+            finish(EXIT_CODES.ERROR);
+        };
 
-        child.on('error', (err) => {
-            if (!options.quiet) {
-                process.stderr.write(`[genexus-mcp] ERROR: Failed to start gateway process: ${err.message}\n`);
-                const code = err && (err.code || err.errno);
-                const accessDenied = code === 'EACCES' || code === 'EPERM' || /access is denied|access denied|acesso negado/i.test(err.message || '');
-                if (accessDenied) {
-                    writeAppLockerHint(process.stderr, gatewayExePath);
-                }
-            }
-            resolve(EXIT_CODES.ERROR);
-        });
+        let child;
+        try {
+            child = spawn(gatewayExePath, passthroughArgs, {
+                // Keep stdout attached to the MCP protocol and tee stderr so a
+                // failed bootstrap remains available after a client drops it.
+                stdio: ['inherit', 'inherit', 'pipe'],
+                env: process.env,
+                windowsHide: true
+            });
+        } catch (err) {
+            handleSpawnError(err);
+            return;
+        }
 
-        child.on('exit', (code, signal) => {
-            if (signal) {
-                resolve(EXIT_CODES.ERROR);
-                return;
+        if (child.stderr) {
+            child.stderr.on('data', (chunk) => {
+                stderrTail.append(chunk);
+                process.stderr.write(chunk);
+            });
+        }
+
+        child.once('error', handleSpawnError);
+
+        child.once('close', (code, signal) => {
+            if (signal || code !== 0) {
+                recordStdioFailure({ gatewayExePath, exitCode: code, signal });
             }
-            resolve(code || EXIT_CODES.OK);
+            finish(signal ? EXIT_CODES.ERROR : (code === null || code === undefined ? EXIT_CODES.ERROR : code));
         });
     });
 }
@@ -405,7 +533,7 @@ function withCommandMeta(envelope, commandName) {
 function resolveMetaCommand(parsed, targetHelp) {
     if (targetHelp || parsed.command === 'help') return 'help';
     if (parsed.command === 'tools') return 'tools.list';
-    if (parsed.command === 'config') return 'config.show';
+    if (parsed.command === 'config') return parsed.subcommand ? `config.${parsed.subcommand}` : 'config';
     if (parsed.command === 'axi' || parsed.command === 'home') return 'home';
     if (parsed.command === 'llm') return 'llm.help';
     if (parsed.command === 'layout') {
@@ -426,7 +554,9 @@ function resolveMetaCommand(parsed, targetHelp) {
 async function main(argv) {
     const parsed = parseArgs(argv);
 
-    if (parsed.command !== 'update') {
+    // `version` is a quiet query: no update-check banner (it would corrupt the raw
+    // version string scripts read) and no launcher config side effects.
+    if (parsed.command !== 'update' && parsed.command !== 'version') {
         startBackgroundUpdateCheck({ quiet: parsed.options.quiet });
     }
 
@@ -458,6 +588,19 @@ async function main(argv) {
         const helpResult = await handleHelp(targetHelp, ctx);
         writeStructured(process.stdout, withCommandMeta(helpResult.envelope, resolveMetaCommand(parsed, targetHelp)), parsed.options.format);
         return helpResult.exitCode;
+    }
+
+    if (parsed.command === 'version') {
+        const versionResult = await handleVersion(parsed.options, ctx);
+        // Default formats print the bare version so `genexus-mcp --version` is usable
+        // from scripts/CI; only --format json opts into the axi-cli/1 envelope.
+        if (versionResult.exitCode === EXIT_CODES.OK
+            && (parsed.options.format === 'toon' || parsed.options.format === 'text')) {
+            process.stdout.write(`${versionResult.envelope.ok.version}\n`);
+        } else {
+            writeStructured(process.stdout, withCommandMeta(versionResult.envelope, 'version'), parsed.options.format);
+        }
+        return versionResult.exitCode;
     }
 
     let result;
@@ -495,15 +638,19 @@ async function main(argv) {
             result = await handleToolsList(parsed.options, ctx);
             break;
         case 'config':
-            if (parsed.subcommand !== 'show') {
+            if (!['show', 'create', 'migrate'].includes(parsed.subcommand)) {
                 writeStructured(
                     process.stdout,
-                    withCommandMeta(usageEnvelope('config requires subcommand `show`.', EXIT_CODES.USAGE), resolveMetaCommand(parsed)),
+                    withCommandMeta(usageEnvelope('config requires subcommand `show`, `create`, or `migrate`.', EXIT_CODES.USAGE), resolveMetaCommand(parsed)),
                     parsed.options.format
                 );
                 return EXIT_CODES.USAGE;
             }
-            result = await handleConfigShow(parsed.options, ctx);
+            result = parsed.subcommand === 'create'
+                ? await handleConfigCreate(parsed.options, ctx)
+                : parsed.subcommand === 'migrate'
+                    ? await handleConfigMigrate(parsed.options, ctx)
+                : await handleConfigShow(parsed.options, ctx);
             break;
         case 'llm':
             if (parsed.subcommand && parsed.subcommand !== 'help') {
@@ -570,6 +717,9 @@ module.exports = {
     main,
     parseArgs,
     EXIT_CODES,
+    KNOWN_COMMANDS,
+    VERSION_ALIASES,
+    isKnownCommandToken,
     renderOutput,
     formatToonObject
 };

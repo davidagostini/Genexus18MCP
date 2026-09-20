@@ -43,7 +43,7 @@ The server can hold multiple KBs open at once (`Server.MaxOpenKbs`, default 3), 
 | `genexus_query` | Narrow down by `typeFilter` for faster results. |
 | `genexus_read` | Always check the `Variables` part if adding logic. `PatternInstance` / `PatternVirtual` return the full pattern XML (WorkWithPlus). `Documentation` / `Help` are first-class write targets. |
 | `genexus_edit` | Prefer `mode=patch` for surgical changes; use `targets[]` for atomic multi-object edits. For pattern parts see "Pattern editing" below. |
-| `genexus_analyze` | One tool covers `linter`, `navigation`, `hierarchy`, `impact`, `data_context`, `ui_context`, `pattern_metadata`, `summary`, and `explain` (the last two replaced `genexus_summarize` and `genexus_explain_code`). |
+| `genexus_analyze` | One tool covers `linter`, `navigation`, `hierarchy`, `impact`, `data_context`, `ui_context`, `pattern_metadata`, and `summary`. `explain` is `compatibility-only` and returns `NotImplemented`; use `summary`, `context`, or `genexus_read` instead. |
 | `genexus_sql` | `action=ddl` for Transaction/Table DDL, `action=navigation` for the SQL produced by a For Each (replaces `genexus_get_sql` and `genexus_get_sql_for_navigation`). |
 | `genexus_kb` | List/open/close/set_default — multi-KB pool management (replaces `genexus_open_kb`). |
 | `genexus_properties` | Essential for enabling "Business Component" or "Expose as Web Service". For WorkWithPlus also handles `SDPlus_Editor_Apply_On_Save` (toggle to keep pattern XML overrides). |

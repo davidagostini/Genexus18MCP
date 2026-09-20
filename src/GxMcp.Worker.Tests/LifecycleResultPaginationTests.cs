@@ -83,7 +83,7 @@ namespace GxMcp.Worker.Tests
             var arr = (JArray)result["items"];
             var meta = (JObject)result["_meta"]["pagination"];
 
-            Assert.Equal(0, arr.Count);
+            Assert.Empty(arr);
             Assert.Equal(0, meta["total"].ToObject<int>());
             Assert.False(meta["has_more"].ToObject<bool>());
         }

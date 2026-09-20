@@ -16,3 +16,9 @@ trim_trailing_whitespace = false
 
 [*.{sln}]
 indent_style = tab
+
+# PowerShell: UTF-8 *with BOM* so Windows PowerShell 5.1 parses non-ASCII
+# characters correctly (it reads BOM-less .ps1 as ANSI, which mangles
+# em-dashes/arrows and can break the tokenizer). pwsh 7 reads BOM fine too.
+[*.ps1]
+charset = utf-8-bom

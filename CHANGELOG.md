@@ -1,5 +1,2095 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`records_query` can use an explicit read-only profile connection alias.** When GeneXus omits server/database metadata, a `dataStoreAlias` can select non-secret connection metadata from the MCP profile while credentials remain on the Worker host. Responses include the effective alias, masked connection identifiers, a confirmed configuration reread, elapsed time, row count, and rows without returning connection strings or credentials. See `docs/transaction-records.md`.
+- Missing, duplicate, cross-KB, or invalid aliases fail closed before SQL execution; writes reject `dataStoreAlias`, and the selected read alias is reread before every `records_query` to detect profile/environment drift.
+
+### Tracked issues
+
+- [#244](https://github.com/lennix1337/Genexus18MCP/issues/244) — `genexus_edit mode=patch` pode apagar uma Source inteira e responder sucesso com verificação não confirmada
+
+### Fixed
+
+- [#244](https://github.com/lennix1337/Genexus18MCP/issues/244) **Text patches now fail closed when persistence cannot be independently confirmed.** Write snapshots always use the uncached verification path, post-save reads reject error/truncated/incomplete envelopes, cache invalidation failures and same-instance SDK reads return `FreshReadUnavailable`, and unverified writes no longer expose `saved:true`. Confirmed responses expose the complete source returned by the fresh read; indeterminate writes return `WriteVerificationUnavailable` with `saveAttempted:true`, `saved:false`, and no implicit lifecycle action. Explicit rollback is version-fenced and PatternInstance verification refreshes the resolved WorkWithPlus child.
+- **Reads recover after an idle Worker is reopened.** Index bootstrap is re-armed when a new Worker is registered, including lazy respawn and explicit reopen, instead of retaining the previous process's one-shot latch. A restored `Ready/stale/Idle` snapshot now offers a non-forced refresh hint; healthy active operations are not cancelled and reads still require `freshness=current`.
+- **Index recovery now distinguishes a live build from a stalled or exited worker.** Status polling no longer cancels a slow index build. Concurrent `action=index` requests are idempotent, return the active `operationId`, and `force=true` starts a new generation only after the old STA worker has stopped; if that bounded stop cannot complete, recovery remains pending instead of running two SDK generations concurrently. Read tools expose the recoverable state and the exact recovery hint without running any GeneXus lifecycle action.
+- **`records_query` profile aliases now escape provider-specific identifier delimiters, preserve string-path KB catalog entries during alias scoping, and isolate shared Worker hosts by profile configuration path.**
+
+## v3.7.0 - 2026-09-19
+
+
+### Tracked issues
+
+- [#228](https://github.com/lennix1337/Genexus18MCP/issues/228) — Desenho: compartilhar o Worker entre clientes em vez do Gateway, para duas sessões usarem a mesma KB
+- [#234](https://github.com/lennix1337/Genexus18MCP/issues/234) — [Melhoria] Preservar contexto sanitizado nas falhas de banco de records_query
+- [#235](https://github.com/lennix1337/Genexus18MCP/issues/235) — [Follow-up da #212] O diagnóstico de datastore ainda pode consultar o DesignModel em vez do environment ativo
+- [#236](https://github.com/lennix1337/Genexus18MCP/issues/236) — [Bug] records_query retorna DataStoreProviderUnsupported para um datastore PostgreSQL ativo
+- [#237](https://github.com/lennix1337/Genexus18MCP/issues/237) — Legacy KBs (GX 8.0/9.0) can't be routed to the com-gxpublic driver: no per-KB install path/driver, and major 8 defaultInstallPath doesn't match real installs
+- [#238](https://github.com/lennix1337/Genexus18MCP/issues/238) — move into a Folder always fails with MoveFailed (Properties/Property[2]/Value[1]); move into a Module works
+- [#239](https://github.com/lennix1337/Genexus18MCP/issues/239) — [Bug] Install/init gravam `EmitStructuredContent: false` enquanto o `tools/list` continua anunciando `outputSchema` (sucesso sem `structuredContent` ⇒ `-32600`)
+- [#240](https://github.com/lennix1337/Genexus18MCP/issues/240) — [Bug] No-progress e wall-clock watchdogs sobrescrevem Phase antes da mensagem; no-progress ainda reusa a baseline de ETag (ignora CurrentObject/LineCount)
+- [#241](https://github.com/lennix1337/Genexus18MCP/issues/241) — [Melhoria] Adicionar inventário read-only de delta entre Design e version frozen
+- [#242](https://github.com/lennix1337/Genexus18MCP/issues/242) — [Docs/UX] doctor client_config_sync: mensagem de sucesso diz npm-package mesmo com GENEXUS_MCP_GATEWAY_EXE (checkout)
+
+
+### Added
+
+- [#228](https://github.com/lennix1337/Genexus18MCP/issues/228) **A supported shared Worker host option for independent Gateways.** `Server.WorkerSharingMode="shared-host"` brokers one compatible GeneXus SDK Worker per physical KB through bounded named-pipe attachments with identity validation, heartbeat, detach/idle lifetime, per-attachment correlation/backpressure and in-place child respawn; `WorkerSharingMode="isolated"` remains available when an agent intentionally needs multiple Workers. Shared writes now carry a Gateway-local owner identity, take a short operation-scoped per-object lock, preserve explicit same-owner locks, and fail closed on a foreign or corrupt lock. `genexus_whoami` and `genexus_doctor` now expose the resolved mode, identity, pipe, host/Worker PIDs, generation, attachment and failure diagnostics; shared-host also bounds handshake reads, drains stale requests during respawn, routes only explicit shared notifications, preserves child-exit diagnostics, and propagates the legacy GXPublic provider.
+- [#241](https://github.com/lennix1337/Genexus18MCP/issues/241) **`genexus_kb_version action=changed_objects` now exposes a read-only Design-versus-frozen inventory.** It resolves a frozen `fromVersion` (or the latest frozen version), returns stable paginated `NEW`/`CHANGED` entries with GUID/entity-key identity and no SQL fallback, and returns `ChangedObjectsNotSupported` when the installed SDK cannot provide the model snapshot.
+
+### Fixed
+
+- **The `genexus_wwp` tool schema is no longer self-referential, so providers that reject recursive JSON schemas can list tools again.** The `wwpControl` `$defs`/$ref cycle (tab/`add_tab` `children` items pointing back at their own definition) was refused upstream with `invalid_request_error: Recursive JSON schemas are not currently supported`, failing every tools/list of the session; the control shape is now inlined into `children.items` at a bounded depth (nested table children accept generic objects), with a `ToolSchemaShapeTests.NoSchemaContainsRecursiveRefs` regression test covering input and output schemas.
+
+### Changed
+
+- **Doctor now fails closed on diagnostic inputs and validates the runtime preflight.** An explicit missing `GX_CONFIG_PATH` no longer falls through to an unrelated cwd config, malformed `tool_definitions.json` is reported as a failure instead of a presence-only pass, strict `Environment.KBs` ambiguity/missing paths are surfaced, explicit Gateway overrides validate the sibling tool definitions the runtime actually loads, support-dump metadata redacts the paths it reports, and the default Gateway probe now invokes the supported `--self-test` contract against the same resolved config instead of launching the Gateway with the obsolete probe flag.
+- **Integration preflight now distinguishes Gateway contract dispatchers from Worker dispatchers.** Internal Worker `CommandDispatcher` changes no longer trigger a false discovery-golden requirement; Gateway contract surfaces remain gated.
+- **GeneXus 8 classic discovery now matches the installed GX8 layout.** The catalog points to `C:\Program Files (x86)\ARTech\GeneXus\gxw80`, CLI/Gateway detection recognizes `gxw32.exe` and its 8.0 product metadata, and the generated supported-version document reports the real default path.
+- **GX8/GX9 compatibility now uses the documented GXPublic OLE DB metadata surface.** The Worker tries the versioned GXPublic providers in 32-bit mode, supports read-only `Object` metadata queries/lists, and returns explicit unsupported envelopes for source-part edits and XPZ operations instead of invoking guessed COM members.
+- **Classic metadata operations now bypass the native search-index gate safely.** GXPublic opens mark the gateway state ready from the provider catalogue, `genexus_query`/`genexus_list_objects` return canonical paged metadata results with a legacy capability block, and ambiguous `.gxi` generation is reported as unresolved until the matching provider opens the KB instead of being misclassified as a GX8/GX9 mismatch.
+- **The live harness now recognizes classic GX8/GX9 runtime anchors.** Legacy runs require a published Worker plus `-SkipBuild`, avoid compiling against the classic installation, and report missing provider/KB prerequisites as explicit unavailable evidence.
+
+### Added
+
+- [#241](https://github.com/lennix1337/Genexus18MCP/issues/241) **`genexus_kb_version action=changed_objects` now exposes a read-only Design-versus-frozen inventory.** It resolves a frozen `fromVersion` (or the latest frozen version), returns stable paginated `NEW`/`CHANGED` entries with GUID/entity-key identity and no SQL fallback, and returns `ChangedObjectsNotSupported` when the installed SDK cannot provide the model snapshot.
+
+### Fixed
+
+- [#242](https://github.com/lennix1337/Genexus18MCP/issues/242) **The `doctor` client configuration check now identifies the effective Gateway path and source.** Checkout runs using `GENEXUS_MCP_GATEWAY_EXE` no longer report a misleading npm-package target, including when warning about a client path mismatch.
+- [#238](https://github.com/lennix1337/Genexus18MCP/issues/238) **Moving an object into a Folder now persists instead of failing with `MoveFailed` on `Properties/Property[2]/Value[1]`.** The move integrity guard now recognizes the SDK's Folder-destination re-parent bookkeeping — a generic `<Properties><Property>` VALUE re-pointed exactly at the destination name while every authored part stays byte-identical — and passes it in both the in-transaction and post-commit checks, so `genexus_properties action=move` and `genexus_create action=object folder=...` complete for Folder destinations the way they already did for Modules. `move` also accepts `folder`/`module` as first-class destination aliases (matching `genexus_create` naming) with their kind carried through.
+- [#239](https://github.com/lennix1337/Genexus18MCP/issues/239) **Lean lifecycle responses now remain MCP-schema compliant.** `genexus_lifecycle` keeps `structuredContent` on successful responses even when `EmitStructuredContent=false`/`GXMCP_NO_STRUCTURED_CONTENT=1`, matching its advertised `outputSchema` while other tools retain lean omission.
+- [#240](https://github.com/lennix1337/Genexus18MCP/issues/240) **Build watchdogs now preserve the pre-terminal phase and use a dedicated liveness fingerprint.** No-progress observes current object and output-line progress independently from the status ETag; wall-clock and no-progress failures report the captured phase instead of overwriting it with `Done`.
+- [#237](https://github.com/lennix1337/Genexus18MCP/issues/237) **Legacy KBs can now be routed per KB.** `genexus_kb action=open` and `Environment.KBs` accept `driver`, `installationPath`, and `major`; GX8 classic DAT roots are recognized, `gxw80` is discoverable from the ARTech `Setup\\80` registry entry, GXPublic ProgIDs are checked before worker spawn, and provider absence fails with a structured diagnostic instead of a misleading `no_worker`/`IndexNotReady` state.
+- [#234](https://github.com/lennix1337/Genexus18MCP/issues/234) **`records_query` now preserves safe database-failure context.** Provider errors retain the active environment/datastore, provider family, phase, exception type, provider code/state and sanitized message, while persistence flags and diagnostic context survive the canonical error envelope without exposing credentials, connection strings, parameters or record values.
+- [#235](https://github.com/lennix1337/Genexus18MCP/issues/235) **Datastore diagnostics now resolve the active environment only.** `db_info`, `whoami`'s database block and the KB-open datastore probe share the TargetModel-only resolver, so a DesignModel datastore cannot shadow the selected environment; unresolved metadata is reported explicitly.
+- [#236](https://github.com/lennix1337/Genexus18MCP/issues/236) **`records_query` now supports PostgreSQL datastores.** PostgreSQL/Npgsql detection accepts provider and DBMS descriptors, builds safe Host/Database/Search Path connection metadata when needed, resolves the bundled Npgsql factory and emits PostgreSQL identifier/limit SQL.
+
+### Internal
+
+- **Split `BuildService.RunBuild` into phase methods with no behavior change.** Watchdog/heartbeat setup (`StartBuildHeartbeatTimer`, `StartWallClockWatchdogTimer`, `StartNoProgressWatchdogTimer`), pre-build evidence snapshots (`SnapshotPreBuildEvidence`), the in-process pipeline (`RunInProcessBuildPhase`) and the external MSBuild.exe fallback (`RunExternalMsBuildPhase`) are now independently testable units; `RunBuild` only orchestrates timers to snapshots to phases to the existing finally cleanup. Locked by new characterization tests in `BuildTimeoutAndReorgModeTests`.
+- **Split `DispatchToolCallCoreAsync` into phase dispatches with no behavior change.** Gateway-owned tools (`TryDispatchGatewayToolAsync`: whoami/doctor/recipe), the async lifecycle-build intercept (`TryDispatchAsyncLifecycleBuildAsync`) and the async edit/variable/gxserver intercept (`TryDispatchAsyncEdit`) moved out of the core method, which now reads as guards → gateway tools → async intercepts → worker dispatch. The existing async/dispatch suites plus both full test suites pass unmodified.
+- **Split `CommandDispatcher.Handle_Kb` into per-action methods with no behavior change.** The fat branches (`HandleKbOpen`, `HandleKbIndexStatus`, `HandleKbIndexState`, `HandleKbNameTypeMap`) moved out of the action chain, which now reads as a flat dispatch table; the methods are `internal` so routing tests can pin the no-KB contracts. Locked by a `HandleKbNameTypeMap` empty-map characterization test plus the full Worker suite.
+
+### Fixed
+
+- **Build-task registry and per-build logs are now bounded instead of accumulating forever.** `_tasks` is swept on every new build: terminal entries past `GXMCP_BUILD_TASK_CAP` (default 50, floor 10) or `GXMCP_BUILD_TASK_TTL_MIN` (default 180, floor 60) are evicted oldest-completed first — never non-terminal, never anything completed under 60s ago — and the in-memory `FullOutput` buffer of terminal builds older than `GXMCP_BUILD_FULLOUTPUT_KEEP_MIN` (default 15) is released while the status envelope keeps answering. Per-build `build-<taskId>.log` files are swept to the newest `GXMCP_BUILD_LOG_RETAIN_COUNT` (default 50, `0` disables). See `docs/environment_variables.md`.
+- **Worker read cache is now count-bounded.** `ObjectService._readCache` was TTL-only; past `GXMCP_READ_CACHE_MAX` (default 256, floor 16) the oldest entry is evicted, mirroring the large-source side cache. Hit behavior within TTL is unchanged.
+- **Gateway semantic cache has a byte ceiling.** Past `GXMCP_SEMANTIC_CACHE_MAX_BYTES` (default 64MB) LRU eviction kicks in alongside the 256-entry count cap, so a few giant read envelopes can't crowd out hundreds of small ones.
+- **Index shares duplicate strings via the CLR intern pool.** Edge names are interned at the single `AddEdgeCow` choke point, low-cardinality scalars (`Type`/`Module`/`Parent`/paths) at entry creation and after both snapshot loads. Snapshot bytes, JSON shape and value semantics are unchanged; unique-per-object values are never interned. Measured surface only — no behavior change.
+- **`friction.jsonl` is tail-kept.** Past `GXMCP_FRICTION_LOG_MAX_LINES` (default 5000, `0` disables) the journal keeps the newest lines on append; tail/report reads are unchanged.
+- **Orphan index snapshots are swept on worker boot.** `index_<hash>` families (meta/json/gz/shards/slots) whose meta names a KB path that no longer exists are deleted best-effort — corrupt metas, live paths and the current KB are never touched. Disable with `GXMCP_SNAPSHOT_SWEEP=0`. See `docs/environment_variables.md`.
+- **Worker idle reap is now 30 minutes (was 60).** An idle worker holds ~130-160MB; the warm snapshot makes the index half of a restart cheap, but the ~90s `GxServiceManager` activation is still re-paid on return in the 30-60min window — override per deployment if that stings. Also fixed the null-`Server` fallback to read the canonical default instead of a hardcoded 60.
+- **Gateway GC stays Server (measured).** 90 steady-state JSON calls each way: WS ~99 vs ~105MB (noise), latency parity. No code change; `DOTNET_gcServer=0` documented in `docs/environment_variables.md` for memory-constrained hosts.
+
+## v3.6.1 - 2026-09-18
+
+
+### Added
+
+- **Typed WorkWithPlus form-level UserAction editing.** `genexus_wwp` and
+  `genexus_apply_pattern mode=actions` now expose `add_user_action` for direct
+  insertion into containers such as `TableActions`, derive the `Do<name>` event
+  without inventing XML attributes, support dry-run diffs and verified rollback,
+  and re-read the persisted PatternInstance without invoking lifecycle actions.
+  See `docs/issues/wwp-form-level-user-action.md`.
+
+### Changed
+
+- **Support metadata now distinguishes native SDK support from basic legacy compatibility.** The package, MCP registry metadata, README, agent instructions, and generated version document identify GeneXus 16–18 as native SDK majors and GeneXus 8.0, 9.0, Evolution 1–3, and 15 as driver-backed legacy support via reflection or COM automation.
+- **Legacy compatibility diagnostics and discovery are more explicit.** Classic installations can be discovered through `gx.exe`/`gxdl32.dll` and Artech paths, Gateway diagnostics expose `supportLevel` plus the legacy catalog, and the built-in fallback catalog includes GeneXus 8. Live validation still requires an installed legacy GeneXus environment.
+
+### Fixed
+
+- **Form-level WorkWithPlus action targeting now fails closed.** Empty container
+  selectors fall back to `TableActions`, `name`/`controlName` matches reject
+  ambiguous tables instead of selecting the first one, and the typed operation
+  reports the matching containers for deterministic correction.
+
+## v3.6.0 - 2026-09-18
+
+
+### Tracked issues
+
+- [#210](https://github.com/lennix1337/Genexus18MCP/issues/210) — [Docs] Checkout local: `npx clients add` pode reescrever o launcher do `install.ps1`
+- [#211](https://github.com/lennix1337/Genexus18MCP/issues/211) — [Bug] npm test no Windows: stub do gateway (cópia de cmd.exe) pode deixar o after-hook falhar com EPERM
+- [#212](https://github.com/lennix1337/Genexus18MCP/issues/212) — [Bug] `records_query` falha após a troca de environment e pode resolver o datastore fora do `TargetModel` ativo
+- [#215](https://github.com/lennix1337/Genexus18MCP/issues/215) — [Contrato/Bug] genexus_worker_reload force=true reinicia o pool e não aplica sourceDir em mode=hard
+- [#216](https://github.com/lennix1337/Genexus18MCP/issues/216) — [OpenCode] Possível divergência quando opencode.json e opencode.jsonc coexistem
+- [#217](https://github.com/lennix1337/Genexus18MCP/issues/217) — genexus_create Transaction auto-seeds a "<Name>Id" attribute that can't be removed; update_visual rollback leaves orphan global attributes
+- [#218](https://github.com/lennix1337/Genexus18MCP/issues/218) — [GX17] `Could not load type Artech.Genexus.Common.Objects.SuperApp` breaks create, save_as, delete, sql_ddl, wwp and not-found resolution
+- [#219](https://github.com/lennix1337/Genexus18MCP/issues/219) — Gateway does not exit on stdin EOF: orphan keeps worker ownership and the next session sees a false "cold start"
+- [#220](https://github.com/lennix1337/Genexus18MCP/issues/220) — [GX17] Full index rebuild stalls silently after `[LITE-ENUM]`; `index force=true` is refused with `AlreadyInProgress`
+- [#221](https://github.com/lennix1337/Genexus18MCP/issues/221) — `genexus_transfer import` reports "no import was attempted" but creates the object with every part empty
+- [#223](https://github.com/lennix1337/Genexus18MCP/issues/223) — [GX17] `genexus_kb action=list_environments` and `action=get_environment` return JSON-RPC `Internal error`
+- [#224](https://github.com/lennix1337/Genexus18MCP/issues/224) — [GX17] `genexus_db action=sql_navigation` builds SQL from concatenated node text
+- [#225](https://github.com/lennix1337/Genexus18MCP/issues/225) — KB lease expires about 20 minutes after `select` even with continuous `kb`-explicit calls
+- [#226](https://github.com/lennix1337/Genexus18MCP/issues/226) — [GX17] `specify` of an existing Main procedure: "object not found in the Knowledge Base", `Status: Failed` with `ExitCode: 0`, and `status wait` does not block
+- [#227](https://github.com/lennix1337/Genexus18MCP/issues/227) — Smaller contract gaps: dryRun without target resolution, status wait vs worker timeout, delete preview needs confirm, pathPrefix, callers edges
+
+
+### Added
+
+- **Permanent live reload/lifecycle smoke promoted to `scripts/tests/test-live-reload-smoke.ps1`.** Parameterized, fail-closed smoke (`0` pass / `1` fail / `2` unavailable) that validates soft drain+replace reload, forced alias reload through the shared restore core, the `mode=hard` guards, lifecycle status/long-poll and the whoami SDK version smoke end to end against a real KB, with an isolated config, structured summary JSON and dedicated `GXMCP_LOG_DIR` per run. Documented in `docs/live-kb-test-harness.md`.
+- **SDK-backed native Object Text tree and in-memory filesystem operations.** `genexus_io` now supports `format=native` for a dependency-aware `src/`/`ref/` projection, `all|newAndModified|newOnly` export modes, deterministic `.gx` documents, optional visual companions, dry-run imports, and safe XML/header/duplicate validation without loading GX4A DLLs. `list_text_files` and `validate_text_in_memory` inspect external trees without a KB read.
+- **Watermark-backed incremental text mirror.** `text_mirror_start|stop|status|catchup|set_references` coalesces watcher identities, queues SDK work onto the Worker's owning STA, persists `.mirror-sync`, removes verified orphan files during full reconciliation, mirrors explicit/MCP and detected external deletions by updating the manifest atomically, and exposes pending/batch/error counters.
+- **Official Module Manager task coverage.** `genexus_module` now exposes package, publish, restore, configured-server management, and server module search through the installed SDK's `IModuleManagerService`; external writes and uploads require explicit confirmation.
+- **Stable module identity in `genexus_module action=list`.** Installed Module objects are deduplicated by SDK GUID/EntityKey, retain homonymous namespaces through `parent`/`path`/`qualifiedName`, and are returned in deterministic order instead of relying on `DesignModel.Objects.GetAll()` enumeration order.
+- **OpenAPI task surface publication.** The existing official SDK-backed API OpenAPI export/import blueprint is now discoverable as `genexus_api action=export_openapi|import_openapi`.
+- **File-system task parity for SDK text exchange.** Batch Object Text operations now support deterministic `[all]`/Module/Folder selection with recursive children, selector-based `ignore`, `listOnly` planning, resumable `skip`, fail-fast `stopOnError`, import `forceSave` and rollback of partial multi-part writes, optional `indentString`, generated `module.toml` metadata, installed reference-module routing and optional official `.opc` reference packages for native `src/ref` exports, optional Transaction root-table projections under `#tables`, sectioned `part=all`/`parts[]` object documents, and offline manifest/file/hash verification. Legacy `.gxtext` and `_gxmcp-object-text-manifest.json` flows remain intact.
+- **Tool-schema budget adjusted from 29,800 to 31,000 tokens** to carry the native text-tree, mirror, Module Manager server/package, OpenAPI action contracts, filesystem-parity controls, full-part documents and reference-package export without silently dropping their safety parameters.
+
+
+- **Legacy GeneXus best-effort compatibility across GeneXus Evolution 1-3, GeneXus 15, GeneXus 9.0, and GeneXus 8.0.**
+  - Added `legacyMajors` to `config/gx-versions.json` supporting `10.3` (Ev3), `10.2` (Ev2), `10.1` (Ev1), `15` (GX15) via `dotnet-reflection`, and `9` (GX 9.0) and `8` (GX 8.0) via `com-gxpublic`, keeping `supportedMajors` strictly scoped to verified primary SDK majors (16, 17, 18) with 0 release metadata drift.
+  - Implemented `DynamicSdkBridge` in Worker to dynamically gate MCP tools based on SDK capabilities, returning structured `UNSUPPORTED_IN_GENEXUS_VERSION` degradation envelopes for tools unavailable in earlier versions (e.g. `genexus_api` in <17, `genexus_gam` in <10.2, `genexus_module` in <10.3).
+  - Extended `OptionalSdkInvoker` with dynamic reflection helpers (`ResolveObjectDynamic`, `GetPartDynamic`, `CreateQualifiedName`) that seamlessly adapt to module-less SDKs (Evolution 1/2) without referencing `Artech.Architecture.Common.Objects.QualifiedName` statically.
+  - Implemented `ComGxPublicDriver` in Worker for classic Win32 GeneXus 8.0 and 9.0 installations using STA COM late-binding over `GXPublic.GXPublic`, enabling Knowledge Base opening, object queries, and part reading from `.gxi` Knowledge Bases.
+  - Updated Gateway version detection (`WorkerSdkCompatibilityProbe.cs`) to evaluate legacy SDK anchors (`gx.exe`, `gxdl32.dll`) returning `GXMCP_SDK_LEGACY_COMPATIBLE` and passing driver/major configuration to spawned workers.
+  - Extended CLI discovery (`cli/lib/config.js`) to parse decimal majors (`10.x`), discover classic `.gxi` Knowledge Bases, and locate classic executable installations (`gx.exe`).
+  - Added AI prescriptive guidance to `UNSUPPORTED_IN_GENEXUS_VERSION` error envelopes, suggesting actionable legacy patterns (e.g. Procedures with `Expose as Web Service` instead of `genexus_api`, Theme objects instead of `genexus_design_system`, Folders instead of `genexus_module`).
+  - Added proactive CLI doctor checks (`gxpublic_com_registration` and `legacy_ide_lock`) verifying `GXPublic.GXPublic` COM server registration and alerting on active `gx.exe` processes holding exclusive KB file locks.
+  - Implemented encoding resilience with automatic Windows-1252 (ANSI/CP1252) resolution for COM driver and pre-GX15 installations with `GXMCP_SOURCE_ENCODING` override support, preventing mojibake on Portuguese/Spanish accented characters.
+  - Enabled classic XPZ transfer routing `genexus_transfer action=export|import` through `ComGxPublicDriver` on GeneXus 8.0 and 9.0.
+  - Added multi-major WorkWithPlus environment resolution in `PatternApplyService`, dynamically discovering `Environment.config` across GeneXus versions instead of hardcoding GeneXus 18.
+
+- **Support for GeneXus 16 SDK.** GeneXus 16 (`16.0.x`) is now an officially supported SDK major alongside GeneXus 17 and GeneXus 18.
+  - Added GeneXus 16 to the version catalog (`config/gx-versions.json`) with auto-discovery at `C:\Program Files (x86)\GeneXus\GeneXus16`.
+  - Updated `SdkCompatibilityValidator` and `scripts/validate-gx-sdk.ps1` to mark `GeneXus.TeamDevClient.Architecture.BL.dll` as optional (absent in GX16).
+  - Decoupled `DesignSystemSdkAdapter`, `DesignSystemService`, `ApiIntrospectService`, `CiPipelineService`, `GeneratorReferenceService`, `ObjectService`, `CurlProcService`, `DataViewService`, `GxServerWriteService`, `KbVersionService`, and `KbService` to dynamically adapt to missing or changed SDK types across GX16, GX17, and GX18 without compile-time breakage.
+  - Verified clean builds (`0 Warning(s), 0 Error(s)`) against all three majors (`GX_PATH` pointing to GX16, GX17, and GX18) and full passing test suites across both .NET and CLI.
+
+- **Autonomous Knowledge Base bootstrapping via `genexus_kb action=create`.**
+  - Added native `action: "create"` to `genexus_kb`, allowing LLMs and automated workflows to create brand new GeneXus Knowledge Bases from scratch using native MSBuild tasks (`Genexus.MsBuild.Tasks.CreateKnowledgeBase`).
+  - Supports `path`, `name`, `alias`, `dbServer` (defaulting to `(LocalDB)\MSSQLLocalDB` with automatic preflight service start), `dbName`, `dbUser`, `dbPassword`, `template` (auto-resolving `netcore.kbtemplate` on GX18, `csharp.kbtemplate` on GX16/17, or custom path), `sdkPath`, `major` ('16', '17', '18'), `openAfterCreate` (automatically spawning an STA Worker and acquiring session lease), `persist` (saving entry to `config.json`), and `dryRun` (returning execution plan without disk mutation).
+  - Bumped tool schema budget from 29400 to 29800 tokens in `ToolSchemaSizeTests.cs` to accommodate the new action, parameters, and examples.
+- **Enriched diagnostics and AI-observable error envelopes for bug reporting.**
+  - Gateway tool error envelopes (`Program.ToolPayload.cs`, `McpRouter.cs`, `Program.RequestLoop.cs`) now attach `diagnosticContext` carrying active SDK version, installed path, major, supported majors, and explicit bug reporting guidance so consuming AI clients can immediately detect incompatibilities and instruct users to provide actionable diagnostics.
+  - Updated `scripts/collect-diagnostics.ps1` to inspect all GeneXus installations (GX16, GX17, GX18) across 64-bit and 32-bit Program Files, extracting exact `ProductVersion` and `FileVersion` from `genexus.exe` and `Artech.Architecture.Common.dll`.
+  - Updated CLI doctor (`cli/commands/axi.js`) to display exact detected SDK versions in `gx_installation` and `kb_sdk_compatibility`.
+  - Updated `.github/ISSUE_TEMPLATE/bug_report.md` with structured sections for GeneXus SDK version & exact build, KB generator, AI client, transport mode, and diagnostics bundle.
+
+### Internal
+
+- **The release-entrypoint issue-reference test is hermetic.** `test-release-entrypoint.ps1` now validates `Assert-ChangelogIssueReferences` against an isolated temp changelog instead of hardcoding issues 210/227 against the live `## Unreleased` section, which the release itself had already promoted mid-run; `Assert-ChangelogIssueReferences` gained an optional `-ChangelogPath` with unchanged default behavior.
+- **The MCP request loop was decomposed into focused partial files.** `Program.RequestLoop.cs` shrank from ~3.5k to ~750 lines: `genexus_worker_reload` handling moved to `Program.WorkerReload.cs` (one handler covering validation, forced and graceful paths), Gateway-served tools (telemetry views, `genexus_kb`, worker pool warm spares, connection recovery, sandbox/kb_diff/kb_import) to `Program.GatewayTools.cs`, `genexus_lifecycle` gateway intercepts (journal inspect/reconcile, op: status/result/cancel, long-poll) to `Program.LifecycleGateway.cs`, and the inner worker dispatch to `Program.ToolDispatch.cs`. The former `DispatchCore` local function became `DispatchToolCallCoreAsync` with explicit request/session parameters, and `genexus_connection_recover` now reuses the shared `RestoreWorkersAsync` core instead of its own restore loop. No tool contract, envelope, or routing behavior changed.
+- **SDK startup-diagnostic classification was consolidated into `SdkDiagnosticClassifier`.** The fatal/informational taxonomy and code extraction now live in a single Gateway class instead of diverging between `WorkerStartupFailure` and `WorkerPool`; unknown `GXMCP_SDK_*` codes fail closed as fatal and are reported as their own code instead of being mislabeled `GXMCP_SDK_COMPATIBLE`, and the redundant `ExtractDiagnosticCode`/`IsFatalSdkDiagnosticCode` passthroughs were deleted.
+- **`genexus_kb` environment actions and explicit-KB meta-tool reads are classified by `OperationClassifier`.** The gateway request loop no longer reimplements the `set_environment`/`list_environments`/`get_environment` and doctor/doc/sdk_probe checks inline at five call sites; adding the next KB action now touches one canonical predicate instead of scattered string comparisons in `Program.RequestLoop.cs`.
+- **The force-reload restore core was extracted into `RestoreWorkersAsync`.** The alias-scoped and global `genexus_worker_reload force=true` paths share one respawn + SDK-ready wait + restored/failed reporting implementation instead of two diverging copies, and `IsForceHardReloadUnsupportedForTest` was renamed to `IsForceHardReloadUnsupported` to stop leaking test intent into a production validation rule.
+- **Transaction/SDT seed naming is owned by `SeedItemPlan`.** The requested-vs-default `firstItem`/`firstItemType` resolution and the `name : type [Key]` description are now defined once, so dry-run previews and the real creation cannot drift (the preview previously did not normalize a leading `&` the executor stripped).
+- **The stalled-index watchdog was extracted into `IndexBuildWatchdog`.** Heartbeat clock, no-progress detection and the cancellation thread now live in their own class with `Thread.Abort` isolated in the recovery path, instead of being threaded through `KbService` fields.
+- **Object deletion member variance moved to `SdkDeletionAdapter`.** The `Delete` vs `Remove` reflection candidate order lives in `src/GxMcp.Worker/Compatibility/` with the other major-specific adapters rather than inline in structure rollback.
+
+- **Text exchange responsibilities were decomposed into focused seams.** The façade now delegates selection, filesystem validation/listing, batch options, legacy pipelines, native export/import pipelines, document/support logic and mirror reconciliation to dedicated files/classes; the public MCP contracts and legacy/native behavior remain unchanged.
+- **Release preflight now verifies the changelog issue ledger.** Every issue selected for closure must have its canonical `/issues/<number>` URL in `## Unreleased`; grouped fixes must list each issue explicitly, and missing references fail before the release snapshot is written.
+
+### Fixed
+
+- **The integration preflight accepts a clean worktree.** Its changed-path validation now permits an empty path collection, so `-ValidateOnly` and clean-check invocations fail only on actual validation errors.
+
+- **Hardened the open issue paths for build, lifecycle, SDK compatibility, KB routing, transfers, structure DSL, and CLI configuration.**
+  - Build/Specify target resolution now keeps dry-runs and execution on the same plan, reports real in-process exit status, and honors the requested lifecycle wait ([#226](https://github.com/lennix1337/Genexus18MCP/issues/226)); variable/edit/delete previews fail closed for unresolved targets or missing confirmation, and `pathPrefix` plus caller-edge gaps are covered ([#227](https://github.com/lennix1337/Genexus18MCP/issues/227)).
+  - Stalled index walks expose bounded recovery through `force=true` without discarding the certified snapshot ([#220](https://github.com/lennix1337/Genexus18MCP/issues/220)).
+  - Explicit KB selectors bypass session ownership only for that request while selected-session leases renew on use ([#225](https://github.com/lennix1337/Genexus18MCP/issues/225)); forced reload validates the selected alias and rejects `force=true` with `mode=hard` before stopping a Worker ([#215](https://github.com/lennix1337/Genexus18MCP/issues/215)).
+  - Isolated stdio gateways terminate on EOF, and expected shutdown cancellation no longer becomes failed health telemetry or misleading warmup failure ([#219](https://github.com/lennix1337/Genexus18MCP/issues/219)).
+  - Active-environment datastore selection no longer falls back to the design model, and environment list/read failures return structured envelopes ([#212](https://github.com/lennix1337/Genexus18MCP/issues/212), [#223](https://github.com/lennix1337/Genexus18MCP/issues/223)).
+  - GX17 dry-runs and missing-object resolution avoid loading unavailable `SuperApp` types and return typed results ([#218](https://github.com/lennix1337/Genexus18MCP/issues/218)).
+  - Transaction creation and structure rollback support explicit seed metadata, remove orphan global Attributes, preserve formula/description metadata, and default omitted index uniqueness to non-unique ([#217](https://github.com/lennix1337/Genexus18MCP/issues/217)).
+  - SQL navigation reads structured filter nodes without concatenating their inner XML text ([#224](https://github.com/lennix1337/Genexus18MCP/issues/224)); XPZ import validates stable identities and rolls back newly created objects on verification failure ([#221](https://github.com/lennix1337/Genexus18MCP/issues/221)).
+  - OpenCode status/apply/remove inspect and synchronize both `opencode.json` and `opencode.jsonc` when both exist ([#216](https://github.com/lennix1337/Genexus18MCP/issues/216)).
+  - The live Gateway harness gives cold SDK/KB startup a bounded 180-second settle window instead of reporting a false failure at the first 15-second probe.
+
+
+
+- **Compatible SDK diagnostics no longer become fatal Worker failures ([#213](https://github.com/lennix1337/Genexus18MCP/issues/213)).** Startup health now classifies only known incompatible SDK codes as fatal; compatible, legacy-compatible, and fingerprint-drift diagnostics are kept informational and do not suppress the normal Worker lifecycle.
+
+- **Targeted build dry-runs now fail closed for unresolved indexed targets ([#214](https://github.com/lennix1337/Genexus18MCP/issues/214)).** When the Worker object index is loaded, `action=build` with `dryRun=true` now resolves bare names, `Type:Name`, and GUIDs before returning a plan. Unknown targets return `BuildTargetUnresolved` with the rejected targets and supported formats, while an index that is not ready is reported as `targetResolutionAvailable: false` and keeps the non-dispatching preview behavior.
+
+- **`genexus_doctor` now always reports a fresh snapshot ([#222](https://github.com/lennix1337/Genexus18MCP/issues/222)).** Gateway-side doctor responses bypass the semantic cache so `checkedAt`, Worker PID, uptime, and telemetry cannot be replayed from a previous health call.
+
+- **Native multi-part imports now fail closed when rollback cannot be certified.** A mutable `part=all`/`parts[]` import no longer writes the first parts when the complete pre-write snapshot is unavailable; it returns `RollbackSnapshotUnavailable` before touching the KB.
+
+- **Batch cancellation is preserved through the decomposed pipelines.** Legacy export/import/validate now return the same immediate typed `Cancelled` envelope before path, index or manifest preparation, matching the pre-refactor contract.
+
+- **GX16 version-catalog contract tests now match the supported-major catalog.** The release-script checks no longer reject the already-supported `16,17,18` catalog or report an outdated display string.
+
+- **Explicit `[all]` native exports retain full-selection reconciliation.** A batch with `targets: ["[all]"]` now participates in stale-file and manifest cleanup exactly like an unfiltered export instead of being treated as a targeted partial pass.
+
+- **Nested worker routing keys no longer leak into user arguments.** A routed `module=Object` was being merged into Object Text's optional `module` filter when callers omitted that filter, causing valid batch selectors to return `NoObjectsMatched`. Reserved `module`, `action`, and `target` fields are now kept at the routing layer while inner tool arguments remain authoritative.
+
+- **The background first-touch warmup now survives a cold index and actually runs.** The warm pass resolves its probe object from the worker's `List/Objects` reply, but on a cold start that reply is the `IndexNotReady` envelope (no items) because the index is still building; the previous single-shot resolve dropped the whole pass silently, so the agent's first `genexus_read` / `genexus_inspect` / `genexus_edit` paid the one-time first-touch JIT/SDK cost instead of the warmup window — measured on a real KB: first read 174ms, inspect 78ms, edit dry-run 29ms, against ~1ms for every following call of the same tool. The pass now runs from the index-bootstrap path (which is the first point where the index can be listable) and waits — bounded at 40 × 3s, logging when it gives up — for a listable object; a warm start still warms from the existing pre-bootstrap path, and whichever path claims the pass first runs it exactly once. It also warms `read part=Source` — the part agents actually read — alongside `Structure`, and converts all warmup commands through `McpRouter.ConvertToolCall` so each tool (`Read/ExtractSource` with singular `target`, `Analyze/GetConversionContext`, `Linter/linter`, `Analyze/FindCallerSites`) reaches the worker's real service handler instead of failing silently on mismatched module or target parameters.
+
+- **`genexus-mcp clients` no longer reports a valid gateway from another install as stale ([#210](https://github.com/lennix1337/Genexus18MCP/issues/210)).** `clientCommandHealth` classified any `GxMcp.Gateway.exe` that differed from the running CLI's own `getGatewayExePath()` as stale *even when it existed*, so reading back a checkout registration with `npx genexus-mcp clients` (or an npm registration with the checkout CLI) produced a stale Antigravity with a "re-register the client" remediation — following it moved the harness off the checkout gateway. `stale` now means only "this registration cannot start MCP" (missing file, node launcher without an entrypoint, unrecognized shape); a different-but-existing gateway is reported as `launcherPathDrift` + `launcherPathDriftReason` with `commandStale: false` and `launcherSemanticState: valid`, and `clients` surfaces it as an informational `Note:` line instead of a repair instruction (the now-unreachable "stale launcher" help bucket was removed). The "not this CLI's packaged gateway" warning keeps its home in `doctor`'s `client_config_sync` check, which already covers every client rather than Antigravity alone.
+- **The CLI spawn probes wait for the child to exit instead of returning while it is still terminating ([#211](https://github.com/lennix1337/Genexus18MCP/issues/211)).** `spawnGatewayProbe` (the `gateway_spawn_probe` check in `init`/`doctor`) and `probeWorkerStartup` called `child.kill()` and reported success immediately; on Windows `kill()` only signals the direct process and returns before the OS releases the executable image, so a still-terminating probe kept the exe locked and `npm test` failed in the `test.after` cleanup with `EPERM` while every assertion passed. Both now await the child's `exit` (bounded by a 2s grace) and report `warn` when the process does not exit, and the worker smoke no longer misreads its own stop signal as a crash. `cli/run.test.js` teardown terminates only processes launched from its own temp dir (never a machine-wide `GxMcp.Gateway.exe` sweep), extends the Windows removal backoff to 8 attempts (10→640 ms), and removes the parent `genexus-mcp-test-<pid>` directory it used to leave behind.
+
+- **PR submission now runs against the current base and complete local test set.** `pr-push.ps1` refuses dirty or stale branches, fetches the PR base, runs the operation-contract inventory, all Python script tests, PowerShell tests, CLI tests, lint, and Gateway tests through `integration-preflight.ps1`, and only then pushes `HEAD`. When no local GeneXus SDK exists, the Worker gate is recorded as unavailable for the protected CI SDK lane. This closes the gap that allowed the stale 228-action contract expectation to reach CI.
+
+- **The version-catalog regression guard now covers the published 16, 17, and 18 support set.** Its expected list and display are synchronized with `config/gx-versions.json`, preventing the local preflight from carrying another stale compatibility baseline.
+
+- **Development worktrees now pass the npm postinstall check.** A linked worktree uses a `.git` file instead of a `.git` directory; the installer now recognizes both forms, and a regression test keeps `npm ci` usable in the isolated PR worktrees used for validation.
+
+- **`genexus_kb` dry-run planning no longer requires an installed SDK or MSBuild.** The read-only plan is produced from the requested inputs, while real creation still fails closed when the SDK, template, or MSBuild assets are unavailable; this keeps the Gateway coverage lane deterministic on hosted runners.
+
+- **The CI tool-contract baseline now matches the published schema.** The
+  regression gate expects the current 244 public actions and continues to
+  compare that count with the capabilities inventory, so future action changes
+  must update the schema and its contract views together.
+
+- **The live benchmark measures the gateway instead of the client's connection setup.** `scripts/bench-live-http.py` opened a new TCP connection per call through `urllib` with a timeout; on Windows a CPython socket operation carrying a timeout waits through `select()`, whose wait granularity is the ~15.6ms system timer, so roughly one sample in three paid that timer. Isolated on the same port: the ~15.6ms spikes disappear with a blocking connect (p95 0.42ms) and never appear in a .NET client (fresh-connection `HttpClient` p95 1.59ms), while the gateway's own `[HTTP] Received`/`Sending` timestamps logged ~1ms for every call — yet the harness reported p95 ~22ms for those same gateway-served ops, so `--compare` and `test-live.ps1`'s `--fail-on-regression` were comparing client transport noise. `rpc()` now POSTs over a single keep-alive connection (`http_post`, one reconnect when the server drops an idle socket, per-request timeouts preserved, HTTP error statuses still surfaced as the `__http_error__` envelope) and the initialize handshake shares that transport; a re-run on the pooled connection measures whoami p50 1.32ms / p95 1.57ms, 0 of 50 samples at ≥10ms, and the benchmark's own stub run shows 11 requests over 1 accepted TCP connection. Two tests that patched `urllib.request.urlopen` were rewritten against the new transport seam, plus three new ones (one connection for N calls, a single reconnect after a drop, and a persistent transport failure surfacing instead of looping). Baselines captured with the previous per-call connections are not comparable; `docs/live-kb-test-harness.md` records that they must be re-captured.
+- **Documented the local-checkout client registration flow ([#210](https://github.com/lennix1337/Genexus18MCP/issues/210)).** `AGENTS.md`'s harness-sync matrix and `docs/llm_cli_mcp_playbook.md` gained an explicit checkout branch (register/repair with `GENEXUS_MCP_GATEWAY_EXE` + `node cli\run.js clients add` or `.\install.ps1`, then validate/repair with the checkout CLI) so `npx @latest clients add` is no longer the only remediation offered there — that path rewrites a checkout harness back to the npm-cache launcher. The matrix row for `install.ps1` was also corrected: it registers with `clients add --all-clients` (not `init --write-clients`), takes `-GeneXusPath`/`-SkipClientConfig`, and writes no `Environment.KBPath`. `init`'s post-patch help (`buildClientLauncherHelp`) now names the checkout alternative next to the npx one.
+
+## v3.5.3 - 2026-09-15
+
+
+### Tracked issues
+
+- [#205](https://github.com/lennix1337/Genexus18MCP/issues/205) — Sugestão: delimitar escopo de genexus_edit mode=patch
+- [#206](https://github.com/lennix1337/Genexus18MCP/issues/206) — Sugestão: validar indentação em genexus_edit mode=patch
+- [#207](https://github.com/lennix1337/Genexus18MCP/issues/207) — [Bug] genexus-mcp --version/-v/ersion encerram com exit 0 sem imprimir a versão
+- [#208](https://github.com/lennix1337/Genexus18MCP/issues/208) — Bug: WriteMetaSidecar incondicional pula objetos alterados em warm start
+- [#209](https://github.com/lennix1337/Genexus18MCP/issues/209) — Freshness gate: decisão de política e janela de bloqueio inconsistente (follow-up #196)
+
+
+### Added
+
+- **`genexus_edit mode=patch` accepts `patch.scope` — a bounded search region ([#205](https://github.com/lennix1337/Genexus18MCP/issues/205)).** The abbreviated `patch={find,replace}` form now takes `scope={start,end}`, two complete-line anchors that delimit where `find` may match; the editable region is the whole lines between them (after `start`'s last line, before `end`'s first line, or to EOF when `end` is omitted) and the anchors are never edited. Anchors are compared with only CRLF/LF normalized (a trailing line break is treated as the anchor's own terminator) and must each be unique. Scope misuse fails closed without writing: `ScopeStartRequired`, `ScopeAnchorNotFound`, `ScopeAnchorAmbiguous`, `ScopeAnchorNotComparable`. Every matching strategy (exact, fuzzy, whitespace-normalized, EOL-normalized) is applied *inside* the slice only, `expectedCount`/`replaceAll` count only in-scope occurrences, and the response reports `editableStartLine`, `editableEndLineExclusive`, `scopeEndsAtEof` and the first match's lines. This is the case an agent hits when a part has two similar business blocks (e.g. one `Do Case` branch per database) and the intended edit must land in one of them.
+- **`genexus_edit mode=patch` accepts `patch.indentation={mode:'validate'}` ([#206](https://github.com/lennix1337/Genexus18MCP/issues/206)).** Before persisting, the replacement's base indentation is compared with the matched line's — tabs and spaces are distinct characters and nothing is reformatted (`replace` is still inserted literally). A differing base indent fails with `IndentationMismatch`; a match starting mid-content or mid-indentation, or a blank first line in `replace`, fails with `IndentationNotComparable`. `replaceAll=true` validates every site before the write, and the response carries the per-site `expectedPrefix`/`preservedPrefix`/`receivedPrefix` evidence. A `dryRun` returns the same verdict as evidence without failing, so it can be reviewed first.
+- **`genexus_lifecycle action=status` can wait for index freshness ([#209](https://github.com/lennix1337/Genexus18MCP/issues/209)).** The index wait now accepts `freshness` (e.g. `freshness=current`) alongside `wait`/`since`, and reports `waitSatisfied` (plus `waitFreshness`/`waitHint` when the budget elapses). A snapshot restored from the warm cache is `Ready` with `freshness=stale`, so a status-only wait used to return immediately while the delta refresh was still running — and there was no way to observe that it finished.
+
+### Changed
+
+- **The index freshness gate is now observable, awaitable and self-healing ([#209](https://github.com/lennix1337/Genexus18MCP/issues/209)).** The fail-closed direction is unchanged (index-dependent reads still require `freshness=current`), but the failure is no longer a dead end: a failed warm-start delta now marks the index failed (`Cold`/`stale`, distinct from the previous indefinite `refreshing`) and re-dispatches the delta with bounded backoff (5s/15s/60s, up to 3 attempts, dropped if a full rebuild supersedes it, abandoned if the KB closed), and the `DeltaStarted`/`IndexNotReady` hints now name the wait (`action=status wait=30 freshness=current`) instead of promising the warm cache is usable. The `IndexNotReady` envelope also carries `retryAfterMs` (the worker's ETA when it has one), reports the real `indexStatus` instead of a blanket `Refreshing` so it agrees with `whoami`'s index block for the same state, and adds the manual recovery (`action=index force=true`) to its hint when the status is Cold/unknown — a stalled index reaches `freshness=current` by nobody's effort, so naming only the wait would send the caller into a loop that can only time out.
+
+### Fixed
+
+- **`genexus-mcp --version`, `-v` and `version` print the package version instead of exiting 0 with no output ([#207](https://github.com/lennix1337/Genexus18MCP/issues/207)).** All three aliases fell through to the gateway stdio passthrough, which never answers that token, so install checks and CI scripts read an empty string *with a success exit code*. They are now command tokens (the parse continues, so `--format json` is honored), print the bare version for the default formats, return the `axi-cli/1` envelope with `ok.version` for `--format json`, are documented by `genexus-mcp version --help`, and skip the background update check. An unreadable `package.json` fails loudly (`version_unavailable`, exit 1) instead of printing nothing. `version` is now a reserved command token, so those three spellings no longer reach the launcher passthrough and no longer run `applyLauncherConfigOrExit` (a version query no longer creates or rewrites config directories) — every other unrecognized argument keeps the unchanged passthrough path. The command table is now a single source shared with `cli/run.js` — the second hand-synced copy is what let the aliases drift out of both the parser and the error-routing decision.
+- **A failed index flush no longer stamps the meta sidecar ([#208](https://github.com/lennix1337/Genexus18MCP/issues/208)).** `FlushNow()` documents that its return value must be honored ("never lies"): it returns `false` on timeout, and stamping the sidecar anyway persisted a high-water-mark the on-disk body did not contain, which made the next warm start's delta skip the objects of that refresh until they were edited again. `IndexCacheService.FlushAndStampSidecar` now writes the sidecar only for a certified flush and otherwise keeps the previous one (and its older hwm), so the next warm start re-delivers the delta — the same degradation used when a worker dies mid-enrichment. All four call sites (lite-complete, final-enrich, delta-refresh, delta-resume-enrich) go through it, and `WriteMetaSidecar` now reports whether it wrote.
+- Make `LiveGatewayHarness` poll adaptively for worker search index readiness instead of relying on a fixed 3-second delay, preventing cold-start E2E test failures on fresh builds.
+- Stage Gateway build outputs outside the publish tree in `build.ps1` to prevent intermediate `temp_gw` directory pollution from corrupting published artifacts.
+
+### Internal
+
+- Document the release preflight resume fast path (`-SkipBuild -SkipTests`) in `docs/release_protocol.md` for cases where test suites have already passed for the exact commit.
+- Document in `AGENTS.md` that `GxMcp.Gateway.exe` is a stdio-based MCP process without interactive CLI flags.
+- Discovery schema: the `genexus_edit` `patch` property is now a real object schema (it was description-only), declaring `find`/`replace` plus the optional `scope` and `indentation` protections and their error codes, and the top-level `scope`/`indentation` aliases the router consumes. Tool-schema budget 28600 → 29400 (measured ~29147); golden `tools-list` fixture regenerated.
+- New regression coverage: `PatchTextEditorTests` (scope resolution, anchor comparability, slice-bounded matching for every strategy, original-line reporting), `PatchProtectionFormTests` (the worker-side gate rejects `scope`/`indentation` without the abbreviated form before any SDK read, and lets the supported form through), `EditOpsModeContractTests` (scope/indentation rejection codes per unsupported form, forwarding of `patchShorthand`), `IndexShardingTests` (sidecar not stamped, and the previous sidecar preserved, when the flush cannot certify), `IndexStateTests` (`IndexWaitPolicy` freshness targets), `IndexGateToolPolicyTests` (`IndexNotReady` envelope state/wait/retry fields). `cli/run.test.js` covers the three version aliases, the JSON envelope, `--help`, unknown flags, the unreadable-package path, and that the aliases no longer reach the gateway passthrough.
+
+## v3.5.2 - 2026-09-15
+
+
+### Tracked issues
+
+- [#202](https://github.com/lennix1337/Genexus18MCP/issues/202) — [Bug] compile_check aceita preview não executável e ignora callers/callerCap
+- [#203](https://github.com/lennix1337/Genexus18MCP/issues/203) — [Contrato] help de genexus_lifecycle anuncia stop-worker, mas schema e router não expõem a action
+- [#204](https://github.com/lennix1337/Genexus18MCP/issues/204) — [Bug] genexus_io read_blob não respeita overwrite=true ao exportar para arquivo existente (v3.5.1)
+
+
+### Added
+
+- Add the typed WorkWithPlus `set_table_type` operation. It resolves an existing table through the native PatternInstance tree, changes only `type`, preserves children/bindings/events/metadata, and verifies the PatternInstance reread plus parent projection with exact rollback on divergence.
+
+### Fixed
+
+- Describe the `read_blob` output controls (`outputPath`, `includeBase64`, and `overwrite`) so the schema validator accepts the published tool contract.
+- Keep `compile_check` preview and execution aligned on target resolution and caller controls, including Transaction `_bc` companions, EntityKey-safe `Type:Name`/GUID execution, fail-closed caller evidence, async environment forwarding, and compact polling metadata ([#202](https://github.com/lennix1337/Genexus18MCP/issues/202)).
+- Replace the stale lifecycle `stop-worker` guidance with the supported `genexus_worker_reload` soft/hard flow, validate hard binary swaps, and add reverse help/schema coverage ([#203](https://github.com/lennix1337/Genexus18MCP/issues/203)).
+- Make `genexus_io action=read_blob overwrite=true` atomically replace an existing output and report post-promotion verification failures explicitly ([#204](https://github.com/lennix1337/Genexus18MCP/issues/204)).
+
+### Internal
+
+- Synchronize the tool-contract regression gate, generated operation inventory, and capabilities table with the public schema after adding `set_table_type`; the early validator now checks the schema and capabilities table together, and the project workflow documents all contract views required before pushing a public action.
+
+## v3.5.1 - 2026-09-15
+
+
+### Tracked issues
+
+- [#196](https://github.com/lennix1337/Genexus18MCP/issues/196) — [Bug] Índice restaurado após open/worker_reload pode permanecer desatualizado sem indicador de frescor
+- [#197](https://github.com/lennix1337/Genexus18MCP/issues/197) — [Bug] list_objects pode devolver GUID obsoleto; sweep de deleção pode remover objeto recriado
+- [#198](https://github.com/lennix1337/Genexus18MCP/issues/198) — [Melhoria] Não há como ler o conteúdo (bytes) de um File (WikiFileKBObject)
+- [#199](https://github.com/lennix1337/Genexus18MCP/issues/199) — [Bug] genexus_worker_reload não-executável após open sem select e ignora a KB do lease com várias KBs
+- [#200](https://github.com/lennix1337/Genexus18MCP/issues/200) — [Melhoria] Convenção de fuso de KBObject.LastUpdate é assumida, não medida
+- [#201](https://github.com/lennix1337/Genexus18MCP/issues/201) — [Bug] Espelho de estado do índice no gateway é process-wide e não isolado por KB
+
+
+### Added
+
+- Add `genexus_io action=read_blob` for bounded Base64 or atomic file export of a File's real `WikiBlob` bytes, including byte count and SHA-256 verification.
+
+### Fixed
+
+- Re-arm and scope index bootstrap/freshness state across KB open, close, reload, and worker respawn; normalize SDK timestamps to UTC and remove stale GUID mappings during delete/recreate deltas.
+- Route worker reload to the resolved or explicitly named KB, allow an unambiguous single open KB without a session selection, and keep Gateway index mirrors isolated by KB alias.
+- Preserve UTC timestamps when JSON.NET materializes Worker index timestamps as `JTokenType.Date`, so `whoami` does not drop `lastSuccessfulScanAt`/`lastIndexedAt` under non-US cultures.
+
+## v3.5.0 - 2026-09-14
+
+
+### Tracked issues
+
+- [#193](https://github.com/lennix1337/Genexus18MCP/issues/193) — [Bug] Desde a 3.2.2 o worker não abre KB do GeneXus 17: sdk-compatibility.json só aceita o major 18
+
+### Fixed
+
+- **PowerShell Automation Fail-Fast**: Remove `[Parameter(Mandatory = $true)]` in `scripts/pr-preflight.ps1`, `scripts/build-release-candidate.ps1`, and `scripts/live-build-all.ps1`, replacing interactive stdin blocking with immediate validation and clear usage error exits, preventing headless CI/agent processes from hanging indefinitely.
+- **GeneXus SDK compatibility and startup diagnostics**: Allow the packaged Worker to start with every GeneXus major declared in `config/gx-versions.json`, including GeneXus 17, while keeping missing required SDK assemblies and undeclared majors as hard failures; expose deterministic refusals through `genexus_whoami`/`genexus_doctor` and stop unsupported-major respawn loops ([#193](https://github.com/lennix1337/Genexus18MCP/issues/193)).
+- **Release issue collection**: Combine explicit and `fixed-pending-release` issue lists without relying on PowerShell scalar/array addition, so release preflight and issue tracking work when both sources contain a single issue.
+
+### Changed
+
+- **Release preflight throughput**: Run independent CLI, script, Nexus, and solution-test gates in parallel while keeping the warning baseline and live testhost gates serialized.
+- **Release retry resilience**: Reuse only source- and artifact-matched preflight phases after a failed run (a missing fingerprint fails closed), persist in-flight phase state atomically, and retry transient Windows temporary-directory locks without hiding permanent cleanup errors.
+- **npm publication verification**: Bound registry probes, avoid unnecessary npm audit/fund work, skip the final polling sleep, and expose publish-to-registry propagation timing in the workflow summary.
+- **Worker Scale Index & Secondary Lookups (Untouched Tools)**:
+  - `SearchIndex.FindByGuid`: Introduce $O(1)$ GUID lookup via `GuidToKey` with fallback, accelerating GUID resolution across Worker tools.
+  - `ObjectService.BuildObjectIdentity` & `TryPromoteCompleteSourceRead`: Replace 40,000-object linear scans with `index.FindByGuid` in $O(1)$.
+  - `CallerGraphService.GetBcVariantTargets`: Replace two 40,000-object linear loops over `idx.Objects.Values` with `idx.FindByName` in $O(1)$.
+  - `TransferService.Export`: Replace fallback linear scan in dependency resolution with `index.FindByName(current.Name).FirstOrDefault()`.
+  - `AnalyzeService.GetCodeMetrics`: Pre-filter candidate procedures and data providers via `index.FindByType` / `index.FindByTypes` instead of scanning all 40,000 objects in `index.Objects.Values`.
+  - `ListService`: Retrieve available distinct types in empty-filter results directly from `index.TypeIndex.Keys` instead of scanning and de-duplicating all 40,000 objects.
+  - `RefactorService.BuildRenamePreview`: Pre-query target callers upfront via `index.FindByName` and add an `IndexOf` fast-path guard before running lexical `SymbolRenameTokenizer.Find` across snippets.
+  - `ApiIntrospectService.DoDescribe` & `EnumerateHttpEndpoints`: Replace 40,000-object linear scans with `idx.FindByName` in $O(1)$ and `idx.FindByType("Procedure")`.
+  - `TypeIntrospectService.RunList`: Query `idx.FindByType("Domain")` or `idx.FindByTypes` directly instead of iterating all 40,000 objects on `genexus_types action=list`.
+  - `PatternService.GetSample`: Filter candidates from `index.TypeIndex` and `FindByTypes` before candidate evaluation, and add null-guard for `o.CalledBy`.
+  - `ObjectTextService.TrySelectEntries`: Seed candidates with `index.FindByType(typeFilter)` when a type filter is present rather than scanning the entire index.
+- **Performance & Allocation**: Cache complete `tools/list` response envelopes per profile in `McpRouter`, eliminating allocation and re-filtering overhead on discovery.
+- **IPC & Stdio Streaming**: Stream progress heartbeat notifications directly via `JsonTextWriter` buffer in `Program.RequestLoop.cs` without intermediate string serialization.
+- **Worker STA Concurrency**: Offload JSON parsing from the single-threaded STA thread by enqueuing pre-parsed `SdkCommandItem` instances into `SdkCommandQueue`, eliminating redundant `JObject.Parse` operations in `DescribeCommand`, `ExtractOperationId`, and `ProcessCommand` on the STA thread.
+- **Memory & Cache Optimization**: Optimize `ObjectService.BuildReadCacheKey` to zero-alloc 4-argument string concatenation with defaults fast-path (-44% latency, -50% Gen0), and introduce adaptive heap-pressure threshold for idle LOH compaction in `IdleMemoryMaintenance`.
+- **Gateway Zero-Buffer Response Guard**: Replace `StreamWriter` and 32KB buffer allocations in `ResponseSizeGuard` with a zero-buffer, thread-safe `CountingTextWriter` computing UTF-8 character and SIMD-accelerated string byte counts directly without intermediate buffering or thread-static state-poisoning hazards.
+- **Gateway Direct Dispatch**: Bypass empty middleware pipeline loop stages in `Program.RequestLoop.cs` to invoke `ProcessMcpRequestCore` directly, eliminating unnecessary context allocation and task overhead per MCP request.
+- **SearchIndex Query Consolidation**: Centralize secondary index access methods (`FindByName`, `ContainsName`, `FindByType`, `FindByTypes`, `FindByDomain`) directly on `SearchIndex` with a unified `ResolveKeys` helper, thread-safe locking, and fallback, eliminating 18+ raw dictionary lookups and unsynchronized hash set iterations across Worker services (`ObjectService`, `SearchService`, `AnalyzeService`, `KbValidationService`, `DbOptimizeService`, `VisualizerService`, `PatternApplyService`, `SourceSearchService`, `HealingService`, `CallerGraphService`, `IndexCacheService`).
+- **Bounded Top-K Algorithm & Deterministic Pagination**: Unify bounded heap selection into a canonical `TopKHelper.SelectTopK<T>` and `TopKHelper.BoundedHeap<T>` container with documented ordering invariants, replacing bespoke `PushTopK` implementations across `HealthService` and `ListService`, eliminating redundant pass-through wrappers and adding a deterministic `Guid` tie-breaker to `DefaultIndexEntryComparer` to guarantee stable pagination across list queries.
+- **Caller Graph Zero-Allocation Traversal & Fallback Hardening**: Eliminate 40,000-key allocations in `CallerGraphService.BuildAdjacency` by delegating directly to `SearchIndex.ContainsName`, with safe $O(N)$ upfront fallback set construction and restored null-guards on unpopulated/null indices.
+- **Path-Qualified Object Validation**: Restore slash (`/`, `\`) path separator handling in `KbValidationService.IsKnownObject`, eliminating false positives and negatives on modular object references, and direct `index.FindByName` delegation in `ObjectService.FindCandidateEntries` and `FindIndexEntry`.
+- **Gateway O(1) Router Dispatch**: Index tool routers into an $O(1)$ lookup dictionary and replace LINQ checks with an immutable `HashSet<string>`, accelerating dispatch routing from 169.8 ns to 35.6 ns (4.8x faster).
+- **Worker Scale O(1) ByNameIndex Multimap**: Resolve candidates via `ByNameIndex` multimap for exact matches and `criteria.NameFilter` in `SearchService`, cutting 40,000-object query latency from 0.598 ms to 0.00035 ms (1,708x speedup, 0 Gen0 collections).
+- **Worker ListObjects Top-K Bounded Heap**: Single-pass bounded heap selection (`SelectTopK`) in `ListService` for paginated discovery (`limit <= 200`), slashing 40,000-object sort latency from 40.35 ms to 2.17 ms (18.6x speedup), and short-circuit `DescriptionContains` in `IndexEntryFilterBuilder` avoiding string allocations on null descriptions.
+- **Worker Scale Hot-Path Resolution & Validation**:
+  - `ObjectService.FindCandidateEntries`, `FindIndexEntry`, and `FindObject`: resolve entries via `ByNameIndex` multimap in $O(1)$ and eliminate 40,000-object linear fallback scans on lookup misses.
+  - `ObjectService.IdentityNameMatches`: zero-allocation fast-path for bare names, completely skipping path manipulation, substring, and replacement allocations when targets lack path separators.
+  - `IndexCacheService.FindEntriesByName` & `CallerGraphService.FindEntriesByName`: $O(1)$ candidate retrieval via `ByNameIndex`, eliminating full index iterations on misses and caller graph generation.
+  - `AnalyzeService.ResolveIndexEntry` & `TryFindByBareName`: $O(1)$ entry resolution with type-priority ordering in impact analysis and dependency graphs.
+  - `KbValidationService.IsKnownObject`, `AnalyzeImpact`, and `ValidateConditions`: $O(1)$ symbol validation (from 2.527 ms to 0.00024 ms per check, 10,435x speedup with 0 Gen0 collections) and direct `TypeIndex` candidate retrieval.
+  - `HealingService.FormatNotFoundError`: $O(1)$ exact-match ambiguity checks via `ByNameIndex` accelerating error envelope synthesis across 29 tool failure paths.
+  - `PatternApplyService.ListWwpWebTemplates` and `DbOptimizeService.EnumerateCallers`/`EnumerateTransactionNames`: query `TypeIndex` directly instead of iterating all 40,000 objects.
+- **Worker Regex & Graph Precompilation**:
+  - `LinterService`: Precompile all rule regexes (`ForEachBlockRegex`, `CommitRegex`, `WhereDefinedByRegex`, `SleepWaitRegex`, `DynamicCallRegex`, `NestedForEachRegex`, `WhenNoneRegex`, `NewBlockRegex`, `WhenDuplicateRegex`, `StripCommentsRegex`) as static singletons, eliminating dynamic JIT recompilation and regex cache overhead across all linted objects.
+  - `CallerGraphService.BuildAdjacency`: Precompile `InvocationRegex` and initialize `knownNames` directly from `ByNameIndex.Keys`, eliminating full-index scans and regex recompilations during graph construction.
+  - `VisualizerService.GenerateGraph`: Pre-filter candidate sets via `DomainIndex` and `TypeIndex` ($O(1)$ `FindByTypes`) before calculating structural scores, avoiding 40,000 anonymous object allocations and score computations on filtered graph visualizations.
+- **Worker Search, Health & Property Optimization**:
+  - `HealthService.GetHealthReport`: Replace 6 full LINQ passes and two 40,000-element QuickSorts with a single-pass accumulation loop and `TopKHelper.BoundedHeap` (7.5x faster, 86.6% latency reduction, 0 Gen0 collections).
+  - `SourceSearchService.SearchCore`: Prune candidate entries using `ByNameIndex` in $O(1)$ when `objectName` is specified and seed candidate entries from `TypeIndex` sets for source types ("Procedure", "DataProvider", "WebPanel", "Transaction"), eliminating linear scans over 40,000 objects.
+  - `PropertyService.ShapeGetPropertiesResult`: Build compiled property matcher once outside the iteration loop instead of dynamically escaping and compiling regexes per property (38.7% faster wildcard inspection) and evaluate candidate property names lazily only on miss paths.
+  - `TableDependencyInjector`, `WcagCheckService`, `ApiIntrospectService`, and `StructureService`: Precompile static regexes and replace $O(N^2)$ linear token collections with $O(N)$ hash set lookups for logic items, table dependencies, WCAG attributes, SDTs, roles, and HTTP protocol markers.
+- **Worker Formatting, Linter & Parsing Hot-Paths (Round 4)**:
+  - `FormatService.NormalizeKeywords`: Unify all 26 keyword regex replacements into a single compiled regex and dictionary lookup (eliminating 26 sequential passes per line and quadratic string allocations).
+  - `LinterService`: Fast-path string scanner for variable declarations in `FindVariableDeclarationLine` (9.7x faster, replacing per-line dynamic regex matches with zero-regex string checks) and precompile static singletons for subroutines, parm rules, and out-variables (`SubDefinitionsRegex`, `SubCallsRegex`, `ParmRuleRegex`, `OutVarRegex`).
+  - `PatchTextEditor.NormalizeWhitespace`: Replace dynamic regex replacements with a zero-regex character scanner and pre-sized `StringBuilder` fast path (8.9x faster, -88.7% latency), eliminating regex compilation overhead across diff and patch operations.
+  - `DbOptimizeService.RemoveNestedForEachBlocks` & `ExtractAttributeRefs`: Avoid repeated string buffer conversions in nested block removals, precompile static anchor and token regexes (`WhereAnchorRegex`, `OrderAnchorRegex`, `QuotedStringsRegex`, `IdentifierTokenRegex`), and cache custom clause anchors in a concurrent dictionary.
+  - `ObjectService`: Precompile `_callPatternsRegex` and `_variableRefRegex` static singletons, eliminating dynamic JIT regex compilation during source inspection and variable metadata extraction.
+  - `DesignSystemService` & `WritePolicy`: Precompile comment-stripping regexes (`QuotedStringsRegex`, `BlockCommentsRegex`, `LineCommentsRegex`), avoiding repeated dynamic regex recompilations on DSO and rule validations.
+- **Gateway Pipeline & Build Error Optimization (Round 5)**:
+  - `ResponseSizeGuard`: Add `Write(ReadOnlySpan<char>)` override to `CountingTextWriter` for zero-allocation byte calculation in .NET 10 without `ArrayPool` rents.
+  - `McpPipelineContext` & `Program.RequestLoop.cs`: Replace reflection-based `ToObject<bool?>()` and `ToObject<int?>()` calls with zero-allocation explicit `JToken` casts on arguments (`dryRun`, `deploy`, `buildPlanCap`, `skipFullDeploy`).
+  - `BuildService.BuildResult`: Replace list instantiation fallbacks (`ErrorsDetailed ?? new List<ErrorDetail>()`) with null-checks and safe enumeration across error categories (`envErrors`, `codeErrors`, `envErrorCount`, `codeErrorCount`, `specErrorCount`), eliminating temporary list allocations during build reporting.
+## v3.4.3 - 2026-09-13
+
+
+### Tracked issues
+
+- [#189](https://github.com/lennix1337/Genexus18MCP/issues/189) — [Bug] `genexus_versioning history_save`/`history_restore` usam diretório compartilhado entre KBs, e o restore pode escrever o Source de uma KB em outra
+- [#190](https://github.com/lennix1337/Genexus18MCP/issues/190) — [Bug] clients classifica launcher sem entrypoint como registrado e não obsoleto
+- [#191](https://github.com/lennix1337/Genexus18MCP/issues/191) — [Bug] install.ps1 imprime snippet manual com a chave legada genexus
+- [#192](https://github.com/lennix1337/Genexus18MCP/issues/192) — [Bug / follow-up #146] recover(force=true) rejeitado com KB_NOT_OWNED em strict enquanto whoami/open ainda reportam KB selecionada
+
+
+### Fixed
+
+- Distinguish a session-selected KB alias from its live ownership lease: preserve `KB_LEASE_EXPIRED` through stateful recovery, report `leaseState`/`leaseActive` in `whoami`, `genexus_kb list/open/select`, and direct expired sessions to create a fresh context with explicit `select` ([#192](https://github.com/lennix1337/Genexus18MCP/issues/192)).
+- Classify registered MCP launchers locally by command semantics, so `node.exe` without an entrypoint is reported as invalid with an actionable reason while existing Gateway and `npx genexus-mcp` launchers remain valid; preserve registration, command/args, stale flag, and exit-code compatibility ([#190](https://github.com/lennix1337/Genexus18MCP/issues/190)).
+- Use the default `genexus18mcp` key in the manual MCP snippet printed by `install.ps1`, while retaining the packaged Gateway executable and `args: []` ([#191](https://github.com/lennix1337/Genexus18MCP/issues/191)).
+- Isolate versioning edit snapshots under the active KB, preserve `part`/`versionId` routing, and report legacy shared snapshots without restoring them automatically ([#189](https://github.com/lennix1337/Genexus18MCP/issues/189)).
+
+### Internal
+
+- Add a bounded integration preflight with combined commit/index/worktree contract checks, explicit phase timeouts, serial solution tests, and an external JSON summary; harden PR ripwire and GitHub JSON readers against empty or inconsistent output.
+- Make live-harness teardown idempotent through `DisposeAsync`, separate warm RPC latency from initialization/open/settle timing, and persist PID/state/error diagnostics for every live run.
+
+## v3.4.2 - 2026-09-13
+
+
+### Tracked issues
+
+- [#186](https://github.com/lennix1337/Genexus18MCP/issues/186) — [Melhoria] Divergências entre o schema publicado e o que os routers aceitam, e um gate para travá-las
+- [#187](https://github.com/lennix1337/Genexus18MCP/issues/187) — [Bug] Com o auto-fix ativado na v3.4.1, `mode=linter fix=true` pode remover variável usada apenas no WebForm
+- [#188](https://github.com/lennix1337/Genexus18MCP/issues/188) — [Melhoria] `genexus_doc` grava os artefatos sob o diretório do executável, e eles ficam para trás na atualização do pacote
+
+
+### Fixed
+
+- Keep the published MCP contract aligned with the Analyze, Search, and Object routers: expose `genexus_analyze`'s mode-dependent `fix`, `waitTimeoutMs`, and `top`, `genexus_query.exactMatch`, `genexus_edit` `mode=ops` `module`, the existing `genexus_inspect.verbose` router option, and the intentional `deep_context` Analyze alias; refresh discovery coverage ([#186](https://github.com/lennix1337/Genexus18MCP/issues/186)).
+- Drive worker-crash retry safety from `OperationClassifier`, so mutating Analyze linter fixes and the default SDK surface probe are never replayed, while read-only modes retain the existing single retry ([#186](https://github.com/lennix1337/Genexus18MCP/issues/186)).
+- Count variables referenced only by a WebForm as used without mutating the visual part during lint reads; publish the linter `dryRun` input and explicitly reject the unsupported `mode=linter fix=true dryRun=true` combination while preserving the existing `symbol`/`snippet` fix resolution ([#187](https://github.com/lennix1337/Genexus18MCP/issues/187)).
+- Isolate `genexus_doc` wiki and visualizer artifacts under a durable per-KB scope, keep the effective `file`/`url` path in successful responses, generate collision-free graph filenames, reject path components explicitly, and make Visualizer/Health consume the active KB's canonical `IndexCacheService` snapshot ([#188](https://github.com/lennix1337/Genexus18MCP/issues/188)).
+
+### Changed
+
+- Add a fail-closed, keyed allowlist gate for undeclared parameters consumed by the Analyze, Search, and Object routers. Freeze the existing 75 top-level property-description gaps, reject new gaps, and require descriptions for every top-level `action` property. The schema remains under the existing 28,250-token budget; no bulk description cleanup is included ([#186](https://github.com/lennix1337/Genexus18MCP/issues/186)).
+
+### Internal
+
+- Contract premise for #186: `deep_context` is retained and published because the current router and plan intentionally define it as a compatibility alias of `context`; `cancelToken` remains an allowlisted Gateway-injected infrastructure field rather than a caller-facing schema property. Nested description debt remains outside this incremental gate.
+
+## v3.4.1 - 2026-09-12
+
+
+### Fixed
+
+- Keep Worker dirty tracking and per-target write timestamps independent for uncertain `WriteNotPersisted` outcomes, including partial persistence, rollback failure, and empty-persist guards; record confirmed batch variable removals ([#184](https://github.com/lennix1337/Genexus18MCP/issues/184), [#185](https://github.com/lennix1337/Genexus18MCP/issues/185)).
+- Classify `genexus_analyze mode=linter fix=true` as mutating, accept legacy `GX008` snippets when resolving variables to remove, and invalidate semantic-cache entries without changing read-only linter analysis ([#185](https://github.com/lennix1337/Genexus18MCP/issues/185)).
+
+### Changed
+
+- Run release contract, inventory, and script checks before the expensive build/test phases, and automatically select the compatible local live KB when one is available.
+
+### Internal
+
+- Separate marking an issue `fixed-pending-release` from closing it after publication, require the label before release closure, and include detached release status and log paths in the machine-readable handoff.
+
+## v3.4.0 - 2026-09-12
+
+
+### Fixed
+
+- Capture installer client-registration stdout and stderr separately, parse only the JSON envelope, and fail closed when it is missing or invalid instead of committing a staged config after an ambiguous registration.
+- Make primitive Attribute type application all-or-nothing: restore previously written Type, Length, and Decimals when a later SDK setter fails, preventing parser paths from persisting partial mutations.
+- Isolate async build hard-cap default assertions from an ambient `GXMCP_BUILD_TIMEOUT_SEC` override and restore the process environment after each test.
+- **`genexus_preview` browser driver resolution.** Resolve `chrome-devtools-axi` from the preview configuration, MCP profile, bundled runtime/dependencies, Worker/backend directories, and finally the effective PATH; Windows shims and quoted relative paths are supported, with preflight diagnostics when no candidate is available. Preview captures continue to support screenshot, console, exceptions, desktop emulation, and `buildFirst=false` without starting a build.
+- Reuse complete MCP source reads in `search_source` through the raw/JSON caches, with a bounded in-memory side cache for source bodies up to 2 MiB; truncated, minimized, Base64, error, and larger-than-cache payloads remain excluded from raw reuse.
+- Promote a successfully confirmed empty primary source into the `FullSource` index marker, so later scans and certified reloads skip that SDK read; null/failed reads remain unresolved and are never promoted.
+- Cache successfully confirmed empty source parts for the read-cache TTL; normal write invalidation clears positive, large-body, and negative raw entries.
+- Recognize certified sharded index slots during warm-start validation and derive Folder/Module storage keys from their scoped paths, avoiding an unnecessary full lite walk on every boot.
+- Prioritize complete `FullSource` token postings before conservative SDK fallback candidates, including multi-hit sources that can fill a capped page alone; the fallback tail remains available when indexed sources do not close the page, and source-search promotions use a 2 MiB per-entry / 8 MiB aggregate budget while preserving the prior enrichment sidecar.
+- Promote complete, non-minimized MCP `genexus_read` source payloads into the already-loaded `FullSource`/`SourceTokenIndex`, so a later Worker restart can answer the same search without reopening that object through the SDK; truncated, Base64, error, non-Source, and oversized payloads remain excluded.
+- Treat regex escape prefixes such as `\b` as syntax rather than literal-token text, so indexed `search_source` keeps valid word-boundary hits instead of filtering every candidate out.
+- Keep transient `IndexCold`, `Reindexing`, `Timeout`, and `Cancelled` envelopes out of the Gateway semantic cache.
+
+## v3.3.2 - 2026-09-11
+
+
+### Tracked issues
+
+- [#179](https://github.com/lennix1337/Genexus18MCP/issues/179) — [Bug] genexus_properties set of Attribute Type is silently ineffective — no tracking issue exists specifically for Type
+- [#180](https://github.com/lennix1337/Genexus18MCP/issues/180) — [Not retested on 3.3.0] genexus_lifecycle build: MCP channel aborts with '1800s no response/progress' while the build itself keeps running and completes
+- [#182](https://github.com/lennix1337/Genexus18MCP/issues/182) — Possível falha no install.ps1 em um checkout novo sem config.json
+- [#183](https://github.com/lennix1337/Genexus18MCP/issues/183) — doctor --mcp-smoke pode reportar falso negativo em runtime stdio-isolated
+
+
+### Fixed
+
+- Preserve UTF-8 issue titles when generating release snapshots and release notes.
+- Verify every `genexus_properties` batch write from a fresh SDK object, reject silently skipped placement/typed-only properties, and return `UnsupportedOperation` when the GeneXus SDK preserves an existing Attribute `Type` instead of changing it.
+- Make Attribute and Domain type adapters fail when requested length, decimals, or signedness cannot be applied instead of reporting partial success; align async Build All/Rebuild polling with the Worker watchdog by allowing a 2700-second Gateway hard cap.
+- Make a fresh-checkout install stage the neutral runtime config before client registration, surface the CLI registration envelope, and remove the pending config when registration fails ([#182](https://github.com/lennix1337/Genexus18MCP/issues/182)).
+- Report `doctor --mcp-smoke` as `not_applicable` for stdio-isolated runtimes without an HTTP listener instead of probing the disabled loopback port ([#183](https://github.com/lennix1337/Genexus18MCP/issues/183)).
+- Keep release issue validation compatible with GitHub's lowercase `open` state and initialize the release tag before the first status write under PowerShell strict mode.
+
+## v3.3.1 - 2026-09-11
+
+
+### Tracked issues
+
+- [#174](https://github.com/lennix1337/Genexus18MCP/issues/174) — [Enhancement] Detectar dependências locais ausentes e oferecer instalação confirmada
+- [#176](https://github.com/lennix1337/Genexus18MCP/issues/176) — [Regression] build reports false Succeeded for an ambiguous object name — real MSBuild error hidden in fullLogPath (regression after #115 fix)
+- [#177](https://github.com/lennix1337/Genexus18MCP/issues/177) — [Bug] genexus_edit part=Styles returns false WriteNotPersisted — verifyMode default not honored (same class as #100, not covered by that fix)
+- [#178](https://github.com/lennix1337/Genexus18MCP/issues/178) — [Bug] genexus_layout set_property with a multi-line Caption silently renames the control and reports an unrelated LayoutReadBackFailed
+- [#181](https://github.com/lennix1337/Genexus18MCP/issues/181) — Worker respawns with a new PID on every tool call, causing KB_NOT_OWNED and indexing never completes
+
+
+### Fixed
+
+- Keep the operational release issue list out of the release commit while
+  preserving its immutable JSON snapshot.
+- Initialize release issue snapshot state before release preparation, allowing
+  clean releases to pass PowerShell strict-mode validation.
+- Hardened live probes with bounded asynchronous stdio reads, terminating-error
+  cleanup, explicit success exit codes, and centralized KB alias canonicalization
+  with regression coverage.
+- Canonicalize session-selected KB aliases before opening the gateway lease, preventing stateful operations from failing with `KB_NOT_OWNED` after `genexus_kb action=select`.
+- Corrigido o harness live para abrir a KB de teste uma única vez e evitar `KB_AMBIGUOUS` por alias duplicada em sessões strict.
+- Add executable validation gates for live-contract coverage, upstream drift reporting, bounded .NET output, and explicit PowerShell 7 enforcement in the documented development workflow.
+- Reject multiline layout `Caption` values before SDK persistence, normalize Design System `Styles` writes by default, surface fast-path ambiguous-object build diagnostics as errors, and add actionable locked-dependency setup diagnostics for the root lint command ([#174](https://github.com/lennix1337/Genexus18MCP/issues/174), [#176](https://github.com/lennix1337/Genexus18MCP/issues/176), [#177](https://github.com/lennix1337/Genexus18MCP/issues/177), [#178](https://github.com/lennix1337/Genexus18MCP/issues/178)).
+
+
+## v3.3.0 - 2026-09-11
+
+
+### Fixed
+
+- Require exact WebPanel replacement identity and structural post-save projection matches, preventing similarly suffixed objects or unrelated controls from being reported as confirmed.
+- Hardened WWP WebPanel replacement identity and post-save projection verification ([#173](https://github.com/lennix1337/Genexus18MCP/pull/173); contributed by [@davidagostini](https://github.com/davidagostini)).
+- Integrated validated Worker lifecycle, SDK compatibility, and index durability fixes ([#170](https://github.com/lennix1337/Genexus18MCP/pull/170); contributed by [@lennix1337](https://github.com/lennix1337)).
+- Documented the merged SDK compatibility and index durability fixes for the release ([#171](https://github.com/lennix1337/Genexus18MCP/pull/171); contributed by [@lennix1337](https://github.com/lennix1337)).
+- Accept SDK patch, build and fingerprint drift within the supported GeneXus major while continuing to reject incompatible majors and missing required assemblies.
+- Preserve dirty index shards for retry when snapshot pointer publication fails, and require a fresh enrichment certificate for each new snapshot body.
+- Extend the bounded live MCP benchmark with KB list/select, dependency graph, design-system inspection, and non-mutating pattern diagnosis operations; cap runs at 20 iterations and validate each operation's result shape before recording latency.
+- Preserved pending index changes after a snapshot publication failure, so a successful retry stores the latest contents instead of certifying stale data.
+- Correct template documentation to distinguish model-wide WWPTemplate records from embedded Settings templates; standalone edits and dry runs remain blocked by unverified ownership, and the original 3.2.2 report is historical.
+- Restore native Domain introspection: database type actions reach the correct Worker action, resolve Domain homonyms by type and read SDK enumeration values.
+- Enforce the selected GeneXus major at build and Worker startup while reporting patch/build and assembly fingerprint drift as diagnostics, including changed DLLs with the same ProductVersion. Missing required assemblies and different majors still fail validation.
+- Preserve the last certified search-index snapshot during forced rebuilds so a Worker crash can warm-start from the previous index instead of leaving the KB cold.
+- Keep the index-readiness fast-fail limited to index-backed reads and analyses; SDK edits, creates and builds remain available while background indexing runs.
+- Never store `Indexing`/`IndexNotReady` responses in the semantic cache, so reads can observe the index as soon as background indexing completes.
+- Make Worker drain replacement fail closed until the old process has really exited; do not register dead replacements, leak draining entries, or run concurrent reloads for one KB.
+- Validate sharded manifests and every shard before publication, reject incomplete/corrupt snapshots, propagate manifest write failures, and atomically replace shard/manifest/warm-snapshot files.
+- Harden update and installer flows with strict semver/channel validation, bounded child commands, atomic update-cache writes, safe npx semantics, correct PowerShell argument passing, exit-code checks, and downgrade protection.
+- Return an explicit retryable error when a Worker reload replaces the process but the SDK does not become ready; keep failed drains fail-closed, prevent acquisitions from reusing a Worker that is still shutting down, and do not infer SDK readiness from RPC error responses.
+- Preserve creations, renames, updates, and removals observed during the lite index walk when publishing the final catalogue; refresh effective object counts after delta deletions and invalidate stale hierarchy data after external moves.
+- Add per-shard hashes to new index manifests so corrupted or mixed shard contents fail closed while retaining compatibility with older manifests.
+- Propagate the selected update channel through npx, global, fixed-path, and package-direct plans; reject release versions with leading-zero components.
+- Make local installation transactional across configuration, build, and client registration outcomes, so failed steps do not report a completed installation.
+- Require typed WorkWithPlus fallback resolution and version preconditions for action mutations; use structural/delimited projection matching so similarly named tabs and events cannot be reported as the requested target.
+- Publish sharded index generations through immutable rebuild slots and an atomic certified pointer; abandoned or partially written slots are ignored, while legacy snapshots remain readable and migrate lazily.
+- Add bounded benchmarks for versioned snapshot publication and cold searches over built secondary indexes; existing search timing is retained as a separate warm/cache-sensitive benchmark.
+- Allow read-only live smoke tests to use an explicit KB path directly; keep fixture manifests only for destructive Build All and reproducible baseline gates.
+- Remove fixture-manifest requirements from live KB operation and Build All; manifests are now benchmark metadata only.
+
+### Internal
+
+- Select SDK diagnostic manifests for GeneXus 18 U11, U12 and U16 during build and packaging; retain the original U10 reference by default without imposing exact-build compatibility gates.
+- Refresh test SDK dependencies when changing upgrades instead of reusing DLLs from a previous SDK.
+
+## v3.2.4 - 2026-09-10
+
+
+### Fixed
+
+- Serialize Worker lifecycle replacement, preserve concurrent healthy replacements, and keep PatternVirtual structural writes on the SDK path while restricting raw PatternInstance edits to safe property changes.
+- Treat standalone WWP template objects as model-wide records without claiming ownership from a name-only Settings match.
+- Complete Events patches now verify SDK and pattern-save isolation before invoking the full object save, preserve pattern projections, invalidate stale reads, and report incomplete persistence instead of claiming success from a part-only write.
+
+- Fixed WorkWithPlus Settings and instance actions failing to resolve objects by name; preserved explicit identities, pagination and version tokens.
+- Preserve a replacement Worker when an eager respawn finishes during the previous Worker's exit callback; remove only the exited entry before notifying subscribers.
+- Include separate WorkWithPlus for Web Template objects in Settings template discovery and reads, with explicit Settings/Main links, pagination, and version tokens. Preview an existing table class with an exact XML text edit that preserves metadata and formatting; real template saves remain blocked pending isolation validation.
+- Preserve SDK-owned pattern metadata during raw XML property edits and previews. Unchanged XML is a no-op; structural or metadata changes are rejected explicitly instead of rebuilding child-order lists. Preview and save share the same unmodified payload, and unreadable current XML blocks both paths. This does not certify SDK save isolation.
+- Respect requested object types when resolving homonyms, including Pattern Settings, and separate read-cache entries by type and read shape.
+- Read Pattern Settings through the SDK pattern tree with explicit pagination instead of the generic properties XML.
+- Dirty tracking now classifies the final persisted write outcome, so no-op and pre-mutation failures do not create false dirty entries while confirmed rollbacks clear only the write they undo.
+- PR preflight now reports unavailable `ripwire` analysis explicitly, supports an opt-in required mode, and preserves nonzero tool failures instead of presenting an incomplete analysis as complete.
+
+## v3.2.2 - 2026-09-10
+
+
+### Added
+
+- Added the issue #146 neutral runtime contract: explicit `ConfigSchemaVersion`, `GatewayMode`, strict/local-friendly versus hardened policies, and KB-free configuration generation.
+- Added stable physical KB identities (`kbId`), explicit rebind generations, owner-scoped leases, session selection, and audit metadata for KB resolution.
+- Added scoped operational state and isolation fences for caches, receipts, journals, recovery, snapshots, jobs, logs, crash ledgers, Workers, tasks, streams, subscriptions, resources, prompts, and completion.
+- Added explicit `config migrate` with atomic backup, read-back receipt, rollback on verification failure, and rejection of non-migratable KB fields.
+- Added gateway-only contracts for `genexus_kb_diff`, `genexus_kb_import`, `genexus_sandbox`, and `genexus_worker_pool`, with schema, discovery, dispatch, help, and parity coverage.
+- Added deterministic property/fuzz regression coverage for idempotency-key validation, canonicalization, and concurrent deduplication.
+
+### Changed
+
+- Decoupled MCP client registration from implicit KB paths, aliases, defaults, and session selection; legacy behavior remains available only through explicit legacy configuration.
+- Made stateful and mutating operations require coherent owner, KB identity, generation, and lease context, while authorized stateless reads remain free of global fallback.
+- Updated CLI initialization, neutral config creation, installers, OpenCode layouts, discovery fixtures, compatibility adapters, and onboarding documentation for the multi-version runtime.
+- Source search now uses typed native accessors for Procedure source and Rules/Events where available, while retaining dynamic fallbacks for SDK variants.
+- Extended the live benchmark with wire-level content, structuredContent, and estimated-token measurements while preserving compatibility with legacy two-value probe results.
+- Improved live-KB harness isolation and diagnostics with stale-log cleanup, streaming child progress, timestamps, and explicit phases.
+- Clarified KB version timestamp semantics by keeping `lastUpdate` separate from an explicitly unavailable `createdAt` when the SDK provides no reliable creation timestamp.
+- Added an explicit `release.ps1 -CloseIssues` option that links the published release before closing completed GitHub issues and verifies the final state.
+
+### Fixed
+
+- Fixed live fixture timestamp validation to parse invariant UTC timestamps and tolerate serialization precision without accepting materially future verification times.
+- Restored required schema examples for the gateway-only filesystem and worker-pool tools so the contract validator accepts the complete discovery surface.
+- Updated the tool-contract regression expectation to cover the four gateway-only tools already present in the supported schema.
+- Restored the `genexus_io` Object Text batch routes in the umbrella router after integrating the neutral-runtime changes with the current `main` contracts; the discovery schema budget now covers the combined tool surface.
+- Prevented concurrent Worker acquisition under different aliases from starting duplicate Workers for the same KB path; this avoids SDK single-instance `BusyReject` loops during initialize and warmup.
+- Serialized default-KB warmup and index bootstrap so initialize does not race two Worker acquisitions on the STA process.
+- Enforced the documented ASCII-only `[A-Za-z0-9_-]` idempotency-key contract.
+- Preserved initialize-time default-KB pre-spawn so strict resolution can warm a configured KB before issuing worker commands.
+- Live SDK/KB acceptance remains gated by the disposable fixture, GeneXus installation, and license prerequisites; unavailable live cases are reported as skipped rather than claimed as passing.
+
+### Internal
+
+- Added regression coverage for strict configuration, identity/rebind, leases, concurrent sessions, side-channel fences, operational persistence, routing contracts, respawn lifecycle, and CLI migration behavior.
+
+## v3.2.1 - 2026-09-09
+
+
+### Fixed
+
+- Forwarded `requireObjectSave` through the Gateway's `genexus_edit` patch route so the Events complete-object-save contract reaches the Worker ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
+
+- Hardened complete Events saves with an in-lock base-version recheck, explicit metadata-stamp evidence, validation for unsupported `requireObjectSave` requests, and matching help text ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
+
+### Changed
+
+- Added a generated, hash-verified live-fixture manifest workflow and a focused `LiveEvents` smoke category for complete Events saves across SDK majors ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
+
+### Internal
+
+- Hardened live validation with exact Gateway image/master checks, isolated per-run logs and ports, configurable RPC timeouts with diagnostics, and a generic edit route-to-Worker contract test.
+
+- Fixed the live-fixture manifest guard to fail closed without prompting for interactive confirmation.
+
+## v3.2.0 - 2026-09-09
+
+
+### Added
+
+- Added version-aware GeneXus 17 and 18 compatibility reporting, with an explicit catalog that can be extended for future SDK majors.
+- Added a Design System SDK adapter that falls back to native Tokens/Styles source parsing when optional helper members are unavailable in an older GeneXus SDK.
+- Added release metadata synchronization from `config/gx-versions.json`, including generated supported-version documentation and an idempotent release check.
+- Added a catalog-driven live SDK matrix that reuses one built artifact and records independent pass, unavailable, or failure evidence for each selected major.
+
+### Changed
+
+- Preserved the legacy `geneXus.supportedMajor` whoami field while adding `supportedMajors` and `matchedMajor` for multi-version clients.
+- Normalized legacy Worker error payloads at the dispatcher boundary while preserving domain-specific nested errors and diagnostic fields.
+- Added explicit SDK identity, catalog support, Design System completeness, warning, and unparsed-construct diagnostics so fallback behavior is visible to clients.
+- Made init and zero-config discovery prefer the KB's detected major, use Windows executable metadata when version files are absent or invalid, and refuse unverifiable or mismatched SDK/KB selections before writing configuration.
+- Added the SDK/KB compatibility result to `genexus-mcp doctor`, including fail-closed unsupported-major diagnostics, and wired the live matrix into release preflight and the self-hosted smoke workflow.
+
+### Fixed
+
+- Made catalog consumers tolerate optional registry metadata for future SDK majors and kept generated Windows install paths readable in the supported-version document.
+
+### Internal
+
+- Simplified shared release-path ownership, Design System fallback invocation, and source parser declarations without changing the public MCP contract.
+
+## v3.1.0 - 2026-09-09
+
+### Added
+
+- Added the official Nexa GeneXus skill and its Markdown references as read-only MCP resources, including an on-demand reference template for object modeling and KB workflows.
+- Added batch Object Text workflows under `genexus_io`: deterministic export/import manifests, validation, guarded deletion, selectors, dry-run semantics, partial results, and cooperative cancellation.
+- Added index-backed source search, native Theme/StyleSheet editing, and WebForm SDK validation diagnostics with an explicit `forceWrite` override for intentional validation bypasses.
+
+### Changed
+
+- Dry-run edit plans now report indexed broken references when the active index is available and disclose when impact analysis cannot run; fast incremental builds now drive the real in-process runner with a safe full-build fallback, while warm reload restores validated snapshots and high-water-mark metadata for delta indexing.
+- Extended cancellation through background Object Text operations, including the cancel-before-worker-start race, and keep cancelled terminal results distinct from successful job completion.
+- Raised the guarded discovery schema budget from 26,300 to 26,900 tokens for the four batch Object Text actions, explicit `forceWrite`, and warm/fast-incremental response fields (measured ~26,584 tokens).
+
+## v3.0.4 - 2026-09-08
+
+
+### Fixed
+
+- Fixed Worker object writes from advancing the model-level Team Development commit baseline, so earlier local changes remain pending while IDE refreshes continue through `LastObjectsVersionDate` ([#145](https://github.com/lennix1337/Genexus18MCP/pull/145); contributed by @elianferreira).
+
+## v3.0.3 - 2026-09-08
+
+
+### Fixed
+
+- Fixed a `KeyNotFoundException` in `SummarizeService` (`genexus_analyze mode=summary`) when inspecting procedures with missing parts or unresolved references by adding safe source extraction (`GetSourceSafe`) and defensive object dependency resolution with early-exit on 10 items.
+
+### Changed
+
+- Eliminated redundant full JSON string serialization and UTF-8 recount (`Encoding.UTF8.GetByteCount(transformed.ToString(...))`) on the hot response dispatch path in Gateway (`Program.WorkerLifecycle.cs`), reusing `pending.ResponseBytes` directly to reduce latency and memory allocations across all tools.
+- Optimized `SearchService.cs` candidate scoring (`CalculateSemanticScore` and `ContainsIgnoreCase`) with string length pre-checks to bypass redundant case-insensitive comparisons across the index catalogue, and removed a dead MTA threadpool warm-up enqueue.
+- Optimized `WriteService.cs` post-write pipeline by scoping the `wasNoOp` `JObject.Parse` check inside the snapshot block, avoiding JSON string reparsing on `dryRun` and snapshot-less operations.
+- Optimized `WriteService.cs` `dryRun` write path by skipping IDE process/window concurrency checks when policy is not `fail_if_open` and reusing cached source reads in `WrapWithPersistedState` rather than forcing database fetches and cache invalidations, cutting `edit_dryrun` p50 latency by ~86% (~40.7ms to ~5.5ms).
+- Optimized `ListService.cs` (`genexus_list_objects`) with a revision-aware `BoundedStringCache`, single-pass aggregate calculations, and unindented JSON output, reducing repetitive listing latency and memory overhead.
+- Optimized `SummarizeService.cs` (`genexus_analyze mode=summary`) with a `BoundedStringCache`, single-pass source extraction, zero-allocation newline counting in `CalculateMetrics`, and unindented JSON serialization, bringing repeat summary p50 latency down to ~0.8ms.
+- Optimized `AnalyzeService.cs` ambiguity disclosure in `GetConversionContext` (`genexus_inspect`) by replacing linear scan over all index objects with an O(1) `ByNameIndex` multimap lookup.
+- Optimized `WriteService.cs` character validation (`CollectNonWin1252Glyphs`) with statically cached `_win1252Encoding` and an ASCII fast-path pre-check, bypassing text element enumerations and substring allocations on ASCII payloads.
+- Optimized `BuildService.cs` (`genexus_lifecycle action=status`) by setting `_meta.snapshot` directly in `GetStatus` and fast-pathing `AnnotateWithBaseline`, eliminating redundant JSON string re-parsing and re-serialization.
+
+## v3.0.2 - 2026-09-07
+
+
+### Fixed
+- Stateful routing for worker reload, connection recovery, lifecycle handles, edit-and-build, SDK probes, KB documentation, and recipe crystallization now requires the session-owned KB lease and stable `KB_CONTEXT_REQUIRED`/`KB_NOT_OWNED` envelopes; stateless recipe reads remain free of worker fallback.
+- Scoped mutation recovery fences, snapshots, jobs, crash ledgers, worker logs, and worker-owned paths by `StateScopeId`, KB identity, and generation; worker-supplied persistence paths are ignored and `GX_KB_PATH` rebinds are rejected.
+
+### Internal
+- Scoped receipt/idempotency journals now persist atomically under the validated `StateScope` owner tuple (`StateScopeId`, KB id, generation); restart read-back fails closed on another scope, while legacy constructors and APIs remain available. Request-loop wiring remains intentionally unchanged because that file is prohibited by the integration contract.
+
+### Added
+- Added explicit `config migrate` for legacy-to-neutral runtime configuration with atomic source backup, read-back receipt, rollback on destination verification failure, and an explicit rejection mode for non-migratable KB fields. `init` and `clients add` no longer rewrite existing configs as an implicit migration; legacy `kb add/remove/switch` destinations remain the `Environment` catalog flow.
+- Added ownership fences to gateway tasks and resource subscriptions, carrying ownerScopeId, kbId, generation, and epoch; delayed or cross-owner events are discarded and stateless streams remain explicitly neutral.
+- Added `config create --config-scope neutral` for explicit KB-free runtime config generation; it requires the new runtime flags and never registers clients or creates a KB catalog.
+- Added owner-scoped operational-state path/key derivation for journals, recovery receipts, snapshots, jobs, logs, and crash ledgers; Worker KB binding now rejects `GX_KB_PATH` rebinds.
+- Aligned installer fallback and client registration on the neutral runtime; `clients add --all-clients` now covers every supported adapter without implicit KB fields or structural overrides.
+- Added session-scoped KB ownership snapshots with owner, KB identity, context generation, and lease validation for stateful gateway acquisition.
+
+### Internal
+- Cache and idempotency state now expose explicit `StateScopeId` + KB id + generation keys; semantic cache keys no longer rely on alias/path alone, with cross-scope and cross-generation regression coverage.
+- Issue #146: keep RequestLoop gateway dispatch names in the declared/legacy-alias/removed tool inventory; advertise the four gateway-only routes and add a parity guard. The combined schema budget is 27500 tokens.
+
+### Changed
+
+- Began the issue #146 contract migration with an explicit `ConfigSchemaVersion`/
+  `GatewayMode` pair, a KB-free neutral configuration fixture, and documented
+  local-friendly versus hardened authorization. Explicit local KB opens remain
+  usable without a separate trust-root step; isolation protects against
+  accidental cross-context access.
+
+### Changed
+
+- Issue #146 compatibility contract: documented local-friendly versus hardened deployments, strict versus explicit legacy `ResolutionPolicy`, owner-scoped open/close/select and lease-free boundaries, `KB_NOT_OWNED`/lease/`KB_LOCKED` errors, and the `GXMCP_HTTP_TOKEN` HTTP boundary; aligned ToolHelpCatalog guidance for `edit_and_build`, `sdk_probe`, and `connection_recover`.
+
+- Preview screenshots and baselines now validate logical object names, resolve canonical artifact roots, and reject paths that escape the configured preview directory.
+
+- Browser-driver launches now resolve absolute `.exe`/`.com` binaries directly and use an escaped, narrow `.cmd`/`.bat` compatibility path; preview shims no longer receive raw request data through `cmd.exe /c`.
+
+- Worker non-SDK command dispatch now uses a bounded dedicated MTA pool with priority for health, cancellation, and status probes, preventing burst-driven task growth while preserving clean shutdown.
+
+- Made onboarding documentation authoritative for the package's Node.js 22
+  requirement, updated translated getting-started guides, replaced the obsolete
+  `setup.bat` command with `build.ps1`, and added a documentation drift test.
+
+- Added a protected, opt-in self-hosted Windows CI lane for explicit GeneXus SDK fingerprint validation and live Worker testing, with license/fixture preconditions, pass/skip/fail status artifacts, cleanup, and visible hosted-runner skip reporting (`docs/ci-sdk-validation.md`).
+
+- Added a checked-in GeneXus SDK compatibility manifest, build/startup fingerprint validation with stable diagnostics, focused match/mismatch/missing-path tests, and self-hosted fixture guidance in `docs/sdk-compatibility.md`.
+
+- Source metadata searches now resolve each candidate once per request and cache
+  requested part values locally, preserving partial-index and cancellation behavior.
+- Added `docs/envelope-coverage.md`, auditing the published tools/actions and
+  separating Worker envelopes from intentional Gateway lifecycle/protocol
+  statuses as the migration map for subsequent response-contract work.
+- Added `docs/metrics-baseline.md` with reproducible measurement rules and
+  initial latency, payload, reliability, cache, and workflow targets.
+- Added `docs/live-kb-validation-matrix.md` defining the live SDK assertions,
+  rollback rules, and mandatory edge cases for critical mutating capabilities.
+- Added named discovery profile aliases (`exploration`, `safe-edit`, `build`,
+  `versioning`, and `deploy`) with regression coverage.
+- Subscription conformance coverage now exercises reconnect, disconnect cleanup,
+  slow consumers, multiple subscriptions, and client isolation.
+- Discovery/resource contracts expose progressive profiles and navigable KB
+  resources while keeping extended operational guidance in resources and
+  playbooks instead of requiring every workflow to load it from tools/list.
+- List/read contracts standardize bounded results, pagination metadata,
+  projections, deterministic ordering, and explicit limits across large
+  collection paths.
+- Security and recovery paths retain dry-run/confirmation gates, allowlists,
+  audit metadata, Worker crash/reload/timeout coverage, and closed-KB/pipe
+  failure regressions.
+- Worker ownership is now checkout-scoped through a named mutex and durable PID/start-time
+  lease; startup no longer performs a system-wide orphan scan, while a once-per-minute
+  exact-record reconciliation handles crashed gateways (see `docs/worker-ownership.md`).
+- Canonical MCP error envelopes now expose optional boolean `retryable` and
+  `reconciliationRequired` decisions, while conformance tests validate their
+  types and the shape of `nextSteps` entries.
+- Infrastructure failures at the HTTP gateway, KB import, macro crystallization, and preview adapters now return stable sanitized messages/codes with operation identifiers; full exception diagnostics remain server-side in structured logs.
+- Added regression coverage proving adapter error envelopes do not expose raw exception text or filesystem paths.
+- Added route-level regression coverage for stdio and session-bound HTTP KB selection, independent sessions, invalid aliases, persisted-default read-back, and legacy non-persistent selection.
+- Added the deterministic `conversion-bundle/1.0` schema, canonical SHA-256 validation oracle, acceptance evidence contract, and documented live Business Component fixture gate.
+- Added the typed visual-authoring design contract and machine-readable acceptance corpus covering SDK-only mutations, validation, rollback, baseline preservation, preview evidence, and live-KB gating; no live implementation is claimed.
+
+
+### Added
+
+- Added the capability release-state design, machine-readable report schema,
+  provenance/expiry rules, CI and release integration proposal, and
+  user-facing examples without changing existing MCP capability payloads.
+- `genexus_kb` `action=select` and `action=set_session_default` for strict per-session KB selection without mutating `config.json` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_kb` `action=set_persistent_default` as an explicit mutating operation that updates the startup fallback in `config.json` and reports `persistedTo` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_kb` `action=set_default` now supports `persist: false` to delegate directly to per-session selection without updating the shared `config.json`, and acts as a legacy persistent operation returning `persistedTo` by default ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_whoami` exposes explicit session auditability metadata: `sessionSelection`, `selectionSource` (`"session-select"` | `"single-open"` | `"config-default"` | `"declared-first"` | `"explicit-arg"` | `"none"`), `selectionState` (`"valid"` | `"absent"` | `"invalid"` | `"conflicting"`), `startupDefault`, `resolutionPolicy`, `config.resolvedFrom`, and backward-compatible aliases (`selected`, `active`, `persistedFallback`, `contextRequired`) even in terse mode ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Zero-config startup outside of a KB: when launched outside a KB workspace without `GX_CONFIG_PATH`, `genexus-mcp` automatically generates and defaults to `~/.genexus-mcp/config.json` with auto-detected GeneXus path, `TransportMode: "stdio-isolated"`, `HttpPort: 0`, `ResolutionPolicy: "strict"`, and empty `Environment.KBs = []` instead of failing ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Added `--global-config` flag to `genexus-mcp init` and `genexus-mcp clients add` for CI or workflows that explicitly require baking fixed `GX_CONFIG_PATH` into client configuration files ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_properties` `action=get` now honors `propertyName` (single property lookup, comma-separated list, or `*`/`?` wildcards), `propertyNames` (string array), search filter `query`, and preset `projection` modes (`"minimal"` | `"standard"` | `"full"`), returning `versionToken` on `PropertiesRead` envelopes ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+- Added Levenshtein-based "Did you mean?" suggestions and actionable `nextSteps` to `PropertyNotFound` errors when a property name or search query does not match, helping AI agents self-correct in a single turn ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+- Added a flat `values: { [propName]: propValue }` dictionary to all successful `genexus_properties` `action=get` envelopes (single, multi, projection, query, and full) for instant O(1) key-value reads without parsing complex metadata arrays ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+
+### Changed
+
+- Decoupled MCP client registration: `genexus-mcp init` and `clients add` now register clients (VS Code, Cursor, OpenCode, Codex TOML) without `GX_CONFIG_PATH` by default, enabling client registrations to be completely portable across multiple KBs ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Strict resolution policy matrix (`ResolutionPolicy: "strict"` by default):
+  - Sessions do not inherit `DefaultKb`/`ActiveKb` startup fallbacks.
+  - With exactly 1 KB open and no conflicting default, resolves as `single-open` (`selectionSource="single-open"`).
+  - With a single open KB conflicting with a configured default (`DefaultKb`), fails closed with `KB_CONTEXT_REQUIRED` (`DefaultConflict`).
+  - With 0 open KBs, declared catalog KBs are never auto-opened (`KB_CONTEXT_REQUIRED` or `KB_AMBIGUOUS`).
+  - Invalid session selection fails closed with `KB_SELECTION_INVALID` with zero fallback.
+  - Legacy promotion and fallbacks preserved under explicit `ResolutionPolicy: "legacy"` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `stdio-isolated` transport mode (`Server.TransportMode: "stdio-isolated"`): bypasses shared lease acquisition/refresh, proxy takeover, and HTTP listener entirely, allowing concurrent isolated instances on neutral config with `HttpPort: 0` without port or master lease collisions ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Sessionless HTTP clients: calling `select` on sessionless HTTP now returns `KB_SESSION_UNAVAILABLE` ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- Bumped tool schema token budget to 26,500 to accommodate `genexus_kb` session selection actions (`select`, `set_session_default`, `set_persistent_default`), `persist` flag, and parameter documentation in discovery fixtures ([#146](https://github.com/lennix1337/Genexus18MCP/issues/146)).
+- `genexus_properties` `action=get` single property queries now return `{ propertyName, value, values: { [name]: value }, property, properties: [property], versionToken }` instead of dumping 100+ properties, dramatically cutting context token consumption ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
+
+### Fixed
+
+- KB startup-default persistence now stages config updates in a unique sibling
+  temporary file, flushes before atomic replacement, and verifies the persisted
+  aliases before updating gateway memory; unknown JSON fields remain intact.
+
+### Internal
+
+- Added deterministic Gateway worker crash/respawn coverage for multiple pending RPCs, retry backoff, eventual replacement recovery, and replacement-only index bootstrap without starting real worker processes.
+
+- Split the legacy `OperationsRouter` into typed domain route modules behind a compatibility facade and registered each module without changing MCP tool names, normalization, or response envelopes.
+
+- Decomposed Gateway request-loop orchestration behind an explicit ordered
+  protocol, KB-resolution, argument-validation, idempotency, semantic-cache,
+  worker-dispatch, and response-shaping stage pipeline while retaining the
+  existing dispatch core and MCP envelopes.
+
+
+### Added
+
+- Added a complete release preflight covering the solution, CLI, Nexus IDE,
+  contracts, operation inventory, plan readiness, script tests, and warning
+  baseline.
+- Added an explicit live Build All gate that reports terminal evidence and
+  distinguishes an unavailable GeneXus cloud User from a failed build.
+- Added atomic release status files and a status reader for detached runs.
+
+### Changed
+
+- Release manifests now bind packaged bytes to the exact commit that receives
+  the release tag; checksums are published as release assets.
+- Unified the legacy release command behind the canonical root entrypoint and
+  synchronized npm lockfile versions with package metadata.
+- The release entrypoint now lets configured `GXMCP_TEST_KB` and
+  `GXMCP_TEST_FIXTURE` values participate in preflight, while
+  `GXMCP_REQUIRE_LIVE_BUILD_ALL=1` makes that live gate mandatory.
+
+### Fixed
+
+- Multi-target asynchronous mutation recovery now records deterministic per-target/part fences on watchdog, timeout, and cancellation paths, and confirms them independently on successful read-back so partial reads cannot unblock the remaining targets.
+
+- Aligned OpenCode Desktop client detection and registration with the shared
+  `opencode.jsonc`/`opencode.json` configuration path, enabling automatic registration
+  and status reporting rather than treating it as an AppData manual setup gap
+  ([#142](https://github.com/lennix1337/Genexus18MCP/issues/142)).
+- Restored the v2.43-compatible typed WorkWithPlus tab and grid-attribute
+  contracts on the v3 line, including preview tokens, optimistic concurrency,
+  exact snapshots, post-save verification, and rollback.
+- Restored `versionToken` as a backward-compatible alias for API route writes;
+  `expectedVersion` remains the canonical spelling.
+- Fixed the live-fixture path check when Windows exposes the temporary folder
+  through an 8.3 short path.
+- Warning baseline checks now classify line-only diagnostic moves separately
+  while continuing to block genuinely new warning locations.
+- Live Build All evidence parsing now preserves terminal fields from JSON-in-JSON
+  responses with duplicate-case keys, so an SDK exit code cannot mask missing
+  completion evidence.
+
+## v3.0.0 - 2026-09-06
+
+
+- Added: `genexus_lifecycle action=build_all` now runs the native incremental GeneXus Build All for the selected KB, rejects directed targets, preserves the existing `build` and `rebuild` contracts, reports KB-open/completion evidence and MSBuild exit data, and stops with structured `ReorgRequired` when `FailIfReorg=true` detects a required reorganization. The external fallback uses a single-node temporary MSBuild project with `/nodeReuse:false` and guaranteed KB close handling. ([#141](https://github.com/lennix1337/Genexus18MCP/issues/141))
+- Changed: Nexus IDE now negotiates the 2026-07-28 sessionless MCP transport through `server/discover`, sends the required per-request metadata and routing headers, and falls back to the legacy initialize/initialized session when the gateway does not advertise the modern revision. Handshake and request IDs are unique per client instance.
+- Added: a dependency-free tool contract gate validates every published input schema, required field, enum and executable example, including negative assertions for invalid actions and extra properties.
+- Changed: semantic graph lookups now fail closed for homonymous bare names and retain revision-aware cycle/adjacency coverage; callers must resolve a typed or otherwise unique identity before graph traversal.
+- Fixed: property writes resolve the SDK descriptor and reject read-only properties or invalid typed values before opening a transaction; dedicated Domain, nullable and Data Provider output adapters remain in control of their typed paths.
+
+- **Lifecycle validation is classified as an operation.** `genexus_lifecycle`
+  `validate` and `validate-kb` now use the same mutating policy as their
+  dispatcher path, so cache invalidation and retry safety cannot claim that
+  validation is a pure read.
+- **Mutation fences bind runtime context.** Durable idempotency records now
+  hash model and environment identities alongside targets and revisions;
+  reconciliation rejects a changed runtime context without persisting its raw
+  identifiers.
+- **Worker retries keep the caller's operation identity.** Gateway tool
+  dispatch now forwards `clientRequestId` (or the explicit idempotency key)
+  into the Worker command while preserving adapter-bound identities, closing
+  the second idempotency guard after a transport timeout.
+- **SDK affinity has a nominal regression oracle.** The Worker test suite now
+  exercises reentrant gate ownership, fail-fast admission from another thread,
+  and single-owner callback execution through `SdkExecutor`.
+- **Live fixture provenance fails closed.** The live harness now compares the
+  declared `.gxw` (with GeneXus-owned version fields normalized) and
+  `knowledgebase.connection` SHA-256 values before a run, preventing metadata
+  rewrites from mixing benchmark revisions.
+- **Release artifacts carry a verified manifest.** Builds now emit
+  `gxmcp-manifest.json` with the runtime matrix, supported MCP revisions, source
+  commit, schema hash, and SHA-256/size metadata for the Gateway, Worker, schema
+  and optional Nexus VSIX.
+- **Release validation uses one artifact contract.** The maintainer release,
+  RC builder, CI and transactional installer now share the manifest writer and
+  reject runtime drift, schema hash mismatches, duplicate paths and incomplete
+  provenance before replacing an installation.
+- **Operation inventory is executable.** A deterministic inventory projects all
+  50 published tools and 227 actions from `OperationClassifier` and fails closed
+  when a new schema action lacks an explicit effect, retry, cache or invalidation
+  policy.
+- **Dual transport conformance is runnable.** `scripts/mcp-wire-conformance.py`
+  now exercises legacy sessions, sessionless 2026 discovery/tasks, subscription
+  acknowledgements, Host/origin guards and concurrent stdio IDs against the
+  packaged Gateway.
+- **Wire conformance covers slow consumers and reconnects.** The modern smoke
+  keeps an SSE subscription open while issuing an independent request, verifies
+  the request is not blocked, closes the stream, and opens a fresh subscription
+  handle. The probe includes the required per-request metadata and fails closed
+  on a transport error.
+- **3.0 integration evidence is consolidated.**
+  `docs/v3-integration-evidence-2026-09-06.md` records the fresh Gateway,
+  Worker, CLI, Nexus, contract, wire, live-KB, benchmark and release-candidate
+  gates, plus the external prerequisites deliberately kept outside supported
+  capabilities.
+- **Release-ready plan statuses require evidence.**
+  `validate-v3-plan.py --require-ready` now rejects a `VERIFIED_INTEGRATED`
+  package without its report, artifact list and explicit external gates.
+- **The release workflow enforces the integrated plan gate.**
+  A publish job now runs `validate-v3-plan.py --require-ready` after verifying
+  the staged manifest and before npm publication.
+- **Sessionless task ownership fails closed.** Modern HTTP tasks now require a
+  stable `Mcp-Client-Id` header, and the Nexus client sends one per instance;
+  requests without an explicit scope cannot read or cancel another client's
+  task. The dual-transport conformance harness now verifies both the missing
+  scope rejection and the scoped task lookup path.
+- **Release provenance rejects dirty candidates.** Manifest generation marks a
+  dirty checkout as `working-tree`, while release verification requires a real
+  committed source identifier. The release workflow now passes the package
+  version to that verifier without shell escaping the Actions expression.
+- **Background task cancellation is atomic.** `Complete` and `Cancel` now
+  serialize their running-to-terminal transition under the job lock, so a
+  completion cannot be overwritten by a concurrent cancellation.
+
+### Internal
+
+- **Contrato único de operações.** Todos os 50 tools publicados agora têm uma
+  política explícita de leitura, mutação ou modo condicional. Cache, retry,
+  invalidação e sugestões de próximos passos canonicalizam aliases pelo
+  mesmo registro; classificações por substring foram removidas e efeitos
+  externos de recovery, reload, testes, execução e probe de superfície ficam
+  fechados para retry/cache sem chave idempotente.
+
+- **Cache por geração de KB.** Leituras semânticas agora usam argumentos
+  canonicalizados, geração independente por KB e identidade de ambiente/modelo
+  quando disponível. Mutações invalidam a geração inteira da KB sem descartar o
+  cache de outras KBs, leituras em voo não repovoam uma geração antiga e o TTL
+  absoluto impede que hits contínuos mantenham uma resposta stale viva para
+  sempre; previews não invalidam o cache. Eventos do `.gx_mirror` resolvem o
+  alias configurado quando possível e usam invalidação global somente quando a
+  identidade da KB não pode ser provada.
+
+- **Limite de corpo MCP explícito.** O Gateway valida `Content-Length` antes de
+  desserializar o POST e devolve `413 Payload Too Large` com erro JSON-RPC
+  determinístico acima de 2 MiB; o limite do Kestrel usa a mesma constante.
+
+- **Shutdown seguro do executor STA.** Callbacks SDK ainda pendentes recebem
+  `ObjectDisposedException` e não iniciam trabalho depois do descarte; slots são
+  liberados mesmo quando o post falha ou a fila é encerrada.
+- **Cancelamento de espera STA.** Cancelar uma invocação depois do enqueue agora
+  libera o slot imediatamente, completa a tarefa como cancelada e impede que o
+  callback atrasado entre no SDK; a chamada seguinte pode ser admitida antes da
+  drenagem da fila antiga.
+
+- **MCP tasks extension contract.** Modern requests that declare
+  `io.modelcontextprotocol/tasks` now receive durable `resultType:"task"`
+  handles for asynchronous tools. `tasks/get` returns the standard
+  `resultType:"complete"` task state, update/cancel are acknowledgement-only,
+  task status timestamps are persisted, and cross-session handles fail closed;
+  legacy lifecycle/job envelopes remain unchanged.
+
+- **Progress routing isolation.** Pending Gateway requests now retain the
+  originating transport, KB alias, and client progress token. Worker progress
+  is correlated with the private operation id, rewritten with the original
+  JSON-RPC token, and delivered only to the owning stdio or legacy HTTP
+  session; sessionless modern requests never receive a process-wide unsolicited
+  frame. Modern `notifications/cancelled` POSTs are accepted without touching
+  a prior request because stream closure is the only unambiguous cancellation
+  owner on that transport; closing a modern response stream now propagates its
+  request-aborted token into lifecycle long-polls.
+
+- **Legacy long-poll cancellation.** Lifecycle status waits now register their
+  exact request id and owning HTTP session, so `notifications/cancelled` aborts
+  the matching wait and returns `-32800` without cancelling a parallel request
+  from another session or an id with a different JSON type.
+
+- **Bounded Worker output queues.** stdout and stderr buffering now use the
+  same validated capacity policy as command queues, with environment overrides
+  and producer backpressure so slow clients cannot grow diagnostic memory
+  without a bound.
+
+- **Nexus trust side-effect gate.** Backend startup already refuses untrusted
+  workspaces; configuration persistence now happens only after an explicit
+  start is authorized, so a background `autoStart=false` probe cannot rewrite
+  the shared Gateway configuration.
+
+- **Mutation evidence fences** — keyed mutation journal entries now bind to
+  hash-only target identities and base revisions inferred from mutation
+  arguments. Reconciliation can require matching `observedTargetIds` and
+  `observedRevision`, refusing a changed target before the unknown fence is
+  closed.
+
+- **Session-scoped resource subscriptions** — `resources/subscribe` and
+  `resources/unsubscribe` now validate absolute URIs, persist state only on the
+  creating legacy HTTP session, and filter resource-update notifications before
+  SSE delivery. The sessionless 2026 transport rejects the legacy methods
+  instead of creating a process-wide subscription that could cross KB clients.
+- **Modern subscription streams** — 2026-07-28 clients can use
+  `subscriptions/listen` over a long-lived POST SSE response. The Gateway sends
+  an acknowledgement with a per-stream subscription id, applies opt-in filters
+  for list/resource notifications, caps concurrent streams and queued events,
+  and removes the handle when the response disconnects. Resource updates retain
+  the legacy URI and add KB alias, cache generation, and a KB-qualified URI so
+  same-named objects from separate KBs cannot be conflated; reads of the scoped
+  URI route back to that explicit KB. Legacy sessions keep their existing
+  GET/SSE subscription behavior.
+
+- **Loopback Host hardening.** `/mcp` now rejects non-loopback `Host` values when
+  bound to loopback, closing the browser DNS-rebinding path while leaving
+  explicitly token-protected non-loopback deployments unchanged.
+- **Queue phase telemetry.** Gateway requests now carry an enqueue timestamp and the Worker reports bounded queue wait time alongside SDK, transform, serialization, and response-size timings; malformed telemetry fails closed without affecting the call.
+
+- **Bounded context bundles.** `genexus_analyze` `mode=context` now emits a
+  stable SHA-256 revision, an explicit UTF-8 byte budget, item-boundary cursors,
+  and addressable `genexus_read` hints for large object parts. Oversized context
+  is marked partial instead of silently cutting JSON or source content.
+- **Typed SQL semantics.** Transaction record envelopes now identify the
+  `typed_sql` adapter and explicitly report `businessRulesExecuted=false`, so
+  callers cannot mistake metadata-driven datastore access for a Business
+  Component execution.
+- **SDK capability evidence.** `genexus_sdk_probe { mode: "capabilities" }`
+  now publishes signature-probe status and evidence without presenting a
+  reflected type as verified authoring or persistence support.
+- **V3 runtime baseline.** Moved the Gateway, contract tests, and benchmarks to
+  `net10.0-windows`, kept the GeneXus Worker on `net48`/x86, and raised the CLI
+  minimum to Node 22 with CI and release jobs running Node 24. Development
+  launchers and smoke-test discovery now resolve the .NET 10 output path.
+- **Executable quality gates.** Added fork-safe PR preflight/push helpers,
+  an isolated live-KB smoke runner and workflow, a machine-readable
+  build-warning baseline, performance-regression thresholds, and
+  non-destructive release dry-runs.
+- **Evaluation corpus gate.** Added a dependency-free validator and regression
+  tests for the 15-scenario v3 evaluation manifest, including required
+  success/cold-warm measurement contracts and unique scenario identifiers.
+- **Deterministic agent replay manifest.** Materialized the 15-scenario corpus
+  under `tests/agent-evals/corpus.json` with a revisioned synthetic-fixture
+  contract and an explicit boundary that model-backed evaluation has not run.
+- **Execution-plan gate.** Added a dependency-free validator for the v3
+  package manifest, including declared statuses, unknown dependencies, cycles,
+  and an explicit strict mode that refuses release readiness until every
+  package is `VERIFIED_INTEGRATED`.
+- **Change-set schema budget.** Raised the discovery schema budget from 25,500
+  to 25,600 tokens to carry the explicit `genexus_edit.changeSet` contract;
+  the new block remains bounded to existing Source/Rules/Variables parts.
+- **Durable operation recovery surface.** Added Gateway-local
+  `genexus_lifecycle action=inspect|reconcile` for redacted journal inspection and
+  explicit post-read reconciliation. Reconciliation records only a verification
+  hash and never replays an uncertain mutation with the old key.
+- **Per-KB capability resource.** Added `genexus://kb/capabilities`, backed by
+  the read-only SDK capability probe, so discovery stays deterministic while
+  capability evidence remains scoped to an explicitly selected KB.
+- **Agent replay safety gate.** Added a provider-neutral validator for completed
+  E01–E15 reports. It rejects skipped scenarios, invalid calls, unintended
+  effects, blind retries after unknown outcomes, fixture-revision mismatches,
+  and source/secret telemetry leakage without executing a model or KB.
+- **Lifecycle structured output contract.** `genexus_lifecycle` now advertises
+  a permissive additive `outputSchema` that matches its object-shaped
+  `structuredContent`; text content remains available for legacy clients.
+
+### Fixed
+
+- **Live gate alias consistency.** `test-live.ps1` now passes the same isolated
+  fixture alias to the HTTP benchmark that it writes into `GX_CONFIG_PATH`,
+  preventing duplicate KB opens from blocking `genexus_list_objects` during the
+  formal performance gate.
+
+- **Lifecycle recovery contract parity.** The new `inspect` and `reconcile`
+  actions are now present in the operation classifier, help resource, and
+  capability inventory, preventing schema discovery from advertising an
+  unclassified action.
+
+- **Operation journal survives Gateway reconfiguration.** Runtime cache
+  reinitialization now keeps the durable mutation journal path, so a restart or
+  config reload cannot silently downgrade idempotency protection to memory-only.
+
+- **Mutation correctness.** Duplicate calls no longer execute outside the
+  idempotency gate after a timeout, and waiting callers retain one shared gate.
+  Object mutations also invalidate collection and dependency cache entries in
+  the affected KB, preserving unrelated direct reads and other KBs.
+- **MCP request and task isolation.** Cancellation now matches the exact JSON-RPC
+  id token and owning session, and tasks/get, tasks/update, and tasks/cancel are
+  backed by session-scoped background jobs. Modern task requests require the
+  declared `io.modelcontextprotocol/tasks` extension, expose MCP task status
+  values, use task IDs for HTTP routing headers, and reject cancellation after
+  a terminal state.
+- **Operation policy registry.** Cache and idempotency decisions now consume a
+  shared conservative contract for effects, retry safety, cacheability, and
+  preview support.
+- **Operation contract coverage guard.** Every published action and help
+  catalog key is now checked against the canonical tool identity registry and
+  action classifier, so discovery cannot silently ship an unclassified
+  operation or orphaned help entry.
+- **Canonical mutation projection.** Semantic-cache invalidation now consumes
+  the explicit action/legacy-alias classifier before its compatibility fallback;
+  recognized writes no longer depend on a tool-name substring to be observed,
+  and idempotency keys use the same canonical tool/action identity across
+  legacy aliases and umbrella tools.
+- **STA SDK admission.** Watcher work now enters a bounded executor on the
+  existing SDK bridge, supports reentrant calls and pre-start cancellation, and
+  reports a typed busy condition instead of growing an unbounded action queue.
+  Main and STA command queues now have bounded, configurable admission and
+  return `WorkerBusy` with retry metadata when saturated.
+- **Worker idempotency timeout.** A duplicate mutation that outlives the
+  in-flight wait budget now receives `idempotency_in_progress` and cannot start
+  a second SDK operation. Completion signals are safe when the original call
+  finishes or aborts concurrently.
+- **Durable mutation recovery fence.** Post-timeout write requirements are
+  journaled atomically in Gateway state and reloaded after restart; a confirmed
+  read removes the journal entry, while stale entries expire automatically.
+- **Fail-closed recovery journal.** The mutation recovery journal now carries a
+  versioned, bounded envelope, keeps independent fences per KB/object/part, and
+  blocks new writes when the persisted file is truncated, corrupt, or cannot be
+  durably replaced.
+- **Restart-safe idempotency fence.** Keyed mutations now persist only a scoped
+  identity/payload hash and lifecycle state. A completed or interrupted entry
+  cannot be replayed blindly after Gateway restart; payloads, source, and KB
+  paths are not written to the journal.
+- **Fail-closed operation journal.** The keyed-mutation journal now uses a
+  bounded versioned envelope and refuses new writes when its state is corrupt,
+  truncated, oversized, or cannot be atomically persisted.
+- **Build target safety.** Bare names that resolve to more than one typed index
+  entry now fail closed with `BuildTargetAmbiguous` instead of silently picking
+  the last indexed object.
+- **Live harness isolation.** Live runs require an explicitly identified
+  synthetic fixture with database-isolation evidence. The harness uses its own
+  configuration and only cleans up processes descended from its gateway.
+- **Live harness regression test.** The PowerShell fixture-rejection test now
+  captures the expected native stderr without treating it as an unhandled test
+  failure, so the seven assertions run and report their result consistently.
+- **Reliable live benchmark failures.** Failed MCP/worker responses no longer
+  count as successful latency samples. Reports include success/failure/skip
+  counts, and regression gates reject missing baselines, invalid metrics,
+  missing operations, and skipped dry-run targets. Both p50 and p95 regressions
+  are gated.
+- **Comparable benchmark populations.** Live benchmark reports now retain
+  successful response-byte percentiles and explicit fixture/revision,
+  generator, cache, concurrency, iteration, and operation metadata. A
+  regression comparison fails closed when the baseline population or payload
+  metrics are missing or differ.
+- **Live benchmark wire-shape parity.** Benchmark validation now accepts the
+  statusless structured envelopes emitted by `whoami`, list/query, inspect and
+  read, the capitalized lifecycle status, and nested source-search hits. Read
+  targets are selected from source-backed object types and probed once before
+  measurement, so folders/modules and unresolved index entries cannot be
+  counted as successful latency samples.
+- **Live fixture provenance.** The isolated live harness now requires a fixture
+  revision and generator identity and forwards both into benchmark population
+  metadata, preventing a baseline from being compared across different SDK or
+  seed states.
+- **Nexus workspace trust.** The IDE now blocks Gateway startup and persisted
+  KB/install configuration writes in untrusted workspaces, advertises limited
+  untrusted support, and retries startup after trust is granted.
+- **Nexus MCP transport.** The reference client now completes the legacy
+  `initialized` handshake, sends the required JSON/SSE `Accept` contract,
+  derives its client version from the extension manifest, and allocates
+  collision-resistant request IDs while preserving effect-aware retry rules.
+- **Nexus unknown-outcome contract.** Lost responses from potentially mutating
+  tools now raise a typed `outcome_unknown` error carrying the supplied
+  operation/idempotency key; only an explicit allowlist of read-only tools may
+  retry a transient transport failure.
+- **Runtime and telemetry baseline.** Gateway, tests, and benchmarks now target
+  .NET 10 while the SDK Worker remains .NET Framework 4.8/x86. Gateway latency
+  summaries expose bounded p50/p95 samples, queue wait, response bytes, and
+  success/error/timeout classes without recording KB content.
+- **End-to-end phase telemetry.** Tool measurements now separate SDK dispatch,
+  startup wait, queue wait, gateway transformation, serialization, response
+  size, cache outcome, and result class. The `Genexus.Mcp.Gateway` ActivitySource
+  and Meter are available to opt-in listeners without adding request or KB data
+  to metric labels.
+- **Call graph adjacency cache.** Direct callers/callees now read from a
+  revisioned reverse/forward adjacency snapshot. SDK edges and textual fallback
+  calls are indexed once per graph revision, preserving deterministic ordering
+  while removing a full KB scan from every graph query; an SDK-free BenchmarkDotNet
+  harness records rebuild versus lookup cost at 1k/10k/50k nodes and runs
+  in-process so repository worktrees cannot make benchmark project discovery
+  ambiguous.
+- **Mutation rollback evidence.** Multi-object compensation now checks each
+  rollback response and re-reads every restored part before reporting
+  `rolledBack=true`; uncertain or failed verification is exposed as
+  `indeterminate` or `partial`. Successful multi-target results carry a
+  per-target saved/verified receipt; previews expose content versions and refuse
+  stale or unreadable per-target `expectedVersion` values before any write.
+- **Semantic rename guard.** Attribute/object and variable caller rewrites now
+  use an identifier tokenizer that skips comments, strings, and larger symbol
+  names. Rename previews expose graph revision, source provenance, and known
+  line/column references instead of only a caller count.
+- **Multi-target edit contract.** `genexus_edit.targets[]` now documents
+  optional `part`, `expectedVersion`, and `baseVersion` fields, and the
+  executed `MultiEdit` route delegates to the MutationEngine so clients get the
+  preflight version fence and per-target rollback receipt instead of a legacy
+  batch write that could bypass them.
+- **Recovery fence coverage.** Post-timeout write fences now cover every target
+  in multi-target edits and explicit change sets; a pending fence on any object
+  blocks the whole mutation before dispatch.
+- **Build plan identity guard.** `genexus_build_plan` now fails closed for
+  ambiguous target or callee names, returns typed candidates, and records the
+  graph revision and completeness flag used to derive the plan.
+- **Explicit change sets.** `genexus_edit.changeSet` now supports a bounded
+  `preview` → `validate` → `apply` flow for existing Source/Rules/Variables
+  parts. Apply requires the returned change-set ID and aggregate base revision,
+  re-reads the same targets, and returns the MutationEngine verification receipt.
+- **Change-set failure atomicity.** Change-set apply responses now derive their
+  `atomicity` value from the actual compensation outcome, so partial or
+  indeterminate rollback cannot be reported as fully compensated.
+
+- **Live contract parity.** Declared the `genexus_analyze` explain payload in
+  the source and discovery schemas, and skip navigation live coverage only
+  when the supplied KB has no generated navigation report.
+
+## v2.57.0 - 2026-09-05
+
+### Added
+
+- **Typed Transaction record access (PR #133).** Added `genexus_db` actions
+  `records_query`, `records_insert`, and `records_update`. They derive table,
+  attributes, key metadata, and scalar conversions from the GeneXus
+  Transaction, bound every read, return an optimistic `versionToken`, default
+  writes to `dryRun=true`, and require a matching single-use v2 preview receipt
+  before persistence. Direct SQL boundaries and the absence of GeneXus business
+  rules are reported explicitly. Contributed by David Agostini
+  (@davidagostini). [PR #133](https://github.com/lennix1337/Genexus18MCP/pull/133)
+
+### Changed
+
+- **Tool schema budget for action contracts (Issues #139/#140).** Raised the guarded schema-size budget from 24,500 to 25,000 tokens to accommodate the required descriptions for all 31 action-bearing tools; that increment measured ~24,666 tokens with ~334 tokens of headroom before PR #133.
+- **Tool schema budget for typed Transaction records (PR #133).** Raised the guarded budget from 25,000 to 25,500 tokens for the `records_query`, `records_insert`, and `records_update` schemas and safety contract; the current measured size is ~25,165 tokens with ~335 tokens of headroom.
+- **Typed Transaction integration quality gates (PR #133).** Kept record reads bounded to the requested projection plus one truncation sentinel, preserved the serializable write verification sequence, and made action/help/inventory parity machine-checkable.
+
+### Fixed
+
+- **Release warning baseline and reduction (Issue #138).** Removed the reported xUnit1012 and benchmark CS8618 diagnostics, scoped the Worker.Tests MSB3277 suppression, and documented a reproducible 216-location nullable-warning baseline for future Release builds.
+- **Action contract parity and conservative classification (Issue #139).** Added descriptions to all 31 umbrella `action` properties and replaced permissive fallback logic with explicit read-only/mutating sets; omitted and unknown actions are now non-read-only, with every supported `dryRun` preview exception covered by the same contract tests.
+- **Tool help and capability inventory parity (Issue #140).** Added help coverage for every action-bearing tool, introduced a schema-checked inventory of all valid actions and mutation semantics, and corrected the README's 50-tool count and dependency-graph wording.
+- **OpenCode Desktop setup guidance (Issue #135).** Kept the Desktop target detect-only, exposed structured local-server fields and validation steps, and made `clients add` report a manual setup skip without touching the app-managed configuration file.
+- **OpenCode Desktop explicit setup (Issue #135).** `clients add --clients opencode-desktop` now always returns actionable manual setup, including the resolved `GX_CONFIG_PATH`, even when the app is not detected or a stale gateway path is present; writable-client launcher validation remains enforced.
+- **Deterministic no-navigation smoke coverage (Issue #137).** The live Procedure navigation test now uses stable name ordering, bounded page/transient-retry caps, progressive backoff, and an explicit `NoNavigationBlocks` status/hint before accepting a hit.
+- **Side-effect-aware action classification (Issues #139/#140).** Navigation cache refreshes, transfer exports, and browser preview build/baseline/screenshot options are no longer reported as pure reads; typed record actions now share exact action-token and dry-run contracts across routing, help, inventory, and cache policy.
+- **Post-merge cache and smoke hardening (PR #133 follow-up).** Semantic caching now uses the side-effect-aware action classifier for both lookup and storage, including navigation refreshes, XPZ exports, browser preview writes, and omitted `records_*` dry-runs; live navigation smoke now has one bounded deadline, consumes index ETA, detects canonical partial-total markers, and reports pagination limits as inconclusive. Published navigation annotations now match its cache-refresh behavior.
+- **Legacy `genexus_analyze` explain envelope (Issue #136).** Restored `mode="explain"` to the published schema and discovery fixture so the existing typed `NotImplemented` response is reachable instead of being rejected by gateway enum validation.
+- **Transitive npm security updates (Issue #134).** Refreshed the lockfile to `brace-expansion@1.1.18` and `js-yaml@4.3.2`, removing the two high-severity audit findings without changing the declared dependency surface.
+- **Race condition and E409 conflict during npm provenance publish.** Hardened `.github/workflows/release.yml` to gracefully handle npm registry E409 "Cannot publish over previously staged version" during asynchronous Sigstore provenance ingestion, added an active polling loop verifying registry availability before completing, removed duplicate `released` trigger causing simultaneous workflow runs, removed obsolete `always-auth` npmrc configuration, and updated `release.ps1` to detect active in-flight release workflows before triggering redundant fallback runs.
+
+## v2.56.0 - 2026-09-04
+
+### Added
+
+- **Type disambiguator on `genexus_structure` (Issue #131).** Added optional `type` parameter across Gateway router, Worker dispatcher, and `StructureService.GetVisualStructure`, allowing callers to explicitly target `type="Transaction"` or `type="Table"` when homonyms share a name (such as `Empresa` as both a Transaction and a Table). When untyped resolution resolves an unsupported object type, the error message now identifies the resolved type and suggests specifying `type="Transaction"` or `name="Transaction:<target>"`.
+- **Missing router-consumed parameters declared in `genexus_lifecycle` schema (Issue #131).** Declared `part`, `page`, `pageSize`, `page_size`, `notifyOnFailure`, `skipFullDeploy`, and `fastIncremental` in `tool_definitions.json` and `tools-list.response.json` for `genexus_lifecycle`, ensuring OpenAPI compliance and full schema transparency for client agents.
+- **Recipe crystallization `steps` parameter (Issue #131).** Declared `steps` array in `genexus_recipe` schema for `action="crystallize"`, enabling clients to pass ordered macro steps explicitly.
+- **Tool help documentation for multi-action tools (Issue #131).** Added comprehensive markdown guides in `ToolHelpCatalog` accessible via `genexus://kb/tool-help/<tool>` for `genexus_structure`, `genexus_layout`, `genexus_versioning`, `genexus_io`, `genexus_kb_version`, `genexus_doc`, `genexus_recipe`, and `genexus_refactor`.
+- **Typed API route persistence and rollback (PR #132).** Added typed route persistence with transactional rollback and logical source equality check for API objects. Contributed by David Agostini (@davidagostini).
+
+### Changed
+
+- **Schema property descriptions across all multi-action tools (Issue #131).** Enriched property descriptions across `genexus_layout` (12 properties), `genexus_db`, `genexus_create`, `genexus_versioning`, `genexus_io`, `genexus_kb_version`, `genexus_edit_form`, `genexus_security`, `genexus_apply_pattern`, `genexus_refactor`, and `genexus_structure`.
+- **Tool schema budget bump to 24,500 tokens (Issue #131).** Increased combined schema budget from 23,000 to 24,500 tokens in `ToolSchemaSizeTests` (measured ~24,200 tokens) to accommodate the complete set of property descriptions, undeclared parameters, and typing additions across multi-action tools.
+- **Aligned effect metadata and annotations for `genexus_doc` (Issue #131).** Set `readOnlyHint=false` and `idempotentHint=false` on `genexus_doc` because `action="wiki"` writes Markdown files to disk; updated description to reference dependency graph generation instead of sequence diagrams.
+- **Removed unsupported `run` action from `genexus_recipe` enum (Issue #131).** Cleaned up `genexus_recipe` action enum and error hints by removing dead `run` action.
+- **Documented MCP update and harness synchronization in `AGENTS.md` (Issue #130).** Added preflight checks, decision matrix, operational side-effects/safety boundaries, checkout-scoped process management rules, and portable `<repoRoot>` placeholders to `AGENTS.md`.
+
+### Fixed
+
+- **`dryRun` propagation in `genexus_lifecycle action="index"` (Issue #131).** Fixed `SystemRouter.ConvertToolCall` to forward `dryRun` to the worker for the `index` action so indexing plans can be previewed without executing full rescan.
+- **Semantic cache invalidation for `genexus_structure action="remove_attribute"` (Issue #131).** Registered `remove_attribute` in `Program.ToolPayload.cs` under `genexus_structure`, preventing stale cached read responses after attribute removal.
+- **Crash retry safety on multi-action tools (Issue #131).** Guarded `ShouldRetryWorkerCrash` in `Program.WorkerLifecycle.cs` with action-level inspection via `IsRetrySafeOperation`, ensuring multi-action tools (`genexus_structure`) only retry on safe read operations (`get_visual`, `get_indexes`, `get_logic`, `check_subtypes`) and never retry mutating writes after a worker crash.
+- **Unified read-only classification across internal services (Issue #131).** Extracted `OperationClassifier` to unify read-only detection across `MacroSuggestionService` and `NextLegalActionsBuilder`, eliminating dead tools (`genexus_logs`, `genexus_history`) and correctly classifying multi-action tools (`genexus_doc`, `genexus_recipe`, `genexus_kb`, `genexus_versioning`, `genexus_telemetry`) by action.
+- **Ephemeral port race and abort signal cleanup in tests and IDE client (PR #132).** Added retry resilience for port bind races in smoke test harness and improved abort signal listener cleanup in IDE client. Contributed by David Agostini (@davidagostini).
+
+## v2.55.0 - 2026-09-04
+
+### Added
+
+- **Modular object identity resolution across `genexus_read`, `genexus_inspect`, and `genexus_search_source` (PR #129).** Added `guid`, `entityKey`, and `path` parameters across `genexus_read`, `genexus_inspect`, and `genexus_search_source` schemas, allowing LLMs to directly read, inspect, or search objects by their native GUID, SDK EntityKey, or module hierarchy path without requiring ambiguous or duplicated names. `genexus_inspect` now allows omitting `name` when modular identity coordinates are supplied. Contributed by David Agostini (@davidagostini).
+- **Uniform identity metadata on object reads.** Expanded all read surfaces (`ReadObject`, `ReadFullObject`, `ReadObjectSourceParts`, `ExtractAllParts`) to proactively return the structured `identity` block (`guid`, `entityKey`, `entityTypeGuid`, `entityId`, `path`), providing downstream tools with deterministic identity tokens for immediate chaining.
+
+### Changed
+
+- **O(1) index lookups for object identity and search scoping.** Replaced full O(N) linear scans across index collections in `BuildObjectIdentity`, `FindIndexEntry`, and `hasIdentityScope` with O(1) lookups via `GuidToKey` and `ByNameIndex`, reducing object resolution time in large KBs from hundreds of milliseconds to microseconds and eliminating per-call allocations. Contributed by David Agostini (@davidagostini) and Antigravity.
+- **Pre-normalized path matching in `SourceSearchService`.** Hoisted path normalization outside search candidate iteration loops, preventing repetitive string allocations during source searches.
+- **Gateway router identity resolution fallback.** Updated `ObjectRouter` and `AnalyzeRouter` to seamlessly resolve targets from `path`, `entityKey`, or `guid` when `name` is omitted, eliminating missing target errors on modular identity tool calls.
+
+## v2.54.1 - 2026-09-03
+
+### Added
+
+- **IDE concurrency detection and warning in `genexus_edit` and `BulkWrite` (Issue #128).** Added `IdeConcurrencyDetector` to detect when `GeneXus.exe` is running and whether the target KB and/or target object is open in an IDE tab/window using Win32 window and child-window inspection. Surfaces structured warnings `GotchaIdeObjectOpenInEditor` and `GotchaIdeActiveOnKb` with resolvable tool-help documentation URIs (`genexus://kb/tool-help/gotchas/ide-object-open-in-editor` and `genexus://kb/tool-help/gotchas/ide-active-on-kb`). Added optional `concurrencyPolicy` argument (`"warn"` [default] or `"fail_if_open"`) to `genexus_edit` schema and `BulkWrite` facade args to abort write operations with an `IdeObjectOpen` error when the target object is open in the IDE. Reported and architected by Antonio Jose Rodrigues Silva (@antoniojosedev).
+
+### Fixed
+
+- **Synchronous object flushing, entity revision date stamping, and IDE message pump nudging in `WriteService` (Issue #128).** Eliminated race conditions caused by the 2-second debounce timer (`_flushTimer`) and removed non-functional reflection (`model.GetType().GetMethod("Commit")`), replacing with synchronous `FlushSync()`. Stamped entity and model revision dates (`SaveModelEntityDate(301)`, `SaveModelEntityDate(300)`, `SaveVersionIndependentDate(310)`, `KBModel.LastCommitDate`, `KBModel.LastObjectsVersionDate`) upon write/commit so external tooling and IDE detect saved modifications. Dispatched non-intrusive `WM_NULL` to running GeneXus IDE windows after successful writes to trigger `Application.Idle` and prompt the IDE's built-in external modification detection (`Messages.ObjectModified`). Reported and architected by Antonio Jose Rodrigues Silva (@antoniojosedev).
+
+
+
+## v2.54.0 - 2026-09-03
+
+### Fixed
+
+- **Primary environment generator selection and Design model exclusion in `genexus_kb(action="list_environments")` (Issue #127).** Fixed generator resolution in `KbService.ResolveModelGenerator` to query `kbModel.GetAs<GxModel>()?.Generator` (with web/default fallbacks) instead of enumerating `GeneratorsPart.Generators` without priority, ensuring the primary/web generator (e.g. `Default (.NET Framework)`) is returned instead of mobile or secondary generators (`Android (Android)`). Fixed `EnumerateEnvironmentModels` and `GetActiveEnvironment` to exclude the conceptual "Design" model and handled `AmbiguousMatchException` in `TryGetMember` when inspecting inheritance-shadowed properties like `KBModel.Type`.
+
+### Internal
+
+- **Centralized `ReflectionHelper` and inheritance-shadowed member resolution.** Extracted `ReflectionHelper` in `GxMcp.Worker.Helpers` to provide safe reflection lookup across GeneXus SDK COM/inheritance hierarchies with declared-only fallback for shadowed properties throwing `AmbiguousMatchException`.
+
+## v2.53.0 - 2026-09-03
+
+### Added
+
+- **Active LLM turn-steering via next_legal_actions, multi-part 360° read aliases, and self-healing error suggestions.** Added active `next_legal_actions` on `genexus_read` (suggesting `genexus_edit`, `genexus_analyze`, and `genexus_navigation` with pre-filled arguments) and `genexus_query` (suggesting 360° `genexus_read` and `genexus_inspect` on the top match), supported 1-roundtrip multi-part aliases (`part="all"|"full"|"summary"|"360"` routing to `ExtractFullObject`), and added actionable self-healing recovery hints for `PartNotFound` and `ObjectNotFound` errors in `McpRouter.AttachSuggestedNextStep`. Eliminates 2 to 3 exploratory roundtrips per task.
+
+### Changed
+
+- **Zero-AST streaming validation in `IsCacheableSuccessEnvelope`.** Replaced full `JObject.Parse(json)` in the worker command dispatcher with a streaming `JsonTextReader` check that verifies top-level `error` and non-cacheable `status` without building in-memory AST syntax trees. Reduces memory allocations by up to 76% and speeds up payload validation by nearly 3X.
+- **Zero-copy parameter merge in `CommandDispatcher.DispatchInternal`.** Eliminated redundant recursive `DeepClone` on request parameters during command dispatching, passing property references directly.
+- **Tool profile definition caching in `ToolProfileFilter` & `McpRouter`.** Added concurrent cache for profile-filtered tool definitions (`core`, `authoring`, `devops`, `ui`, `db`), eliminating repeated `JArray` allocations on `tools/list` calls (yielding >2,800X throughput improvement with 0 allocations).
+- **Extended read cache TTL in `ObjectService`.** Increased default `ReadCacheTtl` from 60s to 300s (5 minutes) and added configurable override via `GXMCP_READ_CACHE_TTL_SEC`. Eliminates redundant COM object reads from disk across multi-turn reasoning sessions while preserving deterministic write invalidation.
+- **Candidate loop allocation reduction in `SourceSearchService`.** Hoisted default scope collections out of per-candidate search loops.
+- **Zero-allocation pipe writing in `WorkerProcess.ProcessQueueAsync`.** Replaced intermediate `rpc.ToString(Formatting.None)` string allocations with direct streaming via `JsonTextWriter.WriteTo` into the worker pipe writer, speeding up command serialization by 5.4X and eliminating intermediate string allocations in the LOH/Gen2.
+- **Asynchronous non-blocking DataStore diagnostic probe in `KbService.OpenKB`.** Offloaded synchronous datastore connection and metadata probing to a background Task so `OpenKB` returns `KbOpened` immediately without gating readiness on remote database latency.
+- **Enhanced `GXMCP_EMIT_STRUCTURED_CONTENT` control.** Added explicit `0`/`false` and `1`/`true` toggle for structured content generation to complement `GXMCP_NO_STRUCTURED_CONTENT`, reducing payload sizes by up to 46.8%.
+- **Value-type `RankedResult` struct in `SearchService`.** Converted `RankedResult` from a heap-allocated class to a stack/contiguous `readonly struct`, eliminating thousands of individual object allocations during search ranking and improving cache locality.
+- **Zero-alloc term matching in `SearchService.CalculateSemanticScore`.** Replaced LINQ `Enumerable.Contains(..., StringComparer.OrdinalIgnoreCase)` calls across `Keywords`, `Tags`, `Tables`, and `Calls` with an allocation-free indexed loop, eliminating up to 60,000 enumerator allocations per search query. Reduces search latency by 45% (0.467ms -> 0.257ms) and Gen0 collections by 75%.
+- **Direct indexed pagination in `ListService`.** Replaced LINQ `.Skip().Take()` iterator allocations over ordered index entries with direct indexed iteration.
+- **Direct streaming response writing in `Program.TryWriteStdout(JObject)`.** Added streaming JSON response serialization directly to `Console.Out` via `JsonTextWriter.WriteTo`, bypassing intermediate large JSON string allocations in stdio MCP dispatching.
+- **Loop unrolling and scalar optimization in `VectorService.ComputeEmbedding`.** Replaced 128-iteration modulo loop with 32-iteration direct dimension updates and scalar multiplication normalization, speeding up embedding generation by 26.8% (4.97µs -> 3.64µs).
+- **Pre-compiled regex and allocation-free token extraction in `SourceSearchService`.** Compiled `LiteralTokenRegex` once statically, replaced LINQ `.Distinct().ToList()` with `HashSet<string>`, hoisted separator arrays in `ParseObjectNames`, and replaced enumerator loops in `MatchesAnyLiteral` with indexed iterations, eliminating GC allocations during literal token pre-filtering.
+- **Fast-path colon guard and regex-free tokenization in `QueryGrammar.Parse`.** Added early `IndexOf(':')` guard to bypass structured filter regex scans for plain queries, replaced dictionary regex lookups with a struct array, eliminated string allocations in property switching, and bypassed regex tokenization for quote-free queries. Speeds up query parsing by 57.8% (14.44µs -> 6.10µs per pair) and cuts Gen0 GC collections by 50%.
+- **Static lookup arrays, string concatenation, and zero-allocation match ordering in `ObjectService`.** Hoisted static arrays for candidate probes, default parts, and colon delimiters, eliminated snapshot allocations in `MarkReadCacheDirty` by iterating `_readCache` directly, optimized `BuildReadCacheKey` using `string.Concat` without redundant lowercasing (27.3% faster key generation), and replaced 4-level LINQ chained sorting in `FindObject` with direct priority comparator and single-match fast paths.
+- **Pre-cached static discovery responses in `McpRouter`.** Pre-built and cached responses for `resources/list`, `resources/templates/list`, and `prompts/list`, eliminating repeated anonymous object and string allocations during MCP handshake and capability discovery. Speeds up discovery endpoint handling by 10.2X (1.94µs -> 0.19µs per set) and eliminates 100% of related Gen0 GC collections.
+- **ASCII uppercase fast path in `IndexCacheService.ShardOf` and allocation-free method checking in `CommandDispatcher`.** Replaced unicode character database lookups and `foreach` string enumerator allocation in `ShardOf` with direct ASCII branch and indexed loop, speeding up index sharding by 54.6% (0.293µs -> 0.133µs per operation), and eliminated redundant `.ToLowerInvariant()` string allocations on every worker dispatch.
+- **Hoisted environment profile lookup and direct indexed pagination in `ListService`.** Hoisted `IsLegacyPerfProfile` resolution outside row projection loops to eliminate hundreds of redundant Win32 `Environment.GetEnvironmentVariable` calls per listing page (28.6% faster page construction, -40.8% GC collections), and replaced LINQ `.Skip().Take().LastOrDefault()` cursor extraction and runtime loops with direct array indexing.
+- **Zero-allocation type match in `IndexEntryFilterBuilder.IsTypeMatchAliasAware`.** Replaced per-object `type.ToLower()` and `query.ToLower()` heap allocations with `string.Equals(..., OrdinalIgnoreCase)` and `IndexOf(..., OrdinalIgnoreCase)`, speeding up type match scans across 38,000 KB objects by 53.7% (6.137ms -> 2.839ms per scan) and eliminating 100% of related Gen0 GC collections (54 -> 0).
+- **In-place ranking sorting, direct indexed pagination, and string concatenation in `SearchService`.** Replaced LINQ `OrderByDescending().ThenBy().ToList()` and `.Skip().Take().ToList()` with in-place `List<RankedResult>.Sort` and direct indexed paging, eliminating intermediate list allocations (25.5% faster ranking, -81.8% Gen0 GC collections), and replaced 10-parameter `string.Format` cache key construction with `string.Concat`.
+- **Single-pass linear token scanner and O(1) variable deduplication in `VariableInjector`.** Replaced two uncompiled Regex passes (`&(\w+)` and `&(\w+)\.`) and LINQ `Cast/Select/Distinct` chains with a single-pass linear scanner, and replaced O(N*M) linear search `variablesPart.Variables.Any(...)` with an O(1) `HashSet<string>` lookup. Speeds up variable extraction during object edits by 10.5X (0.021ms -> 0.002ms per op) and reduces Gen0 GC collections by 84.2%.
+
+## v2.52.0 - 2026-09-02
+
+### Added
+
+- **Native API route inspection and clone/update plans (`genexus_api`, PR #126).** Added typed `routes_inspect`, `routes_clone`, and `routes_update` support for API `ServiceGroupSource` methods, including route bindings, optimistic version tokens, dry-run previews, complete snapshots, post-save rereads, and verified rollback without implicit lifecycle operations. Contributed by David Vinicius Agostini (@davidagostini).
+- **Tool definitions schema budget expansion.** Expanded tool definitions approximate token budget from 22,200 to 22,500 tokens in `ToolSchemaSizeTests` to accommodate typed API route inspection, clone, and update parameters.
+
+## v2.51.0 - 2026-09-02
+
+### Added
+- **Deep Authoritative `MutationEngine` (Architectural Deepening Candidate 1).** Transformed `MutationEngine` into an authoritative Unit-of-Work module with `IMutationEngine` and `ISdkObjectWriter`. Encapsulates preflight guards against literal line-break sequences (`TextPayloadGuard`), optimistic concurrency checking (`ExpectedVersion`), in-memory dry-run diff generation, multi-object staging, and automatic LIFO rollback compensation across touched objects on intermediate failure.
+- **Deep Visual Surface Domain & Adapter Layer (Architectural Deepening Candidate 3).** Retired dead dummy stubs in `IVisualSurfaceAdapter` and implemented complete `WebFormSurfaceAdapter`, `ReportLayoutSurfaceAdapter`, and `VisualSurfaceDomain`. Unifies visual DOM projection, baseline XML preservation of untouched controls and print blocks, and semantic color normalization.
+- **Deep `CompilationPipeline` & Scoped Environment Isolation (Architectural Deepening Candidate 4).** Deepened `CompilationPipeline` with structured compiler diagnostic harvesting (MSBuild CS codes and GeneXus SPC/SRC codes) and introduced `EnvironmentScope : IDisposable` ensuring temporary active environment switching during builds automatically restores the original environment on success, failure, or exception.
+- **Polymorphic `PartSerializerRegistry` & Unified `QueryGrammar` (Architectural Deepening Candidate 5).** Activated `PartSerializerRegistry` with concrete `SourcePartSerializer`, `WebFormPartSerializer`, and `VariablesPartSerializer` to eliminate sprawling switch ladders. Unified search query parsing into `QueryGrammar.Parse` across `SearchService`.
+- **Deep Gateway `McpMiddlewarePipeline` Stages (Architectural Deepening Candidate 2).** Implemented `IMcpMiddleware` across `IdempotencyMiddleware`, `DryRunMiddleware`, and `ResponseCompactionMiddleware`, establishing composability and unit-testability for cross-cutting gateway request transformations.
+- **Deep Gateway `WorkerSupervisor` & `IWorkerSupervisor` Contract (Round 2 Deepening Candidate 1).** Extracted a dedicated `WorkerSupervisor` module implementing `IWorkerSupervisor` to decouple worker process orchestration, per-KB concurrency gates, LRU capacity eviction, and backoff crash recovery from gateway routing. Enables deterministic test execution without spawning real OS processes.
+- **Deep Worker `IndexStorageEngine` & Vector Recall Integration (Round 2 Deepening Candidate 2).** Extracted `IIndexStorageEngine` and `IndexStorageEngine` to encapsulate 16-shard FNV-1a hashing, GZip stream persistence, dirty generation counters, and manifest sidecar validation from `IndexCacheService`. Wired `VectorService` into `MemoryService` to empower factual memory recall with 128-float cosine similarity ranking.
+- **Deep Worker `SchemaMutationEngine` & Relational Domain Wiring (Round 2 Deepening Candidate 4).** Established `ISchemaMutationEngine` and `SchemaMutationEngine` to eliminate duplicate snapshot capture, optimistic concurrency token checking (`ExpectedVersion`), dry-run preview simulation, and rollback compensation across Transactions, Tables, Indexes, and Domains.
+- **Deep Worker `VariableService` & Pure `TypeBindingEngine` (Round 3 Deepening Candidate 5).** Extracted `ITypeBindingEngine` and `TypeBindingEngine` encapsulating 6-tier type resolution (primitive DB types with whitespace tolerance, domain references, dotted SDT items, full SDTs, Business Components, and built-in types) and GAM/WWP+ framework variable protection rules. Connected to `VariableService` to provide an authoritative variable domain engine.
+- **Deep Worker `ObjectReader` & Virtual DSL Synthesis Engine (Round 3 Deepening Candidate 1).** Extracted `IObjectReader` and `ObjectReader` encapsulating read-through caching with targeted invalidation, virtual part synthesis (Transaction/SDT DSL, DesignSystem Tokens+Styles split, DataSelector parts), uniform line- and byte-budget pagination, and multi-target batch reading. Integrated directly into `ObjectInspectionModule`.
+- **Strategy-Based `AnalysisEngine` & Pure `GeneXusSignatureParser` (Round 3 Deepening Candidate 2).** Extracted `GeneXusSignatureParser` as a pure domain parser for parameter rules (`parm(...)`), accessor directions (`in:`, `out:`, `inout:`), and outgoing call statements (`call`, `udp`, `submit`), eliminating regex duplication across `AnalyzeService` and `ObjectService`. Established `IAnalysisEngine` and `AnalysisEngine` with pluggable `IAnalysisModeHandler` strategy registry.
+- **Layered `SystemProcessExecutor` & Reorganization Analyzer (Round 3 Deepening Candidate 4).** Created `IProcessExecutor` and `SystemProcessExecutor` providing a clean mockable seam for OS process spawning, streaming, and tree termination. Created `IReorganizationAnalyzer` and `ReorganizationAnalyzer` to classify DDL statements, track affected tables/columns, and flag destructive conversions.
+- **Automated End-to-End Live HTTP Smoke Harness.** Created `scripts/test_live_http.ps1` to execute automated live MCP HTTP verification against running local gateways and open Knowledge Bases (`KBTeste`), testing protocol initialization, tools/list, whoami, worker pools, and live object queries with deterministic process cleanup.
+
+## v2.50.0 - 2026-09-02
+
+### Added
+
+- **List Knowledge Base environments (`genexus_kb action=list_environments`, Issue #124).** Added `list_environments` action to `genexus_kb` to enumerate all environments configured in the open Knowledge Base under STA lock. Returns `activeEnvironment` alongside each environment's `name`, `description`, primary `generator` (resolved via `GeneratorsPart`), `isActive` status flag, and resolved `webPath`.
+- **Target environment parameter in build lifecycle (`genexus_lifecycle`, Issue #125).** Added optional `environment` parameter to `genexus_lifecycle` for `build`, `specify`, `rebuild`, and `compile_check` actions. Directs the build to target the specified environment without requiring human IDE intervention to switch active environment beforehand.
+
+### Fixed
+
+- **Headless active environment switching (`genexus_kb action=set_environment`, Issue #125).** Fixed `set_environment` failing with `DispatcherException` / `TargetInvocationException` in background workers. The operation now performs direct SDK model activation (`DesignModel.Environment.TargetModel`, `User.SetTargetModel`, and `User.Save`) under `_kbLock`, bypassing the MSBuild task's UI Dispatcher subscriptions (`CommonServices.Output`) with exception-safe fallback.
+
+## v2.49.2 - 2026-08-31
+
+### Fixed
+
+- **Antigravity stdio bootstrap diagnostics (Issue #123).** `init` and `clients add --clients antigravity` now use the packaged gateway executable directly when available, avoiding the repeated npx bootstrap chain; stale package-cache paths are surfaced by `genexus-mcp clients`. The stdio wrapper also tees gateway stderr into `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt` on spawn failures and non-zero exits, so clients that hide child stderr leave an actionable timestamp, exit code, and bounded error tail.
+
+### Internal
+
+- **CLI quality gates.** `npm run lint` now rejects warnings, and the unused Codex launcher helper was removed so the baseline is warning-free.
+- **Agent workflow references.** Detailed SDK/release guidance now lives in focused documents, and `npm run test:one -- "<pattern>"` provides a supported single-test loop without duplicating npm scripts.
+
+## v2.49.1 - 2026-08-31
+
+### Fixed
+- **Report layout rectangle `BackColor`/`ForeColor` persistence and corruption fix (Issue #122).**
+  - **Robust Color Token Parsing (`ColorHelper`):** Resolved an issue where custom/unnamed rectangle colors serializing via .NET `Color.ToString()` (e.g. `Color [A=255, R=144, G=238, B=144]`) failed regex parsing in `ReportLayoutHelper.ReadLayout`, causing raw string descriptors to leak into the editable XML and convert to solid black (`#000000` / integer 0) on subsequent writes or dynamic property assignments. Added exhaustive color token parsing supporting .NET format, GeneXus RGB tokens (`R; G; B|`), comma RGB (`R, G, B`), CSS `rgb(...)`/`rgba(...)`, hex (`#RGB`, `#RGBA`, `#RRGGBB`, `#AARRGGBB`), and named colors.
+  - **Untouched Control Preservation (`baselineXml`):** Fixed `WebFormXmlHelper.ApplyEditableXml` and `WriteService.VisualWrite` to propagate `baselineXml` to `ReportLayoutHelper.WriteLayout`. Untouched controls across separate print blocks are no longer treated as modified, preventing untouched rectangles in other print blocks from turning black when editing a different print block or text control.
+  - **Color Attribute Equivalence in Write Verification:** Updated `XmlEquivalence.ElementsEqual` and `LayoutService.IsPersistedValueMatch` to perform semantic color equivalence on color attributes (`BackColor`, `ForeColor`, `BorderColor`), preventing false-positive write verification mismatches and accidental rollbacks when requested colors normalize to GeneXus canonical tokens.
+  - See Issue [#122](https://github.com/lennix1337/Genexus18MCP/issues/122).
+
+
+## v2.49.0 - 2026-08-31
+
+### Added
+- **Default MCP server name changed to `genexus18mcp`.** To eliminate naming collisions with GeneXus's official MCP server (which registers as `genexus`), the default server identifier across all AI clients (Cursor, VS Code, OpenCode, Codex CLI, Claude Desktop, Antigravity) is now `genexus18mcp`.
+- **`--server-name <name>` support.** Added `--server-name` flag to `genexus-mcp init`, `clients add`, `clients list`, and `clients remove` to configure any arbitrary server identifier (e.g. `Gx18byLennix`) and enable seamless multi-MCP coexistence in all supported formats (`mcpServers`, `servers`, `mcp.servers`, and TOML `[mcp_servers]`).
+- **`--force` override flag.** Added `--force` flag to explicitly overwrite existing foreign or custom MCP server configurations when replacing an entry is desired.
+
+### Fixed
+- **Third-party / HTTP MCP collision protection (Issue #121).** Client auto-registration now distinguishes our own local stdio / npx launcher entries from external/official HTTP/SSE/remote MCP server definitions. Attempting to overwrite an existing third-party entry without `--force` is rejected with `MCP_SERVER_COLLISION` and diagnostic guidance instead of silently clobbering the foreign server.
+  Thanks to [@antoniojosedev](https://github.com/antoniojosedev) for reporting and investigating the collision with the official GeneXus MCP server — see Issue [#121](https://github.com/lennix1337/Genexus18MCP/issues/121).
+
+## v2.48.0 - 2026-08-28
+
+### Added
+- **Unified `NavigationReport` In-Memory Domain Engine (Architectural Candidate 2).** Introduced a strongly-typed `NavigationReport` domain model (`NavigationLevel`, `NavigationFilter`) encapsulating `.nvg.xml` navigation discovery, disk snapshotting, and direct in-memory SQL statement projection. Eliminates legacy intermediate JSON string serialization and re-parsing between `NavigationService`, `NavigationSqlService`, and `NavigationViewService`.
+- **Deep `VariableService` & Type Resolution Engine (Architectural Candidate 4).** Consolidated variable CRUD operations, two-tier type resolution (`VariableTypeResolver`), framework-managed protections, and source auto-declaration heuristics into a cohesive `VariableService` interface (`IVariableService`).
+- **Synchronized Session & KB Context Registry (Architectural Candidate 5).** Enhanced `HttpSessionRegistry` and `SessionKbContextStore` with case-insensitive session matching, timeout immunity for stdio harnesses, and unified session state tracking.
+- **Declarative Gateway Tool Dispatch Seam (Architectural Candidate 1).** Streamlined declarative dispatch in `McpRouter.ConvertToolCall` targeting canonical tool definitions directly.
+- **Pattern Engine Adapter & WorkWithPlus Isolation (Architectural Candidate 3).** Decoupled Pattern and WorkWithPlus application workflows behind `IPatternEngineAdapter` and `PatternService` with mockable test harnesses.
+
+## v2.47.0 - 2026-08-27
+
+### Added
+- **`McpMiddlewarePipeline` for Gateway Request Processing (Pass 2 Architectural Candidate 1).** Decomposed the monolithic gateway request loop into an extensible, unit-testable pipeline (`IMcpMiddleware`) isolating schema validation, auto-typing, idempotency, semantic caching, and response compaction.
+- **Unified `QueryGrammar` & Tokenization (Pass 2 Architectural Candidate 2).** Extracted an authoritative query parser and canonical type alias resolver (`NormalizeType`, `IsTypeMatch`, prefix extraction for `type:`, `parent:`, `usedby:`, `metadata:`) shared across `SearchService`, `ListService`, and `SourceSearchService`.
+- **Polymorphic `IVisualSurfaceAdapter` for UI & Layout (Pass 2 Architectural Candidate 3).** Established a unified visual surface abstraction bridging WebForms, Procedure Reports, and Design System Objects (`WebFormSurfaceAdapter`, `ReportLayoutSurfaceAdapter`).
+- **`MultiObjectUnitOfWork` for Atomic Refactoring (Pass 2 Architectural Candidate 4).** Added multi-object transaction management in `RefactorService` with in-memory staging, dry-run diffing, and automated rollback across all modified caller objects upon intermediate failure.
+- **`DiagnosticAndHealingEngine` (Pass 2 Architectural Candidate 5).** Unified watchdog health probing, crash ledger forensics, mutation fencing analysis, and automated remediation routines for Gateway and Worker self-healing.
+- **`CommandHandlerRegistry` for Worker modular command resolution (Architectural Candidate 3).** Replaced monolithic eager command dispatch with a lazy registry pattern supporting direct canonical tool name resolution (`genexus_*`) and typed `CommandContext` execution.
+- **Authoritative `MutationEngine` (Architectural Candidate 2).** Consolidated object modifications into a unified pipeline managing preflight checks, optimistic concurrency guards, dry-run simulation, SDK COM transactions, snapshot persistence, and automated rollback compensation.
+- **Declarative Gateway Tool Dispatch Seam (Architectural Candidate 1).** Streamlined `McpRouter.ConvertToolCall` to forward canonical tools defined in `tool_definitions.json` directly to the Worker's command registry, preventing schema drift and parameter-dropping bugs while bypassing shallow router boilerplate.
+- **Unified `CompilationPipeline` (Architectural Candidate 4).** Encapsulated compilation, in-process specification, MSBuild execution, process tree management, and structured compiler diagnostic parsing behind a cohesive lifecycle module.
+- **Consolidated `ObjectInspectionModule` (Architectural Candidate 5).** Unified object reading, multi-part extraction, summaries, and 360-degree context extraction into a tiered inspection engine (`Summary`, `Source`, `Parts`, `Full`, `Context360`).
+
+## v2.46.2 - 2026-08-26
+
+### Fixed
+- **Text writes now reject literal line-break escape sequences before persistence.** A shared preflight guard covers full edits, patches, atomic authoring, batch writes, and the legacy scaffold path, returning `LiteralLineBreaksDetected` with the affected field and sequence instead of allowing a whole GeneXus part to become one `//` comment. The discovery schema budget was raised from 21,900 to 22,200 tokens to document the contract.
+
+## v2.46.1 - 2026-08-26
+
+### Fixed
+- **`save_as` no longer leaves a partial WebPanel when a part cannot be cloned (issue #118).** Explicitly empty or unsupported parts remain non-fatal skips, but a real part-write failure now stops the clone, removes the incomplete target automatically, and reports whether cleanup succeeded. (PR [#120](https://github.com/lennix1337/Genexus18MCP/pull/120)).
+- **`save_as` on Design System objects (DSO) now clones both Tokens and Styles parts (issue #119).** `PartAccessor.GetDisplayPartName` now maps `DesignSystemTokensPartGuid` to `"Tokens"` and `DesignSystemStylesPartGuid` to `"Styles"` so both source parts are discovered and copied instead of colliding on `"Source"`.
+- **`save_as` on DataSelector objects preserves structure, conditions, and parameters (issue #116).** DataSelector structure parts cannot be round-tripped as plain source text; `ObjectService.CloneDataSelectorStructurePart` now copies parameters, conditions, orders, and defined-by attributes natively via the SDK object model with XML deserialization fallback.
+- **`genexus_properties` persists and verifies Domain assignments on Attributes and Variables (issue #117).** Setting `Domain`, `DomainBasedOn`, or `BasedOn` now validates that the target Domain exists, applies the assignment via `DomainPropertyApplier.ApplyDomainBasedOn`, and confirms persistence by inspecting the object's `DomainBasedOn` link during post-save verification.
+- **In-process build resolves targets when a Transaction and Table share the same name (issue #115).** `InProcessBuildRunner.ResolveTargetKBObject` disambiguates homonyms by prioritizing primary logic objects (Transactions, Procedures, WebPanels, etc.) over auto-generated Tables and adds support for `Type:Name` qualifiers (e.g. `Transaction:Customer`) and GUIDs.
+
+## v2.46.0 - 2026-08-24
+
+### Fixed
+- **Report Layout writes accepted again via `genexus_edit` / visual write paths.** The input validator rejected the `<Report>` root that `genexus_layout` itself emits for Procedure Report layouts, making every round-trip edit fail with "Visual writes currently require a valid GxMultiForm, BODY, HTML, Layout, or ReportPart XML document". `Report` is now an accepted root.
+
+### Added
+- **Creating new controls in Report print blocks.** `ReportLayoutHelper.WriteLayout` only updated attributes of controls that already existed in a band, so adding controls to an empty print block (e.g. border `ReportLine`s) silently did nothing. Controls present in the incoming XML but absent from the band are now created — cloned from an existing control of the same type in the layout when possible — with all incoming geometry/style attributes applied and verified on save.
+- **Type-specific report control properties round-trip.** Report layouts are no longer projected lossily: `ReportLine` (Direction, LineWidth, BorderStyle), `ReportRectangle` (per-side BorderStyle*, CornerRadius*), `ReportImage` (ImageReference), and `ReportAttribute` (AttributeReference, Row/Col expressions, FieldSpecifier) properties now appear when reading a Report layout and are applied back on write.
+- **`genexus_layout action=delete_printblock`.** Removes a print block from a Procedure's report layout inside a transactional write that also removes the matching `print <block>` command from the Procedure Source and verifies on a cold read-back that the block is gone.
+- **Report page-setup read/write.** PaperSize, PaperOrientation, PaperWidth/PaperHeight, RightMargin, and UsePrinterSettings are now projected on the `<Report>` root element and applied back to the layout on write (only attributes actually changed vs. baseline).
+
+## v2.45.2 - 2026-08-24
+
+### Changed
+- **Faster object resolution on large KBs.** `genexus_search` and target-name lookups no longer scan the whole in-memory index when the typed probes miss — candidates are resolved through the name→objects multimap that already exists, turning a ~38k-entry linear scan into a direct lookup. Falls back to the old scan transparently when the derived index isn't built yet.
+- **Less per-row overhead in `genexus_list_objects`.** The legacy-compatibility profile flag is now read once per page instead of once per result row, removing hundreds of environment lookups from every large listing.
+- **Cheaper object deletion on the index.** Removing an object from the search index resolves its storage key through the name multimap instead of filtering every indexed entry while holding the index lock, so watcher-driven deletions no longer block concurrent searches for a full-index pass.
+- **Less duplicated enrichment work.** The background enrichment queue now skips entries that are already queued instead of re-running their full SDK reference-graph work per duplicate, and duplicate detection on heavily-referenced hub objects (popular tables/SDTs) uses a hash set instead of a linear scan of thousands of accumulated edges.
+- **Leaner per-request response path in the gateway.** Gateway-built tool responses no longer deep-clone the whole payload tree just to attach KB metadata; lifecycle status compaction works directly on the in-memory JSON instead of serializing and re-parsing it (up to three full passes saved per poll); and the per-call feature-flag environment probes (`GXMCP_TERSE`, `GXMCP_NO_STRUCTURED_CONTENT`, `GXMCP_LEGACY_TOOL_ALIASES`) are cached behind a short TTL instead of hitting Win32 environment lookups multiple times per request.
+
+### Fixed
+- **npm package missing `scripts/verify-install.js` on publish (issue #114).** The `postinstall` script introduced in v2.44.1 to verify worker/gateway binary presence failed on fresh `npm install -g` / `npx` invocations because `scripts/verify-install.js` was not declared in `package.json`'s `files` array and was omitted from the published npm tarballs. Added `scripts/verify-install.js` to `package.json` `files` and added a contract test ensuring all declared bin and postinstall script files are packaged.
+
+### Added
+- **`genexus_connection_recover` — self-healing recovery tool.** When tool calls hang, return `WorkerBusy` repeatedly, or the connection seems dead, the agent can now call this instead of asking the user to restart the AI client. It probes every open worker with a liveness check, kills and respawns only the unhealthy ones (force=true targets all), confirms each replacement is SDK-ready before returning, and clears the semantic cache so stale reads can't survive the recovery. Workers that silently died since their last call are re-opened even though they no longer appear in the open list.
+
+## v2.45.1 - 2026-08-22
+
+### Fixed
+- **`genexus-mcp doctor --mcp-smoke` no longer fails on a healthy server.** The smoke check omitted the `Accept: application/json, text/event-stream` header that the gateway requires on every POST, so it always got a 406 back and reported a false failure — masking real connection problems. Users hitting "connection closed" can now trust the smoke check to tell a healthy gateway from a dead one.
+- **The smoke check no longer fails when no KB is open.** Tool calls in the smoke run now accept a well-formed structured error (e.g. `KB_AMBIGUOUS` with no default KB) as proof the channel works — only transport-level failures (no reply, non-JSON, HTTP errors) fail the check. A new contract test (`McpSmokeScriptContractTests`) launches a real gateway in-process and runs the unmodified smoke script against it, so any future drift between first-party diagnostic scripts and the gateway's protocol requirements fails CI instead of shipping.
+
+## v2.45.0 - 2026-08-22
+
+### Added
+- **Lean-response mode: drop `structuredContent` from tool results.** The MCP-standard `structuredContent` field duplicates the entire JSON payload that is already carried in `content[0].text`, adding 42-46% to every tool response's byte size (measured across `genexus_kb`, `genexus_list_objects`, and `genexus_search` against a real KB). Set `Server.EmitStructuredContent: false` in `config.json`, or the `GXMCP_NO_STRUCTURED_CONTENT=1` environment variable, to omit it — LLM clients read the text content, so nothing is lost for agent-driven sessions. Default remains `true` (protocol-compliant).
+- **Terse mode: strip per-response UX sugar.** `Server.TerseResponses: true` (or env `GXMCP_TERSE=1`) omits `next_legal_actions` and the `_meta.tokens` used/limit block from tool responses, keeping only the payload itself plus error hints. Stacks with lean mode for maximum per-turn savings. Also slims `genexus_whoami` (drops worker death history, tool-latency roll-up, metrics summary, install forensics, the reference pointer, `suggestedNext`, index `recentlyChanged`/`flushHealth`, the full update-registry dump when up to date, and redundant KB alias lists — 11KB → ~1.2KB measured), `InvalidArgs` error envelopes (drops the repeated `nextSteps` scaffolding; violations stay), the worker's inner `_meta` UX blocks (`suggested_next`, `alternative_views`, `aggregates`, `enrichmentHint`, `autoInjected*` — list_objects 3.8KB → 1.7KB measured), inspect's `sourceReadHint`, `summary`, name-resolution echoes (`resolvedAs`/`alsoMatches`), `correlationId`, `wwpMetadata.masterPage`, and `lifecycle.lastModifiedBy` (inspect 2.9KB → ~0.9KB measured).
+- **Automatic worker pre-spawn on startup.** The gateway now pre-spawns the default KB's worker during MCP initialize, so the measured 3.8-12s cold-start is paid at boot instead of on the agent's first KB-bound call. No configuration needed — it uses `Environment.DefaultKb`/`KBs[]`; a failed pre-spawn logs and falls back to the normal open path.
+- **First-touch warmup for STA-heavy tools.** After opening a KB, the background warmup now exercises `inspect`, `analyze` (linter + callers), and read paths — the first real call of each previously paid a one-time 0.6-3.8s JIT/SDK cost while every following call ran in single-digit milliseconds. That cost now lands in the warmup window instead of the agent's turn.
+- **Lean + terse responses by default on new installs.** `genexus-mcp init` now writes `EmitStructuredContent: false` and `TerseResponses: true` into the generated `config.json` — every tool response drops the duplicated `structuredContent`, `next_legal_actions`, and `_meta.tokens` blocks, cutting per-turn bytes by roughly half for agent-driven sessions. Existing configs are untouched; flip either flag back to opt in to the full MCP surface.
+- **Compact projection for `genexus_search`.** Search result pages (50 items/call) now project each hit to `name`/`type`/`description`/`path`/`lastUpdate`, dropping per-item type metadata (`guid`, `length`, `decimals`) a scanning agent rarely needs. Explicit `fields[]` and `projection=verbose` still win.
+- **First-touch warmup now targets real code objects.** The background warmup picks its probe object from Transactions/Procedures instead of the alphabetically-first index entry, so it exercises the structure/source SDK paths that inspect/analyze actually hit.
+
+### Changed
+- **Faster post-edit validation and build-status polls.** The `genexus_apply_pattern` validation poll now probes at 250ms for the first 2s before falling back to 1s — single-object validation builds typically land in 1-3s, cutting the common-case wait from ~1-4s to under 1s. The async build-status poller's first probe drops from 2s to 500ms so sync-fast builds surface immediately.
+- **Faster visual-edit persistence retry.** The Procedure layout write-back verifier retried at a fixed 350ms per attempt (up to 2.1s of waiting); it now backs off adaptively (100/200/350/350/500/500ms), so edits whose persistence lands quickly confirm in under 600ms while slow cases still get the full retry window.
+- **Granular semantic-cache invalidation.** Mutations that target a single object (edit, delete, properties set/move, single-target writes) now drop only cached reads referencing that object; unrelated warm reads survive (~10x faster follow-up reads after writes). KB-wide mutations (rename across KB, import) still clear the whole cache.
+
+## v2.44.1 - 2026-08-21
+
+### Fixed
+
+- **A background build can no longer be killed by the worker's idle watchdog (issue #113).** While a build runs, the worker emits a `build_active` heartbeat every 20 seconds; the Gateway now treats a recent heartbeat as activity and refuses to idle-reap or heap-recycle the worker mid-build, no matter how short `Server.WorkerIdleTimeoutMinutes` is configured.
+- **A build whose worker dies mid-run now fails immediately instead of hanging for 30 minutes (issue #113).** The Gateway's background status poller used to loop until its hard cap when the worker process exited, leaving `wait_until_done` callers waiting until the MCP transport itself timed out. Three consecutive failed status polls now complete the job as failed with a "worker exited mid-build" message and a re-run hint.
+- **A missing worker binary is now diagnosed at the source (issue #112).** When `GeneXus.WorkerExecutable` in `config.json` doesn't exist, the Gateway logs it instead of silently falling back; the "Worker NOT FOUND" error lists every location checked plus the reinstall command, `genexus-mcp doctor` gained a `worker_binary` check, and the npm package verifies `publish/GxMcp.Gateway.exe` and `publish/worker/GxMcp.Worker.exe` right after install so an incomplete npx extraction fails loudly at install time.
+
+## v2.44.0 - 2026-08-21
+
+### Added
+
+- **Dynamic Tool Gating and Profiles (`GXMCP_PROFILE` / `Server.ToolProfile`).** The MCP Gateway now supports scoped tool surface profiles (`all`, `core`, `authoring`, `devops`, `ui`, `db`), reducing client token overhead by up to 75% on discovery while ensuring full toolset availability on demand.
+- **Auto-Fix & Self-Correction Engine (`ErrorDiagnoser`).** Diagnoses GeneXus specifier and compiler error codes (`spc0005`, `spc0011`, `spc0053`, `spc0107`, `spc0130`, etc.) and automatically populates structured `suggestedFixes` arrays on build results and linter reports so AI agents can self-correct with a single click/action.
+- **OpenAPI 3.0 Import & Export for GeneXus API Objects (`genexus_api action=export_openapi|import_openapi`).** Serializes GeneXus HTTP procedures and API Objects into canonical OpenAPI 3.0.3 specifications and imports external OpenAPI 3.0 / Swagger definitions directly into GeneXus SDT blueprints and endpoint contracts.
+- **Design System Object (DSO) Token Parsing, Class Extraction and Validation (`genexus_layout action=design_system` & `DesignSystemService`).** Extends DSO capabilities with automated extraction of token groups (`#colors`, `#font-sizes`, `#spacing`), CSS class rules (`.ClassName`), and syntax validation for Design System objects.
+- **Automated GXtest Unit Test Generation (`GxTestGeneratorService`).** Automatically generates complete, structured GXtest `ProcedureUnitTest` source code, parameters, variables, happy-path assertions (`Assert.IsTrue`, `Assert.AreEqual`), and boundary/edge-case suites for GeneXus procedures.
+- **MCP Resource Subscriptions (`resources/subscribe` & `resources/unsubscribe`).** Fully integrates MCP resource subscription protocol and capabilities, enabling clients to receive real-time push events (`notifications/resources/updated`) when KB resources, objects, or health indicators update.
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **Index cache no longer risks losing the most recent index mutation across a concurrent flush.** MarkDirty/MarkDirtyForKey now mark the affected shard(s) dirty before bumping the flush generation, closing a race where an in-flight flush could record a generation as confirmed on disk without serializing that mutation - leaving it permanently absent from the warm-start snapshot.
+- **Self-update no longer leaves the install without a binary if the swap fails mid-apply.** The previous binaries are now only cleaned up after a fully successful update, and a failed file replacement restores the backup instead of leaving the gateway or worker executable missing. The per-install update lock is also derived from a process-stable hash of the install path, so two gateway instances sharing one install can no longer apply the same update simultaneously.
+- **A cached read can no longer resurrect a pre-mutation response.** A read already in flight when a mutating tool ran could finish after the cache invalidation and store its stale envelope back, so an identical later read replayed pre-mutation data. In-flight reads are now epoch-stamped and skipped when any invalidation happened meanwhile.
+- **Two MCP clients with the same KB open no longer kill each other's worker.** The duplicate-worker reaper matched workers only by KB path and treated another live gateway's worker as an orphan, causing mutual kill/respawn thrashing; it now spares workers whose owning gateway is still running.
+- **`genexus_worker_reload` can no longer wedge a KB permanently.** If a reload stalled between marking the pool entry as draining and signalling completion, every subsequent call for that KB waited forever; the wait is now bounded to 60 seconds and fails with a retryable error.
+- **Client cancellations (`notifications/cancelled`) now actually cancel pending tool calls.** A cancelled tool call resolves immediately with JSON-RPC error `-32800` instead of occupying the worker until the timeout elapses.
+- **Searches and listings no longer risk native crashes while the index is cold.** The few code paths behind thread-safe dispatch that reached into GeneXus SDK COM objects off the dedicated STA thread (exact-name direct lookup, SDK cache warm-up, runtime enumeration fallback) are now guarded and fall back to the in-memory index.
+- **Retries with `clientRequestId` no longer replay errors.** The idempotency cache also stored error/busy envelopes, so a quick retry reproduced a transient failure (e.g. "KB not open" during warm-up) instead of re-executing the call.
+- **A corrupted or hand-edited `config.json` no longer prevents startup.** Invalid scalar values fall back to defaults with a warning, configuration reloads are debounced and serialized, and the update-check cache file is now written atomically.
+- **Cross-reference edges (`CalledBy`) no longer miss targets with different casing or inside Folders/Modules**, and the index meta sidecar is written atomically (a crash mid-write previously forced a full reindex on the next start).
+- **`Server.MaxOpenKbs` is now respected exactly** (an off-by-one allowed one extra open KB before eviction kicked in), and worker-pool alias lookups normalize casing consistently.
+
+### Changed
+
+- **Semantic cache is bounded (256 entries, 30-minute TTL).** Long-lived gateways no longer grow memory without limit on read-heavy sessions; tune with `GXMCP_SEMANTIC_CACHE_MAX`.
+- **Lower per-call overhead.** Tool commands parse once instead of 3-4 times on the worker; large responses serialize fewer times in gateway post-processing; oversized list truncation no longer reserializes the whole array per removed item; SSE streams deliver messages immediately instead of on a 5-second poll; and the HTTP endpoint rejects request bodies over 2 MB.
+
+### Internal
+
+- New regression coverage for the fixes above (semantic-cache epoch/bounds, send-failure envelopes, self-update rollback, dirty-generation ordering, idempotency envelope filtering, meta-token injection, worker-pool capacity). Suites now total ~1,130 Gateway and ~2,020 Worker tests.
+
+## v2.43.0 - 2026-08-20
+
+### Added
+
+- **Multi-part editing on a single object in `genexus_edit`.** `genexus_edit` now accepts a `parts` array (`[{ part: "Rules", content: "..." }, { part: "Source", content: "..." }]`) alongside `name`, updating all specified parts and saving the object exactly once in a single atomic transaction.
+- **Batch property setting in `genexus_properties action=set`.** `genexus_properties` now accepts a `properties: { "Prop1": "Val1", "Prop2": "Val2" }` map to set multiple properties on an object in memory and commit them with a single `EnsureSave()` and SQL Server transaction.
+
+### Performance
+
+- **Eliminated redundant multiple saves and KB history bloat across all authoring and batch tools.** Previously, creating an object with variables, rules, source, and properties, or batch editing multiple parts, would sequentially invoke `EnsureSave()` 5 to 10 times, generating dozens of intermediate `EntityVersion` revisions and slowing down execution.
+  - `genexus_create action=object_atomic` (`AtomicCreateService`): Refactored to instantiate the object in memory, apply variables, rules, source, and properties directly in memory, and commit the entire object with **exactly 1 `EnsureSave()`**.
+  - `genexus_authoring` (`AtomicAuthoringService`): Coalesces creation, variables, rules, source, and properties in memory before performing a single save.
+  - `genexus_edit` / `MultiEdit` (`BatchService`): Groups edits by target object and executes coalesced in-memory part mutations, reducing N saves to 1 single `EnsureSave()` per object.
+  - `WriteService`: Logical source parts (`ISource` parts: Source, Rules, Events, Variables) now bypass the redundant intermediate `part.Save()` during transaction save and commit directly via `obj.EnsureSave()`, eliminating duplicate SQL Server `EntityVersion` rows.
+
+## v2.42.0 - 2026-08-20
+
+### Added
+
+- **Single-roundtrip Smart Read and 360° Task Context (`genexus_read` and `genexus_analyze mode=context`).** AI coding agents can now obtain full object context in a single tool call instead of incurring multiple roundtrips across parts, variables, rules, and dependencies:
+  - `genexus_read`: Omitting the `part` argument (the new recommended default) returns the complete, tailored object payload for any GeneXus object type in 1 call: rules (with `parm`), source/events, compact variables array, structure DSL, signature, and called procedures' signatures. Single-part reads remain fully supported when `part` is explicitly provided.
+  - `genexus_analyze mode=context`: Bundles complete 360° task context in 1 roundtrip: the full target object + inlined parameter signatures of all called procedures + physical schemas and primary keys of referenced tables + structures of referenced SDTs + top callers.
+  - Smart Variable Pruning: Prunes 100% of unused GeneXus SDK built-in system noise variables (`&Time`, `&Pgmname`, `&Pgmdesc`, `&Page`, `&Line`, etc.) from variable lists, saving context budget while preserving all user-declared and referenced variables.
+  - `inline_read_top` Smart Reads: `genexus_query`, `genexus_list_objects`, and `genexus_search_source` now populate `inline_reads` with full `FullObjectRead` payloads on Turn 1.
+  - AXI Guidance: Embedded proactive playbooks and schema annotations in `tool_definitions.json`, `genexus_whoami(verbose=true)`, and Next Legal Actions to guide LLMs toward the 1-roundtrip path, maximizing speed and context economy.
+- **Native typed .NET generator references with `genexus_generator_reference`.** Lists, previews, adds, and removes the managed assemblies that GeneXus emits through `GxExternalReference`. Mutations require an optimistic token, save and reread only the native `GeneratorsPart`, avoid duplicates, and restore the complete generator-property snapshot on divergence. The tool never invokes Specify, Generate, Build, Rebuild, compilation, reorganization, publish, execution, or tests.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for native typed .NET generator references — see [PR #111](https://github.com/lennix1337/Genexus18MCP/pull/111).
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`genexus_edit mode=full` now keeps dry-runs non-persistent and recovers deterministically from blocked SDK calls.** Preview requests never enter the asynchronous mutation path or call `Save`; background edits use one operation ID across accepted/status/result/cancel and Worker busy telemetry; cancellation terminalizes the operation and recycles only its blocked Worker. Timed-out or cancelled writes require a successful read-back before another write to the same object. Full writes preserve `baseVersion`/`expectedVersion`, honor `rollbackOnFailure`, and return the independently re-read Source, version token, persistence state, and empty implicit lifecycle list.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for stabilizing full edit dry-runs, optimistic concurrency, and async mutation recovery — see [PR #110](https://github.com/lennix1337/Genexus18MCP/pull/110).
+- **Robust Native SDK Object Resolution across all modules.** Fixed edge cases where newly created or unindexed objects (and Transactions sharing names with physical Table shadow objects) would fail resolution during single-roundtrip reads; resolution now seamlessly uses native SDK `GetByName` and promotes physical tables to source-bearing Transactions.
+- **SDT attribute-based members (`Attribute:<Name>` / `basedOnAttribute`) now persist and round-trip through `genexus_structure`, `genexus_read`, `genexus_inspect`, and `genexus_edit`.** Previously, SDT fields referencing a KB Attribute were ignored or stripped when setting structure, reading visual structure, or serializing to the Structure DSL, causing `basedOnAttribute` to be lost and `dryRun` to report false negatives. The SDT authoring pipeline now binds `AttributeBasedOn` via the native SDK reference provider, parses and emits `Attribute:<Name>` in DSL round-trips, surfaces `basedOnAttribute` in `genexus_structure action=get_visual`, `genexus_inspect`, and `genexus_read part=Structure`, and accurately detects visual structure mutations on attribute changes. Fixes #109.
+
+### Internal
+
+- **Typed generator-reference schema budget.** Raised the intentional combined tool-schema budget from 21,100 to 21,700 tokens for native .NET generator reference list/add/remove, dry-run, optimistic concurrency, and exact rollback (measured ~21,563).
+
+## v2.41.11 - 2026-08-19
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **User Control degradation detection no longer fires on healthy builds.** The post-build
+  evidence gate required one `setProp("Gx Control Type", ...)` binding per `gx.uc.getNew(...)`
+  instance, but GeneXus emits that property only sporadically: in a reference KB with 32 User
+  Control objects, exactly one carried it — and IDE-generated output was no different from
+  MCP-generated output. Every other build was reported as `SucceededWithGaps` with a
+  `[user-control-degraded]` warning, which buried the real failure in noise. Detection now keys
+  on the signature actually observed in degraded output: the control-name argument of
+  `gx.uc.getNew(...)` emitted as the literal string `"this"` instead of the control's name,
+  and/or a generated `.js` that lost every `setProp(...)` binding. Measured against a real KB,
+  the new gate flags 5 of 5 genuinely degraded files and 0 of 28 healthy IDE-generated ones
+  (the previous gate flagged 27 of those 28). Fixes #103 item 4.
+- Thanks to [@danielkrueger](https://github.com/danielkrueger) for identifying the real User Control degradation signature and updating the evidence gate — see [PR #108](https://github.com/lennix1337/Genexus18MCP/pull/108).
+
+## v2.41.10 - 2026-08-19
+
+### Added
+
+- **Native atomic Data View authoring with `genexus_data_view`.** The new `inspect`, `dry_run`, `create`, `update`, and `delete` actions validate existing table metadata, global attributes, types and complete primary keys before saving a root-only Business Component Transaction and its Data View mapping inside one GeneXus SDK transaction. Responses include optimistic version tokens, persisted reread evidence, physical schema/table mapping, and a no-DDL reorganization preview. The tool never invokes Specify, Generate, Build, Rebuild, Reorg, compilation, publishing, execution, or tests implicitly.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for the native atomic Data View authoring — see [PR #104](https://github.com/lennix1337/Genexus18MCP/pull/104).
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **Data View mutations now fail closed at the safety boundary.** `genexus_data_view action=delete` requires `confirm=true` outside dry-run, create/update report commit and verification independently, updates validate the Transaction/Data View pair, and successful deletes remove both native identities from the search index and semantic cache.
+- **Object deletion no longer treats SDK resolution failures as absence.** Native identity verification now distinguishes found, absent, and failed states, limits incoming-reference enumeration, reports verification uncertainty honestly after a committed delete, and removes only the deleted GUID from the index.
+- **Business Component variable writes now honor collection intent and protect concurrent edits.** `collection` is applied explicitly for add/modify, and a version conflict detected before mutation skips compensating rollback so a concurrent change cannot be overwritten.
+- **XPZ fidelity checks now fail closed when the raw WebForm payload is unavailable.** Namespace-aware, bounded archive parsing is required before import; SDK-projected XML is never used as its own fidelity baseline, and explicit import options fail before mutation when the installed SDK cannot apply them.
+- **Transaction object dry-runs no longer create the global seed Attribute.** `genexus_create action=object type=Transaction dryRun=true` now returns before constructing the SDK Transaction, reporting `persisted=false` and `mutationDetected=false` without creating the `<Transaction>Id` Attribute or any table/index metadata.
+- **Native modular Business Component variables in `genexus_variable`.** `add` and `modify` now accept `objectType=BusinessComponent`, `objectName`, and `module`, resolve the Transaction through the GeneXus type provider, persist its native custom type, and verify the same BC GUID/module after reread. The atomic path supports `expectedVersion`, mutation-free `dryRun`, typed diffs, and complete rollback without running lifecycle actions.
+- **Atomic Transaction visual-structure updates.** `genexus_structure action=update_visual` now snapshots the Structure, authored parts, and referenced global Attributes; checks `expectedVersion`; performs a pure `dryRun`; and restores and verifies the complete snapshot on save or reread failure. Default WinForm/WebForm projections may follow a valid Structure change without producing a false `AuthoredPartsCorrupted` failure.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for the modular Business Component and atomic Structure support — see [PR #105](https://github.com/lennix1337/Genexus18MCP/pull/105).
+- **Native typed Domain resolution and atomic verification in `genexus_delete_object`.** Domain deletion now resolves through the GeneXus SDK identity API, reports native incoming references in dry-run, supports optimistic concurrency with `expectedVersion`, requires confirmation only for persistence, and performs transactional deletion plus post-save reread without invoking lifecycle actions.
+- Thanks to [@davidagostini](https://github.com/davidagostini) for native Domain resolution in object deletion — see [PR #106](https://github.com/lennix1337/Genexus18MCP/pull/106).
+- **XPZ imports now use lossless overwrite options and capture fidelity from the raw export payload before SDK import preparation**, preserving WebForm `GxWidth`/`GxHeight` and preventing circular fidelity checks. Fixes #102.
+- **Build telemetry now resolves the active Environment through the KB service and audits User Control bindings in up-to-date generated JavaScript**, so stale/incomplete `Gx Control Type` output is reported instead of appearing successful. Fixes #103 items 3 and 4.
+- **Build generation evidence is now scoped to the SDK-selected environment output root**, so a newer production artifact cannot be reported for a development build; `genexus_kb` can also read/select the active environment through the official SDK path. Fixes #103 item 3.
+- Thanks to [@danielkrueger](https://github.com/danielkrueger) for XPZ fidelity and environment-scoped build evidence — see [PR #107](https://github.com/lennix1337/Genexus18MCP/pull/107).
+
+### Changed
+
+- **Multi-KB target selection is now predictable.** `genexus_kb action=set_default` controls the implicit target for calls that omit `kb`, while explicit aliases remain available for parallel work. Gateway and OpenCode KB catalogs now preserve all registered entries across array/map config formats, and `whoami`/`genexus_kb list` expose the active, open, known, and declared aliases.
+- **OpenCode now works across both MCP configuration layouts.** The installer automatically configures detected OpenCode installations while preserving OpenCode 1.x's direct `mcp.genexus` entry and the current nested `mcp.servers.genexus` form; KB-bound responses identify their source with `kbAlias` for text-only clients.
+- **KB-bound responses now avoid redundant payload cloning and serialization.** The Gateway transfers ownership of completed Worker payloads before attaching `kbAlias`, reducing allocation and response-finalization cost for large search, read, and edit results while retaining defensive cloning for shared payloads.
+
+### Internal
+
+- **Disposable U16 Data View persistence harness and schema budget.** Added `scripts/Test-DataViewAtomic.ps1` to verify dry-run immutability, atomic create/reread/delete, root-only BC shape, physical mapping, stale-version rejection, and absence of implicit lifecycle actions; raised the intentional combined tool-schema budget from 20,500 to 21,100 tokens (measured ~20,932).
+
+## v2.41.9 - 2026-08-18
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`genexus_structure action=move_attribute` now preserves authored Transaction logic across SDK saves and worker restarts.** Rules and Events snapshots select the source-bearing native part when GeneXus exposes duplicate lazy entries, restore through the normal Source writer, and verify the persisted result after commit. Fixes [#99](https://github.com/lennix1337/Genexus18MCP/issues/99).
+- **`genexus_transfer action=import` now verifies WebForm fidelity after XPZ import.** The import preserves dimensions, bindings, and theme references through lossless SDK options, repairs a detected mismatch when possible, and reports the verification result instead of claiming success from `ImportFile` alone. Fixes [#102](https://github.com/lennix1337/Genexus18MCP/issues/102).
+- **Lifecycle build previews, environment telemetry, and User Control generation evidence are now reliable.** `dryRun=true` stays on the synchronous preview path, compact responses retain the resolved Environment, and generated JavaScript reports incomplete `Gx Control Type` bindings by count. Fixes [#103](https://github.com/lennix1337/Genexus18MCP/issues/103).
+
+## v2.41.8 - 2026-08-17
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **Visual layout batch parity and rollback in `genexus_layout action=set_properties`.** Batch layout property writes now synchronize `Caption` and `CaptionExpression` consistently across controls and automatically roll back the layout to the pre-call baseline if readback or post-save verification fails.
+- **Snapshot and part preservation in `genexus_structure action=update`.** Updating Transaction visual structures via `SyncVisualStructure` now captures a complete snapshot of non-Structure parts (`Rules`, `Events`, `WebForm`, `Variables`) and restores them if reset during SDK Transaction saving, verifying authored parts preservation before committing.
+- **Expanded visual root element support in `NormalizeEditableXmlInput`.** Supported `<Layout>` and `<ReportPart>` roots in addition to `<GxMultiForm>`, `<BODY>`, and `<HTML>` to ensure SDPanels and Procedure/Report layouts read via `genexus_read` can be modified and written back directly.
+- **Text persistence verification for Documentation, Help, DataSelector, and WSDL.** `TextPersistenceVerifier` now classifies `Documentation`, `Help`, `DataSelector`, and `WSDL` as code/text parts, preventing false `WriteNotPersisted` errors due to SDK whitespace or line-ending formatting differences.
+- **`ExtractProcedure` dry-run preview and line-ending normalization in `genexus_refactor`.** `ExtractProcedure` now normalizes CRLF/LF line endings before matching the code block in the source object, pre-verifies existence before attempting object creation to avoid orphaned procedures, and respects `dryRun=true` by returning planned extraction details without mutating the KB.
+- **Standardized error responses in `genexus_analyze mode=linter`.** Replaced unformatted JSON error strings in `LinterService` with canonical `McpResponse.Err` envelopes.
+
+## v2.41.7 - 2026-08-17
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`genexus_edit` on `part=Events` and `part=Conditions` now defaults to normalized verification and tolerates harmless formatting/EOL differences.** `TextPersistenceVerifier` now classifies `Events` and `Conditions` alongside `Source` and `Rules` as code/text parts, canonicalizes line endings, and resolves default verification mode to `normalized`. `NormalizedCodeEquals` tolerates blank lines inserted or removed by GeneXus SDK rendering, eliminating false `WriteNotPersisted` errors on successful Event edits. Fixes [#100](https://github.com/lennix1337/Genexus18MCP/issues/100).
+- **`genexus_structure move_attribute` and `remove_attribute` preserve non-Structure authored parts and strictly verify snapshot integrity.** Reordering or removing attributes in a Transaction structure now preserves all non-Structure parts (`Rules`, `Events`, `WebForm`, `Variables`), restoring them if reset by SDK transaction saving. Post-save verification (`VerifyMove` / `VerifyRemoval`) now checks that every authored part in the pre-write snapshot remains intact, rather than skipping parts marked default by the SDK. Fixes [#99](https://github.com/lennix1337/Genexus18MCP/issues/99).
+- **`genexus_layout set_property` on `gxButton` retains `Caption` and rolls back on verification failure.** Setting `Caption` on visual controls no longer removes the underlying `Caption` attribute when synchronizing with `CaptionExpression`. If post-save readback verification fails, `SetProperty` automatically rolls back the visual XML to the pre-call baseline and returns `rolledBack: true` in the error envelope. Fixes [#101](https://github.com/lennix1337/Genexus18MCP/issues/101).
+- **Lossless XPZ import in `genexus_transfer action=import`.** `TransferService.Import` now defaults to `FullOverwrite` with `ClassConflicts=UseFromExport` and `ThemeOptions=Overwrite`, preventing WebForm dimensions (`GxWidth`, `GxHeight`) from being dropped and preserving theme class references when overwriting existing KB objects from an `.xpz`. Fixes [#102](https://github.com/lennix1337/Genexus18MCP/issues/102).
+- **WebForm XML root compatibility and build response telemetry.** `WebFormXmlHelper.NormalizeEditableXmlInput` now accepts `<BODY>` and `<HTML>` root elements so Transaction WebForms read by `genexus_read` can be written back without manual wrapping; `genexus_lifecycle action=build` echoes the resolved environment name and surfaces `upToDate: true` in `generateEvidence` when nothing needed to be rebuilt; and `dryRun: true` is respected before dispatching build and specification actions. Fixes [#103](https://github.com/lennix1337/Genexus18MCP/issues/103).
+
+## v2.41.6 - 2026-08-17
+
+### Added
+
+- **Wildcard search support in `genexus_query`.** `genexus_query` now treats `query="*"` as a global search matching all indexed objects, rather than searching for the literal asterisk character.
+- **Automatic single-KB default promotion in Gateway.** When `config.json` declares exactly one KB in `Environment.KBs` and `DefaultKb` is not explicitly configured, the Gateway automatically promotes it to `DefaultKb`, eliminating the need for an explicit `genexus_kb action=open` before calling tools.
+- **Tolerant action auto-inference in `genexus_create`.** `genexus_create` automatically infers `action="object_atomic"` when `source`, `variables`, `rules`, or `parms` are provided, and `action="object"` when `name` and `type` are supplied without an explicit `action` key.
+- **Auto-variable declaration on `genexus_edit` (`autoDeclareVariables=true`).** When modifying `Source`, `Events`, `Rules`, or applying textual patches, setting `autoDeclareVariables=true` scans updated code for newly introduced `&Variable` references and automatically creates them in `VariablesPart`, inferring types from homonymous Attributes/Domains or default types.
+- **Local subroutine extraction in `genexus_refactor` (`action="ExtractSubroutine"`).** Extracts a designated code block into a local `Sub 'SubName' ... EndSub` within the object's source/events and replaces the callsite with `Do 'SubName'`, supporting `dryRun=true` preview.
+- **Transitive dependency closure export in `genexus_transfer` (`includeDependencies=true`).** When exporting an object to `.xpz`, setting `includeDependencies=true` navigates the `Calls` and `Tables` dependency graph in `SearchIndex` to gather and bundle all referenced objects and tables into a self-contained archive.
+
+### Internal
+
+- **Token budget bump in `ToolSchemaSizeTests`.** Bumped schema budget from 20,300 to 20,500 tokens to accommodate `autoDeclareVariables`, `ExtractSubroutine`, and `includeDependencies` schema additions.
+
+## v2.41.5 - 2026-08-16
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`genexus_edit mode=patch` no longer reverts a successfully verified Source when `verifyRollback=true`.** Rollback is now restricted to post-save divergence with `rollbackOnFailure=true`; persistence verification performs a fresh, complete SDK read and reports requested, saved, and independently re-read content separately. Source version tokens include the persisted content fingerprint, so rapid sequential saves cannot reuse a stale timestamp token. Thanks to [@davidagostini](https://github.com/davidagostini) — see PR [#98](https://github.com/lennix1337/Genexus18MCP/pull/98).
+
+## v2.41.4 - 2026-08-16
+
+## v2.41.3 - 2026-08-15
+
+### Changed
+
+- **99.97% latency cut & 0 B allocation in Gateway legacy tool resolution (`McpRouter.TryRewriteLegacyTool`).** Converted `TryRewriteLegacyTool` to evaluate matching cases lazily in [`McpRouter.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/McpRouter.cs). On normal non-legacy tool calls (`genexus_query`, `genexus_read`, `genexus_edit`), latency dropped from 244.8 ns to 4.1 ns (-98.3%), and on large edit payloads from 14.18 μs to 3.89 ns (-99.97%, 3,646x speedup), completely eliminating all heap allocations (0 B allocated).
+- **Zero-clone canonicalization in `IdempotencyMiddleware`.** Replaced the full `args.DeepClone()` in [`IdempotencyMiddleware.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/IdempotencyMiddleware.cs) with root-level property skipping inside `JsonCanonicalize`, eliminating object tree duplication during SHA256 mutation payload hashing.
+- **Zero-reflection JSON envelope construction in Worker `SearchService`.** Replaced `JObject.FromObject(new { ... })` anonymous type serialization with direct `JArray`/`JObject` construction across exact-match and ranked search paths in [`SearchService.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Services/SearchService.cs), eliminating runtime reflection overhead and intermediate anonymous objects.
+- **Zero-allocation dispatch scopes in Worker command lifecycle.** Reused static `NoopDisposable` instances for null tokens in [`WorkerCancellationRegistry.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Helpers/WorkerCancellationRegistry.cs) and [`ProgressContext.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Helpers/ProgressContext.cs), and eliminated redundant `.ToLower()` string allocations before case-insensitive lookup in [`CommandDispatcher.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Services/CommandDispatcher.cs).
+- **54% latency cut & 55% memory reduction in Gateway envelope projection.** Streamlined [`NormalizeToolPayloadForAxi`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/Program.ToolPayload.cs) and [`ProjectArrayItems`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/Program.ToolPayload.cs) to project array items directly without full intermediate object tree cloning, eliminated redundant `DeepClone()` on `result["structuredContent"]`, and optimized `BuildTotalsByType` with single-lookup dictionary updates. `CompactProjection_500Rows` latency dropped from 500 μs to 230 μs (-54%), heap allocations decreased from 1.7 MB to 775 KB (-55%), and Gen0/Gen1 GC collections were reduced by >53%.
+- **Zero-allocation fast structural pre-check in `TruncateResponseIfNeeded`.** Added structural pre-filtering in [`Program.ToolPayload.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/Program.ToolPayload.cs) before computing full-tree JSON string serializations, bypassing unconditional string serialization on sub-budget tool responses (whoami, status, inspect, short reads, mutations).
+- **Allocation-free `DidYouMean.Levenshtein` & candidate length pruning.** Replaced heap array allocations in [`DidYouMean.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/DidYouMean.cs) with stackalloc `Span<int>` buffers and added candidate length-delta filtering in `DidYouMean.Suggest`. Levenshtein distance calculations now allocate 0 bytes on the heap (215 ns), and non-matching suggestion lookups execute in 17.7 ns.
+- **Optimized type lookups and aggregations in Worker `ListService`.** Replaced inline type array instantiations in `ListService.IsLikelyType` with a static frozen `HashSet<string>` and streamlined `ComputeAggregates` to use single-pass `TryGetValue` updates.
+
+## v2.41.2 - 2026-08-14
+
+### Added
+
+- **Multi-target batched build via `BuildWithTheseOnly` on `includeCallees=none`.** When `genexus_lifecycle action=build` receives multiple comma-separated targets and `includeCallees=none`, the worker routes all targets to `IBuildServiceBL.BuildWithTheseOnly` in a single shared specification and MSBuild compilation pipeline, avoiding N sequential `BuildOne` cycles. Fixes [#96](https://github.com/lennix1337/Genexus18MCP/issues/96).
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **Lifecycle router forwards `dryRun` and `deploy` parameters.** `SystemRouter` and `CommandDispatcher` now forward `dryRun` and `deploy` across `build`, `rebuild`, `specify`, and `compile_check` actions, ensuring preview validation and deploy options are respected by the worker. Fixes [#96](https://github.com/lennix1337/Genexus18MCP/issues/96).
+- **`SdkSurfaceProbe` surfaces warning when GeneXus path does not resolve.** Instead of silently returning when the GeneXus installation directory is missing, `SdkSurfaceProbe.TryPreloadSdkAssemblies` now appends an explicit warning to `result.Warnings` indicating the skipped path and noting that only pre-loaded AppDomain assemblies are scanned. Fixes [#94](https://github.com/lennix1337/Genexus18MCP/issues/94).
+- **Preserved content and snapshot verification on object moves in `genexus_properties action=move`.** Move operations capture all GeneXus parts and properties before moving, prioritize non-destructive `EntityManager.UpdateParent`, validate the snapshot within the SDK transaction, and perform independent post-commit verification. Thanks to [@davidagostini](https://github.com/davidagostini) — see PR [#95](https://github.com/lennix1337/Genexus18MCP/pull/95).
+
+### Internal
+
+- **Worker local test isolation and coverage strengthening.** Worker tests isolate local SDK assembly resolution from NuGet-provided dependencies and maintain explicit coverage thresholds across Gateway and Worker. Thanks to [@williamgarciadev](https://github.com/williamgarciadev), [@danielkrueger](https://github.com/danielkrueger), and [@davidagostini](https://github.com/davidagostini) — see PR [#93](https://github.com/lennix1337/Genexus18MCP/pull/93).
+
+## v2.41.1 - 2026-08-13
+
+### Changed
+
+- **O(1) dictionary key resolution in `SearchService` exact-match.** Replaced full O(N) `Objects.Values` iteration with direct dictionary probe on `typeFilter:name` in [`SearchService.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Services/SearchService.cs#L102), making exact name queries instantaneous on large Knowledge Bases.
+- **Pre-computed static caching for `tools/list` discovery.** Eliminated expensive per-call `DeepClone()` of the full tool definitions array in [`McpRouter.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/McpRouter.cs). Added `Cache-Control: public, max-age=3600` response headers on discovery endpoints in [`Program.Http.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Gateway/Program.Http.cs) adhering to the 2026-07-28 MCP specification.
+- **Event-driven STA message pump in Worker dispatching.** Replaced timer-only polling with immediate `BeginInvoke` event-driven queue draining in [`Program.cs`](file:///C:/Projetos/Genexus18MCP/src/GxMcp.Worker/Program.cs), reducing internal dispatch latency from 15ms to 0ms.
+- **Deepened mutation and patch subsystem inside `WriteService`.** Encapsulates the `PatchService` lifecycle and eliminates redundant per-call instantiations during `genexus_edit` patch mode.
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`genexus_properties action=move` now preserves and verifies the complete object.** The move captures every GeneXus part and authored property before mutation, prefers the non-destructive `EntityManager.UpdateParent` path, validates the snapshot inside the SDK transaction, and performs an independent post-commit re-read. `dryRun` is non-persistent, `baseVersion` rejects concurrent changes, and any divergence with `rollbackOnFailure=true` restores the original parent and content. Responses expose saved/persisted/verified state, requested and persisted hashes, rollback evidence, and confirm that no lifecycle operation ran.
+
+### Internal
+
+- **Testes locais do Worker agora carregam o SDK GeneXus configurado sem preparação manual.** O projeto de testes copia para sua saída apenas as dependências ausentes do `GX_PATH`, preservando as versões fornecidas por NuGet; a coleta completa de cobertura U16 volta a executar os 1.912 cenários. Os pisos são explícitos por componente (Gateway 60%, Worker 45%), sem exclusões ou testes desativados.
+- **Higiene incremental de CI e análise estática.** O teste de lease agora caracteriza concorrência com temporários de outra instância, avisos de nulabilidade e variáveis sem uso foram eliminados nos pontos publicados pela CI, e o upload de cobertura usa `actions/upload-artifact` v6 fixado por SHA.
+- **Zero-warning test hygiene and async task execution.** Converted blocking `.Wait()` / `.Result` test calls to `async Task` with `await` in `LauncherResolutionTests`, `StatusWaitTests`, `IdempotencyInflightTests`, and `EdgeCaseRegressionTests` (`xUnit1031`). Resolved unassigned field warnings (`CS0649`), nullable annotations (`CS8632`), and collection assertion idioms (`xUnit2013`).
+- **Codebase architectural deepening plan executed.** Implemented and verified deepening refactor plan (`docs/plans/2026-08-13-architecture-deepening.md`), ensuring high module depth, tight locality, and robust test suite verification across Gateway and Worker.
+
+## v2.41.0 - 2026-08-13
+
+### Added
+
+- `genexus_read` now exposes persisted Data Selector definitions through the
+  GeneXus 18 U16 public SDK: ordered parameters, complete conditions, orders,
+  `Defined By`, referenced attributes, and unambiguous base Table/Transaction
+  resolution with declared indexes. The path is strictly read-only, returns a
+  `versionToken`, and never runs Specify, Generate, Build, Rebuild, compilation,
+  reorganization, execution, or tests. SDK capabilities that do not exist for
+  Data Selectors (`projection` and resolved `joins`) are reported explicitly in
+  `unsupportedParts` instead of appearing as empty data. The combined
+  `structure` is marked as a semantic projection of those typed SDK elements,
+  avoiding U16's internal collection type names.
+
+### Changed
+
+- **The text-patch pipeline now separates matching from orchestration and persistence evidence.** `PatchTextEditor` owns pure Replace/InsertAfter matching, while `PatchPersistenceReceipt` owns the stable saved/verified/hash/rollback response fields. The public `genexus_edit` contract and GeneXus SDK save path are unchanged.
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`genexus_edit mode=patch operation=Replace` now reports success only after a durable Source/Rules save.** Text patches use the same explicit part-save and transaction path as full edits, so GeneXus 18 U16 can no longer advance the object version and leave the replacement only in the live SDK instance. Empty replacements are supported, and the response separates `saved` from `verified`, includes requested/re-read hashes and old-context evidence, and reports rollback verification when requested.
+- **`genexus_structure action=create_index` no longer persists during `dryRun=true`.** The Worker now keeps validation/projection separate from SDK mutation, verifies the persisted index snapshot and composite `versionToken` after every preview, and returns `DryRunMutationDetected` with rollback details if any state changes. Effective writes support `baseVersion` optimistic concurrency, preserve the requested attribute order, re-read and verify the exact index, and restore the prior snapshot on save/verification failure when `rollbackOnFailure=true`. The action does not implicitly Specify, Generate, Build, Rebuild, compile, reorganize, execute, or test.
+- **`genexus_lifecycle action=specify` surfaces structured evidence and `effective_status=SucceededWithGaps` for unreachable or not found objects.** When GeneXus skips specification because an object is unreachable (`spc0217`) or not found in the Knowledge Base, the worker now captures `generateEvidence` (`ok=false`, `unreachable`/`notFound` lists, note) and emits a `[specify-gap]` warning, allowing the gateway to surface `effective_status="SucceededWithGaps"` instead of a false clean success. Fixes [#86](https://github.com/lennix1337/Genexus18MCP/issues/86).
+- **`UIServices.SetDisableUI(true)` invoked during worker bootstrap.** Explicitly disables interactive modal dialogs prior to `UIServices.Initialize`, preventing blocked STA threads during headless execution. Fixes [#88](https://github.com/lennix1337/Genexus18MCP/issues/88).
+- **`genexus_sdk_probe` pre-loads and scans unreferenced GeneXus/WWP SDK assemblies from disk.** Discovers and loads assemblies from the GeneXus installation, `Packages`, and `Patterns` directories into the AppDomain prior to probing so that unreferenced tools and generators are discovered. Also cleaned up duplicate merge header artifacts in `CHANGELOG.md`. Fixes [#87](https://github.com/lennix1337/Genexus18MCP/issues/87).
+
+### Internal
+
+- Thanks to [@davidagostini](https://github.com/davidagostini) for Data Selector reading, patch replace durability, create_index dry-run safety, and test coverage improvements — see PRs [#85](https://github.com/lennix1337/Genexus18MCP/pull/85), [#89](https://github.com/lennix1337/Genexus18MCP/pull/89), [#90](https://github.com/lennix1337/Genexus18MCP/pull/90), [#91](https://github.com/lennix1337/Genexus18MCP/pull/91), and [#92](https://github.com/lennix1337/Genexus18MCP/pull/92).
+
+## v2.40.2 - 2026-08-12
+
+### Added
+
+- **`genexus_edit` can persistently remove an Attribute reference from a Transaction Structure.** A single `remove_attribute` semantic operation now detaches the native `TransactionAttribute`, saves and re-reads the Transaction, and returns a before/after diff. The KB-global Attribute and its SubType Group memberships are hash/membership verified as preserved; `dryRun`, `baseVersion`, and automatic snapshot rollback are supported.
+- **`genexus_structure action=move_attribute` reorders an existing Transaction attribute without recreating it.** Place an attribute `before` or `after` another attribute in the same level, or at a zero-based `position`; root, named, and nested `levelPath` levels are supported. Dry runs show only the affected positions, `baseVersion` rejects stale edits, and effective writes snapshot every Transaction part, re-read after save, verify native identities/properties and relative order, and restore the complete snapshot if GeneXus normalizes the move or changes anything else. The operation never specifies, generates, builds, reorganizes, or reapplies a Pattern.
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`genexus_structure action=create_index` no longer persists during `dryRun=true`.** The Worker now keeps validation/projection separate from SDK mutation, verifies the persisted index snapshot and composite `versionToken` after every preview, and returns `DryRunMutationDetected` with rollback details if any state changes. Effective writes support `baseVersion` optimistic concurrency, preserve the requested attribute order, re-read and verify the exact index, and restore the prior snapshot on save/verification failure when `rollbackOnFailure=true`. The action does not implicitly Specify, Generate, Build, Rebuild, compile, reorganize, execute, or test.
+
+- Build diagnostics now classify GeneXus source/query errors (`src####`, `qry####`)
+  as specification failures and build-infrastructure errors (`gtm####`, `mtd####`,
+  `pmm####`, `rgz####`, `rgo####`) as environment failures, so recovery guidance
+  points to the correct cause.
+- WorkWithPlus `userAction` bindings now persist the `gxobject` target through the
+  SDK PatternInstance change command when the XML deserializer drops it.
+- `genexus_edit mode=patch` now always re-reads Source/Rules after the SDK save
+  and supports `verifyMode=normalized|semantic|exact` (`normalized` by default).
+  Harmless SDK normalization of EOLs, encoding markers, trailing whitespace, or
+  repeated blank lines no longer produces a false `WriteNotPersisted`. Responses
+  include raw and normalized SHA-256 hashes plus re-read, match, replacement, and
+  normalization evidence. A real mismatch performs no implicit second write;
+  rollback occurs only when explicitly requested with a valid snapshot.
+- Patch-mode edits now enforce `baseVersion` optimistic concurrency at entry and
+  again immediately before the single write. `dryRun` remains non-persistent and
+  does not claim a post-save re-read.
+- Patch-mode optimistic-concurrency misses now include a concrete object-list
+  recovery step instead of returning an uncured `ObjectNotFound` error.
+
+### Internal
+
+- Raised the tool-schema budget from 19,500 to 19,800 tokens for the `move_attribute` action and its module, attribute, before/after/position, level/levelPath, dry-run, and optimistic-concurrency fields (measured about 19,637 tokens).
+- Thanks to [@davidagostini](https://github.com/davidagostini) for transaction structure editing and normalized patch verification improvements — see PRs [#83](https://github.com/lennix1337/Genexus18MCP/pull/83) and [#84](https://github.com/lennix1337/Genexus18MCP/pull/84).
+
+## v2.40.1 - 2026-08-11
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- `genexus_lifecycle action=rebuild` now scopes comma-separated target lists through
+  `SpecifyOneOnly` in the in-process runner instead of falling through to a full KB
+  `RebuildAll`.
+
+## v2.40.0 - 2026-08-10
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- `genexus_search_source` and the `genexus_read` log-grep path no longer hang the
+  whole Knowledge Base on a pathological search pattern. A regex with
+  catastrophic backtracking (e.g. `(a|aa)+$` against a long single line) used to
+  run with no match timeout on the worker's single STA thread, blocking every
+  call to that KB for ~15 minutes until the wedged-worker killer fired. Every
+  LLM-supplied pattern now carries a 2-second per-match timeout; a pattern that
+  exceeds it returns `PatternTimeout` with an explanation, and the worker keeps
+  serving other calls.
+- When an async job's SDK call silently blocks past its watchdog bound, the
+  wedged worker process is now **recycled** instead of leaving the KB unusable.
+  Previously the job was marked `stalled` but the worker's STA thread stayed
+  stuck on the SDK call, so the recovery steps (re-run synchronously, cancel)
+  queued behind the same blockage. Now the watchdog force-kills the wedged
+  worker the moment the stall is detected and a replacement respawns for the KB;
+  the stalled envelope reports `recycledWorker: true` and reads keep working.
+- `genexus_structure action=update_group` now verifies its write like every
+  other write path. A membership change could report `GroupUpdated` even when
+  the SDK dropped part of the update; the service now re-reads the group's
+  members after saving and returns `GroupUpdateNotPersisted` (with the
+  expected vs. actual sets) when the write didn't survive, and only claims
+  `persistedVerified: true` when a genuinely fresh re-read confirmed it.
+- Moving an object into a Folder/Module can no longer bind an unrelated
+  `EntityManager` type. `ObjectMover`'s reflection fallback now constrains the
+  bare simple-name lookup to the `Artech.*` namespace (and logs which binding
+  it resolved), so a coincidentally-named type in another assembly can't be
+  picked over the GeneXus SDK's own class.
+
+### Changed
+
+- `genexus_db action=reorg_impact deep=true` (and `reorg_preview`) now gets a
+  10-minute sync ceiling instead of the generic 60-second default, and the
+  response carries a runtime note explaining that a deep impact analysis runs
+  the specification engine and can legitimately take minutes. A long-running
+  deep analysis no longer times out spuriously while the specifier is still
+  working.
+
+### Internal
+
+- `plans/README.md` marks plans 068–072 DONE with the live-KB validation
+  evidence; regression coverage landed in `SourceSearchPerfGuardTests`,
+  `LogFilteringTests`, `AsyncJobWatchdogTests`, `WorkerPoolTests`,
+  `GroupStructureVerificationTests`, `ObjectMoverHardeningTests`, and
+  `GatewayBudgetTests`.
+
+## v2.39.4 - 2026-08-10
+
+### Added
+
+- Added `scripts/mcp_recover.ps1`, an out-of-band Streamable HTTP client for
+  continuing diagnostics when a client-owned STDIO transport has closed. It
+  initializes a fresh session, discovers the current catalog, and blocks tools
+  not marked read-only unless `-AllowWrite` is passed explicitly.
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- `genexus_apply_pattern` now selects the WorkWithPlus
+  `CreatePatternInstanceWithTemplate` overload by its complete compatible
+  signature. GeneXus 18 Upgrade 16 exposes both four- and five-parameter
+  overloads, which made name-only reflection fail with
+  `AmbiguousMatchException` when attaching WorkWithPlus to a new WebComponent.
+  WebPanel and WebComponent targets now use the five-parameter
+  `SettingsView.Web` overload; SDPanel keeps the native-mobile overload.
+  Success is now confirmed by re-reading the PatternInstance association;
+  failures include the selected/found signatures and full inner exception.
+- WorkWithPlus first-attach diagnostics now resolve the effective
+  `Environment.config` from the active GeneXus installation's configured
+  `UserAppDataPath` and verify write access before invoking the package.
+  Missing permission returns `PatternEnvironmentAccessDenied` with the exact
+  path, configuration source, process identity, and complete access exception
+  instead of passing diagnose and failing later as a generic `PatternNoOp`.
+
+- Post-write verification no longer rejects writes the SDK module-qualified. When
+  GeneXus saves a Procedure/WebPanel source it can rewrite object and table
+  references with the owning module's prefix (`For Each Foo` persists as
+  `For Each MyModule.Foo`); the verifier treated the inserted token as a content
+  mismatch, firing `WriteNotPersisted` and rolling `object_atomic` creates back.
+  A reference is now considered normalization when every difference is a
+  `<Module>.<Name>` qualification, and `mutation.diff.reason` reports
+  `moduleQualification` so the agent can see exactly what the SDK rewrote.
+  Spacing inside string literals is still treated as a real difference.
+- Async `genexus_edit` / variable / GXserver jobs can no longer stay `running`
+  forever when the SDK call silently blocks. Each job now has a watchdog bound
+  (10 minutes minimum, `max(10 min, 8×estimated_seconds)` up to 60 minutes;
+  tune with `GXMCP_ASYNC_JOB_WATCHDOG_S`, `0` disables). A job that exceeds the
+  bound is marked `stalled` — a terminal error carrying recovery steps (re-run
+  the edit synchronously to get the immediate validation error, cancel the stuck
+  op, check the IDE for a waiting modal dialog) instead of reporting progress
+  that isn't happening. The accepted envelope advertises `stallBoundSeconds` up
+  front, and cancelling a job that already finished is a no-op.
+- `genexus_create type=SDT` with `firstItem`/`firstItemType` now actually
+  persists the seeded member. The SDK's `AddItem` mutates the in-memory SDT
+  structure but does not always flag the `SDTStructurePart` dirty, so the
+  object `Save()` wrote the old (empty) serialized XML while the response
+  claimed `seeded` — a follow-up `genexus_structure` read showed no children.
+  The create path now forces the structure part dirty before saving (the same
+  fix the SDT write path already applied), so the first member survives and
+  round-trip reads agree with the creation response.
+- `genexus_read` (and other read tools) could keep returning stale content after
+  a delete or write until the gateway restarted. The gateway replays the first
+  successful response for an identical read to avoid re-hitting the SDK, but
+  that semantic cache was only cleared by a subset of write tools — a
+  `genexus_delete_object`, `genexus_variable` edits, `genexus_apply_pattern`,
+  `genexus_rename_across_kb`, structure/index mutations, `genexus_transfer
+  action=import`, `genexus_db` data mutations (translations/sample data) and
+  gxserver commit/update/lock/resolve were missed, so a read of a deleted
+  object could return its pre-delete content. Every KB-mutating tool/action
+  now invalidates the cache, and cache entries are scoped per KB so identical
+  reads against different open Knowledge Bases never share envelopes.
+
+Thanks to [@davidagostini](https://github.com/davidagostini) for the WorkWithPlus
+overload-resolution fix and the out-of-band MCP recovery client — see PRs
+[#76](https://github.com/lennix1337/Genexus18MCP/pull/76) and
+[#77](https://github.com/lennix1337/Genexus18MCP/pull/77).
+
+### Internal
+
+- `AGENTS.md` gained an "Engineering workflow rules" section locking in the
+  2026-08-10 session lessons: mandatory PR-author credit in the CHANGELOG,
+  multi-PR merge flow (Unreleased conflicts + fork-PR worktree merge), the
+  semantic-cache invalidation duty for new mutating tools (guarded by
+  `SemanticCacheInvalidationTests`), the real-KB HTTP validation harness, and
+  the bash-on-Windows gotchas that previously burned turns.
+- `OperationTracker.CleanupExpired` no longer sweeps in-flight operations by age.
+  A running operation past the retention window (tiny test retention plus thread
+  descheduling under CI load) used to have its request→operation mapping dropped
+  mid-flight, making every later completion/status poll return `NotFound` — the
+  cause of the flaky `CleanupExpired_DoesNotDropMappingForReusedRequestId` that
+  blocked PR #76's merge once. Only completed operations age out now.
+- Release tooling now survives Windows PowerShell 5.1 and long-running commands:
+  `release.ps1` and `build.ps1` are saved as UTF-8 **with BOM** (5.1 mis-parses
+  BOM-less `.ps1` containing em-dashes/arrows), `release.ps1 -Detach` relaunches
+  the whole release in a background pwsh writing to `%TEMP%\gxmcp-release*.log`
+  so a 30 s shell timeout can no longer kill a multi-minute run, 5.1 invocations
+  auto-re-exec under pwsh, the CHANGELOG promotion step fails loudly instead of
+  silently shipping a release whose notes fall back to generic text, and
+  `.editorconfig` pins `utf-8-bom` for `*.ps1`.
+## v2.39.3 — 2026-08-09
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- Post-write verification now performs a fresh, explicit full-part read instead of
+  comparing an MCP-defaulted/minimized page with the complete requested source. A
+  truncated or failed verification read is reported as `indeterminate` and does not
+  become `WriteNotPersisted`; mutation diagnostics distinguish `normalization`,
+  `truncation`, `readFailure`, and a real `contentMismatch`.
+- Lifecycle status now merges the worker's SDK single-flight state, so long-running
+  Undo operations report `isBusy: true` with the active operation and elapsed time.
+- Batch `genexus_read targets=[...]` now honors `parts=[...]`; variable persistence
+  checks use an uncached full read and reconcile SDK errors that occur after commit.
+- Best-effort patches no longer force a full-object validation pass, cancellation of
+  non-preemptible SDK calls reports `CancellationRequested`, `WorkerBusy` identifies
+  the blocking operation, and forced reloads verify replacement workers are SDK-ready.
+- **`genexus_apply_pattern` now accepts WorkWithPlus on WebComponents.** WebComponents that expose WorkWithPlus in the GeneXus IDE were incorrectly rejected by the MCP's parent-type gate. They now use the same template-based direct-attach lifecycle as WebPanels, preserving the original object type while creating and projecting the linked `WorkWithPlus<Object>` instance.
+
+## v2.39.2 — 2026-08-07
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- Fixed Report layout writes so `genexus_layout action=set_property` preserves untouched controls, RGB colors, alignment, and geometry ([#72](https://github.com/lennix1337/Genexus18MCP/issues/72)).
+
+## v2.39.1 — 2026-08-07
+
+This release fixes `object_atomic` rollback on Procedure source casing normalization, async `genexus_edit` failures on XML `PatternInstance` default attributes, and `genexus_layout set_property` degradation on Report layouts.
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`genexus_create action=object_atomic` no longer rolls back valid objects on SDK Source casing/indentation normalization.** (Issue #70) `WhitespaceInsensitiveEquals` now performs case-insensitive comparison (`OrdinalIgnoreCase`), preventing Procedure `Source` keyword case-normalization (`for each` -> `For Each`, `parm` -> `Parm`, `if` -> `If`) from triggering false-positive `WriteNotPersisted` errors that previously rolled back and deleted freshly-created objects.
+- **Async `genexus_edit` no longer reports `failed` status for persisted `PatternInstance` parts.** (Issue #71) `WhitespaceInsensitiveEquals` now evaluates structural XML equivalence for XML parts (`PatternInstance`, `Layout`, `WebForm`, etc.), ignoring SDK-dropped default/empty attributes (`default*`, empty strings, default boolean/numeric values) and empty element self-closing differences so background edit jobs report `succeeded`.
+- **`genexus_layout action=set_property` on Reports no longer degrades untouched controls or RGB colors.** (Issue #72) `ReportLayoutHelper.TryParseColor` now parses comma-separated RGB color strings (`192, 0, 0`) in addition to semicolons, preventing RGB colors from falling back to `Black`. `ReportLayoutHelper.WriteLayout` now verifies whether the current SDK property value is already equivalent (`IsPropertyEquivalent`) before calling `TrySetProperty`, preventing untouched controls, geometry, alignment, and colors from being overwritten with lossy defaults.
+
+## v2.39.0 — 2026-08-03
+
+This release fixes `dryRun` precheck error handling for pattern/visual parts, clarifies `dryRun` verification scope, updates agent instructions regarding SDK folder/module placement capabilities, and enforces strict release-linked issue closure.
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`dryRun` precheck failures no longer return `ok` status when reading current pattern/visual parts fail, and `dryRun` responses now detail verification scope.** (Issue #67) When `ReadPatternPartXml` or `ReadVisualPartXml` threw an exception during precheck, the `dryRun` catch block previously returned `code: "WriteDryRun"` inside an `ok` envelope, masking the read failure. Catch blocks now return `PatternReadFailed` / `VisualReadFailed` error envelopes. Successful `dryRun` responses now explicitly include `verified` scope (`["xmlParse", "childrenOrderedList", "diffVsCurrent"]`), `savePathExercised: false`, and a warning on WorkWithPlus `PatternInstance` parts noting that pattern saves can still be rejected by the WWP validator on save.
+- **Agent instructions no longer claim that folder/module placement is impossible.** (Issue #65) `AGENTS.md` — loaded as context in every agent session, and the shared convention file for Claude Code, Cursor, Codex and Aider — still described object placement as an SDK wall and told agents to move objects from the GeneXus IDE by hand. Placement has worked since v2.35.0, so agents reading that section were skipping `genexus_properties action=move` and `genexus_create folder=`/`module=` entirely. The section now documents the move, the `MoveNotPersisted` write-back check, and the fact that `action=set propertyName=Folder` is routed to the move rather than rejected. Server behavior is unchanged — only the instructions were wrong. Also enforces strict rule that issues are only closed after a release link is attached.
+
+### Internal
+
+- The rewritten `AGENTS.md` section keeps a short *why this was believed* note: the `Parent`/`ParentKey`/`Module` setters genuinely read as empty stubs in the facade/reference assembly, which is what produced the original verdict; the runtime persist goes through `EntityManager.SaveWithParent` (`ObjectMover`). Without that note the wrong conclusion is re-derivable from a decompile.
+- Struck the matching "confirmed WALL" line in `docs/sdk_uncovered_endpoints_2026-07-20.md` with a dated pointer to v2.35.0, leaving the rest of that dated snapshot intact.
+- `PropertyService._placementProps` and the `McpRouterTests` issue-#50 comment described the pre-v2.35.0 rejection paths; both now describe the routing that replaced them.
+- Corrected the test counts in `AGENTS.md` (they understated both suites by roughly 2.4x) and the tool count in `README.md` (46 → 47, adding the missing `genexus_wwp` bullet to Tool Surface).
+
+## v2.38.0 — 2026-08-01
+
+The release improves safe GeneXus authoring, persistence verification, inline specification feedback, source-search performance, and modern MCP interoperability.
+
+### Added
+
+- **`genexus_create action=object_atomic` — create (or update) an object with variables, rules, parameters, properties and Source in a single validated call.** Instead of orchestrating several independent calls (create → add variable → edit rules → edit source) — where a mid-way failure leaves a half-configured object — the whole definition arrives at once: `{ type, name, variables:[{varName, typeName?, length?, decimals?, collection?}], rules:["Parm(in:&Id);"], parms:["out:&Msg"], source, properties, validate, mode, expectedVersion }`. Every field is validated BEFORE the first save — variable type names are checked against the KB (so a typo'd Domain name fails with the exact `variables[N]` index instead of persisting a spec-broken object), rules get a parenthesis sanity check, and `parms` is rendered into the `Parm(...)` rule automatically.
+- **All-or-nothing by default.** If any step fails after the object was created, the operation compensates: a freshly-created object is deleted, an updated object is restored to its pre-write snapshots — reported inside the error envelope under `compensation` — so a failed call never leaves a partially-configured object behind. `dryRun=true` previews the full plan with the same validation and zero writes.
+- **`validate=true` runs the inline Specify pass before confirming success** (reusing the issue #60 machinery): a spec-invalid object is caught in the same call, and with `rollbackOnFailure=true` a fresh object is deleted rather than left spec-broken.
+- **Optimistic version control for updates.** Every successful atomic create/update returns a `version` token (a hash of the object's Source/Rules/Variables). Pass it back as `expectedVersion` on the next update and a concurrent change fails with `ConcurrentModification` instead of being silently overwritten — the same intent as `genexus_multi_agent_lock`, built into the operation.
+
+- **`genexus_db action=reorg_preview` — see the physical impact of structural changes before running the reorganization.** Point it at a Transaction (or Table) and it diffs the model's logical structure against the physical Table structure the model records, returning per-column `before`/`after` definitions (`"NUMERIC(18) NOT NULL"` → `"NUMERIC(18) NULL"`) for every change a reorg would apply: type family changes, length and decimal-precision changes, columns added/dropped, and — straight from the issue #57 scenario — a logical `Nullable` that the physical column still stores as `NOT NULL`. The envelope also lists the table's indexes, renders a proposed `CREATE TABLE` for the desired schema (labeled heuristic, like `sql_ddl`), and reports `requiresReorganization` from the SDK's timestamp signal.
+- **Destructive changes are highlighted before anything runs.** Cross-family type conversions, length/precision shrinks, `NULL` → `NOT NULL` transitions and dropped columns each carry a structured `warning` (`{column, severity: "destructive", message}`) explaining the risk (data loss, truncation, reorg failure on NULL rows) — so an agent can stop and ask before a reorganization destroys data it didn't expect to touch. Sub-ordinated Transaction levels are walked and diffed individually.
+- **`deep=true` swaps the heuristic for the SDK's native impact analysis.** Instead of the timestamp guess, `requiresReorganization` comes from `ISpecifierService.ImpactDatabase` (the same build-heavy specification pass the IDE's Impact Analysis runs) and the `AnalysisResult` verdict is surfaced under `deep`. The operation is read-only in both modes — no KB writes, no database changes; the exact statement-level delta still requires running the reorg on a non-production environment.
+
+- **`genexus_wwp` — list, add, update, move and remove WorkWithPlus grid/bar actions without touching generated code.** Custom buttons on a WorkWithPlus screen live as `<userAction>` elements in the pattern host's `PatternInstance` XML (alongside the registered `Trn_Enter`/`Trn_Cancel`/`Trn_Delete` standard actions). `action=list` reads those containers back as named groups with their actions and attributes; `add_action` inserts a new `<userAction>` into an existing group or creates a new one, with `caption`, `buttonClass`, `icon`, `description`, `confirm`, `selection` (single/multiple → `selectionMode`) and `enabledWhen` availability condition — the issue #58 scenario (`MonitorIntegracaoWW` + a `Reativar` action bound to a Procedure) is one call. `update_action` changes those attributes, `move_action` relocates an action between groups or reorders it, `remove_action` deletes one (`confirm=true`).
+- **The associated Procedure is validated against the KB before anything is written.** `procedure` must resolve to an existing object or the call fails with `ProcedureNotFound` and a list hint — no dangling action targets. The response notes that a WWP `userAction` auto-generates an empty `'Do<Action>'` event stub to fill with the actual call.
+- **`dryRun=true` returns the exact XML diff without persisting.** Every write action first reports `diff` (`[{op, action, group, before, after}]`) against the current PatternInstance; persisting runs through the same verified pattern-write path as `genexus_edit part=PatternInstance`, which reconciles `childrenOrderedList` and confirms what actually landed — and because the configuration lives in the PatternInstance, it survives reapplying WorkWithPlus.
+- **No Security permissions are created implicitly.** Every response carries a `securityNote` stating that no GAM permissions were created or modified — provisioning access for a new action is an explicit, separate step.
+
+### Fixed
+
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
+- **`validationMode="specify"` — save and spec-check in a single call.** `genexus_edit`, `genexus_variable`, `genexus_properties` (set), `genexus_structure` (structure writes) and `genexus_create` (object) accept `validationMode="specify"`: right after the write persists, the worker runs the fast Specify+Generate pass and returns the result in the same response — a `_meta.specification` block with structured diagnostics (`[{code, object, member, message}]`) when clean, or a `SpecificationFailed` error listing exactly which `spc*`/`gen*` diagnostics the edited object would trip on build. No more write-then-poll-specify round trips to learn an edit is spec-invalid.
+- **`rollbackOnFailure` — auto-restore when the spec check fails.** Combined with `validationMode="specify"`, restores the pre-write state from the edit snapshot when the specify pass reports errors, so a bad edit never leaves the object in a spec-broken state. Works on the part-write paths (`genexus_edit` full/patch/ops); property/variable/structure/create writes have no pre-write snapshot and report `rolledBack=false` with a note instead of silently pretending.
+- **Post-write persistence verification on all write paths.** `genexus_properties` (set), `genexus_structure` (update_visual / set_domain), and `genexus_variable` (add, single and batch) now re-read the object after saving and compare what was requested against what persisted. Confirmed writes expose a `before`/`requested`/`persisted` diff block on the success envelope; writes the SDK silently dropped are no longer reported as applied.
+- **Empty Knowledge Bases no longer report `IndexNotReady` forever.** A KB whose model contains no objects (e.g. a missing LocalDB model) previously made every `list_objects` / `query` / `read` call return `IndexNotReady` no matter how many times you ran `lifecycle action=index force=true` — and `whoami` kept recommending that same reindex. A built index with zero objects is now recognized as a genuinely empty KB: `list_objects` and `query` return an honest empty result tagged `empty_reason: "kb_has_no_objects"` with a hint, and `whoami` suggests creating an object (or opening a different KB) instead of looping the force-reindex.
+
+- **`PropertyApplied` no longer fires when the property didn't persist.** A property set that the SDK accepted but silently dropped (e.g. Nullable on some builds) now fails with `PropertyNotPersisted`, carrying the property name and the before/requested/persisted values, instead of reporting success over a no-op.
+- **`DomainUpdated` no longer fires when enum values were dropped.** A Domain update whose enum values did not survive the save now fails with `DomainUpdateNotPersisted`, naming the dropped values, instead of reporting the update applied with an empty combobox.
+- **`StructureUpdated` no longer fires when structure items were dropped.** A Transaction structure update whose requested top-level items are missing after the re-read now fails with `StructureUpdateNotPersisted`.
+- **`VariableAdded` no longer fires when the variable didn't land.** Every added variable (single and batch) is re-read from the persisted part; missing variables fail with `VariableAddNotPersisted` instead of a success that spec can never accept.
+
+- **A `genexus_edit` / `genexus_read` / `genexus_analyze` call that omitted `type` on a Transaction now resolves to the Transaction — reliably.** Every Transaction generates a Table model object under the same name, and the gateway's auto-type inference used to guess the type from the few most recently changed objects — when the table shadow surfaced there instead of the transaction, it injected `type="Table"` and the worker resolved the *table* object, which has no Source/Rules/Events part, returning `PatchReadFailed` ("The object does not expose the requested part"). The inference is now fed from the complete index name→types map rather than a small recent-changes window, so a name backed by both a Transaction and its generated Table resolves to the Transaction deterministically; calls that genuinely target a Table pass `type="Table"` explicitly (an explicit type is never overridden).
+
+- **WWP action updates.** Updating an existing `genexus_wwp` action now persists its associated `procedure` instead of accepting and discarding the field.
+- **Atomic optimistic concurrency.** `expectedVersion` now fails closed with `VersionUnavailable` when the fingerprint cannot be read, rather than allowing a stale update through.
+- **Structure persistence verification.** Full visual-structure writes now detect unexpected persisted items, including the empty-payload case, instead of reporting a false success.
+- **Prompt validation.** Unknown prompts and missing or invalid prompt arguments now return JSON-RPC `-32602` errors.
+- **Reorganization previews.** Shared physical tables across transaction levels no longer look missing, and generated SQL safely escapes `]` in identifiers.
+
+### Changed
+
+- **`genexus_search_source` repeat searches are much faster.** Source text is now cached per object (invalidated on every write), the scan probes that cache before touching the SDK, unanchored regex patterns run in a single pass instead of per-line, and compiled regexes are reused across calls instead of being re-JITed on every construction (~10–30ms of IL compilation on .NET Framework each). A repeat whole-KB search that previously re-read every candidate's source through the SDK now runs against cached text — the live probe shows a cold first call (~950ms of SDK reads) dropping to ~1ms on the very next identical call.
+- **`genexus_whoami` is faster.** The four per-call disk reads (GeneXus version probe, KB-validity directory walk, crash ledger, update-check JSON) are now memoized with short TTLs — a stale-by-seconds answer is fine for a health probe. whoami p50 dropped from ~5.8ms to ~1.2ms in the live benchmark against the same harness.
+
+- **Modern MCP Streamable HTTP.** The gateway now supports the sessionless `2026-07-28` transport alongside legacy sessions, including server discovery, per-request header validation, correct notification/status semantics, cache metadata, and structured tool results.
+- **MCP bootstrap.** Discovery and static resources no longer require an open KB, and stdio notifications no longer receive spurious response lines.
+- **`genexus_search_source` continuation.** Pages that end inside an object now return an opaque continuation cursor, so resuming does not duplicate or skip hits.
+
+
+### Internal
+
+- New pure helpers (unit-tested without a live KB): `Helpers/PersistenceVerifier.cs` (normalization-aware value comparison + the NotPersisted envelope + before/requested/persisted diff attach) and `Helpers/SpecificationDiagnostics.cs` (parses the BuildService status envelope — which mixes PascalCase CLR names with renamed computed getters — into `[{code, object, member, message}]`). `Services/SaveSpecifyOrchestrator.cs` runs the inline specify pass with a chained baseline wait (no busy-polling the STA worker) and best-effort snapshot restore. Golden `tools-list` fixture regenerated for the five schema additions; new tests: `PersistenceVerifierTests`, `SpecificationDiagnosticsTests`, `VariableAddPersistenceTests`, `SpecifyValidationRouterTests` (+44). Tool-schema token budget 16900 → 17700 (measured ~17572) for the `validationMode`/`rollbackOnFailure` params on `genexus_edit`, `genexus_variable`, `genexus_properties`, `genexus_structure`, `genexus_create`.
+- issue #58: new `Services/WwpActionService.cs` (module `WwpAction`) resolves the WWP host via `PatternAnalysisService.ResolveWWPInstance`, reads the `PatternInstance` XML, applies pure XML patches (`ParseActionGroups`, `BuildUserActionElement`, `BuildAddAction`, `BuildUpdateAction`, `BuildMoveAction`, `BuildRemoveAction` — unit-tested without an SDK) and persists via the verified `WriteService.WriteObject(host, "PatternInstance", xml, dryRun)` path with `childrenOrderedList` reconciliation. `update_action` treats `position` as a reorder directive (never writes a literal attribute); `Persist()` keys off the canonical envelope `status` rather than substring matching, with a `WwpActionNoChange` code for no-ops. Procedure existence validated via `ObjectService.FindObject`. Golden `tools-list` fixture regenerated for the new tool; new `WwpActionServiceTests` (17); tool-schema token budget 18200 → 19000 (measured ~18938) for the new tool's schema.
+- issue #61: `ReorgImpactService.Preview` walks `Transaction.Structure.Root` + sub-levels (root-level Table disambiguation mirrors `sql_ddl`), reads logical nullable per the issue #57 DSL convention (`Attribute.Properties.Get("Nullable")` Yes/Nullable) and physical nullable via `TableAttribute.IsNullableValue.True`, and delegates the diff to pure statics (`DiffColumns`, `TypeFamily`, `RenderColumnDef`, `RenderCreateTable`, `Warning`) — unit-tested with synthetic column objects. `genexus_db action=reorg_preview` routes `ReorgImpact/Preview`; `ToolSchemaSizeTests` budget unchanged (18200, measured re-checked). New `ReorgImpactPreviewTests` (24: family normalization incl. the `LONGVARCHAR`→character regression, issue #61 example before/after strings, destructive semantics, DDL rendering, no-KB guard).
+- issue #62: new `Services/AtomicCreateService.cs` composes the existing SDK write primitives (`ObjectService.CreateObject` → `WriteService.AddVariables`/`WriteObject` → `PropertyService.SetProperty`) with pre-save field validation (`ValidateVariables` syntax gate + `ValidateKbReferences` KB-existence pre-flight with an injected resolver — the issue #56 failure mode), all-or-nothing compensation (delete fresh object / restore all touched parts from pre-write `EditSnapshotStore` snapshots, which the orchestrator captures for the Variables part that `AddVariables` doesn't snapshot itself), optimistic `version` fingerprinting (`ComputeVersion` = SHA-256 over Source/Rules/Variables), and issue #60 `SaveSpecifyOrchestrator` reuse for `validate=true`. Wired as `genexus_create action=object_atomic` (module `AtomicCreate`). Golden `tools-list` fixture regenerated for the `object_atomic` action + params; new `AtomicCreateServiceTests` (19, pure helpers with fake resolvers); tool-schema token budget 17700 → 18200 (measured ~18077) for the `object_atomic` params.
+- Perf pass (worker + gateway): `SourceSearchService` reads cached raw part sources via `ObjectService.ReadPartSourceRaw`/`TryGetPartSourceRaw` (256KB size guard so huge WebForm XML isn't cached; guid-normalized probe key), the scan is cache-first per-part with a `resolutionFailed` bail, unanchored regexes take a single-pass `Matches` path gated by new conservative `HasLineAnchors`/`MayMatchAcrossLines` guards (anchored patterns and newline-capable atoms — `\s \D \W \cJ \p..`, negated classes, `(?is)`-style inline options — keep the exact per-line loop), and compiled regexes go through a bounded 16-entry cache. `Program.Whoami` memoizes `GetCachedGxVersion` (60s), `IsKbPathValid` (15s), `CrashLedger.Summarize` (10s); `UpdateNotifier.GetCachedStatusSync` gains a 10s in-memory layer over the disk read. New `SourceSearchPerfGuardTests` (19) pin the routing guards and the regex cache via reflection; full suites green (Worker 1802, Gateway 750 passed; 4 and 7 live/integration tests skipped). `scripts/bench-live-http.py` fixed: it passed `query` to `genexus_search_source`, which only accepts `pattern`/`callee` — the benchmark was measuring the `MissingCriteria` error path (~15ms flat) rather than the real search; the harness now passes `pattern` and measures the actual scan.
+- Modern MCP transport, result-envelope, prompt, static-resource, notification, cursor, and structure-persistence regression coverage was added; the schema budget is now 19100 tokens for the opaque source-search continuation cursor.
+- The MCP tool-schema budget is now 19500 tokens to cover the merged atomic-authoring compatibility aliases and native Domain-binding guidance; the resulting catalog measures about 19350 tokens with headroom for small additive fixes.
+- Benchmark harness (`scripts/bench-live-http.py`) extended with three ops + a comparison mode: `edit_dryrun` (genexus_edit mode=full + `// gxbench-dryrun` marker on a small Transaction, dryRun-verified per candidate), `analyze` (mode=summary) and `lifecycle_status`, plus `--compare <baseline.json>` printing per-op p50/p95 deltas with a >+25% p50 regression warning (live demo: mean p50 −12.4% baseline→current, no regressions flagged). Findings wired into the harness: tracked ops without a client progress token are capped at the gateway's 50s sync wait (`McpRouter.SafeLongPollSecondsWithoutProgress`) and keep running in the STA worker, so heavy shapes (analyze mode=impact, patches on big WebForm sources) are not latency-measurable and poison every later call — the docstring documents restarting the gateway on uniform ~50s timeouts; omitting `type` on genexus_edit auto-injects `Table` (resolving to the table object, which exposes no Source part → `PatchReadFailed`), and identity find==replace patches short-circuit to `NoChange` — the op now passes the type explicitly and appends a marker line via mode=full. New `scripts/probe-bench-ops.py` diagnoses op shapes live (per-op status + elapsed, full error-envelope dump); a `WriteDryRun` envelope (`status: ok`) is a success, not an error.
+- `AutoTypeInjector` root-cause fix: the name→type map is now fed from the FULL index via a new worker action `kb/GetNameTypeMap` (O(n) in-memory scan, STA-exempt alongside `GetIndexState`), fetched once per KB by `Program.Whoami` when the index reaches LiteReady/Enriching/Ready (fire-and-forget, `TryAdd` gate; UltraLiteReady deliberately excluded — the lite pass streams partial snapshots and would pin an incomplete map behind the gate). `ApplyFullNameTypeMap` rebuilds the per-KB map wholesale and collapses {Transaction, Table} → Transaction; `_shadowTypesNoInject` ("Table", "Attribute") refuses injection of shadow-only names, and `RefreshFromRecentlyChanged` now skips shadow entries so the recent-window feed can't flip a collapsed Transaction back to ambiguous when the table shadow surfaces (the poisoning path). Explicit caller-supplied types still short-circuit first. `Attribute` joined the set after a live 16-typeFilter probe found exactly two collision classes: Table+Transaction ×3 (already collapsed) and Domain+ExternalObject ×1 (`Geolocation` — genuine ambiguity between two real objects, already handled by the ambiguous→null rule; Domain is deliberately NOT shadow-listed), while the 8 `Attribute` objects (`GpBaseId`…) are physical artifacts whose Source read falls back to empty Documentation — a type-less `genexus_edit` on one of them auto-injected `type=Attribute` and resolved to the part-less artifact (same class as Table; `IndexCacheService` routes Attribute/Table targets identically). Live-verified: `genexus_edit` without `type` now injects `Transaction` (was `Table` → `PatchReadFailed`) and leaves `Attribute`/`Geolocation` type-less; gateway log confirms `applied full name→type map for 'live' (510 names)`. New `scripts/probe-rootmap-live.py` + `scripts/probe-type-shadows.py`; +6 `AutoTypeInjectorTests` (single-type inject, Transaction+Table → Transaction, Table-only no-inject, Attribute-only no-inject, ambiguous no-inject, wholesale rebuild clears stale) and +7 `FullNameTypeMapFetchTests` (canonical-envelope descent into `{status,code,result:{nameTypeMap}}`, flat payload, missing/null map, once-per-KB gate arm, release re-allows retry, stays armed after success) — 23/23 + 7/7 green; builds clean (worker + gateway).
+
 ## v2.37.0 — 2026-07-31
 
 ### Added
@@ -8,6 +2098,7 @@
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`Nullable=Yes` on a Transaction attribute now actually persists.** `genexus_structure action=update_visual` with `nullable:"Yes"` crashed with a runtime binder error (`Cannot implicitly convert type 'int' to 'Artech.Genexus.Common.Parts.TableAttribute.IsNullableValue'`), and the JSON-boolean form (`nullable:true`) silently no-oped — either way the DDL kept generating `NOT NULL`. The value is now written as the SDK's typed `IsNullableValue`, the boolean forms are accepted, and the generated table DDL follows the value (verified end-to-end: the column loses `NOT NULL` with `Yes`, regains it with `No`).
 - **`genexus_properties` on a Transaction attribute now applies `ALLOWNULL` / `Nullable` / `IsNullable`.** These names previously fell into the generic string setter, which cannot represent the enum — the call reported `PropertyApplied` while nothing changed. `control=<attribute>` now resolves the attribute occurrence from the Transaction's structure (previously only layout controls and variables were reachable), and those property names write the typed nullable value.
 - **Domain-based procedure variables now verify their type reference after saving.** On some GeneXus 18 builds the SDK accepts a Domain-typed variable but drops the Domain reference when persisting — the variable saves with an empty `BasedOnReference` and fails specification with `spc0056` ("Variable definition is incorrect"). `genexus_add_variable` (single and batch) now re-reads the persisted variable list after saving and, when a Domain reference did not survive, fails with `VariableDomainReferenceNotPersisted` naming the affected variables instead of reporting a success that spec can never accept.
@@ -19,6 +2110,7 @@ Patch release: fixed router action dispatch for `genexus_analyze mode=linter` an
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_analyze mode=linter` router action.** Previously routed to `action = "Analyze"` instead of `action = "linter"`, which fell through `AnalyzeService` without reaching `LinterService.Lint`. `AnalyzeRouter.cs` now emits `action = "linter"`.
 - **`FindObject` SDK fallback when search index misses newly created objects.** `ObjectService.FindObject` previously skipped the SDK `Objects.GetByName` fallback whenever a search index was loaded in memory. If an object was created after index load, tools like `genexus_analyze`, `genexus_inspect`, and `genexus_read` returned `ObjectNotFound` until a full index rebuild ran. `FindObject` now falls through to the SDK fallback when the index lookup misses.
 
@@ -32,6 +2124,7 @@ Full-fidelity SDT structure & lifecycle rebuild target scoping: cloning and auth
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Cloning a collection SDT via `genexus_create action=save_as` no longer flattens it.** The clone was rebuilt from the SDT's flat textual structure, which encodes neither the root collection flag, the collection item name, nor Domain/SDT-typed members — so a collection SDT was cloned as a flat, non-collection SDT with every Domain member collapsed to its base type. The SDT structure is now copied at the model level, so the clone preserves the collection flag and item name, each member's type/length/decimals, per-member collection flags, nested levels, Domain links (`basedOnDomain`), and SDT references (#51).
 - **A Domain-based SDT member now reads back with its Domain.** `genexus_structure action=get_visual`, `genexus_inspect`, and `genexus_read` (part `SDTStructure`) reported a member based on a Domain only by its underlying base type, hiding the Domain link. Reads now include `basedOnDomain` with the Domain's name (#51).
 - **`genexus_lifecycle action=rebuild` now honors `target` parameter.** Scopes execution to `<SpecifyOneOnly>` when `targets` are supplied instead of rebuilding the entire KB (#53).
@@ -49,6 +2142,7 @@ Full-fidelity SDT structure & lifecycle rebuild target scoping: cloning and auth
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Typing a variable as an SDT *item* now works — `&Message : Messages.Message` no longer collapses to the collection.** Declaring a variable as a single element of a collection SDT (the dotted `SDT.Item` form, e.g. GeneXusCommon's `Messages.Message`) persisted as the whole `Messages` collection instead, so `&Messages.Add(&Message)` was impossible and callers fell back to ad-hoc `VarChar` collections. `genexus_variable action=add` and `action=modify` now resolve the dotted item form through the SDK's own type-picker resolver — the same path the GeneXus IDE uses — so the variable is typed as the item. Verified end-to-end: `&Message.Id` / `.Type` / `.Description` member access and `&Messages.Add(&Message)` compile. Plain SDT, Business Component, and Domain types are unaffected.
 
 ### Internal
@@ -62,6 +2156,7 @@ Correctness fixes for reading and writing SDT / Data Provider objects, plus an e
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Reading a collection SDT no longer flattens it.** `genexus_inspect` and `genexus_structure action=get_visual` reported a top-level collection SDT as `isCollection: false` with a flat field list, because the collection flag lives on the structure's root level, not on the SDT object. Both now report `isCollection: true` and the collection item name (e.g. `"DASDTCursosAlunoItem"`), and `get_visual` now also carries each field's length/decimals — matching what the IDE and `genexus_read part=Structure` show.
 - **SDT members typed as another SDT now read as that SDT's name.** A member referencing another SDT came back as the opaque `"GX_SDT"` token; it now includes `referencedType` with the referenced object's name (e.g. `"CobrancaEndpointServiceconvenioDto"`).
 - **Setting a Data Provider's `OutputSDT` now persists.** `genexus_properties action=set propertyName=OutputSDT value=<SDT name>` reported success but wrote an empty value, because `OutputSDT` is a read-only derived string and the writable output is a typed reference. The MCP now resolves the SDT name and applies it through the SDK's typed Data Provider output API. Passing an empty value clears the output; a non-existent SDT name is rejected with `OutputSdtNotFound` instead of silently emptying the property.
@@ -81,6 +2176,7 @@ Hardening and correctness fixes for the **Nexus IDE VS Code extension**. (The `g
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Webviews no longer execute markup smuggled through Knowledge Base content.** The Structure, Index, and History views built their HTML by concatenating KB-derived values (object / attribute / index names, descriptions, formulas, revision authors and comments) without escaping, under a policy that allowed inline handlers — so a crafted name or comment could run script inside the view and reach the extension host. Every KB-derived value is now HTML-escaped before display (matching the Properties view, which already constructed its DOM safely).
 - **Virtual-file paths can no longer escape the KB mirror folder.** The object type/name segments taken from `gxkb18:` URIs are now validated, and every mirror file path is confined to the shadow root — closing a path-traversal gap on both the read and the write paths (the on-disk `file:` path already enforced this).
 - **`&variable.` member completion now reflects edits made during the session.** An object's variable list was cached on first use and never refreshed, so a newly added, renamed, or retyped variable didn't appear (or showed members for the old type) until the window was reloaded. The cache now expires after 30 seconds, matching the hover cache.
@@ -102,6 +2198,7 @@ The **Nexus IDE VS Code extension** is brought up to the MCP server's quality ba
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Rename now actually updates the editor.** Renaming a variable/attribute ran server-side but the editor showed nothing (it returned an empty edit); it now refreshes the affected open documents (skipping ones with unsaved changes). Also fixed variable renames being mis-routed to the attribute-rename operation.
 - **Find References / Go to Definition return real locations** instead of collapsing every hit to the top of the object; variable references within a document now resolve.
 - **Code actions come from real linter diagnostics** (e.g. "Remove unused variable" on an unused-variable warning) instead of a blanket "Create Variable" offered on any `&word`.
@@ -125,6 +2222,7 @@ Agent-ergonomics round: louder argument validation, richer list metadata, conten
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A second build started in the split-second after the first no longer slips past the "build already running" guard.** The guard read an in-flight set that a build only joined on a background thread, so two builds fired back-to-back could both be admitted and race the generated output. Builds now register synchronously before the background work is scheduled.
 - **`next_legal_actions` follow-up suggestions work again for object/popup/save-as creation.** After the tool consolidation the suggestion builder was still keyed on pre-consolidation tool names, so a `genexus_create` call produced no follow-up hints; it now dispatches on the canonical tool + `action`, and every suggestion points at a current tool name (so it holds even with legacy aliases disabled).
 - **`genexus_variable action=modify` rollback now restores a non-primitive type.** When a retype failed and the variable was rolled back, an original SDT / Business Component / built-in GeneXus data-type binding (e.g. `HttpClient`, `WebSession`) was silently downgraded to a bare scalar while the tool reported "the original variable was restored." The rollback now re-establishes the original binding, and the message flags when it couldn't.
@@ -152,6 +2250,7 @@ Variable-retype reporting honesty (issue #46 follow-up).
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_variable action=modify` now reports the type it actually persisted.** Retyping a variable to a built-in GeneXus data type (e.g. `Properties`), an SDT, a Business Component, or a Domain reported `persistedType: "DomainReference"` — an internal placeholder, not a real type — even though the variable was correctly persisted. It now reports the real type name (`"Properties"`, the SDT/BC/Domain name). Declaring `Properties` (and every other built-in data type) already worked as of v2.31.0; this only corrects the confusing success message.
 - **`genexus_variable action=modify` no longer silently falls back to `NUMERIC(4)` when a type can't be resolved.** If a requested type matched no Domain, SDT, Business Component, or built-in GeneXus data type, modify used to leave the variable at its default `NUMERIC(4)` and still report success. It now fails loudly, rolls the variable back to its original type, and leaves it unchanged.
 
@@ -173,6 +2272,7 @@ GeneXus Server "Ignored Objects" visibility, plus full variable-type authoring (
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **You can now declare a variable of a built-in GeneXus data type — `HttpClient`, `HttpRequest`, `HttpResponse`, `WebSession`, `MailMessage`, `ExcelDocument`, and the rest — through the MCP.** Previously `genexus_variable add typeName=HttpClient` failed with `UnknownType`, `modify` silently persisted a dangling reference, and the `genexus_edit part=Variables` DSL silently coerced the variable to `NUMERIC(4)` — so any object that calls out over HTTP (`&http.Host`, `&http.Execute(…)`) could not be authored without opening the GeneXus IDE by hand. All three paths (`add`, `modify`, and the `mode=full` Variables DSL) now resolve the type through GeneXus's own type registry, exactly as the IDE's variable Type picker does, and the variable round-trips (reads back by name) and passes specification with member access resolved. Only `WebSession` was previously special-cased; every built-in GeneXus data type — and user-defined KB External Objects — is now recognized generically.
 - **A variable declared as a collection through the `genexus_edit part=Variables` DSL is now a real collection.** Writing `&items : Numeric(4) Collection` used to persist the `Collection` keyword but leave the variable a scalar, so a later `&items.Count` failed at specification as an unknown function — only `genexus_variable add collection=true` produced a working collection. Setting the type was clearing the collection flag; the DSL now applies the flag after the type, so `.Count` and other collection semantics work.
 - **Auto-declared variables no longer include ampersands that live inside string literals or comments.** Saving a Source/Events part with, say, a URL query (`"…&status=paid"`), an HTML entity (`"&nbsp;"`), or a commented-out line used to auto-declare spurious `VARCHAR(100)` variables (`&status`, `&nbsp`, …) from those ampersands. The auto-declare scanner now ignores ampersands inside quoted strings (honoring GeneXus's doubled-quote escaping) and comments, so only real variable references are declared.
@@ -191,6 +2291,7 @@ Data-loss and reliability fixes (issues #43 and #44).
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **The MCP connection no longer drops during/after a build.** A background build kept emitting progress (`Build phase: OpeningKB`, …) tagged with a token whose operation had already finished — so the client (Cursor especially) saw a "progress notification for an unknown token", flagged the transport as errored, and closed the connection (looking like "the server crashed" when it was still running). The gateway now relays a progress notification only while its operation is still active and silently drops stale/unknown ones, so async builds and background indexing can't tear down the session. Live build progress is unaffected — follow it with `genexus_lifecycle action=status target=op:<id>`.
 - **`genexus_edit` with `operation: Append` or `Insert_After` no longer overwrites the whole part.** Passing one of these operations without `mode: patch` used to fall through to a full-part replace that silently discarded the operation — so an append/insert against an ~888-line Source destroyed everything but the payload, while still reporting `WriteApplied`. An explicit `operation` now always routes through the patch pipeline (which genuinely appends/inserts and preserves the rest of the part); combining `operation` with `mode: full`/`ops` is now a clear usage error instead of a destructive write.
 - **The pre-write `.bak` snapshot now captures the full original part.** The safety-net backup taken before every write was read through the paginated MCP path (~200 lines / 16 KB cap), so for a large part it saved only the head and could not restore the object. The snapshot now reads the complete part, so the backup is usable for recovery.
@@ -232,6 +2333,7 @@ Bug-fix pass — five agent-friction fixes across dry-run, DB drift, targeted bu
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_edit` dry-run no longer promises a Transaction attribute removal the SDK will reject.** Removing a key attribute from a transaction always fails at save, but a `dryRun` / `validate=only` run reported the edit applied (`opsApplied:1`) because it only projected the change against the Structure text in memory. Dry-run now flags removals the SDK will refuse up front (`capabilityRisks`, `willLikelyFail`), and every dry-run carries a `dryRunCaveat` making clear the preview is a projection, not a guarantee the persist will succeed.
 - **`genexus_db action=drift_check` is fast again.** It unconditionally ran the build-heavy database-impact specification (minutes on a real Knowledge Base), holding the worker's single SDK thread for the whole run. Drift check now uses the cheap timestamp heuristic by default; the specification pass is opt-in with `deep=true`.
 - **A targeted build that matches no object fails loud instead of reporting success.** `genexus_lifecycle action=build` for a name that didn't resolve to a KB object built nothing, left the `.dll` untouched, and still reported "succeeded" — so a pattern-generated panel whose object name differs from the name passed (WorkWith panels, etc.) looked built when nothing happened. The build now returns a clear error naming the unresolved target(s), and warns when only some targets of a multi-target build are skipped.
@@ -248,6 +2350,7 @@ Two more performance + bug-fix passes (no new features). Fixes span the analysis
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_gam action=define_api|deploy` now require `confirm=true`.** These call the GeneXus GAM Define API / security-table deploy and can create or alter tables in the KB's datastore; they previously executed on the first call with no confirmation. They now fail fast asking for `confirm=true`, matching every other destructive SDK action.
 - **`genexus_gxserver action=pipeline_run|pipeline_abort` report real failures instead of "not connected".** A network or auth error while triggering or cancelling a CI build was reported as a benign `connected:false` success, so an agent might retry and double-trigger the build. A genuine trigger/cancel failure now returns a clear error; only an actually not-linked KB reports `connected:false`.
 - **KB-wide rename is now atomic.** `genexus_refactor` rename patched every caller's source and saved them one by one, then renamed the target last — with no rollback. If that final rename failed, callers were left referencing a name that no longer existed. The whole rename now runs in a single transaction that rolls back every caller edit if any step fails.
@@ -276,6 +2379,7 @@ Performance and bug-fix pass (audit 2.29.x). No new features — targeted fixes 
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Long-running gateways no longer accumulate stray background tasks.** Each time a worker was retired for being idle, recycled for memory, or killed for hanging, its writer and health-check loops kept running for the life of the gateway against a token that was never cancelled — a slow, unbounded task/timer leak. Every worker-teardown path now cancels cleanly.
 - **`genexus_search_source` metadata-field searches are fast again and respect `objectName`.** Searching `fields=[caption|description|parmNames|webForm]` rescanned the entire Knowledge Base and resolved each candidate the slow (untyped) way — quadratic on large KBs — and ignored any `objectName=` scope you supplied. It now stays within the requested scope and resolves each object by its type in one step.
 - **A cancelled build's reported state stays cancelled.** After `genexus_lifecycle action=cancel`, buffered build output still draining in the background could overwrite the task a moment later and flip its phase back off `"Done"`. The cancel now freezes the task's state atomically.
@@ -298,6 +2402,7 @@ Security and reliability hardening for the recently added SDK-endpoint tools.
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Lingering MSBuild processes are now actually reaped on every build exit.** The v2.29.0 "guaranteed reap" cleanup inspected the build's process handle *after* it had already been released, so the safety net silently did nothing (and logged a spurious cleanup warning on affected builds). Cleanup now tracks the MSBuild process by PID — with a start-time guard against PID reuse — so a hung child process can't linger after the build finishes, fails, or throws.
 - **`genexus_screenshot_publish` now only accepts image files from an expected location.** The tool copied any readable file path it was handed into the Knowledge Base's `.gx` tree with no type, size, or location check. It now requires an image extension, confines the source to the OS temp directory, the open KB, or `GXMCP_SCREENSHOT_DIR`, and caps the file at 25 MB — rejecting anything else before it copies.
 - **The gateway's HTTP request log no longer records raw request bodies.** The debug log wrote the first 100 characters of every inbound JSON-RPC body, which could capture a credential passed as a tool argument. It now logs the method, id, and argument key names with sensitive values — and any nested object or array — masked.
@@ -322,6 +2427,7 @@ Reliability & authoring batch — build/deploy status honesty, long-op resilienc
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`compile_check` no longer re-expands the whole KB.** It now builds exactly the target plus its (capped) callers with `includeCallees=none`, instead of also walking every caller's dependency graph — which re-dragged the DeveloperMenu the check is meant to skip and left `CompileCheck:false` on the run.
 - **A build that compiled cleanly but hit a late deploy step no longer reports a bare `Failed`.** When Generation and Compilation both succeeded and there are zero code errors, an in-process build whose only failure is a downstream step (WebAppConfig, a standalone module like GAMUser) is now flagged `partial_success` — the gateway renders `effective_status=PartialSuccess` (not an error), matching the external-build path. No more contradictory "Failed with 0 errors".
 - **Long specify/build calls no longer get dropped to the background at ~120s.** With no client progress token the gateway now returns an interim "still running — poll `op:<id>`" within its safe window instead of blocking the connection until the client gives up. Progress frames also keep the operation's `updatedAtUtc` live so a status poll shows real movement instead of a frozen timestamp.
@@ -394,6 +2500,7 @@ See `docs/sdk_uncovered_endpoints_2026-07-20.md` + `docs/sdk_endpoints_roadmap.m
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Editing a Transaction's `Rules` with an invalid rule now tells you what's wrong instead of a bare "Erro" (issue #39).** Writing `Rules` that contained `Unique(Attribute);` failed with `Part save failed: Erro` and no detail, which looked like the whole `Rules` part was broken. It wasn't — valid `Rules` writes (`Default`, `Error`, `NoAccept`, assignments, conditional rules, proc calls) always worked and still do. The one bad rule was `Unique`, which GeneXus does not recognize (the SDK reports `src0295: unknown rule 'Unique'`). `genexus_edit part=Rules` now returns an actionable `hint` for this: enforce uniqueness with `genexus_structure action=create_index` instead. The `Unique` clause only ever existed for queries and was removed after GeneXus 18 Upgrade 9.
 
 ### Internal
@@ -419,6 +2526,7 @@ Fixes the build-hang reported against v2.25.1, where `genexus_lifecycle action=b
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A build that fails no longer secretly re-runs the whole thing.** When the in-process GeneXus build ran end-to-end and reported failure (for "build all", on real compile errors), the MCP was discarding that result and silently restarting the entire build as an external MSBuild process — re-opening the KB and recompiling from scratch. That second full pass is what looked like an indefinite hang. The MCP now surfaces the failure from the first pass and terminalizes immediately (`Failed`). The external build is used only when the in-process build could not start at all (SDK unavailable, unsupported action such as reorg), never to retry a build that already ran.
 - **In-process builds now report phase progress.** Progress was stuck at the starting phase for the whole build because the phase parser only understood the external MSBuild text format, not the section-marker stream the in-process build emits. Builds now advance through Specifying → Generating → Compiling → Finishing as they run.
 - **A build that fails without a per-line error is now actionable.** When the build fails at the section level with no itemized `error CS####:` line (typical of the deploy/config stage), the response now names the failing section under `phaseFailure` and points you at `genexus_lifecycle action=specify target=<object>` for itemized spc/gen diagnostics, instead of reporting a bare `Failed`.
@@ -433,6 +2541,7 @@ Fixes the gateway lock-up reported in issue #38, where opening a path that isn't
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Opening a non-KB path now fails fast with a clear error instead of wedging the gateway.** `genexus_kb action=open` validates that the path is a real KB root (a folder with a `.gxw` / `knowledgebase.connection`, or the `.gxw`/`.gx` file itself) before a worker is spawned for it, and returns `KbInvalidPath` when it isn't. Previously the bad path was handed to a fresh worker whose open failed but kept retrying, so the whole gateway drifted into an unrecoverable state.
 - **Background KB auto-open no longer retries forever.** A structurally unopenable path used to be re-attempted on every operation (the debug log filled with the same failed open every few seconds). Auto-open now gives up after 3 consecutive failures and says so; an explicit `genexus_kb action=open` still works and a successful open resets the counter.
 - **The gateway recovers on its own when its session to the running server expires.** When a second AI client shares the already-running server and that server restarts (or its session ages out), the client used to get `Master error: NotFound` on every call with no way back except a full restart. The connection now re-establishes the session transparently and retries the call.
@@ -448,6 +2557,7 @@ Addresses the deploy/database-apply gaps reported in issue #37: reorg couldn't r
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Builds and previews can no longer hang indefinitely.** A build (or `buildFirst` preview) that wedges in a late deploy/reorg step used to sit at `Running` with no terminal state, forcing you to cancel by hand. Each build task now has a wall-clock cap: on expiry it is force-failed with a clear reason and any spawned MSBuild process tree is killed. Default 900s (2400s for a full rebuild); override with `GXMCP_BUILD_TIMEOUT_SEC`.
 - **`genexus_lifecycle action=reorg` no longer fails with `MSB4036` (task `CheckAndInstallDatabase` not found).** The generated MSBuild project was resolving under the CLR-2.0 toolset, where the .NET 4.x GeneXus task assemblies can't load. It now pins `ToolsVersion="4.0"` so the reorg task resolves.
 
@@ -459,6 +2569,7 @@ Addresses the deploy/database-apply gaps reported in issue #37: reorg couldn't r
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Enumerated ("combobox") Domains now render their options.** `genexus_create` for a Character/VarChar Domain stored `enumValues` raw (`A`), but GeneXus needs quoted literals (`"A"`) — a raw value produced an empty combobox in the IDE. Character-family enum values are now auto-quoted (pass the bare value; already-quoted input is left alone); numeric/date domains are unchanged.
 - **`genexus_layout action=add_printblock` works on any report Procedure.** It previously failed with "no compatible AddBand/collection mutator found" unless the layout already had a `footer` band. It now uses the report layout's own `AddBand` method, so a print block can be added to a freshly-created Procedure.
 - **Datastore `provider` / `accessTechnology` are no longer blank.** These were read under friendly names (`ServerName`, `Provider`, …) that GeneXus doesn't use; the introspection now reads the real internal descriptors (`CS_SERVER`, `ADONET_DRIVER`/`JDBC_DRIVER`, `ACCESS_TECHNO`, …). This also unblocks the `whoami` database block, which shared the same latent dynamic-dispatch bug and was stuck at `Pending`.
@@ -479,6 +2590,7 @@ Closes the gaps reported in issue #36 from an end-to-end WorkWithPlus feature bu
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Structure edits are authoritative — no more silent additive-only merges.** `genexus_edit part=Structure` with `mode:full` now replaces the whole attribute list, including keys: sending a different key line no longer leaves you with a composite double key. Removals run after additions, so replacing a key works (the new key exists before the old one is dropped). When the SDK genuinely refuses to drop an attribute (e.g. a key still referenced by a foreign key, relation, or index), the write is aborted with a `StructureAttributeNotRemoved` error explaining why — instead of quietly keeping the attribute and reporting success.
 - **`remove_attribute` persists or errors — never `ok:true` on a no-op.** A `mode:ops remove_attribute` (or a textual patch that deletes an attribute) that the SDK does not actually persist now surfaces the failure on the envelope, rather than returning a green `opResults` list while the attribute remains.
 - **`genexus_variable action=modify` reports the type it actually persisted.** The success message showed the requested type name even when the SDK stored a different one; it now reports the persisted type (and, when they differ, both) plus `requestedType`/`persistedType` fields.
@@ -511,6 +2623,7 @@ Fixes issue #33 — SDT-typed collections and `WebSession` variables can now be 
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A native GeneXus SDK fault no longer silently kills the worker mid-edit.** Some complex edits (large WebComponents, certain Structure writes) made the SDK raise a corrupted-state fault (`AccessViolation`) that the runtime turned into an immediate process exit — the client saw the MCP disconnect with no answer, and the in-flight call was lost (issue #35, and the homonym Transaction/Table Structure crash). The worker now catches that fault, returns a structured `WorkerNativeCrashRecovered` error for the call, and restarts cleanly so the gateway brings up a fresh worker — so a bad call fails with a message and a retry works, instead of dropping the connection. (A `StackOverflow` remains unrecoverable by design; it stays a hard restart.)
 
 ### Internal
@@ -526,6 +2639,7 @@ Fixes issue #34 — the blocker plus the three secondary problems reported along
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_edit` can now add and modify attributes on a base Transaction.** Every base Transaction shares its name with an auto-generated Table, and while `type` was honored on read and on `dryRun`, the actual write ignored it and re-resolved by name — hitting both objects and failing with `Ambiguous object name`. `type` is now carried all the way into the write, so `genexus_edit part=Structure` (mode `patch` and `ops`) persists against the Transaction you named. This also unblocks JSON-Patch writes and any other same-named object pair (e.g. a WebPanel behind a Transaction).
 - **`genexus_edit mode=ops add_attribute` works and accepts the documented argument shape.** Attribute ops (`add_attribute`, `set_attribute`, `remove_attribute`) on a Transaction failed with `<Structure> not found`; they now apply through the same Structure path the `patch` mode uses, so they actually persist. Both the documented `{ op, args: { name, type } }` shape and the flat `{ op, name, type }` shape are accepted.
 - **`genexus_variable` no longer stores a Blob or Image as `NUMERIC(4)` and reports success.** `typeName: "Blob"` / `"Binary"` (and `"Image"`) were recognized but mapped to a database type that doesn't exist, so the variable silently fell back to `NUMERIC(4)` while the response claimed the requested type. Blob/Binary now persist as `BINARY` and Image as `BITMAP`; a recognized type that genuinely can't be applied now returns an error instead of a wrong-but-successful write.
@@ -546,6 +2660,7 @@ Fixes issue #34 — the blocker plus the three secondary problems reported along
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_refactor action=RenameObject` can now rename any object, and tells same-named objects apart.** Renaming a WebPanel, Transaction, or Procedure previously failed with "Attribute not found" — the action only ever renamed attributes — and when two objects shared a name (for example a WebPanel and the same-named `Table` generated behind a Transaction) there was no way to indicate which one you meant. RenameObject now resolves the object by name, disambiguated by `type` (and honoring a GUID or `Type:Name` target), renames it, and patches every call-site that referenced it. Pass `type=WebPanel` (or `Transaction`, `Procedure`, …) when a name is shared. `genexus_rename_across_kb` gets the same type-aware resolution; renaming attributes is unchanged.
 - **`dryRun` previews no longer execute for real.** `dryRun=true` on `genexus_refactor` (rename/extract) — and on the other tools that read it, including index/build/run previews — was silently dropped on the way to the worker, so the "preview" actually performed the operation. Previews now stay previews; nothing is persisted until you run without `dryRun`.
 
@@ -562,6 +2677,7 @@ Worker-stability pass: the worker stops dying for reasons that have nothing to d
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A second editor/agent no longer kills your live worker.** When more than one client connected at once, a second gateway ran as a proxy to the first. A routine, id-less MCP notification — which the main gateway correctly answers with an empty acknowledgement — was misread as "the main gateway is dead," triggering a takeover whose port-recovery step then force-killed the real gateway *and its GeneXus worker*, mid-edit or mid-build. The proxy now treats an empty acknowledgement to a notification as success, re-verifies the main gateway is actually gone before taking over, and never force-kills a process holding the port unless it is itself one of ours. The one request that did trigger a (now genuinely warranted) takeover is replayed by the new master instead of being dropped. This removes a whole class of "the worker just died / I had to reconnect" interruptions that were never about your KB.
 - **Two gateways starting at the same instant no longer both become master.** The coordination lease was written non-atomically, so a gateway starting concurrently could read a half-written lease, see "no master," and register a second one (a startup split-brain that ended the same way — a killed worker). The lease is now published via an atomic rename, so a starting gateway always reads either the previous complete lease or the new one, never a partial.
 - **A worker that fails to respawn now keeps trying instead of getting stuck.** If the automatic respawn after a crash exhausted its quick retries (host under load, the KB briefly locked by the IDE), the KB was left in `respawn_failed` until you manually reloaded. It now retries quietly on a long interval for ~30 minutes, so a transient cause self-heals without intervention.
@@ -604,6 +2720,7 @@ Agentic-DX fixes from a real session authoring a SOAP-exposed Procedure (issue #
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`VarChar` now persists as `VARCHAR`, not `CHARACTER`.** A variable requested as
   `VarChar(80)` was silently stored as `CHARACTER(80)`, which forced callers to `Trim()`
   padding when writing to a `VARCHAR2` column. `VarChar` is now its own type and round-trips
@@ -655,6 +2772,7 @@ search/list on large KBs, the new `Server.WedgedCommandTimeoutMinutes` knob, and
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Incremental indexing of large sibling groups is no longer quadratic.** Adding an
   object to the parent-children index scanned the whole sibling list to dedup on every
   insert, so bulk/streaming indexing of a folder or table with thousands of children ran
@@ -785,6 +2903,7 @@ argument on `genexus_kb_import`.
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_kb_import` rejects path-traversal in `name`/`type`.** These arguments flow
   into filesystem delete/copy; values like `..\..\x` could escape the KB's `Objects/`
   tree and overwrite an unrelated directory. They are now validated against
@@ -845,6 +2964,7 @@ argument on `genexus_kb_import`.
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Reading a Smart Device Panel (`SDPanel`) no longer reports real content as empty.** An SDPanel's parts are WorkWithDevices projections, and the tool was looking them up with the Web panel's part identifiers, which never matched — so `part=Source` landed on the panel's (usually empty) rules part, and the layout/variables/conditions came back as a blank `<Properties />` that read like an empty object. Now: `part=Source` (and `Events`) returns the panel's **event code**; `SDEvents` and `SDRules` are listed in `availableParts` and readable by name; and reading `SDLayout` / `SDVariables` / `SDConditions` returns a clear note (`projected: true`) explaining the content is projected from the pattern and authored in the GeneXus IDE — a blank there does not mean the panel is empty.
 
 ### Internal
@@ -857,6 +2977,7 @@ Follow-up on two v2.15 authoring sessions (issues #30 and #31): SDT element sizi
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **SDT element Length/Decimals are now settable.** Writing an SDT structure element as `Codigo : Numeric(9)` used to drop the size — the element stayed at the `Numeric(4)` default, which serializes as `xsd:short` and silently truncates any value over 32767. Two causes: the structure write only fired for `part=Structure` while `genexus_read` reports the part as `SDTStructure` (so the write was a silent no-op), and the parser never applied the length even when it ran. Both are fixed — `part=SDTStructure` now writes, and `Numeric(9)` / `Numeric(9.0)` / `Numeric(9,0)` all set length and decimals. Reads round-trip the size (`Codigo : NUMERIC(9)`).
 - **Batch `genexus_read` no longer crashes.** `genexus_read targets=["A","B","C"]` failed with `BatchRead failed: Cannot access child value on Newtonsoft.Json.Linq.JValue`. The batch path expected each entry to be an object but the tool passes bare object-name strings; it now accepts both forms, so reading several objects in one call works. Individual reads were unaffected.
 - **`genexus_lifecycle action=validate` now validates Procedure Source.** It always returned `ValidationSkipped: "Validation not applicable for this part type."` because the dispatch passed the action verb ("Check") where the part name belonged, so the lookup never matched a part. Validation now targets the object's `Source` (pass `part` for another part, e.g. `Rules`); with no `code` argument it validates the object's current Source in place, giving a lightweight per-object syntax check independent of a full build.
@@ -892,6 +3013,7 @@ Second pass on the long-session report (issue #28): the remaining authoring and 
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **No more phantom placeholder KB.** The shipped fallback config carries a placeholder `KBPath` (`C:\KBs\YourKB` — an empty scaffold). It was being auto-migrated into a `yourkb` default that opened alongside your real KB, so every call failed with `Multiple KBs open (yourkb,…); 'kb' parameter is required`. A `KBPath` that isn't a real KB (missing, or no `.gxw` / `KnowledgeBase.Connection`) is no longer migrated — the only open KB is the one you actually open, so no `kb` argument is needed.
 - **Error messages keep the authored identifier casing.** GeneXus lowercases identifiers in its diagnostics (`&Objcod` for a variable authored `&ObjCod`). Build errors now restore the casing the KB actually uses for `&`-prefixed identifiers, so the error matches what you wrote. Unknown identifiers and literal text are left exactly as emitted.
 
@@ -906,6 +3028,7 @@ Stability and authoring fixes from a long real-world session on a ~1200-object K
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Edits no longer blocked by `IndexNotReady` when the index is actually loaded.** After a reconnect the worker's index loads from its warm cache (log shows `Index loaded. Objects: 1191`), yet the first `genexus_edit` could still be rejected with `IndexNotReady` / `indexStatus: Cold` — and the only way to warm it risked a long blocking call. The index state is now hydrated from the loaded cache the moment it's queried, so the first status/edit after a reconnect reflects the objects already in memory instead of reporting `Cold`.
 
 ### Added
@@ -926,6 +3049,7 @@ Index-status honesty + a "wait until ready" convenience, from a measured pass ov
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Index status no longer reports 0 objects when it's actually ready.** When the index loads from the warm/delta cache (the normal path on reopen), `genexus_lifecycle action=status` reported `total: 0`, `processed: 0`, `objectsWalked: 0` and a blank status even though the index was fully `Ready` with thousands of objects — the "processed: 0 the whole session, impossible to tell progress" confusion. Status now reports the real object count and state in that case.
 - **A read while the index is still warming gives an honest hint.** Reading an object by name before the index has populated returned "No similar names found in the index" — which implied the index had been consulted and the name truly didn't exist. It now says the index is still warming (and a direct lookup also missed), so you retry instead of concluding the object is absent. Reading by exact name never required a full index and still doesn't.
 
@@ -939,6 +3063,7 @@ Reliability + search-ergonomics pass from a long large-KB session (issue #27): a
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A background build always resolves to a terminal result.** After `genexus_lifecycle action=build`, polling `action=status` / `action=result` could report `running` / `Pending` forever even though the build had already finished — the background progress tracker could wedge (a recycled worker, a stalled pipe) and nothing ever flipped the job to its final state. Every status/result poll now re-checks the worker's real build state and settles the job to `succeeded` / `failed` on the spot. If the worker was recycled and its build outcome is genuinely unrecoverable, the job resolves with a clear "tracking lost — re-run to confirm" instead of hanging.
 
 ### Added
@@ -967,6 +3092,7 @@ Follow-up to the v2.13.0 Design System work: editing a Design System now actuall
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Editing a Design System's styles no longer silently no-ops.** Writing a Design System's `Source` with only a `styles { … }` block — or a combined `tokens { … } styles { … }` source in which only the styles changed — returned `WriteNoChange` and never persisted, so the object looked untouched in the IDE. The styles now save correctly. A write where neither the tokens nor the styles block changed still returns `WriteNoChange`, as expected.
 - **A worker that shut down for inactivity is replaced on the next call.** After the worker idled out, the following tool call failed with `Worker for KB '…' crashed/exited` and no replacement was started, leaving the session stuck until a manual reconnect. The idle worker is now dropped cleanly the moment it stops, so the next call transparently spawns a fresh one.
 
@@ -981,6 +3107,7 @@ Worker-reliability, KB-lifecycle, and DX pass on large KBs (issue #26): the work
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_search_source` no longer crashes the worker.** Source search was running on a background thread while reaching into the GeneXus SDK, which is single-thread-bound — every call killed the worker and cost a recovery cycle. It now runs on the SDK thread, so searching source is safe and repeatable, even on a large KB and while the index is still building.
 - **The worker recovers on its own; no more phantom "respawning".** After a crash the gateway now retries the respawn and, if a health check finds no live worker, starts one — so you no longer get stranded watching `respawning` while nothing is actually coming up. Worker health reports the truth: `starting` when a process really is booting, `respawn_failed` (with the underlying error and a recovery step) when it isn't, and `no_worker` when no KB is open.
 - **An opened KB stays open across a worker recycle.** A KB opened by alias or path used to become `Unknown KB '…'` after a build or worker restart, forcing you to reopen it before every call. The gateway now remembers KBs you've opened for the whole session and transparently re-attaches (respawning the worker on demand) instead of failing.
@@ -1001,6 +3128,7 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_search_source` no longer returns an empty "not found" for tokens that exist.** A search for text that lived in an object's body — but not in its name — was silently dropped for every Procedure, Data Provider, Web Panel, and Transaction, because a pre-filter treated the (never-populated) indexed snippet as proof of absence. The pre-filter now only skips an object when the index genuinely holds its body text; otherwise the full source is read. A zero result is now trustworthy.
 - **Search works while the index is still building.** Instead of hard-failing with `IndexCold` until the entire catalogue is walked, `genexus_search_source` now scans the objects walked so far and marks the result `partial: true`. A zero result on a partial index comes back as `PartialIndexNoMatch` (never a plain empty success), so an in-progress index can't be mistaken for "the token doesn't exist."
 - **`genexus_list_objects` no longer presents a partial catalogue as complete.** While the index is still walking, the page is flagged `partial: true` / `totalIsPartial: true` with `hasMore: true`, and a `typeFilter` / folder miss says the type or folder may simply not have been reached yet — instead of implying it doesn't exist. The misleading authoritative `total` / `hasMore: false` over the walked subset is gone.
@@ -1034,6 +3162,7 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Edit and save errors now show the real diagnostic instead of `{"message":"{"}`.** When the GeneXus SDK rejected an edit — invalid source syntax, a save that didn't persist, and similar — the error reaching the client collapsed to a literal `{"message":"{"}`, with the actual `src####` line/column diagnostic, error code, and fix hint all dropped. `genexus_edit mode=patch` and `genexus_io action=export_part` returned the same opaque string. The error now carries the SDK's real message, code, and hint, so a failed write is actionable in one read instead of a dead end. (Fixes the `{"message":"{"}` reports in issue #24.)
 - **Editing is no longer blocked for minutes after an upgrade on large KBs.** Every MCP version bump changes the worker binary, which forced a full re-index of the whole KB on the next start; on a 38k-object KB that held all writes for the duration of the rebuild. When only the binary changed (the on-disk index format is unchanged), the worker now runs a bounded delta — re-indexing just the objects that changed since the last run, typically under a second — and re-baselines its cache to the new binary. Reads were always available during this window; now writes are too. `genexus_lifecycle action=index force=true` still runs the full rescan when you want enrichment-logic improvements applied to every object.
 - **`genexus_edit` no longer reports `WriteApplied` when a source write persisted as empty.** As a safety net, a non-empty source edit that re-reads as an empty part now returns a `WriteNotPersisted` error with a recovery path (restore via `genexus_history`, or retry once the KB is idle) instead of a false success, and a follow-up edit of the same object is no longer stuck on a phantom `WriteNoChange`. (Addresses the silent empty-write + `WriteNoChange` loop in issue #24.)
@@ -1058,6 +3187,7 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_worker_reload` no longer leaves the session with a dead pipe.** Reload is now orchestrated by the gateway: tool calls that arrive during the swap wait in a queue instead of being routed to the exiting worker, and the reload response returns only after the replacement worker is SDK-ready (`swappedAndReady: true`). The old "reconnect the MCP client after reload" workaround is no longer needed.
 - **Worker respawn loops eliminated.** A worker that exited on purpose — idle timeout, explicit `genexus_kb action=close`, gateway shutdown, or a "KB already open in another instance" rejection — was treated as a crash and respawned, in the busy-KB case in an infinite loop that could kill the legitimate sibling worker. Exit intent is now threaded through the lifecycle and deliberate exits stay down.
 - **The on-disk index can no longer go permanently stale.** The index metadata sidecar was written even when the index body flush had failed or was still in flight, so the next warm start trusted a high-water-mark the body didn't contain and skipped those objects forever (only a `force=true` rebuild recovered). The sidecar is now written only after a durably confirmed flush.
@@ -1100,6 +3230,7 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **The MCP server no longer shows "parou de responder" / "stopped responding" while idle.** The host's periodic keepalive `ping` was processed in the same single-file queue as tool calls, so a long-running request (a cold start, an index build, an edit reapply, or a background index refresh) blocked the gateway from answering the ping until it finished — and the IDE declared the server unresponsive even when you weren't actively using it. Pings and other lightweight protocol messages are now answered immediately regardless of what heavier work is in flight.
 
 ## v2.9.0 — 2026-06-03
@@ -1113,6 +3244,7 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Index builds no longer thrash the disk.** While enriching a Knowledge Base the server was re-serializing and rewriting the entire index after nearly every object — hundreds of full rewrites on a large KB, each one slower as the index grew, competing with the build for CPU. These writes are now throttled, with a single final write when the build completes, removing the bulk of the redundant work.
 - **`genexus_analyze mode=impact` no longer reports "Low" risk when it has no signal.** When the search index held an object but carried no call-graph edges for it (not yet enriched, or a stale snapshot), impact analysis returned `blastRadiusScore: 0, riskLevel: "Low"` — indistinguishable from a genuinely safe change, and the reason it could claim "0 affected" for an object that clearly had callers. It now cross-checks the live SDK reference graph (the same source `genexus_inspect` uses): edges the index missed are surfaced under `sdkCrossCheck` with `indexEdgesMissing: true`; a genuinely empty graph is reported as `riskLevel: "None", verifiedZero: true`; and when nothing can confirm the result, it returns `riskLevel: "Unknown"` instead of a misleading "Low".
 - **`genexus_analyze` and `genexus_inspect` now resolve an ambiguous name to the same object.** A bare name that matches both a Transaction and its generated Table (e.g. `"Acao"`) was resolved nondeterministically — `inspect` could land on the Table while `impact` preferred the Transaction, so the two tools appeared to contradict each other. Resolution is now deterministic: editable logic objects (Transaction/Procedure/WebPanel/…) rank above the generated Table/View, with a stable tiebreak. `genexus_inspect` also returns `resolvedAs` and `alsoMatches` whenever a name spans multiple types, and `genexus_analyze mode=impact` echoes the `resolvedType` it analyzed.
@@ -1153,6 +3285,7 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **The init wizard now detects installed AI agents that haven't created an MCP config yet.** Agents were marked "not detected" whenever their MCP config file was absent — but Antigravity doesn't create `mcp_config.json` until you add a server, so a freshly installed Antigravity always showed as not detected and was skipped. Detection now keys off the agent's own install footprint (e.g. `…\Programs\Antigravity`, `~\.antigravity`), so the wizard offers to register it and creates the config for you. When an agent really isn't found, the prompt now shows where it looked.
 - **Client configs are backed up and written atomically.** Before modifying any AI client config the installer now writes a timestamped `.bak`, and the new content is staged to a temp file and renamed into place — so a crash mid-write can no longer leave a client's config truncated. After writing, the entry is read back to confirm it landed; a silently-corrupted write is now reported as a failure instead of a success.
 - **Commented (JSONC) client configs are no longer treated as corrupt.** VS Code's `mcp.json`/`settings.json` and OpenCode's `opencode.jsonc` allow `//` and `/* */` comments; registration now parses these instead of failing. (Comments are not preserved when the file is rewritten.)
@@ -1175,6 +3308,7 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`read`, `query`, `list_objects`, and object creation no longer get stuck on `IndexNotReady` / `totalObjects: 0` after a KB finishes indexing.** The v2.8.0 canonical-envelope migration wrapped the worker's index-state reply one level deeper (`result.result`), but the gateway's internal refresh still read the old top level — so it saw `status: "ok"` and `totalObjects: 0` and fast-failed every SDK-bound tool, even while `genexus_lifecycle action=status` correctly reported the index as ready with all objects. The gateway now reads the nested payload. Backward-compatible with the pre-2.8.0 reply shape.
 - **The active data store (DBMS dialect) now resolves for database-aware tools.** Datastore enumeration relied on SDK accessors (`Parts.Get("DataStores")`, `Environment.DataStores`, `TargetModel.DataStore`) that come back empty on many KBs, so the DBMS family silently fell back to a hardcoded default and the new `[KB-OPEN-DATASTORE]` diagnostic showed `<unresolved>`. It now reads the data store through the correct `DataStoresPart` model part — searching every environment model — and reads the DBMS off `GxDataStore.Dbms` directly, so the real dialect (e.g. Oracle) is resolved instead of guessed.
 - **The one-time "background indexing started" notice fires on first open again.** The cold-start banner only matched the legacy full-index reply (`Started`), not the default lite-index path (`LiteStarted`), so on most KBs it silently never appeared. It now fires for either path (and stays quiet on warm starts).
@@ -1195,6 +3329,7 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`mcp.serverVersion` in `whoami` no longer reports a stale 2.7.4 stamp.** The v2.8.0 publish landed with the Gateway csproj `InformationalVersion=2.7.4` because `release.ps1` only bumped version files when `-Version` was passed AND it differed from `package.json`. When `package.json` was edited by hand before invoking the script (as happened for v2.8.0), `$Version -eq $currentVersion` and the whole bump block was skipped — including the csproj sync. The published binary then carried the old version stamp even though the runtime code was the new v2.8.0 source. The script now also reads the csproj's current `InformationalVersion` and forces the bump pass when it's out of sync with `package.json`, regardless of whether `-Version` was passed.
 - **csproj version stamp realigned to 2.8.1.** The Gateway DLL emitted by this release stamps `Version` / `AssemblyVersion` / `FileVersion` / `InformationalVersion` to 2.8.1 — so `genexus_whoami.mcp.serverVersion` matches the package version, and the in-band update check no longer marks the running binary as "update available" against its own release.
 
@@ -1271,6 +3406,7 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_delete_object` retry after a client timeout is no longer reported as "Object not found".** When the worker's `obj.Delete()` finished after the MCP client gave up on the call (large objects can take longer than the gateway's pipe budget), the next `genexus_delete_object` for the same name reached an empty KB and surfaced the generic not-found envelope — leaving the agent unsure whether the deletion actually succeeded. The worker now records every successful delete for 5 minutes and matches retries against that record: a retry whose object is genuinely gone returns `status:"Success", confirmedAfterTimeout:true, deletedAtUtc:<iso>` with a note explaining the earlier call completed server-side. A typo or never-existed name still gets the not-found envelope.
 - **`genexus_apply_pattern` with `reapply=true` regenerates the full family when the generated host was previously deleted.** The pattern engine's `GetPatternInstance` returns the metadata stored on the parent even after the `WorkWithPlus<Name>` host has been removed from the KB, so reapply was taking the "existing instance" path and producing a minimalist `PatternInstance` (often an empty `<table/>`) instead of regenerating. The apply path now probes for the host before trusting the metadata: a missing host promotes the call back to first-apply so the engine rebuilds the family. The response carries `staleInstanceRecovered:true` and a hint when this happens.
 - **`genexus_edit mode=ops` schema now matches the real ops dispatcher.** The `ops` field was advertised as "RFC 6902 JSON-Patch" with `op ∈ {add, remove, replace, test}`, but the worker actually implements a GeneXus-semantic DSL — `set_attribute`, `add_attribute`, `remove_attribute` (Transaction), `add_rule`, `remove_rule` (Transaction/Procedure/WebPanel), `set_property` (any kind). Sending `{op:"add", path:"…"}` was accepted by the schema and then rejected by the worker with a `did-you-mean: set_attribute, …` error. The schema now declares the actual op enum and a free-form `args` object; the description spells out which op applies to which object kind and points callers at `mode=patch` for textual find/replace.
@@ -1292,6 +3428,7 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Worker cold-start is ~40% faster, so the first tool call after a worker (re)starts stops timing out.** Booting a worker re-activated the GeneXus Service Manager twice: once via the build-task warm-up and again via the connector init, with the second attempt burning ~35 s before throwing "Service Manager já foi ativado" (already activated). Cold-start dropped from ~92 s to ~53 s on a large KB. On top of that, the gateway now waits for the worker's "SDK ready" signal **before** starting a tool's timeout clock, so worker start-up time is no longer billed against the operation's budget — a `genexus_delete_object`, `genexus_apply_pattern`, or `genexus_read` issued right after a (re)start completes inline instead of returning a spurious "still running" timeout, regardless of how long boot takes. Worker boot is also now instrumented: each init step's duration is logged, and an init failure logs the full inner-exception chain instead of a generic message.
 - **Worker processes no longer pile up — strictly one worker per Knowledge Base.** A single worker exit (crash, soft reload, or a `genexus_worker_reload`) could spawn more than one replacement: the worker restarted itself *and* the gateway spawned a fresh one for the same KB, leaving the previous process alive but untracked. Under a reload loop this compounded into hundreds of orphaned `GxMcp.Worker` processes eating memory. The gateway is now the single authority for respawning, and a reaper kills any duplicate worker bound to a KB before starting a new one. The pool still caps the number of open KBs (default 3), so total workers can't exceed that.
 - **Long-running tool calls no longer trip the client's "Request timed out" (`-32001`) error.** A heavy operation — typically a first `genexus_apply_pattern` of WorkWithPlus on a real transaction, where GeneXus generates the whole object family — could run past the MCP client's request deadline; the client gave up and showed a timeout even though the work completed on the server. The gateway now emits standard MCP `notifications/progress` messages while the worker is busy (every 15 s) whenever the client supplies a `progressToken`, which keeps the connection alive so the call can finish and return its real result inline. The call stays synchronous — this is the spec's native mechanism for long operations, not a background job — and is a no-op for clients that don't request progress.
@@ -1302,6 +3439,7 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Intermittent `Transport closed` / dropped connection when more than one gateway was running.** Each MCP client session starts a gateway; the first one binds the local port and becomes the "master", the rest attach to it as proxies. The master kept its instance lease alive by refreshing it every 60 seconds, but a lease was treated as stale after only 45 seconds — so for roughly 15 seconds of every minute a newly-launched gateway saw the live master as dead, tried to take over the port, failed to bind it, and killed the running master during port recovery. Clients (Codex, Cursor, …) experienced this as the connection dropping just as it started working, and restarting the client on every prompt was the only workaround. The active gateway now refreshes its lease every 15 seconds — well inside the staleness window — so a second gateway correctly attaches as a proxy instead of evicting the live one.
 - **`genexus_gxserver` now detects GeneXus Server links that the IDE sees.** The tool reported `connected:false` on Knowledge Bases that were in fact linked to a GeneXus Server, because it looked for marker files on disk — but the server link is stored in the KB metadata, not in files. It now reads the link through the GeneXus SDK (the same source as the IDE's Team Development tab): `status` returns the real `serverUrl`, `host`, and `remoteKbName`; `pending` lists the objects with uncommitted local changes (`name`, `operation`, `lastChange`, `user`); and `conflicts` reports actual update conflicts. Still read-only — no commit or update is performed. Falls back to the previous file-based detection when the Team Development service isn't loaded.
 
@@ -1326,6 +3464,7 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **The IDE's "Apply this pattern on save" checkbox now stays checked after the MCP edits a WorkWithPlus pattern.** Editing a host's `PatternInstance` through `genexus_edit` used to silently clear the flag the GeneXus IDE renders as that checkbox, so the next time you opened the object the box was unchecked and the layout no longer regenerated on save. The MCP now re-asserts the flag after every successful pattern write; the response carries `applyOnSaveReenabled: true` so you can confirm it took.
 - **GeneXus no longer pops the "different installation than last time" dialog after the MCP opens a Knowledge Base.** On installs where the GeneXus executable's file-version build differs from its product-version build, the MCP was stamping the KB with the file-version build (e.g. `18.0.48055 U7`) while the IDE identifies itself by the product-version build (e.g. `18.0.179127 U7`). Every MCP open rewrote the stamp to the wrong value, so the next IDE open warned about a version mismatch. The MCP now reads the product-version string and writes each `.gxw` version field in the exact format the IDE uses, so opening the same KB in the IDE after using the MCP no longer triggers the prompt.
 - **`genexus_edit part=PatternInstance` verification failures now carry the actual SDK error and a stable code.** A failed pattern write previously returned a generic `"Pattern write verification failed"` with nothing to act on. The error envelope now includes a machine-readable `code` (`PatternInvalidXml`, `PatternPartNotFound`, `PatternVerificationMismatch`, or `PatternSaveFailed`) and, when the SDK throws while saving, an `sdkSaveError` block with the exception type, message, and inner-exception chain — so you can see why the SDK rewrote or rejected the bytes instead of guessing.
@@ -1355,6 +3494,7 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Gemini / Vertex AI HTTP 400 on `tools/list`** caused by `genexus_run_object.args` declaring `type: "array"` with no `items` field — strict OpenAPI consumers (Vertex, some OpenAI Function-Calling configurations) reject the request before the tool is ever called. The schema now declares `items: {type: "string"}`. A new `ToolSchemaShapeTests` suite walks every umbrella + nested schema and asserts `array → items`, non-empty `enum`, `required[]` entries match `properties`, and unique tool names — so this class of bug fails CI instead of a chat session.
 
 ### Internal
@@ -1385,6 +3525,7 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`apply_pattern reapply=true` no longer returns silent `status:"Success"` when the pattern's Events-by-WorkWithPlus generation will fail at the next IDE save.** Live repro: a fresh PatternInstance (created when `wasFirstApply` lands on a host that had been rebuilt) doesn't carry forward the previous host's controlName map, so any reference in the parent's Events code to a control the new instance doesn't expose (typically `GrpX.Visible = …` after a popup conversion) fails with `src0265: Invalid attribute 'GrpX'` + `src0216: 'Visible' invalid property` — but only visible to the user when they try `Ctrl+S` in the IDE, well after the MCP has already declared the reapply a success. The reapply now runs `SdkDiagnosticsHelper.GetDiagnostics(parent)` after the projection phase and surfaces `Error`-severity diagnostics (plus the WWP-projection-specific src0265 / src0216 codes) in the response. When issues are found the envelope flips to `status:"PartialFailure"` with `patternValidationIssues:[…]` and a hint telling the agent which Events references to fix before the user's next save.
 
 ## v2.6.10 — 2026-05-25
@@ -1393,6 +3534,7 @@ Six fixes to surfaces that surfaced friction during the v2.6.9 popup-conversion 
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_create_popup` now works on WorkWithPlus KBs.** The flat `<Form type="layout"><table>` body emitted by prior versions was rejected by `WebLayoutHandler.LoadPanelElement` with `"Elemento não pode ser desserializado do nó XML porque sua marca (table) não corresponde ao nome do elemento (detail)"` on any KB with the WorkWithPlus dual-form convention — i.e. most GeneXus 18 KBs in the field. A new `WwpConventionProbe` samples existing layout-form WebPanels to detect the convention and harvest the theme class GUID prefix (e.g. `d4876646-98dd-419b-8c1c-896f83c48368`), and `PopupLayoutBuilder.BuildWwpLayoutXml` emits the proper `<Form type="layout"><detail><layout id="GUID"><table controlName tableType="Responsive" class="<prefix>-N">…</table></layout></detail></Form>` structure with class suffixes `-4` (data attribute), `-24` (textblock), `-46` (action), `-59` (errorviewer). Non-WWP KBs keep the flat-schema path.
 - **`genexus_search_source` gained `fields=["webForm"]` scope.** WebForm XML wasn't indexed by any search; the agent was blind to layout-form examples (e.g. "how does this KB express a Radio Button in WWP?") even when one existed in the same KB. Opt-in via the new `webForm` value so the default code-search path stays fast; reuses `WebFormXmlHelper.ReadEditableXml` for the read.
 - **`genexus_preview` wall-clock budget + GAM-redirect detection.** A single preview against a GAM-protected panel used to wedge the STA worker thread for 10+ minutes — every other MCP tool queued behind it until /mcp reconnect. Now bounded by `GXMCP_PREVIEW_BUDGET_MS` (default 60 s); per-step CLI timeouts shrink as the budget burns down. Final URL is also captured after the launcher loads so the GAM-login detector catches the redirect even when the requested URL itself isn't a login URL. Returns `{status:"Error", code:"PreviewTimeout", elapsedMs, stage}` instead of blocking.
@@ -1442,6 +3584,7 @@ Adds the REST/DB/GxServer/type/profiler/cross-platform tool surfaces, a self-ext
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Error envelope dual-key consolidation.** Hand-built error envelopes across 36 worker services historically emitted `{status:"Error", error:"..."}`; the 18 newly-promoted tools used `{status:"Error", message:"..."}`. The codebase carried both conventions in roughly equal split, and the in-flight `McpResponse.Error()` helper had been emitting BOTH keys defensively (doubling bytes on every error envelope). Now canonical key is `["message"]` (REST / JSON-Schema convention, what new tools already used). McpResponse helper migrated; the 95+ hand-built envelopes across worker services swept to match; 11 test assertions migrated; gateway-side `TrimErrorEnvelope` still reads `error["message"] ?? error["error"]` for back-compat with any unmigrated path. Net: one canonical key, less bandwidth, no LLM ambiguity.
 - **Live-KB Gateway E2E now 7/7** (was 4/7 before this release; 11 `[LiveKbFact]`-gated tests had never actually executed in CI). Root causes resolved:
   - `LiveGatewayHarness` is now an `IClassFixture<>` shared across all 7 tests in a class. Previously each test spawned + killed its own gateway+worker in 500 ms; the kill left shared SDK + KB-lock state that crashed the next worker's boot mid-cycle. The fixture also drops the total E2E suite runtime from ~3 min+ to ~1 m11s and is more representative of real MCP usage (one long-lived gateway, many calls). Dispose grace 500 ms → 2 s.
@@ -1529,6 +3672,7 @@ Adds the REST/DB/GxServer/type/profiler/cross-platform tool surfaces, a self-ext
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Build success was wrapped in `<e>error{…}</e>`.** `genexus_lifecycle build wait_until_done=true` returned `"Build succeeded: 0 warnings, 0 errors"` inside the MCP error envelope because the wait path compared `JobEntry.Status` against `"completed"` when the registry actually stamps `"succeeded"`. Clean success now classifies as `isError=false`; `partial_success=true` uses the `warning` envelope.
 - **Patch write-fallback false negatives.** "Patch write fallback failed after persistence mismatch" fired even when the write had been applied. Now distinguishes `write_not_persisted` (retry-safe error) from `persisted_with_concurrent_change` (write OK, hash drifted post-write — returns `Success` with a `postWriteHashDrift` warning and a `RequiresReread` flag).
 - **`genexus_logs since=<ISO>` was off by the worker's timezone offset.** `since` was parsed with `RoundtripKind` (preserving `Z` when present) and compared directly against log-line timestamps parsed with `AssumeLocal`. A client passing `2026-05-22T14:00:00Z` to a worker running in UTC-3 was seeing a 3-hour window of unrelated lines. Both sides now normalize to UTC before comparing.
@@ -1704,6 +3848,7 @@ A 28-point friction sweep against `AcademicoHomolog1` on 2026-05-21 surfaced the
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`.gxw` version metadata now matches the format the GeneXus IDE writes.** `KbService.DetectGeneXusVersion` was reading `FileVersionInfo.ProductVersion` from `GeneXus.exe`, which on modern .NET includes the `InformationalVersion` suffix (`18.0.14.187794+<git-sha>`). When the IDE later reopened the KB it re-detected its own canonical string (`18.0.187794 U14`) and showed the "different GeneXus installation than last time" dialog every time, even though the install path was identical. The version is now built from the numeric `FileVersionInfo` parts as `{Major}.{Minor}.{Private} U{Build}`, matching the IDE byte-for-byte. The string-based `ProductVersion`/`FileVersion` path is kept as a fallback for installs where the numeric parts come back zeroed.
 - **`genexus_history action=restore discard=true target=<obj>`.** IDE-parity Discard — restores the part bytes from the most recent `EditSnapshotStore` entry, no commit / rollback / VCS round-trip required. Surfaces `restoredFrom` (timestamp + snapshot path) in the envelope so the operation is auditable.
 - **Installer no longer silently writes a broken config when `--gx` points at a path without `genexus.exe`.** A field install hit this when GeneXus was at `C:\Program Files (x86)\GeneXus\GeneXus18u7` (the update-pack folder) instead of the canonical `GeneXus18`: `genexus-mcp init --gx "...\GeneXus18"` wrote the config with the wrong path, the doctor only emitted a `warn`, and the worker crashed on first MCP call with the opaque `Worker for KB '<name>' crashed/exited.` envelope. Fix is four-part: (1) `handleInit` validates `--gx` / `--kb` before touching disk and, when the supplied `--gx` is missing, runs `discoverGeneXusInstallation()` to suggest the real path in the error help (catches the `GeneXus18u7` sibling automatically); (2) `handleDoctor` promotes `gx_installation` and `kb_path_exists` from `warn` to `fail` when a path is configured but absent — silently warning about something that guarantees a worker crash was the root cause; (3) `runPostInitVerification` exports `GX_CONFIG_PATH` before invoking doctor so it actually finds the freshly-written config instead of looking at `C:\windows\system32` (the CWD when operators run `npx genexus-mcp init` from a fresh shell); (4) `probeWorkerStartup` spawns the gateway with the resolved config for ~2.5s and detects an early crash with exit code and captured stderr — so init reports the worker failure inline rather than deferring it to the first MCP call. Init now returns a non-zero exit when any check fails, so `scripts/install.ps1` / CI / AI clients see the problem at install time.
@@ -1751,6 +3896,7 @@ Second: `genexus_preview` failed with `O executável especificado não é um apl
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_lifecycle action=build` rewritten to use the IDE's task pattern.** `BuildService.cs` no longer emits `<BuildOne ObjectName="…" ForceRebuild="true" />` — that task includes an IIS configuration-update sub-step that fails opaquely outside the GeneXus IDE process. Worker now emits `<SpecifyOneOnly ObjectNames="A;B;C" /><GenerateOnly />` for `action=Build` (with targets) and `<SpecifyAll /><GenerateOnly />` for `action=Sync`. `<OpenKnowledgeBase>` is also opened with `Output="IDE"` to match the IDE's load flags. Net effect: build runs 0 errors against a 38k-object KB where the old path produced 6 errors / 10 warnings every time.
 - **`PreviewService` CLI launch handles `.cmd` / `.bat` / `.ps1` / extensionless shims.** `DefaultCliRunner.Run` previously called `Process.Start(filename, args)` with `UseShellExecute=false`, which CreateProcess refuses for anything that is not a native PE image. The runner now classifies the resolved path and routes non-`.exe` / non-`.com` candidates through `cmd.exe /c "<file>" <args>` (the same pattern `Which()` already used). Eliminates the `ERROR_BAD_EXE_FORMAT` failure mode that swallowed the real CLI command before it ran.
 - **`PreviewService` auto-discovers a globally installed `chrome-devtools-mcp` and injects `CHROME_DEVTOOLS_AXI_MCP_PATH`.** Without that env var the axi bridge `npx`-bootstraps `chrome-devtools-mcp@latest` on first launch (~25-30s on Windows), which routinely tripped the per-command timeout. Worker now caches the resolution of `npm prefix -g` once per process, then sets `CHROME_DEVTOOLS_AXI_MCP_PATH` on every spawned `ProcessStartInfo` when the local file exists. Setup is one-shot: `npm install -g chrome-devtools-mcp` and the headless preview path stays warm afterwards.
@@ -1769,6 +3915,7 @@ Three passes: a usability sweep against KB `AcademicoHomolog1` that caught nine 
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`analyze mode=explain` was a stub returning hardcoded `"Code analysis simulation"`** regardless of input — agents treated the fake response as real. Mode removed from the public schema (`tool_definitions.json`); legacy callers receive an explicit `NotImplemented` envelope pointing to valid modes.
 - **`genexus_query` ranking pulled `Index` objects with no name/path match into the top-20** via vector similarity. Fast literal query for "Country" returned 15 unrelated `IBls*` indexes. Index/Folder/Module are now filtered out of default results unless explicitly requested via `typeFilter`. New `_meta.match_quality` field (exact|prefix|substring|vector|none) lets the caller branch reliably; `suggested_next` is only emitted for `exact`/`prefix` to stop misdirecting agents.
 - **`genexus_read` error envelope for invalid parts didn't list valid parts.** Agents were guessing part names through trial-and-error. Now includes `availableParts` (same list `genexus_inspect include=['parts']` returns) plus a `hint` line: `Valid parts for Procedure: Documentation, Help, Layout, Source, Variables.`
@@ -1852,6 +3999,7 @@ Bug-fix pass uncovered by live-testing v2.6.2. Two gateway-side gaps prevented `
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`McpRouter.ResolveJobId` strips the `op:` prefix.** Callers pass `target=op:<jobId>` to lifecycle cancel/status; `ResolveJobId` returned the string verbatim, so `JobRegistry.Get("op:<id>")` always returned null, and cancel fell through to the OperationTracker path which doesn't track build/edit jobs — surface error: `"NotFound"` even when the job was registered and running. Now strips the prefix (case-insensitive, idempotent for non-prefixed inputs). 2 new unit tests in `LongPollTests`.
 
 - **`lifecycle status target=op:<jobId>` consults JobRegistry before falling through to OperationTracker.** The previous order routed every `op:<id>` shape to `_operationTracker.BuildOperationStatus`, which is a different lifecycle (gateway-internal request handles, not async jobs) and reported `NotFound`. The status path now checks `JobRegistry.Get(operationId)` first and only falls back to OperationTracker when the id isn't a registered job. Cancel was already covered by the ResolveJobId fix; this closes the symmetric status/result gap.
@@ -1872,6 +4020,7 @@ Observability + cancel reliability + pattern-parity harness. The three together 
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_lifecycle action=cancel target=op:<id>` actually cancels async builds/edits.** Previously the worker-side `WorkerCancellationRegistry.Cancel(jobId)` returned `NotFound` because the original async command was dispatched without a `cancelToken` — only search/impact/analyze opted-in per-handler. Now: (a) the gateway injects `cancelToken=jobId` into every async command it starts (`Build/Build`, `Build/RebuildAll`, async edit commands); (b) the worker's `CommandDispatcher.Dispatch` blanket-registers the token once at entry so every handler running under it inherits a single shared CTS; (c) `WorkerCancellationRegistry.Register` is now refcounted so inner handlers that also register the same token (search/impact still do) share the registration without their `Dispose` stripping the outer scope's registration first. Net effect: a single `lifecycle cancel target=op:<id>` resolves the right CTS regardless of which handler is currently in flight.
 
 ### Internal
@@ -1928,6 +4077,7 @@ WorkWithPlus on a bare WebPanel now works end-to-end. Apply the pattern, get a h
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_apply_pattern` no longer drops `pattern` and `settings`.** The gateway's `OperationsRouter` wrapped the original arguments under `@params` for `apply_pattern`, `apply_template`, `bulk_edit`, and `diff`, but the worker dispatcher read fields at the top level — so `args["pattern"]` was always null and the tool returned `"Pattern key is required."` even when the caller had passed one. The dispatcher now unwraps the nested params object once, preserving any outer routing fields as a fallback.
 
 - **`genexus_apply_pattern reapply=true` works on installs that lack the `ApplyPattern(PatternInstance, ApplySettings)` overload.** Previous logic threw `InvalidOperationException` because the reflection probe disambiguated overloads using `IsAssignableFrom(KBObject)` — but `PatternInstance` inherits from `KBObject`, so both overloads bound to the same field and the reapply slot stayed null. Disambiguation now uses exact-type matching, and `TryReapplyWithFallback` replays the void overload (which the SDK treats as a re-apply when an instance already exists) when the typed overload is missing.
@@ -1951,10 +4101,6 @@ WorkWithPlus on a bare WebPanel now works end-to-end. Apply the pattern, get a h
 - Pattern-write path now exposes `WriteService.ForcePatternPartDirty` and `WriteService.ApplyPatternDataFromXml` publicly so `WwpProjectionHelper` can reuse the same Dirty/Mode bookkeeping the regular pattern write uses.
 - New `Microsoft.Build.Framework` reference in the worker csproj so the MSBuild-style `WWP_ApplyTemplate` task's `IBuildEngine` contract resolves (the task's ctor still fails headlessly; we keep the route as a fallback in case future SDK versions relax the requirement).
 - Tests: worker 379 → 382 (3 new `ApplySettings` projection tests, integration smokes env-gated via `LiveKbFact`), gateway 252 → 252 (golden discovery fixture regenerated for the new `genexus_sdk_probe` tool). All green; 2 worker tests skipped by design when `GXMCP_TEST_KB` is unset.
-
-## Unreleased
-
-(none)
 
 ## v2.5.3 — 2026-05-19
 
@@ -2016,6 +4162,7 @@ context.
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`gxButton OnClickEvent` for custom events.** Raw-XML writes that emitted
   `OnClickEvent="'MyEvent'"` were silently ignored by the HTML generator,
   which only reads the per-element XML attribute the SDK assigns (`Event`
@@ -2127,6 +4274,7 @@ Four new static checks for patterns that compile clean but render wrong:
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`PatchService` reported `Failed` when the auto-reconciler legitimately rewrote
   `childrenOrderedList` during a pattern write**: PatchService's
   `VerifyPersistedSource` ran a byte-level comparison of `finalCode` (the
@@ -2190,6 +4338,7 @@ Four new static checks for patterns that compile clean but render wrong:
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Pattern (`PatternInstance` / `PatternVirtual`) writes silently no-op'd —
   `WritePatternPart` reported `Success` but the KB never changed**:
   Three root causes stacked:
@@ -2249,6 +4398,7 @@ Four new static checks for patterns that compile clean but render wrong:
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **KB reopen warning after MCP edits (`11.0.0.0` vs GeneXus 18)**:
   worker now normalizes `.gxw` metadata right after `KnowledgeBase.Open(...)` using
   active installation from `GX_PROGRAM_DIR`. It updates `InstallationPath`,
@@ -2259,6 +4409,7 @@ Four new static checks for patterns that compile clean but render wrong:
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 Systematic bug hunt following the v2.4.1 BC patches surfaced ten latent bugs sharing
 the same fault patterns. All ten are fixed in this release; full worker test suite
 (314/314) and gateway suite (241/241) green.
@@ -2318,6 +4469,7 @@ the same fault patterns. All ten are fixed in this release; full worker test sui
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_properties` set could not toggle Business Component (and other typed bool/enum properties)**:
   `PropertyService.SetProperty` passed the raw string value straight to the SDK's
   `SetPropertyValue(string, object)` overload. For properties whose underlying CLR type is `bool`
@@ -2356,6 +4508,7 @@ the same fault patterns. All ten are fixed in this release; full worker test sui
 
 ### Fixed
 
+- **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **DSL parsers dropped attribute types**: `TransactionDslParser` and `TableDslParser` previously
   parsed `pNode.TypeStr` from the DSL but never applied it — new attributes silently defaulted to
   `Numeric(4)` and type changes to existing attributes were ignored. Both parsers now resolve the
@@ -3070,7 +5223,7 @@ Plan: `docs/superpowers/plans/2026-05-13-mcp-perf-and-tool-stability-v2.2.0.md`.
 - Set `MCP_PERF_PROFILE=legacy` to restore pre-v2.2.0 behavior at the
   process level (single env-flip kill switch).
 
-## Unreleased
+## v2.39.4 - 2026-08-10
 
 Closes every item from the second-cycle friction report
 `docs/mcp-friction-report-2026-05-13.md`, produced by a fresh real-KB session

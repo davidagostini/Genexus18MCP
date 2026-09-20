@@ -22,22 +22,6 @@ namespace GxMcp.Gateway
     /// </summary>
     public static class NextLegalActionsBuilder
     {
-        // Read-only tools — no natural "next step" beyond doing the work
-        // the user asked for, so we skip emission entirely.
-        private static readonly HashSet<string> _readOnlyTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "genexus_whoami",
-            "genexus_query",
-            "genexus_list_objects",
-            "genexus_read",
-            "genexus_inspect",
-            "genexus_analyze",
-            "genexus_logs",
-            "genexus_doc",
-            "genexus_recipe",
-            "genexus_kb",
-        };
-
         /// <summary>
         /// Build the suggestion array for a single tool response. Returns
         /// null when no suggestions apply.
@@ -45,13 +29,29 @@ namespace GxMcp.Gateway
         public static JArray? BuildFor(string toolName, JObject? args, JObject? responsePayload, bool isError)
         {
             if (string.IsNullOrWhiteSpace(toolName)) return null;
-            if (_readOnlyTools.Contains(toolName)) return null;
+
+            // Resolve legacy aliases once, before both policy checks and the
+            // action-specific switch. This keeps follow-up suggestions on the
+            // canonical tool/action contract without removing compatibility for
+            // older clients.
+            args = OperationClassifier.NormalizeArguments(toolName, args, out var canonicalTool);
+            toolName = canonicalTool;
+
+            // Tools with explicit next-legal-action builders (genexus_read, genexus_query)
+            // are allowed to produce suggestions even though they are read-only.
+            if (!string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(toolName, "genexus_query", StringComparison.OrdinalIgnoreCase))
+            {
+                if (OperationClassifier.IsReadOnly(toolName, args)) return null;
+            }
 
             args ??= new JObject();
             responsePayload ??= new JObject();
 
             JArray? suggestions = toolName.ToLowerInvariant() switch
             {
+                "genexus_read" => isError ? null : BuildForRead(args, responsePayload),
+                "genexus_query" => isError ? null : BuildForQuery(args, responsePayload),
                 "genexus_apply_pattern" => BuildForApplyPattern(args, responsePayload, isError),
                 "genexus_create" => isError ? null : (S(args["action"])?.ToLowerInvariant() switch
                 {
@@ -60,11 +60,8 @@ namespace GxMcp.Gateway
                     "save_as" => BuildForSaveAs(args, responsePayload),
                     _ => null,
                 }),
-                "genexus_create_object" => isError ? null : BuildForCreateObject(args, responsePayload),
-                "genexus_create_popup" => isError ? null : BuildForCreatePopup(args, responsePayload),
                 "genexus_edit" => isError ? null : BuildForEdit(args, responsePayload),
                 "genexus_lifecycle" => BuildForLifecycle(args, responsePayload, isError),
-                "genexus_save_as" => isError ? null : BuildForSaveAs(args, responsePayload),
                 "genexus_versioning" => isError ? null : BuildForVersioning(args, responsePayload),
                 _ => null,
             };
@@ -381,6 +378,93 @@ namespace GxMcp.Gateway
                         "Inspect the object to confirm the expected pre-edit shape was restored",
                         "medium"),
                 };
+            }
+
+            return null;
+        }
+
+        // 11. read (success)
+        private static JArray? BuildForRead(JObject args, JObject payload)
+        {
+            string? name = S(args["name"]) ?? S(payload["name"]) ?? S(payload["target"]);
+            if (string.IsNullOrEmpty(name)) return null;
+
+            string? type = S(payload["type"]) ?? S(args["type"]);
+            string defaultPart = string.Equals(type, "Transaction", StringComparison.OrdinalIgnoreCase) ? "Structure"
+                : string.Equals(type, "WebPanel", StringComparison.OrdinalIgnoreCase) ? "Events"
+                : "Source";
+
+            string currentPart = S(args["part"]) ?? defaultPart;
+
+            var arr = new JArray
+            {
+                Suggest(
+                    "genexus_edit",
+                    new JObject { ["name"] = name, ["part"] = currentPart },
+                    $"Edit {name}'s {currentPart}",
+                    "high"),
+                Suggest(
+                    "genexus_analyze",
+                    new JObject { ["mode"] = "linter", ["target"] = name },
+                    $"Run static analysis / linter on {name}",
+                    "medium"),
+                Suggest(
+                    "genexus_navigation",
+                    new JObject { ["target"] = name },
+                    $"Inspect table navigation / For Each loops for {name}",
+                    "low"),
+            };
+            return arr;
+        }
+
+        // 12. query (success)
+        private static JArray? BuildForQuery(JObject args, JObject payload)
+        {
+            JArray? results = payload["results"] as JArray;
+            if (results == null || results.Count == 0)
+            {
+                string q = S(args["query"]) ?? string.Empty;
+                var tokens = q.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (tokens.Length > 1)
+                {
+                    return new JArray
+                    {
+                        Suggest(
+                            "genexus_query",
+                            new JObject { ["query"] = tokens[0], ["limit"] = 10 },
+                            $"Broaden search using single keyword '{tokens[0]}'",
+                            "high"),
+                        Suggest(
+                            "genexus_list_objects",
+                            new JObject { ["limit"] = 50 },
+                            "List KB objects to explore available names",
+                            "medium"),
+                    };
+                }
+                return null;
+            }
+
+            if (results[0] is JObject topMatch)
+            {
+                string? topName = S(topMatch["name"]);
+                string? topType = S(topMatch["type"]);
+                if (!string.IsNullOrEmpty(topName))
+                {
+                    var arr = new JArray
+                    {
+                        Suggest(
+                            "genexus_read",
+                            new JObject { ["name"] = topName },
+                            $"Read full 360° content of top match '{topName}' ({topType ?? "Object"})",
+                            "high"),
+                        Suggest(
+                            "genexus_inspect",
+                            new JObject { ["target"] = topName },
+                            $"Inspect metadata, properties, and dependencies for '{topName}'",
+                            "medium"),
+                    };
+                    return arr;
+                }
             }
 
             return null;

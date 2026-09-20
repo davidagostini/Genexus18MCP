@@ -19,6 +19,119 @@ namespace GxMcp.Worker.Services
             _writeService = writeService;
         }
 
+        internal static string ResolveHistoryRoot(string kbPath)
+        {
+            if (string.IsNullOrWhiteSpace(kbPath))
+                throw new InvalidOperationException("The active Knowledge Base path is unavailable; history snapshots are disabled.");
+
+            return EditSnapshotStore.ResolveRoot(kbPath);
+        }
+
+        internal static string[] FindLegacySnapshotFiles(string legacyRoot, string canonicalName)
+        {
+            if (string.IsNullOrWhiteSpace(legacyRoot) || string.IsNullOrWhiteSpace(canonicalName)
+                || !Directory.Exists(legacyRoot))
+                return new string[0];
+
+            string prefix = canonicalName + "_";
+            try
+            {
+                return Directory.EnumerateFiles(legacyRoot, "*", SearchOption.TopDirectoryOnly)
+                    .Where(path =>
+                    {
+                        string fileName = Path.GetFileName(path);
+                        return fileName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                            && fileName.EndsWith(".txt", StringComparison.OrdinalIgnoreCase);
+                    })
+                    .OrderByDescending(path => path, StringComparer.Ordinal)
+                    .ToArray();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("[History] Legacy snapshot scan failed: " + ex.Message);
+                return new string[0];
+            }
+        }
+
+        private string GetActiveKbPath()
+        {
+            try
+            {
+                return _objectService.GetKbService().GetKbPath();
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException("The active Knowledge Base path could not be read; history snapshots are disabled.", ex);
+            }
+        }
+
+        private string ResolveActiveSnapshotRoot()
+        {
+            return ResolveHistoryRoot(GetActiveKbPath());
+        }
+
+        private static string NormalizePartName(string partName)
+        {
+            return string.IsNullOrWhiteSpace(partName) ? "Source" : partName.Trim();
+        }
+
+        private static string LegacyHistoryRoot()
+        {
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".history");
+        }
+
+        private static string CanonicalObjectName(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            string typeName = obj?.TypeDescriptor?.Name ?? obj?.GetType()?.Name ?? "Object";
+            string objectName = obj?.Name ?? "Object";
+            return (typeName + "_" + objectName).Replace(":", "_").Replace(" ", "_");
+        }
+
+        private static JArray LegacySnapshotEntries(string[] paths)
+        {
+            var entries = new JArray();
+            foreach (string path in paths ?? new string[0])
+            {
+                entries.Add(new JObject
+                {
+                    ["fileName"] = Path.GetFileName(path),
+                    ["legacy"] = true,
+                    ["restorable"] = false,
+                    ["reason"] = "Legacy snapshots have no Knowledge Base identity."
+                });
+            }
+            return entries;
+        }
+
+        private static string LegacySnapshotNotRestorable(
+            string target,
+            string part,
+            string canonicalName,
+            string[] paths)
+        {
+            return Models.McpResponse.Err(
+                code: "LegacySnapshotNotRestorable",
+                message: "Legacy snapshots were found in the shared .history directory, but they were not restored because their Knowledge Base identity is unknown.",
+                hint: "Use history_save in the active Knowledge Base to create a KB-scoped snapshot. Legacy files are reported for inspection and are never selected automatically.",
+                nextSteps: new JArray(
+                    Models.McpResponse.NextStep(
+                        tool: "genexus_versioning",
+                        args: new JObject { ["action"] = "history_save", ["name"] = target, ["part"] = part },
+                        why: "Creates a new snapshot under the active Knowledge Base's isolated snapshot root."),
+                    Models.McpResponse.NextStep(
+                        tool: "genexus_versioning",
+                        args: new JObject { ["action"] = "history_list", ["name"] = target, ["part"] = part },
+                        why: "Shows the isolated snapshots and the non-restorable legacy files.")),
+                target: target,
+                extra: new JObject
+                {
+                    ["part"] = part,
+                    ["canonicalName"] = canonicalName,
+                    ["legacySnapshots"] = LegacySnapshotEntries(paths),
+                    ["legacyRestoreAllowed"] = false
+                });
+        }
+
         /// <summary>
         /// History dispatch. <paramref name="partName"/> + <paramref name="snapshotToken"/>
         /// drive the edit-snapshot <c>restore</c> action: <c>snapshot=latest</c> or
@@ -42,10 +155,15 @@ namespace GxMcp.Worker.Services
                             return ListEditSnapshots(target, partName);
                         return ListRevisions(target);
                     case "get_source":
-                        return GetVersionSource(target, versionId);
+                        return GetVersionSource(target, versionId, partName);
                     case "save":
-                        return SaveSnapshot(target);
+                        return SaveSnapshot(target, partName);
                     case "restore":
+                        // A version ID is an explicit SDK-history selection. It must
+                        // never fall through to the local snapshot store (or the old
+                        // shared .history directory) when supplied.
+                        if (versionId > 0)
+                            return RestoreVersion(target, partName, versionId, dryRun, discard);
                         // Item 21 (friction 2026-05-22): dryRun=true returns the diff
                         // (current vs snapshot) without writing through SDK.
                         if (dryRun)
@@ -54,7 +172,7 @@ namespace GxMcp.Worker.Services
                             return RestoreEditSnapshot(target, partName, snapshotToken);
                         if (discard)
                             return DiscardLatestEditSnapshot(target, partName);
-                        return RestoreSnapshot(target);
+                        return RestoreSnapshot(target, partName);
                     default:
                         return Models.McpResponse.Err(
                         code: "UnknownHistoryAction",
@@ -104,10 +222,8 @@ namespace GxMcp.Worker.Services
             try { guid = obj.Guid.ToString(); }
             catch (Exception ex) { return Models.McpResponse.Err(code: "DryRunFailed", message: ex.Message, target: target); }
 
-            string kbPath = null;
-            try { kbPath = _objectService.GetKbService().GetKbPath(); } catch { }
-            string root = EditSnapshotStore.ResolveRoot(kbPath);
-            string part = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+            string root = ResolveActiveSnapshotRoot();
+            string part = NormalizePartName(partName);
 
             string path;
             if (!string.IsNullOrWhiteSpace(snapshotToken))
@@ -121,6 +237,10 @@ namespace GxMcp.Worker.Services
             }
             if (string.IsNullOrEmpty(path))
             {
+                string[] legacy = FindLegacySnapshotFiles(LegacyHistoryRoot(), CanonicalObjectName(obj));
+                if (legacy.Length > 0)
+                    return LegacySnapshotNotRestorable(target, part, CanonicalObjectName(obj), legacy);
+
                 return Models.McpResponse.Ok(
                     target: target,
                     code: "NoSnapshot",
@@ -195,11 +315,11 @@ namespace GxMcp.Worker.Services
             try { guid = obj.Guid.ToString(); }
             catch (Exception ex) { return Models.McpResponse.Err(code: "SnapshotListFailed", message: ex.Message, target: target); }
 
-            string kbPath = null;
-            try { kbPath = _objectService.GetKbService().GetKbPath(); } catch { }
-            string root = EditSnapshotStore.ResolveRoot(kbPath);
-            string part = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+            string root = ResolveActiveSnapshotRoot();
+            string part = NormalizePartName(partName);
             var files = EditSnapshotStore.List(root, guid, part);
+            string canonicalName = CanonicalObjectName(obj);
+            string[] legacy = FindLegacySnapshotFiles(LegacyHistoryRoot(), canonicalName);
             var arr = new JArray();
             foreach (var f in files)
             {
@@ -216,7 +336,10 @@ namespace GxMcp.Worker.Services
                 {
                     ["part"] = part,
                     ["count"] = files.Count,
-                    ["snapshots"] = arr
+                    ["snapshots"] = arr,
+                    ["legacySnapshotCount"] = legacy.Length,
+                    ["legacySnapshots"] = LegacySnapshotEntries(legacy),
+                    ["legacyRestoreAllowed"] = false
                 });
         }
 
@@ -250,12 +373,12 @@ namespace GxMcp.Worker.Services
             try { guid = obj.Guid.ToString(); }
             catch (Exception ex) { return Models.McpResponse.Err(code: "DiscardFailed", message: ex.Message, target: target); }
 
-            string kbPath = null;
-            try { kbPath = _objectService.GetKbService().GetKbPath(); } catch { }
+            string kbPath = GetActiveKbPath();
 
             return DiscardLatestEditSnapshotCore(
                 target, partName, guid, kbPath,
-                (t, p, content) => _writeService.WriteObject(t, p, content));
+                (t, p, content) => _writeService.WriteObject(t, p, content),
+                CanonicalObjectName(obj));
         }
 
         /// <summary>
@@ -269,13 +392,18 @@ namespace GxMcp.Worker.Services
             string partName,
             string objectGuid,
             string kbPath,
-            Func<string, string, string, string> writer)
+            Func<string, string, string, string> writer,
+            string canonicalName = null)
         {
             string root = EditSnapshotStore.ResolveRoot(kbPath);
-            string part = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+            string part = NormalizePartName(partName);
             var files = EditSnapshotStore.List(root, objectGuid, part);
             if (files.Count == 0)
             {
+                string[] legacy = FindLegacySnapshotFiles(LegacyHistoryRoot(), canonicalName);
+                if (legacy.Length > 0)
+                    return LegacySnapshotNotRestorable(target, part, canonicalName, legacy);
+
                 return Models.McpResponse.Ok(
                     target: target,
                     code: "NoSnapshot",
@@ -301,22 +429,8 @@ namespace GxMcp.Worker.Services
                     target: target);
             }
 
-            string snapshotToken;
-            try { snapshotToken = System.IO.Path.GetFileName(path); } catch { snapshotToken = path; }
-
             string writeResult = writer(target, part, content) ?? "{}";
-            try
-            {
-                var json = JObject.Parse(writeResult);
-                json["discarded"] = true;
-                json["restoredFrom"] = path;
-                json["restoredSnapshot"] = snapshotToken;
-                return json.ToString();
-            }
-            catch
-            {
-                return writeResult;
-            }
+            return AttachSnapshotRestoreMetadata(writeResult, path, part, true);
         }
 
         private string RestoreEditSnapshot(string target, string partName, string snapshotToken)
@@ -340,22 +454,25 @@ namespace GxMcp.Worker.Services
             try { guid = obj.Guid.ToString(); }
             catch (Exception ex) { return Models.McpResponse.Err(code: "SnapshotRestoreFailed", message: ex.Message, target: target); }
 
-            string kbPath = null;
-            try { kbPath = _objectService.GetKbService().GetKbPath(); } catch { }
-            string root = EditSnapshotStore.ResolveRoot(kbPath);
-            string part = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+            string root = ResolveActiveSnapshotRoot();
+            string part = NormalizePartName(partName);
             string path = EditSnapshotStore.ResolveByTimestamp(root, guid, part, snapshotToken);
             if (string.IsNullOrEmpty(path))
             {
+                string[] legacy = FindLegacySnapshotFiles(LegacyHistoryRoot(), CanonicalObjectName(obj));
+                if (legacy.Length > 0)
+                    return LegacySnapshotNotRestorable(target, part, CanonicalObjectName(obj), legacy);
+
                 return Models.McpResponse.Err(
                     code: "SnapshotNotFound",
-                    message: "No snapshot matched token '" + snapshotToken + "'.",
+                    message: "No snapshot matched token '" + snapshotToken + "' for part '" + part + "'.",
                     hint: "Use action=list with part=" + part + " to enumerate available snapshots.",
                     nextSteps: new JArray(Models.McpResponse.NextStep(
                         tool: "genexus_history",
                         args: new JObject { ["target"] = target, ["action"] = "list", ["part"] = part },
                         why: "Returns the list of snapshot tokens for this object and part.")),
-                    target: target);
+                    target: target,
+                    extra: new JObject { ["part"] = part });
             }
 
             string content = EditSnapshotStore.ReadSnapshot(path);
@@ -369,20 +486,10 @@ namespace GxMcp.Worker.Services
             }
 
             string writeResult = _writeService.WriteObject(target, part, content);
-            try
-            {
-                var json = JObject.Parse(writeResult);
-                json["restoredFrom"] = path;
-                json["restoredSnapshot"] = System.IO.Path.GetFileName(path);
-                return json.ToString();
-            }
-            catch
-            {
-                return writeResult;
-            }
+            return AttachSnapshotRestoreMetadata(writeResult, path, part, false);
         }
 
-        private string GetVersionSource(string target, int versionId)
+        private string GetVersionSource(string target, int versionId, string partName)
         {
             var obj = _objectService.FindObject(target);
             if (obj == null)
@@ -398,49 +505,174 @@ namespace GxMcp.Worker.Services
                     target: target);
             }
 
+            string requestedPart = NormalizePartName(partName);
+            if (!TryGetVersionPartContent(obj, versionId, requestedPart, out string content, out string errorCode, out string reason))
+            {
+                return Models.McpResponse.Err(
+                    code: errorCode,
+                    message: reason,
+                    hint: "Use action=list to see available version IDs and parts for this object.",
+                    nextSteps: new JArray(Models.McpResponse.NextStep(
+                        tool: "genexus_versioning",
+                        args: new JObject { ["action"] = "history_list", ["name"] = target, ["part"] = requestedPart },
+                        why: "Returns available revisions and the requested part.")),
+                    target: target,
+                    extra: new JObject { ["part"] = requestedPart, ["versionId"] = versionId });
+            }
+
+            return Models.McpResponse.Ok(
+                target: target,
+                code: "VersionSourceRead",
+                result: new JObject
+                {
+                    ["source"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(content)),
+                    ["isBase64"] = true,
+                    ["versionId"] = versionId,
+                    ["part"] = requestedPart
+                });
+        }
+
+        private bool TryGetVersionPartContent(
+            global::Artech.Architecture.Common.Objects.KBObject obj,
+            int versionId,
+            string partName,
+            out string content,
+            out string errorCode,
+            out string reason)
+        {
+            content = null;
+            errorCode = "VersionNotFound";
+            reason = "Version " + versionId + " not found for this object.";
             try
             {
-                var versions = obj.GetVersions().Cast<global::Artech.Architecture.Common.Objects.KBObject>().ToList();
+                var versions = obj.GetVersions()
+                    .Cast<global::Artech.Architecture.Common.Objects.KBObject>()
+                    .ToList();
                 var targetVersion = versions.FirstOrDefault(v => v.VersionId == versionId);
+                if (targetVersion == null) return false;
 
-                if (targetVersion != null)
+                global::Artech.Architecture.Common.Objects.KBObjectPart part;
+                try
                 {
-                    var sourcePart = targetVersion.Parts.Cast<global::Artech.Architecture.Common.Objects.KBObjectPart>()
-                                        .FirstOrDefault(p => p is global::Artech.Architecture.Common.Objects.ISource) 
-                                        as global::Artech.Architecture.Common.Objects.ISource;
-
-                    if (sourcePart != null)
-                    {
-                        string content = sourcePart.Source ?? "";
-                        return Models.McpResponse.Ok(
-                            target: target,
-                            code: "VersionSourceRead",
-                            result: new JObject
-                            {
-                                ["source"] = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(content)),
-                                ["isBase64"] = true,
-                                ["versionId"] = versionId
-                            });
-                    }
+                    part = GxMcp.Worker.Structure.PartAccessor.GetPart(targetVersion, partName);
                 }
-                return Models.McpResponse.Err(
-                    code: "VersionNotFound",
-                    message: "Version " + versionId + " not found or has no source code.",
-                    hint: "Use action=list to see available version IDs for this object.",
-                    nextSteps: new JArray(Models.McpResponse.NextStep(
-                        tool: "genexus_history",
-                        args: new JObject { ["target"] = target, ["action"] = "list" },
-                        why: "Returns available revisions with their version IDs.")),
-                    target: target);
+                catch (Exception ex)
+                {
+                    errorCode = "VersionPartUnavailable";
+                    reason = "Version " + versionId + " could not resolve part '" + partName + "': " + ex.Message;
+                    return false;
+                }
+
+                if (part == null)
+                {
+                    errorCode = "VersionPartUnavailable";
+                    reason = "Version " + versionId + " does not contain part '" + partName + "'.";
+                    return false;
+                }
+
+                var sourcePart = part as global::Artech.Architecture.Common.Objects.ISource;
+                if (sourcePart == null)
+                {
+                    errorCode = "VersionPartUnsupported";
+                    reason = "Version " + versionId + " part '" + partName + "' is not a textual source part and was not restored.";
+                    return false;
+                }
+
+                content = sourcePart.Source ?? string.Empty;
+                errorCode = null;
+                reason = null;
+                return true;
             }
             catch (Exception ex)
             {
-                Logger.Error("Failed to read version source: " + ex.Message);
+                errorCode = "VersionSourceFailed";
+                reason = "SDK Version access failed: " + ex.Message;
+                return false;
+            }
+        }
+
+        private string RestoreVersion(string target, string partName, int versionId, bool dryRun, bool discard)
+        {
+            var obj = _objectService.FindObject(target);
+            if (obj == null)
+            {
                 return Models.McpResponse.Err(
-                    code: "VersionSourceFailed",
-                    message: "SDK Version access failed: " + ex.Message,
-                    hint: "The SDK history API may not be available for this KB.",
+                    code: "ObjectNotFound",
+                    message: "Object not found.",
+                    hint: "Verify the object name and ensure the KB is open.",
+                    nextSteps: new JArray(
+                        Models.McpResponse.NextStep(
+                            tool: "genexus_list_objects",
+                            args: new JObject { ["name_contains"] = target },
+                            why: "Lists objects whose names match, in case of a typo.")),
                     target: target);
+            }
+
+            string requestedPart = NormalizePartName(partName);
+            if (!TryGetVersionPartContent(obj, versionId, requestedPart, out string content, out string errorCode, out string reason))
+            {
+                return Models.McpResponse.Err(
+                    code: errorCode,
+                    message: reason,
+                    hint: "Use action=list to see available version IDs and parts for this object.",
+                    nextSteps: new JArray(Models.McpResponse.NextStep(
+                        tool: "genexus_versioning",
+                        args: new JObject { ["action"] = "history_list", ["name"] = target, ["part"] = requestedPart },
+                        why: "Returns available revisions and the requested part.")),
+                    target: target,
+                    extra: new JObject { ["part"] = requestedPart, ["versionId"] = versionId });
+            }
+
+            if (dryRun)
+            {
+                string currentContent = ReadCurrentPartContent(target, requestedPart);
+                return Models.McpResponse.Ok(
+                    target: target,
+                    code: "DryRun",
+                    result: new JObject
+                    {
+                        ["part"] = requestedPart,
+                        ["versionId"] = versionId,
+                        ["dryRun"] = true,
+                        ["discard"] = discard,
+                        ["restoreSource"] = "version:" + versionId,
+                        ["diff"] = GxMcp.Worker.Helpers.DiffBuilder.UnifiedDiff(currentContent, content, 3),
+                        ["hint"] = "Re-run without dryRun to write this version through WriteService."
+                    });
+            }
+
+            string writeResult = _writeService.WriteObject(target, requestedPart, content);
+            return AttachVersionRestoreMetadata(writeResult, requestedPart, versionId, discard);
+        }
+
+        private string ReadCurrentPartContent(string target, string partName)
+        {
+            try
+            {
+                string readJson = _objectService.ReadObjectSource(target, partName, 0, 0, "mcp", false, null);
+                if (!string.IsNullOrWhiteSpace(readJson))
+                {
+                    var parsed = JObject.Parse(readJson);
+                    return parsed["source"]?.ToString() ?? parsed["content"]?.ToString() ?? string.Empty;
+                }
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        private static string AttachVersionRestoreMetadata(string writeResult, string partName, int versionId, bool discard)
+        {
+            try
+            {
+                var json = JObject.Parse(writeResult ?? "{}");
+                json["restoredFromVersion"] = versionId;
+                json["restoredPart"] = partName;
+                json["discarded"] = discard;
+                return json.ToString();
+            }
+            catch
+            {
+                return writeResult;
             }
         }
 
@@ -459,6 +691,29 @@ namespace GxMcp.Worker.Services
                         why: "Lists available objects in the KB.")),
                     target: target);
             }
+
+            string guid;
+            try { guid = obj.Guid.ToString(); }
+            catch (Exception ex) { return Models.McpResponse.Err(code: "HistoryAccessFailed", message: ex.Message, target: target); }
+
+            string root = ResolveActiveSnapshotRoot();
+            string canonicalName = CanonicalObjectName(obj);
+            var snapshotEntries = EditSnapshotStore.ListForGuid(root, guid);
+            var snapshots = new JArray();
+            foreach (var entry in snapshotEntries)
+            {
+                snapshots.Add(new JObject
+                {
+                    ["path"] = entry.Path,
+                    ["fileName"] = entry.FileName,
+                    ["part"] = entry.Part,
+                    ["timestamp"] = entry.Timestamp,
+                    ["bytes"] = entry.Bytes,
+                    ["legacy"] = false,
+                    ["restorable"] = true
+                });
+            }
+            string[] legacy = FindLegacySnapshotFiles(LegacyHistoryRoot(), canonicalName);
 
             var history = new JArray();
             try
@@ -482,16 +737,32 @@ namespace GxMcp.Worker.Services
                     code: "HistoryAccessFailed",
                     message: "SDK History access failed: " + ex.Message,
                     hint: "The SDK history API may not be available for this KB.",
-                    target: target);
+                    target: target,
+                    extra: new JObject
+                    {
+                        ["snapshots"] = snapshots,
+                        ["snapshotCount"] = snapshotEntries.Count,
+                        ["legacySnapshots"] = LegacySnapshotEntries(legacy),
+                        ["legacySnapshotCount"] = legacy.Length,
+                        ["legacyRestoreAllowed"] = false
+                    });
             }
 
             return Models.McpResponse.Ok(
                 target: target,
                 code: "RevisionList",
-                result: new JObject { ["history"] = history });
+                result: new JObject
+                {
+                    ["history"] = history,
+                    ["snapshots"] = snapshots,
+                    ["snapshotCount"] = snapshotEntries.Count,
+                    ["legacySnapshots"] = LegacySnapshotEntries(legacy),
+                    ["legacySnapshotCount"] = legacy.Length,
+                    ["legacyRestoreAllowed"] = false
+                });
         }
 
-        private string SaveSnapshot(string target)
+        private string SaveSnapshot(string target, string partName)
         {
             var obj = _objectService.FindObject(target);
             if (obj == null) return Models.McpResponse.Err(
@@ -509,33 +780,64 @@ namespace GxMcp.Worker.Services
                         why: "Rebuilds the SearchIndex if the object exists but isn't indexed.")),
                 target: target);
 
-            string histDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".history");
-            if (!Directory.Exists(histDir)) Directory.CreateDirectory(histDir);
+            string part = NormalizePartName(partName);
+            string root = ResolveActiveSnapshotRoot();
+            string guid = obj.Guid.ToString();
+            string sourceJson = _objectService.ReadObjectSource(target, part, 0, 0, "mcp", false, null);
+            JObject json;
+            try { json = JObject.Parse(sourceJson); }
+            catch (Exception ex)
+            {
+                return Models.McpResponse.Err(
+                    code: "SnapshotReadFailed",
+                    message: "Could not read part '" + part + "' before saving a snapshot: " + ex.Message,
+                    hint: "Use action=list to inspect the available parts for this object.",
+                    target: target);
+            }
 
-            string sourceJson = _objectService.ReadObjectSource(target, "Source", client: "mcp");
-            if (sourceJson.Contains("\"error\"")) return sourceJson;
+            if (json["error"] != null || string.Equals(json["status"]?.ToString(), "Error", StringComparison.OrdinalIgnoreCase))
+                return sourceJson;
 
-            var json = JObject.Parse(sourceJson);
-            string code = json["source"] != null ? json["source"].ToString() : "";
+            string code = json["source"]?.ToString() ?? json["content"]?.ToString();
+            if (code == null)
+            {
+                return Models.McpResponse.Err(
+                    code: "SnapshotPartUnavailable",
+                    message: "Part '" + part + "' does not expose textual content and was not snapshotted.",
+                    hint: "Choose a readable textual part from availableParts; history never silently substitutes Source.",
+                    target: target,
+                    extra: new JObject { ["part"] = part });
+            }
 
-            string ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            // Use canonical name: Type_Name
-            string safeName = $"{obj.TypeDescriptor.Name}_{obj.Name}".Replace(":", "_").Replace(" ", "_");
-            string filePath = Path.Combine(histDir, string.Format("{0}_{1}.txt", safeName, ts));
-            File.WriteAllText(filePath, code, Encoding.UTF8);
+            var info = EditSnapshotStore.SaveSnapshot(root, guid, part, code);
+            if (info == null)
+            {
+                return Models.McpResponse.Err(
+                    code: "SnapshotSaveFailed",
+                    message: "The KB-scoped history snapshot could not be saved.",
+                    hint: "Check the active KB path and filesystem permissions.",
+                    target: target,
+                    extra: new JObject { ["part"] = part, ["snapshotRoot"] = root });
+            }
 
             return Models.McpResponse.Ok(
                 target: target,
                 code: "SnapshotSaved",
                 result: new JObject
                 {
-                    ["file"] = Path.GetFileName(filePath),
-                    ["timestamp"] = ts,
-                    ["canonicalName"] = safeName
+                    ["file"] = Path.GetFileName(info.Path),
+                    ["path"] = info.Path,
+                    ["timestamp"] = info.Timestamp,
+                    ["canonicalName"] = CanonicalObjectName(obj),
+                    ["guid"] = info.Guid,
+                    ["part"] = part,
+                    ["compressed"] = info.Compressed,
+                    ["bytes"] = info.Bytes,
+                    ["legacyDirectoryUsed"] = false
                 });
         }
 
-        private string RestoreSnapshot(string target)
+        private string RestoreSnapshot(string target, string partName)
         {
             var obj = _objectService.FindObject(target);
             if (obj == null) return Models.McpResponse.Err(
@@ -553,30 +855,60 @@ namespace GxMcp.Worker.Services
                         why: "Rebuilds the SearchIndex if the object exists but isn't indexed.")),
                 target: target);
 
-            string histDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".history");
-            if (!Directory.Exists(histDir)) Directory.CreateDirectory(histDir);
+            string part = NormalizePartName(partName);
+            string root = ResolveActiveSnapshotRoot();
+            string guid = obj.Guid.ToString();
+            var files = EditSnapshotStore.List(root, guid, part);
+            string canonicalName = CanonicalObjectName(obj);
 
-            // Use canonical name: Type_Name
-            string safeName = $"{obj.TypeDescriptor.Name}_{obj.Name}".Replace(":", "_").Replace(" ", "_");
-            var files = Directory.GetFiles(histDir, $"{safeName}_*.txt")
-                .OrderByDescending(f => f)
-                .ToArray();
+            if (files.Count == 0)
+            {
+                string[] legacy = FindLegacySnapshotFiles(LegacyHistoryRoot(), canonicalName);
+                if (legacy.Length > 0)
+                    return LegacySnapshotNotRestorable(target, part, canonicalName, legacy);
 
-            if (files.Length == 0)
                 return Models.McpResponse.Err(
                     code: "SnapshotNotFound",
-                    message: "No snapshots found for '" + safeName + "'.",
+                    message: "No KB-scoped snapshots found for '" + canonicalName + "' part '" + part + "'.",
                     hint: "Use action=save first to capture a snapshot before restoring.",
                     nextSteps: new JArray(Models.McpResponse.NextStep(
-                        tool: "genexus_history",
-                        args: new JObject { ["target"] = target, ["action"] = "save" },
-                        why: "Saves the current state as a snapshot that can be restored later.")),
+                        tool: "genexus_versioning",
+                        args: new JObject { ["action"] = "history_save", ["name"] = target, ["part"] = part },
+                        why: "Saves the current part under the active Knowledge Base's isolated snapshot root.")),
+                    target: target,
+                    extra: new JObject { ["part"] = part, ["legacySnapshots"] = new JArray() });
+            }
+
+            string path = files[0];
+            string code = EditSnapshotStore.ReadSnapshot(path);
+            if (code == null)
+            {
+                return Models.McpResponse.Err(
+                    code: "SnapshotReadFailed",
+                    message: "File exists but could not be decoded: " + path,
+                    hint: "Use action=list with part=" + part + " to enumerate available snapshots and choose another token.",
                     target: target);
+            }
 
-            string lastFile = files.First();
-            string code = File.ReadAllText(lastFile, Encoding.UTF8);
+            string writeResult = _writeService.WriteObject(target, part, code);
+            return AttachSnapshotRestoreMetadata(writeResult, path, part, false);
+        }
 
-            return _writeService.WriteObject(target, "Source", code);
+        private static string AttachSnapshotRestoreMetadata(string writeResult, string path, string part, bool discarded)
+        {
+            try
+            {
+                var json = JObject.Parse(writeResult ?? "{}");
+                json["restoredFrom"] = path;
+                json["restoredSnapshot"] = Path.GetFileName(path);
+                json["restoredPart"] = part;
+                if (discarded) json["discarded"] = true;
+                return json.ToString();
+            }
+            catch
+            {
+                return writeResult;
+            }
         }
     }
 }

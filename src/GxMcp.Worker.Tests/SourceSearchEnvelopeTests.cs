@@ -80,6 +80,38 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void Search_UsesIndexedFullSourceAndSkipsUnrelatedObjects()
+        {
+            var entries = new List<SearchIndex.IndexEntry>
+            {
+                new SearchIndex.IndexEntry
+                {
+                    Name = "HasToken", Type = "Procedure",
+                    FullSource = "msg(IndexedToken)",
+                    SourceSnippet = null
+                },
+                new SearchIndex.IndexEntry
+                {
+                    Name = "Other", Type = "Procedure",
+                    FullSource = "msg(Unrelated)",
+                    SourceSnippet = null
+                }
+            };
+            var idx = new IndexCacheService();
+            idx.LoadFromEntries(entries);
+            idx.MarkIndexComplete(entries.Count);
+
+            // Null ObjectService proves the hit came from FullSource; no SDK read is
+            // available to the search loop in this fixture.
+            var svc = new SourceSearchService(idx, null);
+            var obj = JObject.Parse(svc.SearchAsJson(new SourceSearchCriteria { Pattern = "IndexedToken" }));
+
+            Assert.Equal("SourceSearchCompleted", obj["code"]?.ToString());
+            Assert.Equal(1, obj["result"]?["scannedObjects"]?.ToObject<int>());
+            Assert.Equal("HasToken", obj["result"]?["hits"]?[0]?["objectName"]?.ToString());
+        }
+
+        [Fact]
         public void Search_PartialIndex_ZeroHits_ReturnsDistinctCode()
         {
             // issue #25 #1/#3: a zero result on a still-walking index must NOT look

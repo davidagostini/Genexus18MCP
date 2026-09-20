@@ -2,9 +2,9 @@ name: Release
 
 on:
   release:
-    # `edited` / `released` let a late `gh release upload publish.zip` re-trigger
+    # `edited` lets a late `gh release upload publish.zip` re-trigger
     # this workflow when the asset was missing on first publish.
-    types: [published, released, edited]
+    types: [published, edited]
   workflow_dispatch:
     inputs:
       tag:
@@ -44,8 +44,21 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
+
+      - name: Resolve release commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMIT="$(git rev-parse HEAD)"
+          if [[ -z "$COMMIT" ]]; then
+            echo "::error::The release tag did not resolve to a commit."
+            exit 1
+          fi
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Release source commit: $COMMIT"
 
       - name: Upgrade npm for Trusted Publishing
         run: |
@@ -73,15 +86,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if npm view "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}" version >/dev/null 2>&1; then
+          CHECK_STARTED_EPOCH="$(date +%s)"
+          if npm view "${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}" version --fetch-retries=0 --fetch-timeout=5000 >/dev/null 2>&1; then
+            CHECK_ELAPSED_SECONDS=$(( $(date +%s) - CHECK_STARTED_EPOCH ))
             echo "already_published=true" >> "$GITHUB_OUTPUT"
-            echo "Already on npm; skipping publish."
+            echo "Already on npm; skipping publish (registry check ${CHECK_ELAPSED_SECONDS}s)."
           else
+            CHECK_ELAPSED_SECONDS=$(( $(date +%s) - CHECK_STARTED_EPOCH ))
             echo "already_published=false" >> "$GITHUB_OUTPUT"
+            echo "Exact npm version is not published yet (registry check ${CHECK_ELAPSED_SECONDS}s)."
           fi
 
-      - name: Download publish.zip from Release
-        if: steps.npm_check.outputs.already_published == 'false'
+      - name: Download release artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -92,24 +108,34 @@ jobs:
           # references Artech.* DLLs from a GeneXus 18 install which the
           # ubuntu runner doesn't have) — release.ps1 automates the full
           # sequence: build → zip → tag → push → gh release create with asset.
-          if ! gh release view "${{ steps.tag.outputs.tag }}" \
-                --json assets --jq '.assets[].name' | grep -qx 'publish.zip'; then
+          ASSETS="$(gh release view "${{ steps.tag.outputs.tag }}" --json assets --jq '.assets[].name')"
+          if ! grep -qx 'publish.zip' <<<"$ASSETS"; then
             echo "::error title=publish.zip missing::Release ${{ steps.tag.outputs.tag }} has no publish.zip asset. Use ./release.ps1 to create releases (builds + zips + uploads in one step), or run 'gh release upload ${{ steps.tag.outputs.tag }} publish.zip' from a machine that has the Worker artefacts."
+            exit 1
+          fi
+          VERSION="${{ steps.pkg.outputs.version }}"
+          if [[ "$VERSION" == 3.* ]] && ! grep -qx 'publish.zip.sha256' <<<"$ASSETS"; then
+            echo "::error title=checksum missing::Release ${{ steps.tag.outputs.tag }} must publish publish.zip.sha256 as an asset."
             exit 1
           fi
           gh release download "${{ steps.tag.outputs.tag }}" \
             --pattern publish.zip \
             --dir .
+          if [[ "$VERSION" == 3.* ]]; then
+            gh release download "${{ steps.tag.outputs.tag }}" \
+              --pattern publish.zip.sha256 \
+              --dir .
+          fi
 
       - name: Verify publish.zip integrity
-        if: steps.npm_check.outputs.already_published == 'false'
         shell: bash
         run: |
           set -euo pipefail
-          # Read the SHA-256 committed at the tag (written by release.ps1 before tagging).
+          # The checksum is a release asset so the source commit remains the
+          # exact commit recorded by gxmcp-manifest.json.
           SHA_FILE="publish.zip.sha256"
           if [[ ! -f "$SHA_FILE" ]]; then
-            echo "::warning::$SHA_FILE not found at tag ${{ steps.tag.outputs.tag }} — skipping integrity check (pre-v2.9.2 release)."
+            echo "::warning::$SHA_FILE not found for tag ${{ steps.tag.outputs.tag }} — skipping integrity check for a legacy release."
           else
             EXPECTED=$(awk '{print $1}' "$SHA_FILE")
             ACTUAL=$(sha256sum publish.zip | awk '{print $1}')
@@ -122,7 +148,6 @@ jobs:
           fi
 
       - name: Unpack publish/
-        if: steps.npm_check.outputs.already_published == 'false'
         run: |
           set -euo pipefail
           mkdir -p publish
@@ -131,12 +156,39 @@ jobs:
           test -f publish/worker/GxMcp.Worker.exe || { echo "::error::worker/GxMcp.Worker.exe missing in publish.zip"; exit 1; }
           # Task 4: assert tool_definitions.json is present (version consistency validated by release.ps1)
           test -f publish/tool_definitions.json || { echo "::error::publish/tool_definitions.json missing in publish.zip — rebuild with release.ps1"; exit 1; }
+          test -f publish/gxmcp-manifest.json || { echo "::error::gxmcp-manifest.json missing in publish.zip — rebuild with release.ps1"; exit 1; }
+
+      - name: Verify release manifest artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          POLICY="$(python -c 'import json; print(json.load(open("publish/gxmcp-manifest.json", encoding="utf-8")).get("sourceCommitPolicy", "legacy"))')"
+          if [[ "$POLICY" == "exact-tag" ]]; then
+            python scripts/verify-release-manifest.py publish --version "${{ steps.pkg.outputs.version }}" --source-commit "${{ steps.source.outputs.commit }}"
+          else
+            echo "::warning::Release manifest uses legacy sourceCommit policy; verifying artifact hashes without tag binding."
+            python scripts/verify-release-manifest.py publish --version "${{ steps.pkg.outputs.version }}"
+          fi
+
+      - name: Verify release metadata parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          POLICY="$(python -c 'import json; print(json.load(open("publish/gxmcp-manifest.json", encoding="utf-8")).get("sourceCommitPolicy", "legacy"))')"
+          if [[ "$POLICY" == "exact-tag" ]]; then
+            python scripts/verify-release-metadata.py --root . --version "${{ steps.pkg.outputs.version }}"
+          else
+            echo "::warning::Skipping strict package/lockfile parity for a legacy release manifest."
+          fi
+
+      - name: Require all v3 plans to be integrated
+        run: python scripts/validate-v3-plan.py --require-ready
 
       - name: Install dependencies
         if: steps.npm_check.outputs.already_published == 'false'
         # --force: package.json declares os=win32 (correct for end users);
         # the linux publish runner only needs devDependencies to run npm publish.
-        run: npm install --force
+        run: npm install --force --no-audit --no-fund
 
       - name: Enforce OIDC-only npm auth
         if: steps.npm_check.outputs.already_published == 'false'
@@ -150,7 +202,6 @@ jobs:
           OIDC_NPMRC="$RUNNER_TEMP/npmrc-oidc"
           {
             echo "registry=https://registry.npmjs.org/"
-            echo "always-auth=false"
           } > "$OIDC_NPMRC"
           echo "NPM_CONFIG_USERCONFIG=$OIDC_NPMRC" >> "$GITHUB_ENV"
 
@@ -160,4 +211,68 @@ jobs:
         run: |
           set -euo pipefail
           unset NODE_AUTH_TOKEN NPM_TOKEN
-          npm publish --access public --provenance
+          TARGET_SPEC="${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}"
+          PUBLISH_STARTED_EPOCH="$(date +%s)"
+          PUBLISH_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          echo "Publishing ${TARGET_SPEC} to npm with provenance..."
+          set +e
+          PUBLISH_OUT=$(npm publish --access public --provenance 2>&1)
+          PUBLISH_EXIT=$?
+          set -e
+
+          echo "$PUBLISH_OUT"
+
+          if [ $PUBLISH_EXIT -eq 0 ]; then
+            PUBLISH_OUTCOME="accepted"
+            echo "npm publish accepted by registry (staged with provenance)."
+          elif echo "$PUBLISH_OUT" | grep -Eq "E409|previously staged|previously published"; then
+            PUBLISH_OUTCOME="already-staged"
+            echo "Notice: ${TARGET_SPEC} is already staged or published on npm (E409 conflict). Proceeding to verify registry propagation..."
+          else
+            echo "::error::npm publish failed with exit code $PUBLISH_EXIT"
+            exit $PUBLISH_EXIT
+          fi
+          PUBLISH_ACCEPTED_EPOCH="$(date +%s)"
+          PUBLISH_ACCEPTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          echo "Verifying that ${TARGET_SPEC} is live on npm registry..."
+          MAX_ATTEMPTS=60
+          SLEEP_SECONDS=10
+          REQUEST_TIMEOUT_SECONDS=5
+          MAX_WAIT_SECONDS=$((MAX_ATTEMPTS * REQUEST_TIMEOUT_SECONDS + (MAX_ATTEMPTS - 1) * SLEEP_SECONDS))
+          AVAILABLE=false
+          REGISTRY_VISIBLE_EPOCH=""
+          REGISTRY_VISIBLE_AT=""
+
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            if npm view "${TARGET_SPEC}" version --fetch-retries=0 --fetch-timeout=$((REQUEST_TIMEOUT_SECONDS * 1000)) >/dev/null 2>&1; then
+              AVAILABLE=true
+              REGISTRY_VISIBLE_EPOCH="$(date +%s)"
+              REGISTRY_VISIBLE_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "Successfully verified ${TARGET_SPEC} on npm registry (attempt $i/$MAX_ATTEMPTS)!"
+              break
+            fi
+            if [ "$i" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Package not yet queryable on npm (attempt $i/$MAX_ATTEMPTS). Waiting ${SLEEP_SECONDS}s..."
+              sleep $SLEEP_SECONDS
+            fi
+          done
+
+          if [ "$AVAILABLE" != "true" ]; then
+            echo "::error::Package ${TARGET_SPEC} was submitted but did not become available on npm registry within ${MAX_WAIT_SECONDS}s maximum probe budget."
+            exit 1
+          fi
+
+          PROPAGATION_SECONDS=$((REGISTRY_VISIBLE_EPOCH - PUBLISH_ACCEPTED_EPOCH))
+          echo "npm registry propagation: ${PROPAGATION_SECONDS}s (${PUBLISH_ACCEPTED_AT} -> ${REGISTRY_VISIBLE_AT}, ${i} probe(s))."
+          {
+            echo "### npm publication verification"
+            echo "- Target: \`${TARGET_SPEC}\`"
+            echo "- Publish result: \`${PUBLISH_OUTCOME}\`"
+            echo "- Publish started: \`${PUBLISH_STARTED_AT}\`"
+            echo "- Publish accepted: \`${PUBLISH_ACCEPTED_AT}\`"
+            echo "- Registry visible: \`${REGISTRY_VISIBLE_AT}\`"
+            echo "- Propagation: \`${PROPAGATION_SECONDS}s\`"
+            echo "- Verification probes: \`${i}/${MAX_ATTEMPTS}\`"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

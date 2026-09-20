@@ -5,6 +5,10 @@ Execution plan for wiring the uncovered SDK capabilities from
 endpoints. Each item lists the SDK entry point, the input-construction gate result, the
 tool surface, and the wiring touch-points.
 
+The probe baseline in this document is GX18. The runtime compatibility catalog also
+supports GX17, but a probe or live result below is not automatically evidence of
+GX17 parity; use the catalog-driven live matrix for per-major evidence.
+
 ## Live verification (2026-07-20) — all 6 P0/P1 tools working
 
 Smoke-tested over HTTP against a running worker on KB `AcademicoHomolog1`. All six resolve
@@ -41,6 +45,15 @@ the same idiom `GamService` already uses. Every impl has a public parameterless 
 `SdkServiceLocator.ConstructOrResolve<T>(factory)` encapsulates "construct-concrete-first,
 fall back to registry". New csproj refs: `Artech.Packages.GenexusBL`, `Artech.Packages.Specifier`,
 `GeneXus.SecurityScanner.Common`, `GeneXus.TeamDevClient.Architecture.BL`.
+
+## Capability probe contract (v3)
+
+`genexus_sdk_probe { mode: "capabilities" }` is the safe first step for authoring
+parity. It returns the installed SDK version, matched type names, and one of
+`available_unverified`, `unavailable`, or `deferred` for each curated capability.
+Every row carries `persistenceVerified=false`; reflection cannot certify a save.
+The Business Component row is deferred because BC rules belong to the generated
+application runtime and require a separate disposable endpoint fixture.
 
 ## Feasibility gate (done 2026-07-20)
 

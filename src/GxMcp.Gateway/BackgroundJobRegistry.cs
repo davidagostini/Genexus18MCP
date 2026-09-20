@@ -63,6 +63,9 @@ namespace GxMcp.Gateway
         }
 
         public JobEntry Start(string session, string kind, int estimatedSeconds)
+            => Start(session, kind, estimatedSeconds, new OwnershipFence(session, string.Empty, 0));
+
+        internal JobEntry Start(string session, string kind, int estimatedSeconds, OwnershipFence ownership)
         {
             var job = new JobEntry
             {
@@ -71,8 +74,13 @@ namespace GxMcp.Gateway
                 Kind = kind,
                 Status = "running",
                 StartedAt = DateTime.UtcNow,
-                EstimatedSeconds = estimatedSeconds
+                EstimatedSeconds = estimatedSeconds,
+                OwnerScopeId = ownership.OwnerScopeId,
+                KbId = ownership.KbId,
+                Generation = ownership.Generation,
+                Epoch = ownership.Epoch
             };
+            job.LastUpdatedAt = job.StartedAt;
             _jobs[job.Id] = job;
             return job;
         }
@@ -85,11 +93,15 @@ namespace GxMcp.Gateway
             DateTime completedAt;
             lock (job.SyncRoot)
             {
-                // Don't clobber a Cancelled status with succeeded/failed — the cancel
-                // raced ahead of the worker's response.
-                if (!string.Equals(job.Status, "cancelled", StringComparison.OrdinalIgnoreCase))
-                    job.Status = success ? "succeeded" : "failed";
+                // Only a running job can transition to a terminal state. Cancelled and
+                // stalled are already terminal — a late worker response (or a second
+                // poller/reconcile) must never resurrect them. This also fixes the
+                // latent double-complete clobber where a reconcile could overwrite the
+                // poller's terminal verdict.
+                if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)) return;
+                job.Status = success ? "succeeded" : "failed";
                 job.CompletedAt = DateTime.UtcNow;
+                job.LastUpdatedAt = job.CompletedAt;
                 if (job.Summary == null) job.Summary = summary;
                 if (job.Result == null) job.Result = result;
                 // Issue #27 item 2: feed the estimator with the observed wall-clock of a
@@ -102,7 +114,28 @@ namespace GxMcp.Gateway
             if (shouldRecordDuration)
             {
                 int elapsed = (int)Math.Round((completedAt - startedAt).TotalSeconds);
-                RecordBuildDuration(job.Kind, elapsed);
+                RecordBuildDuration(job.Kind!, elapsed);
+            }
+            DisposeCts(jobId);
+        }
+
+        // Issue #79: terminal "stalled" state for an async job whose SDK call exceeded
+        // its time bound without returning (typically an IDE modal dialog holding the
+        // model, or the SDK retrying a failing validation internally). Distinct from
+        // "failed" so agents get an explicit, actionable signal ("the worker never
+        // answered — recover with the sync path") instead of a generic failure. Like
+        // cancelled, stalled is terminal: Complete()/Cancel() can't resurrect it.
+        public void Stall(string jobId, string? summary, JObject? result = null)
+        {
+            if (!_jobs.TryGetValue(jobId, out var job)) return;
+            lock (job.SyncRoot)
+            {
+                if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)) return;
+                job.Status = "stalled";
+                job.CompletedAt = DateTime.UtcNow;
+                job.LastUpdatedAt = job.CompletedAt;
+                if (job.Summary == null) job.Summary = summary;
+                if (job.Result == null) job.Result = result;
             }
             DisposeCts(jobId);
         }
@@ -119,15 +152,23 @@ namespace GxMcp.Gateway
         public bool Cancel(string jobId, string? reason = null)
         {
             if (!_jobs.TryGetValue(jobId, out var job)) return false;
+            // The status check and terminal transition must be one critical section.
+            // Otherwise Complete() can win the lock after this check and Cancel()
+            // would overwrite a succeeded/failed result.
+            lock (job.SyncRoot)
+            {
+                // A terminal job (succeeded/failed/stalled) is done — cancelling it
+                // would only rewrite history. Only running jobs can be cancelled.
+                if (!string.Equals(job.Status, "running", StringComparison.OrdinalIgnoreCase)) return false;
+                job.Status = "cancelled";
+                job.CompletedAt = DateTime.UtcNow;
+                job.LastUpdatedAt = job.CompletedAt;
+                job.Summary = reason ?? "Cancelled by client";
+            }
+
             if (_cts.TryGetValue(jobId, out var cts))
             {
                 try { cts.Cancel(); } catch { /* already disposed */ }
-            }
-            lock (job.SyncRoot)
-            {
-                job.Status = "cancelled";
-                job.CompletedAt = DateTime.UtcNow;
-                job.Summary = reason ?? "Cancelled by client";
             }
             return true;
         }
@@ -141,6 +182,13 @@ namespace GxMcp.Gateway
         }
 
         public JobEntry? Get(string jobId) => _jobs.TryGetValue(jobId, out var j) ? j : null;
+
+        internal bool BelongsTo(JobEntry job, OwnershipFence ownership)
+            => job != null && ownership != null
+                && string.Equals(job.OwnerScopeId, ownership.OwnerScopeId, StringComparison.Ordinal)
+                && string.Equals(job.KbId, ownership.KbId, StringComparison.Ordinal)
+                && job.Generation == ownership.Generation
+                && job.Epoch == ownership.Epoch;
 
         public IReadOnlyList<JobEntry> SnapshotForSession(string session)
         {
@@ -215,7 +263,7 @@ namespace GxMcp.Gateway
             if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("path required", nameof(path));
             try
             {
-                string dir = Path.GetDirectoryName(path);
+                string? dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 var list = _jobs.Values.ToList();
                 string json = JsonConvert.SerializeObject(list, Formatting.Indented);
@@ -274,9 +322,21 @@ namespace GxMcp.Gateway
         public string Status { get; set; } = "running";
         public DateTime StartedAt { get; set; }
         public DateTime? CompletedAt { get; set; }
+        // Updated whenever a task changes state. Persisting this separately from
+        // StartedAt lets the MCP tasks extension expose a monotonic freshness marker
+        // without deriving it from a nullable terminal timestamp.
+        public DateTime? LastUpdatedAt { get; set; }
         public int EstimatedSeconds { get; set; }
         public string? Summary { get; set; }
         public JObject? Result { get; set; }
+
+        // Async mutations keep the physical worker and authored target identity so a
+        // lifecycle cancel can recycle a non-preemptible STA call without guessing which
+        // KB owns it, and can require a read-back of the exact part before the next write.
+        public string? WorkerAlias { get; set; }
+        public string? Target { get; set; }
+        public string? Part { get; set; }
+        public string? ObjectType { get; set; }
 
         // Issue #27 item 1: the worker-side build task id (BuildTaskStatus key) this
         // job maps to. The async build poller (Program.cs) is fire-and-forget and can
@@ -286,6 +346,11 @@ namespace GxMcp.Gateway
         // poll actively re-query the worker and reconcile the job to its real terminal
         // state instead of trusting only the background poller. See ReconcileJobWithWorkerAsync.
         public string? WorkerTaskId { get; set; }
+
+        public string OwnerScopeId { get; set; } = string.Empty;
+        public string KbId { get; set; } = string.Empty;
+        public long Generation { get; set; }
+        public long Epoch { get; set; }
 
         // Plan 026: guards read-modify-write of Status/CompletedAt/Summary/Result so
         // Complete() and Cancel() can't race and clobber a terminal "cancelled" status.

@@ -76,6 +76,22 @@ namespace GxMcp.Gateway.Tests
             Assert.False(File.Exists(Path.Combine(b, "Objects", "Procedure", "P", "Stale.txt")));
         }
 
+        [Fact]
+        public void IoFailure_HidesExceptionTextAndReturnsOperationId()
+        {
+            string a = MakeKb("a");
+            string targetFile = Path.Combine(_root, "target-file");
+            File.WriteAllText(targetFile, "not a directory");
+            string sourceObjDir = Path.Combine(a, "Objects", "WebPanel", "Home");
+            Directory.CreateDirectory(sourceObjDir);
+            File.WriteAllText(Path.Combine(sourceObjDir, "Layout.xml"), "<root/>");
+            var result = KbImportHelper.ImportObject(a, targetFile, "Home", "WebPanel");
+            Assert.Equal("IoError", result["code"]?.ToString());
+            Assert.Equal("Import failed while accessing the Knowledge Base. See server logs for details.", result["message"]?.ToString());
+            Assert.DoesNotContain(targetFile, result.ToString());
+            Assert.NotNull(result["operationId"]);
+        }
+
         // SEC-01 regression: `name`/`type` are LLM-controlled and flow into
         // Directory.Delete/CopyTo. Traversal must be rejected before any FS touch.
         [Theory]
@@ -107,6 +123,19 @@ namespace GxMcp.Gateway.Tests
             Assert.False(KbImportHelper.IsSafeSegment(".."));
             Assert.False(KbImportHelper.IsSafeSegment(""));
             Assert.False(KbImportHelper.IsSafeSegment("a\\b"));
+        }
+
+        [Fact]
+        public void LogValue_RedactsQuotedPasswordTokenAndAuthorizationValues()
+        {
+            const string input = "IOException: {\"password\":\"password-value\", \"token\": \"token-value\", \"authorization\": \"Bearer auth-value\"}";
+
+            string result = KbImportHelper.LogValue(input);
+
+            Assert.DoesNotContain("password-value", result);
+            Assert.DoesNotContain("token-value", result);
+            Assert.DoesNotContain("auth-value", result);
+            Assert.Contains("<redacted>", result);
         }
     }
 }

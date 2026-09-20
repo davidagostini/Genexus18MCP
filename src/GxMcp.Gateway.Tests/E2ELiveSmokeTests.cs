@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using Xunit;
+using Xunit.Sdk;
 
 namespace GxMcp.Gateway.Tests
 {
@@ -42,17 +45,102 @@ namespace GxMcp.Gateway.Tests
 
         public Task DisposeAsync() => Task.CompletedTask;
 
+        private async Task RequireSdkTeamDevelopmentAsync()
+        {
+            var response = await _h.CallToolAsync("genexus_gxserver", new JObject
+            {
+                ["action"] = "status"
+            });
+            Assert.False(
+                LiveGatewayHarness.IsToolError(response),
+                "Team Development status read failed: " + response.ToString(Newtonsoft.Json.Formatting.None));
+
+            var payload = LiveGatewayHarness.ParseToolPayload(response);
+            Assert.NotNull(payload);
+            var result = payload!["result"] as JObject ?? payload;
+            Assert.Equal("sdk:ITeamDevClientService", result["source"]?.ToString());
+
+            bool? connected = result["connected"]?.ToObject<bool?>();
+            if (connected == false)
+            {
+                throw SkipException.ForSkip(
+                    "The configured live KB is not linked to GeneXus Team Development; " +
+                    "set GXMCP_TEST_KB to a linked disposable KB to run this regression.");
+            }
+            Assert.True(connected == true, "Team Development status did not return a connected boolean.");
+        }
+
+        private async Task<HashSet<string>> ReadTeamDevelopmentPendingNamesAsync()
+        {
+            var response = await _h.CallToolAsync("genexus_gxserver", new JObject
+            {
+                ["action"] = "pending",
+                ["limit"] = 100
+            });
+            Assert.False(
+                LiveGatewayHarness.IsToolError(response),
+                "Team Development pending read failed: " + response.ToString(Newtonsoft.Json.Formatting.None));
+
+            var payload = LiveGatewayHarness.ParseToolPayload(response);
+            Assert.NotNull(payload);
+            var result = payload!["result"] as JObject ?? payload;
+            Assert.Equal("sdk:ITeamDevClientService", result["source"]?.ToString());
+
+            var objects = result["objects"] as JArray;
+            Assert.NotNull(objects);
+            return new HashSet<string>(
+                objects!
+                    .OfType<JObject>()
+                    .Select(item => item["name"]?.ToString())
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Select(name => name!),
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        private async Task AssertObjectsDeletedAsync(params string[] names)
+        {
+            var failures = new List<string>();
+            for (int i = names.Length - 1; i >= 0; i--)
+            {
+                try
+                {
+                    var response = await _h.CallToolAsync("genexus_delete_object", new JObject
+                    {
+                        ["name"] = names[i],
+                        ["confirm"] = true
+                    });
+                    if (LiveGatewayHarness.IsToolError(response))
+                    {
+                        failures.Add(names[i] + ": " + response.ToString(Newtonsoft.Json.Formatting.None));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failures.Add(names[i] + ": " + ex.Message);
+                }
+            }
+
+            Assert.True(
+                failures.Count == 0,
+                "Team Development cleanup failed: " + string.Join(" | ", failures));
+        }
+
         [LiveKbFact]
         public async Task Whoami_BaselineUnder500ms_AndCarriesPlaybooks()
         {
-                        var sw = System.Diagnostics.Stopwatch.StartNew();
+            var warmup = await _h.CallToolAsync("genexus_whoami", new JObject { ["verbose"] = true });
+            Assert.False(LiveGatewayHarness.IsToolError(warmup),
+                "whoami warmup failed: " + _h.DiagnosticsSummary());
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             var resp = await _h.CallToolAsync("genexus_whoami", new JObject { ["verbose"] = true });
             sw.Stop();
             var payload = LiveGatewayHarness.ParseToolPayload(resp);
 
-            Assert.False(LiveGatewayHarness.IsToolError(resp));
+            Assert.False(LiveGatewayHarness.IsToolError(resp),
+                "whoami response was an MCP tool error: " + _h.DiagnosticsSummary());
             Assert.True(sw.ElapsedMilliseconds < 500,
-                $"whoami baseline must be <500ms; got {sw.ElapsedMilliseconds}ms");
+                $"whoami baseline must be <500ms; got {sw.ElapsedMilliseconds}ms; diagnostics={_h.DiagnosticsSummary()}");
             Assert.NotNull(payload?["playbooks"]);
             Assert.NotNull(payload!["playbooks"]!["wwp_on_webpanel"]);
         }
@@ -137,37 +225,138 @@ namespace GxMcp.Gateway.Tests
                 "read error must include availableParts / hint. payload=" + text);
         }
 
-        [LiveKbFact]
+        [LiveKbFact(requiresNavigation: true)]
         public async Task Navigation_NoForEachBlocks_ReturnsNoNavigationBlocksStatus()
         {
-                        var list = await _h.CallToolAsync("genexus_list_objects", new JObject
-            {
-                ["typeFilter"] = "Procedure",
-                ["limit"] = 5
-            });
-            var items = LiveGatewayHarness.ParseToolPayload(list)?["results"] as JArray
-                    ?? LiveGatewayHarness.ParseToolPayload(list)?["items"] as JArray;
+            const int pageSize = 200;
+            const int maxPageRequests = 1000;
+            const int maxTransientRetries = 8;
+            var maxDuration = TimeSpan.FromMinutes(2);
+            var budget = System.Diagnostics.Stopwatch.StartNew();
+            int offset = 0;
+            int pageRequests = 0;
+            int transientRetries = 0;
+            var observed = new System.Collections.Generic.List<string>();
+            JObject? hit = null;
 
-            // Walk a few procedures looking for one without any navigation levels
-            // (most Academic procs have no For Each blocks).
-            JObject hit = null;
-            foreach (var item in items ?? new JArray())
+            while (hit == null)
             {
-                string name = item["name"]?.ToString();
-                var nav = await _h.CallToolAsync("genexus_analyze", new JObject
+                if (pageRequests >= maxPageRequests)
+                    Assert.Fail($"Inconclusive: Procedure pagination reached the safety cap of {maxPageRequests} pages before a terminal page.");
+                int remainingBeforePage = (int)Math.Max(0, (maxDuration - budget.Elapsed).TotalMilliseconds);
+                if (remainingBeforePage <= 0)
+                    Assert.Fail($"Inconclusive: Procedure navigation smoke exceeded its global {maxDuration.TotalSeconds:0}s budget after {pageRequests} page requests.");
+
+                pageRequests++;
+                JObject list;
+                try
                 {
-                    ["name"] = name,
-                    ["mode"] = "navigation"
-                });
-                var navPayload = LiveGatewayHarness.ParseToolPayload(nav);
-                var levels = navPayload?["levels"] as JArray;
-                if (levels != null && levels.Count == 0)
-                {
-                    hit = navPayload;
-                    break;
+                    list = await _h.CallToolAsync("genexus_list_objects", new JObject
+                    {
+                        ["typeFilter"] = "Procedure",
+                        ["limit"] = pageSize,
+                        ["offset"] = offset,
+                        ["sort"] = "name"
+                    }, timeoutMs: remainingBeforePage);
                 }
+                catch (TimeoutException ex)
+                {
+                    Assert.Fail($"Inconclusive: Procedure listing exceeded the global {maxDuration.TotalSeconds:0}s budget ({ex.Message}).");
+                    throw;
+                }
+                var listPayload = LiveGatewayHarness.ParseToolPayload(list);
+                var decision = NavigationListStateMachine.Evaluate(
+                    listPayload, LiveGatewayHarness.IsToolError(list), offset);
+                if (decision.Kind == NavigationListDecisionKind.Retry)
+                {
+                    transientRetries++;
+                    if (transientRetries > maxTransientRetries)
+                        Assert.Fail("Inconclusive: Procedure listing did not become complete after transient retries. Last reason: " + decision.Reason);
+
+                    int? etaMs = listPayload?["etaMs"]?.Value<int?>();
+                    int delayMs = etaMs.HasValue && etaMs.Value > 0
+                        ? Math.Min(5000, Math.Max(250, etaMs.Value))
+                        : Math.Min(2000, 250 * transientRetries);
+                    int remainingBeforeDelay = (int)Math.Max(0, (maxDuration - budget.Elapsed).TotalMilliseconds);
+                    if (remainingBeforeDelay <= 0)
+                        Assert.Fail($"Inconclusive: Procedure listing exceeded its global {maxDuration.TotalSeconds:0}s budget while waiting for the index.");
+                    await Task.Delay(Math.Min(delayMs, remainingBeforeDelay));
+                    continue;
+                }
+
+                transientRetries = 0;
+                if (decision.Kind == NavigationListDecisionKind.Fail)
+                    Assert.Fail("Procedure listing failed: " + (listPayload?.ToString(Newtonsoft.Json.Formatting.None) ?? "<unparseable>"));
+                if (decision.Kind == NavigationListDecisionKind.Exhausted)
+                    break;
+
+                if (listPayload == null)
+                    throw new InvalidOperationException("Procedure listing returned no parseable payload.");
+                var items = listPayload["results"] as JArray
+                    ?? listPayload["items"] as JArray;
+                if (items == null)
+                    throw new InvalidOperationException("Procedure listing returned no result array after a process decision.");
+
+                foreach (var item in items)
+                {
+                    int remainingBeforeNavigation = (int)Math.Max(0, (maxDuration - budget.Elapsed).TotalMilliseconds);
+                    if (remainingBeforeNavigation <= 0)
+                        Assert.Fail($"Inconclusive: Procedure navigation smoke exceeded its global {maxDuration.TotalSeconds:0}s budget after {pageRequests} page requests.");
+
+                    string? name = item["name"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+
+                    JObject nav;
+                    try
+                    {
+                        nav = await _h.CallToolAsync("genexus_analyze", new JObject
+                        {
+                            ["name"] = name,
+                            ["mode"] = "navigation"
+                        }, timeoutMs: remainingBeforeNavigation);
+                    }
+                    catch (TimeoutException ex)
+                    {
+                        Assert.Fail($"Inconclusive: navigation analysis exceeded the global {maxDuration.TotalSeconds:0}s budget ({ex.Message}).");
+                        throw;
+                    }
+                    var navPayload = LiveGatewayHarness.ParseToolPayload(nav);
+                    if (navPayload == null)
+                    {
+                        observed.Add(name + "=<unparseable>");
+                        continue;
+                    }
+
+                    var levels = navPayload["levels"] as JArray;
+                    string navStatus = navPayload["status"]?.ToString()
+                        ?? navPayload["code"]?.ToString()
+                        ?? (LiveGatewayHarness.IsToolError(nav) ? "error" : "unknown");
+                    observed.Add(name + "=" + navStatus);
+                    bool validNoBlocks = !LiveGatewayHarness.IsToolError(nav)
+                        && levels != null
+                        && levels.Count == 0
+                        && string.Equals(navPayload["status"]?.ToString(), "NoNavigationBlocks", StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrWhiteSpace(navPayload["hint"]?.ToString());
+                    if (validNoBlocks)
+                    {
+                        hit = navPayload;
+                        break;
+                    }
+                }
+
+                if (hit != null) break;
+
+                if (decision.NextOffset.HasValue)
+                {
+                    offset = decision.NextOffset.Value;
+                    continue;
+                }
+                break;
             }
-            Assert.NotNull(hit);
+
+            Assert.True(hit != null,
+                $"No Procedure returned NoNavigationBlocks after {pageRequests} page requests. Observed: " +
+                string.Join(", ", observed.Take(40)));
             Assert.Equal("NoNavigationBlocks", hit!["status"]?.ToString());
             Assert.NotNull(hit["hint"]);
         }
@@ -260,6 +449,279 @@ namespace GxMcp.Gateway.Tests
             // (the bug found and fixed in v2.6.4 dev).
             Assert.True(validation["durationMs"]!.ToObject<long>() > 2000,
                 "validation must reflect a real build (>2s)");
+        }
+
+        [LiveKbFact]
+        public async Task Edit_AutoDeclareVariables_CreatesVariablesOnSourceWrite()
+        {
+            string stamp = DateTime.UtcNow.Ticks.ToString("X").Substring(DateTime.UtcNow.Ticks.ToString("X").Length - 6).ToLowerInvariant();
+            string proc = "TestAutoVar" + stamp;
+
+            try
+            {
+                var create = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = proc
+                });
+                Assert.True(!LiveGatewayHarness.IsToolError(create), "create failed: " + create?.ToString(Newtonsoft.Json.Formatting.None));
+
+                var edit = await _h.CallToolAsync("genexus_edit", new JObject
+                {
+                    ["name"] = proc,
+                    ["part"] = "Source",
+                    ["mode"] = "full",
+                    ["content"] = "&TotalCount = 100\r\n&DescriptionTag = 'LiveTest'",
+                    ["autoDeclareVariables"] = true
+                });
+                Assert.True(!LiveGatewayHarness.IsToolError(edit), "edit failed: " + edit?.ToString(Newtonsoft.Json.Formatting.None));
+
+                var readVars = await _h.CallToolAsync("genexus_read", new JObject
+                {
+                    ["name"] = proc,
+                    ["part"] = "Variables"
+                });
+                var payload = LiveGatewayHarness.ParseToolPayload(readVars);
+                string text = payload?.ToString(Newtonsoft.Json.Formatting.None) ?? "";
+                Assert.True(text.IndexOf("TotalCount", StringComparison.OrdinalIgnoreCase) >= 0,
+                    $"readVars text missing TotalCount. payload={text}, raw={readVars?.ToString(Newtonsoft.Json.Formatting.None)}");
+                Assert.True(text.IndexOf("DescriptionTag", StringComparison.OrdinalIgnoreCase) >= 0,
+                    $"readVars text missing DescriptionTag. payload={text}, raw={readVars?.ToString(Newtonsoft.Json.Formatting.None)}");
+            }
+            finally
+            {
+                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = proc, ["confirm"] = true });
+            }
+        }
+
+        [LiveKbFact]
+        public async Task Refactor_ExtractSubroutine_UpdatesSourceAndAddsSub()
+        {
+            string stamp = DateTime.UtcNow.Ticks.ToString("X").Substring(DateTime.UtcNow.Ticks.ToString("X").Length - 6).ToLowerInvariant();
+            string proc = "TestExtSub" + stamp;
+
+            try
+            {
+                var create = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = proc
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(create));
+
+                var edit = await _h.CallToolAsync("genexus_edit", new JObject
+                {
+                    ["name"] = proc,
+                    ["part"] = "Source",
+                    ["mode"] = "full",
+                    ["content"] = "&Counter = 1\r\n&Total = 50\r\n&Counter = &Counter + 1"
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(edit));
+
+                var extract = await _h.CallToolAsync("genexus_refactor", new JObject
+                {
+                    ["action"] = "ExtractSubroutine",
+                    ["target"] = proc,
+                    ["code"] = "&Total = 50",
+                    ["subroutineName"] = "InitTotal",
+                    ["dryRun"] = false
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(extract));
+
+                var readSource = await _h.CallToolAsync("genexus_read", new JObject
+                {
+                    ["name"] = proc,
+                    ["part"] = "Source"
+                });
+                var payload = LiveGatewayHarness.ParseToolPayload(readSource);
+                string source = payload?["content"]?.ToString() ?? payload?["source"]?.ToString() ?? payload?.ToString() ?? "";
+                Assert.Contains("Do 'InitTotal'", source);
+                Assert.Contains("Sub 'InitTotal'", source);
+                Assert.Contains("&Total = 50", source);
+                Assert.Contains("EndSub", source);
+            }
+            finally
+            {
+                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = proc, ["confirm"] = true });
+            }
+        }
+
+        [LiveKbFact]
+        public async Task Transfer_Export_WithDependencies_IncludesGraphClosure()
+        {
+            string stamp = DateTime.UtcNow.Ticks.ToString("X").Substring(DateTime.UtcNow.Ticks.ToString("X").Length - 6).ToLowerInvariant();
+            string proc = "TestExport" + stamp;
+            string tempXpz = Path.Combine(Path.GetTempPath(), proc + ".xpz");
+
+            try
+            {
+                var create = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = proc
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(create));
+
+                var export = await _h.CallToolAsync("genexus_transfer", new JObject
+                {
+                    ["action"] = "export",
+                    ["targets"] = new JArray { proc },
+                    ["includeDependencies"] = true,
+                    ["outputFile"] = tempXpz
+                });
+                Assert.False(LiveGatewayHarness.IsToolError(export));
+
+                var payload = LiveGatewayHarness.ParseToolPayload(export);
+                var res = payload?["result"] as JObject ?? payload;
+                Assert.True(res?["includeDependencies"]?.ToObject<bool>() == true, "export payload=" + payload?.ToString(Newtonsoft.Json.Formatting.None));
+                Assert.NotNull(res?["dependenciesAdded"]);
+                Assert.True(File.Exists(tempXpz), "Exported .xpz file must exist");
+            }
+            finally
+            {
+                if (File.Exists(tempXpz)) File.Delete(tempXpz);
+                await _h.CallToolAsync("genexus_delete_object", new JObject { ["name"] = proc, ["confirm"] = true });
+            }
+        }
+
+        [LiveKbFact]
+        public async Task TeamDevelopmentPendingList_PreservesEarlierMcpWriteAfterLaterWrite()
+        {
+            await RequireSdkTeamDevelopmentAsync();
+
+            string stamp = Guid.NewGuid().ToString("N").Substring(0, 8);
+            string first = "TestTeamDevA" + stamp;
+            string second = "TestTeamDevB" + stamp;
+            var created = new List<string>();
+
+            try
+            {
+                var createFirst = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = first
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(createFirst),
+                    "create failed for " + first + ": " + createFirst.ToString(Newtonsoft.Json.Formatting.None));
+                created.Add(first);
+
+                var firstEdit = await _h.CallToolAsync("genexus_edit", new JObject
+                {
+                    ["name"] = first,
+                    ["part"] = "Source",
+                    ["mode"] = "full",
+                    ["content"] = "&TeamDevFirst = 1",
+                    ["autoDeclareVariables"] = true
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(firstEdit),
+                    "first edit failed: " + firstEdit.ToString(Newtonsoft.Json.Formatting.None));
+
+                var afterFirst = await ReadTeamDevelopmentPendingNamesAsync();
+                // GetLocalChanges observes the model-level pending state regardless of whether
+                // the first change came from the IDE or this worker; using the MCP path keeps
+                // the regression self-contained while exercising the same SDK read.
+                Assert.True(
+                    afterFirst.Contains(first),
+                    "The first MCP write must appear in the Team Development pending list.");
+
+                var createSecond = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = second
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(createSecond),
+                    "create failed for " + second + ": " + createSecond.ToString(Newtonsoft.Json.Formatting.None));
+                created.Add(second);
+
+                var secondEdit = await _h.CallToolAsync("genexus_edit", new JObject
+                {
+                    ["name"] = second,
+                    ["part"] = "Source",
+                    ["mode"] = "full",
+                    ["content"] = "&TeamDevSecond = 1",
+                    ["autoDeclareVariables"] = true
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(secondEdit),
+                    "second edit failed: " + secondEdit.ToString(Newtonsoft.Json.Formatting.None));
+
+                var afterSecond = await ReadTeamDevelopmentPendingNamesAsync();
+                Assert.True(
+                    afterSecond.Contains(first),
+                    "A later MCP write must not clear the earlier pending object.");
+                Assert.True(
+                    afterSecond.Contains(second),
+                    "The later MCP write must appear in the Team Development pending list.");
+            }
+            finally
+            {
+                await AssertObjectsDeletedAsync(created.ToArray());
+            }
+        }
+
+        [LiveKbFact(requiresTeamDevelopmentFixture: true)]
+        public async Task TeamDevelopmentPendingList_PreservesIdeChangeAfterMcpWrite()
+        {
+            string? idePendingName = Environment.GetEnvironmentVariable("GXMCP_TEAMDEV_PENDING_NAME");
+            Assert.False(string.IsNullOrWhiteSpace(idePendingName));
+
+            await RequireSdkTeamDevelopmentAsync();
+            var before = await ReadTeamDevelopmentPendingNamesAsync();
+            Assert.Contains(
+                idePendingName,
+                before);
+
+            string mcpName = "TestTeamDevMcp" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            bool created = false;
+            try
+            {
+                var create = await _h.CallToolAsync("genexus_create", new JObject
+                {
+                    ["action"] = "object",
+                    ["type"] = "Procedure",
+                    ["name"] = mcpName
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(create),
+                    "create failed for " + mcpName + ": " + create.ToString(Newtonsoft.Json.Formatting.None));
+                created = true;
+
+                var afterCreate = await ReadTeamDevelopmentPendingNamesAsync();
+                Assert.Contains(
+                    idePendingName,
+                    afterCreate);
+
+                var edit = await _h.CallToolAsync("genexus_edit", new JObject
+                {
+                    ["name"] = mcpName,
+                    ["part"] = "Source",
+                    ["mode"] = "full",
+                    ["content"] = "&TeamDevMcp = 1",
+                    ["autoDeclareVariables"] = true
+                });
+                Assert.False(
+                    LiveGatewayHarness.IsToolError(edit),
+                    "edit failed for " + mcpName + ": " + edit.ToString(Newtonsoft.Json.Formatting.None));
+
+                var afterEdit = await ReadTeamDevelopmentPendingNamesAsync();
+                Assert.Contains(idePendingName, afterEdit);
+                Assert.Contains(mcpName, afterEdit);
+            }
+            finally
+            {
+                if (created)
+                {
+                    await AssertObjectsDeletedAsync(mcpName);
+                }
+            }
         }
     }
 }

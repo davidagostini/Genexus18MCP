@@ -209,7 +209,7 @@ namespace GxMcp.Worker.Services
                     {
                         var states = new JArray();
                         foreach (var h in toCommit)
-                            states.Add(new JObject { ["name"] = SafeStr(() => h.ObjectName), ["insertedForCommit"] = TryBool(() => tdSvc.IsInsertedForCommit(model, h.Key)) });
+                            states.Add(new JObject { ["name"] = SafeStr(() => h.ObjectName), ["insertedForCommit"] = TryBool(() => (bool)((dynamic)tdSvc).IsInsertedForCommit(model, h.Key)) });
                         diag["objects"] = states;
                     }
                     catch { }

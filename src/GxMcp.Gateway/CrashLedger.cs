@@ -41,10 +41,30 @@ namespace GxMcp.Gateway
             get
             {
                 if (_pathOverride != null) return _pathOverride;
+                string scoped = Environment.GetEnvironmentVariable("GXMCP_CRASH_LEDGER_PATH");
+                if (!string.IsNullOrWhiteSpace(scoped)) return scoped;
                 string baseDir = Environment.GetEnvironmentVariable("LOCALAPPDATA")
                                  ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
                 return Path.Combine(baseDir, "GenexusMCP", "worker-crashes.jsonl");
             }
+        }
+
+        internal static string ResolveScopedPath(StateScopeId scopeId, string kbId, long generation)
+        {
+            var scope = StateScope.Create(id: scopeId);
+            return scope.LogsPath(kbId, generation, "crash-ledger.jsonl");
+        }
+
+        internal static bool IsKbContextMatch(string expected, string candidate)
+        {
+            if (string.IsNullOrWhiteSpace(expected) || string.IsNullOrWhiteSpace(candidate)) return false;
+            try
+            {
+                string left = Path.GetFullPath(expected).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                string right = Path.GetFullPath(candidate).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
         // A worker exit is "unexpected" (i.e. a real death worth investigating) when it
@@ -62,6 +82,7 @@ namespace GxMcp.Gateway
                 case WorkerStopReason.ExplicitClose:
                 case WorkerStopReason.PlannedReload:
                 case WorkerStopReason.HeapRecycle:
+                case WorkerStopReason.SdkCompatibilityRejected:
                     return false;
                 default:
                     // None / Wedged. A clean exit code 0 with reason None is a benign
@@ -81,7 +102,8 @@ namespace GxMcp.Gateway
             string? lastOperation,
             long? spawnMs,
             long? sdkInitMs,
-            bool sdkReady)
+            bool sdkReady,
+            string? ledgerPath = null)
         {
             try
             {
@@ -105,7 +127,7 @@ namespace GxMcp.Gateway
 
                 lock (_lock)
                 {
-                    string path = LedgerPath;
+                    string path = ledgerPath ?? LedgerPath;
                     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
                     // Single-writer (gateway only) so a plain append is safe. Trim to the

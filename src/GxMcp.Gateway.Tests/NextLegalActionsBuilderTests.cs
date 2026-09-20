@@ -235,6 +235,8 @@ namespace GxMcp.Gateway.Tests
         [InlineData("genexus_edit")]
         [InlineData("genexus_lifecycle")]
         [InlineData("genexus_versioning")]
+        [InlineData("genexus_read")]
+        [InlineData("genexus_query")]
         public void NoSuggestion_NamesAKnownLegacyAlias(string toolName)
         {
             var args = new JObject
@@ -255,6 +257,7 @@ namespace GxMcp.Gateway.Tests
                 ["name"] = "Foo",
                 ["created"] = "Foo",
                 ["target"] = "Foo",
+                ["results"] = new JArray(new JObject { ["name"] = "Foo", ["type"] = "Transaction" }),
             };
 
             foreach (var isError in new[] { false, true })
@@ -267,6 +270,43 @@ namespace GxMcp.Gateway.Tests
                     Assert.DoesNotContain(tool, KnownLegacyToolNames);
                 }
             }
+        }
+
+        [Fact]
+        public void ReadSuccess_SuggestsEditAnalyzeAndNavigation()
+        {
+            var args = new JObject { ["name"] = "PCalculaDesconto", ["part"] = "Source" };
+            var payload = new JObject { ["name"] = "PCalculaDesconto", ["type"] = "Procedure" };
+            var result = NextLegalActionsBuilder.BuildFor("genexus_read", args, payload, isError: false);
+
+            Assert.NotNull(result);
+            Assert.Equal(3, result!.Count);
+            var tools = result.Select(s => s["tool"]?.ToString()).ToList();
+            Assert.Contains("genexus_edit", tools);
+            Assert.Contains("genexus_analyze", tools);
+            Assert.Contains("genexus_navigation", tools);
+
+            var first = (JObject)result[0];
+            Assert.Equal("genexus_edit", first["tool"]?.ToString());
+            Assert.Equal("PCalculaDesconto", first["args"]?["name"]?.ToString());
+            Assert.Equal("Source", first["args"]?["part"]?.ToString());
+        }
+
+        [Fact]
+        public void QuerySuccess_SuggestsReadAndInspectForTopMatch()
+        {
+            var args = new JObject { ["query"] = "PCalculaDesconto" };
+            var payload = new JObject
+            {
+                ["results"] = new JArray(new JObject { ["name"] = "PCalculaDesconto", ["type"] = "Procedure" })
+            };
+            var result = NextLegalActionsBuilder.BuildFor("genexus_query", args, payload, isError: false);
+
+            Assert.NotNull(result);
+            Assert.Equal(2, result!.Count);
+            var first = (JObject)result[0];
+            Assert.Equal("genexus_read", first["tool"]?.ToString());
+            Assert.Equal("PCalculaDesconto", first["args"]?["name"]?.ToString());
         }
     }
 }

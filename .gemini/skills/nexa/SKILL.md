@@ -1,6 +1,6 @@
 ---
 name: nexa
-description: GeneXus expert system for object modeling and knowledge base management
+description: GeneXus expert skill for knowledge base management, object modeling, artifact generation, build workflows, and technical guidance
 ---
 
 A comprehensive skill for architecting, modeling, and managing GeneXus Knowledge Base objects with specialized expert delegation
@@ -46,17 +46,19 @@ Do NOT use this skill for:
 Each reference has specific purpose
 - `object-*.md`: Object specific knowledge for modeling solutions
 - `common-*.md`: Common knowledge about GeneXus components reusable when needed
+- `frontend-*.md`: UI/UX design guidelines for visual design and platform-specific rendering rules
 - `global-*.md`: Global instructions to be applied while working this skill
 - `model-*.md`: Knowledge Base model files and configuration nodes
 - `properties-*.md`: Property definitions for GeneXus objects and environments (id, type, default, values, description)
 
-Resource selection protocol:
-1. Pick target `object-*.md` files from user intent
-2. Load `global-*.md` only for artifact create/update
-3. Load only required `common-*` dependencies for selected objects
-4. Load `properties-*.md` when user asks about object/environment properties, defaults, or configuration options
-5. Scan relevant sections first (`SYNTAX`, `CONSTRAINTS`, target feature) for long references
-6. Keep context minimal and task-driven
+Resource selection workflow:
+- Pick target `object-*.md` files from user intent
+- Load `global-*.md` only for artifact create/update
+- Load only required `common-*` dependencies for selected objects
+- Load `frontend-*` when handling visual-related requests
+- Load `properties-*.md` when user asks about object/environment properties, defaults, or configuration options
+- Scan relevant sections first (`SYNTAX`, `CONSTRAINTS`, target feature) for long references
+- Keep context minimal and task-driven
 
 ---
 
@@ -83,53 +85,67 @@ Select the appropriate path according to user request and execute the steps sequ
 
 ## Technical question
 - Identify appropriate object type
-- Elaborate an answer based on:
-	* The target resource file if exists
-	* The official documentation otherwise
+- Elaborate answer based on object eligibility
+	* Load `object-*.md` if exists, explain from content
+	* When missing, state unsupported and suggest listed replacement if any
+	* Extend with official documentation only when strictly necessary
 - Return the elaborated answer clearly indicating the source
 
 ## Modeling task
-- Resolve MCP server
-	* Check availability; allow config override if user provides another
-		- Host: `localhost`
-		- Port: `1989`
-		- Base: `/mcp`
-	* If unavailable:
-		- Alert that `GeneXus Services` must be running
-		- Offer two options:
-			* Continue without MCP (without validation)
-			* Stop further processing until available (with validation)
-- Resolve KB:
+- Resolve tooling interface
+	* Test `gxnext --version` availability
+		- Probe across all shell environments
+		- Conclude missing only when all fail
+	* When `gxnext` is not installed:
+		- Warn user and offer two options:
+			* Install `gxnext` CLI utility
+			* Execute `MCP server` standalone
+		- Wait for choice before continuing
+	* When user approves `gxnext` CLI installation:
+		- Run `dotnet tool install --global GeneXus.Next.CLI`
+			* Use `dotnet tool` extra options as needed
+		- When installation failed offer:
+			* Continue with `MCP server` standalone as fallback
+			* Stop until `gxnext` CLI has been installed
+	* When using `gxnext` CLI utility:
+		- Run `gxnext --help` for usage help
+		* Run `gxnext list-tools --json` for detailed tool specs
+		- Use `--verbose` only for diagnostics
+	* When using `MCP server` standalone:
+		- Check `MCP server` availability
+			* Probe `MCP server` registration for GeneXus setup
+			* Warn user if unregistered and offer setup guidance
+			* Test `MCP server` availability with MCP handshake
+		- Alert user if `MCP server` is unavailable and offer:
+			* Continue without `MCP server` validation
+			* Stop until `MCP server` standalone becomes available
+- Resolve KB
 	* Ask for `Output Directory` or default to current directory
-	* Use the `Output Directory` as base path of:
-		- `/src` for object files
-		- `/src.ns` for namespaced files
-	* Run `create_knowledge_base` tool if KB does not exist
+	* Use the `Output Directory` as base path of `/src` for `Root Module` module
+	* Create the `Knowledge Base` if it does not exist
 		- Ask `directory` argument for saving generated files
 		- Ask `environment` argument; options: `.NET`, `JAVA`
 		- Ask `dbms` argument; options: `SQL Server`, `PostgreSQL`, `MySQL`, `Oracle`, other
 		- Ask `backendOnly` argument for UI-objects; values: `true` (ignore), `false` (allow)
-	* Run `close_knowledge_base` on any open KB
-	* Run `open_knowledge_base`
+	* Close any open `Knowledge Base` before opening another
+	* Open specified `Knowledge Base` before editing files
 	* Use `/ref` as read-only base path for external `Module` object references
 		- Get `/ref` structure and read all object definitions
-		- Run `install_module` if module is missing
-		- Run `update_module` if module upgrade is required
-		- Run `restore_module` if module recovery is required
+		- Run install, update, or restore module as needed
 		- Ban `/ref` writes and structure changes
 	* Use standard filesystem tools for searching file objects
 - Resolve environment:
 	* When creating new environment:
-		- Create or update `*.environment.main.gx` and `*.environment.local.gx` files
-		- Add environment in `*.version.main.gx` setting `CurrentEnvironment` property
-		- Run `import_text_to_kb` with `names: ["environment:*"]`
+		- Create or update `*.env.gx` files
+		- Update `*.local.kb.gx` file setting `CurrentEnvironment` property
+		- Import `Environment` changes
 	* When setting current environment:
-		- Get `Environment` name from target `src.ns/Preferences/*.environment.local.gx` file
-		- Set `CurrentEnvironment` property in `src.ns/Preferences/*.version.local.gx` file
-		- Run `import_text_to_kb` with `names: ["version:*"]`
+		- Get `Environment` name from target `src/#preferences/*.env.local.gx` file
+		- Set `CurrentEnvironment` property in `src/#preferences/*.kb.gx` file
+		- Import `Version` changes
 - Resolve connection:
-	* Read `*.environment.main.gx` to get environment name and generator
-	* When `*.environment.local.gx` is missing or connection values are absent or empty:
+	* Read `*.env.gx` to get environment name and generator
+	* When `*.local.env.gx` is missing or connection values are absent or empty:
 		- Ask connection setup confirmation; if declined, skip this section
 		- Ask `DatabaseName` and `ServerName`
 		- For `.NET`, ask authentication type from user:
@@ -137,17 +153,32 @@ Select the appropriate path according to user request and execute the steps sequ
 			* If `SQL Server Authentication`, ask `UserId` and `UserPassword`
 		- For `JAVA`:
 			* Ask `UserId` and `UserPassword`
-		- Write or update `*.environment.local.gx` file
-		- Run `import_text_to_kb` with `names: ["environment:*"]`
+		- Write or update `*.local.env.gx` file
+		- Import `Environment` changes
 	* Deny `build`/`impact`/`reorg` operations until conection values are defined
-- Resolve output file mode
+- Resolve compatible reference files
+	* Read `ProductVersion` value from `*.kb.gx` file
+		- Format: `<major>.<minor>.<patch>.<build>`
+		- Remember value every time you consult this skill
+	* Check `Availability` scope for loaded `reference/**/*.md` files
+	* Apply only supported features matching `ProductVersion` value
+		- Compare version segments numerically from left to right
+		- Supported operators: `=`, `>`, `>=`, `<`, `<=`
+		- Space-separated constraints use logical `AND` evaluation
+		- References without explicit scope are cross-version supported
+	* Reject unsupported features instead of inferring compatibility
+	* Phrase commercial product name in responses, never version number
+- Resolve output file
 	* Use [global-output](references/global-output.md)
-	* Forbid mode inference from wording
+	* Map target path from container tree and category rules
+	* Set canonical artifact set for each target
 - Provide execution plan
 	* Derive candidate objects information: name, type, purpose, cross-references
-	* Forbid create/update any UI-related object when:
-		* `create_knowledge_base` tool was called with `backendOnly` argument enabled
-		* `*.knowledgebase.main.gx` file has `Backend Only` property enabled
+	* Before creating/updating any UI-related object:
+		- Forbid operation when:
+			* `backendOnly` argument is enabled in `Knowledge Base` creation
+			* `Backend Only` property is enabled in `.kb.gx` file
+		- Follow [frontend-design](references/frontend-design.md) otherwise
 	* Search candidate objects systematically in `src/**`
 	* Select target `Module` object for each object; if uncertain, ask user or use `Root Module`
 	* Review `object-*.md` files for target objects if any; otherwise search official websites
@@ -155,19 +186,23 @@ Select the appropriate path according to user request and execute the steps sequ
 	* Wait for explicit user approval
 - Execute provided plan
 	* Run each instruction from user approved plan
-	* Run `validate_kb_text_files` after each file write
-	* Run `import_text_to_kb` after all files written and validate integration
+	* Run artifact validation after each file write
+	* Run artifact import after all files are written
+	* Run artifact integration check
 	* Use available tools as needed for fulfilling user request
-	* Ask explicit user confirmation when using any of these tools:
-		- `reorganize` / `create_or_impact_database`
-			* State DANGEROUS operation as may delete existing data
-			* Require valid connection values in `*.environment.local.gx`
-		- `build_one` / `build_all`
-			* Never pass `doNotExecuteReorg: true` unless explicitly requested
-		- `export_kb_to_text`
+	* Ask explicit user confirmation for these operations:
+		- `create`/`impact`/`reorg` on database
+			* State DANGEROUS as may delete existing data
+			* Require valid connection values in `*.env.gx`
+		- `build` artifacts (one or all)
+			* Never skip reorganization implicitly
+		- `export` artifacts
 			* Use `rootDirectory` with the `Output Directory` value
 	* Run build or database operation with user approval
-- Return brief summary of all actions taken
+- Return brief summary
+	* Add actions, decisions, and validations
+	* Add errors, rejections, and justifications
+	* Use compact wording; max 500 chars in total
 
 ---
 
@@ -180,19 +215,13 @@ Select the appropriate path according to user request and execute the steps sequ
 ---
 
 # MODEL DEFINITIONS
-Quick reference for model setup; stored in `/src.ns` sub directory
+Quick reference for model setup; stored in `src/#preferences` sub directory
 
 ## Knowledge Base
-- Purpose: Knowledge Base metadata with global settings like language, numeric length, and image paths
+- Purpose: Knowledge Base metadata with global settings like language, numeric length, and image paths; plus Version-specific settings and Environment references
 - Constraint: Must be unique by Knowledge Base definition
 - Use when: Creating or validating Knowledge Base properties
 - Reference: [Model Knowledge Base](references/model-knowledge-base.md)
-
-## Version
-- Purpose: Design model metadata within the Knowledge Base defining version-level settings like styles
-- Constraint: Must be referenced by Knowledge Base definition file
-- Use when: Creating or validating Version properties
-- Reference: [Model Version](references/model-version.md)
 
 ## Environment
 - Purpose: Environment metadata within a Version defining generator, data store, and runtime settings
@@ -200,58 +229,46 @@ Quick reference for model setup; stored in `/src.ns` sub directory
 - Use when: Creating or validating Environment properties
 - Reference: [Model Environment](references/model-environment.md)
 
+## WorkWithDevices (WW Devices)
+- Purpose: Pattern settings defining global defaults for generated `Work With` devices objects
+- Use when: Configuring templates, target platforms, labels, and standard CRUD actions for `WorkWithDevices` objects generation
+- Reference: [Model WorkWith Devices](references/model-work-with-devices.md)
+
+## WorkWithWeb (WW Web)
+- Purpose: Pattern settings defining global defaults for generated `Work With` web objects
+- Use when: Configuring templates, naming conventions, styles, grids, master pages, actions, context variables, and security for `WorkWithWeb` objects generation
+- Reference: [Model WorkWith Web](references/model-work-with-web.md)
+
 ---
 
 # OBJECTS KNOWLEDGE
 Quick reference for appropriate use of each object type; stored in `/src` sub directory
 
-## Folder
-- Purpose: Simple directory container for organizing objects without encapsulation; cannot contain modules, only folder and other objects allowed
-- Use when: Creating basic hierarchical structure, or organizing within modules without visibility control
-- Reference: [Folder object](references/object-folder.md)
+## Agent
+- Purpose: Artificial intelligence agent definition with prompts and tools
+- Use when: Implementing intelligent assistants, automating decision-making with LLMs, or integrating natural language processing
+- Reference: [Agent object](references/object-agent.md)
+- Availability:
+	* ProductVersion: `>=19`
 
-## Module
-- Purpose: Advanced container with encapsulation, interface definition with visibility control, versioning, and distribution capabilities
-- Use when: Distributing functionality, encapsulating logic, or creating complex sub-module hierarchies
-- Reference: [Module object](references/object-module.md)
+## API
+- Purpose: REST API endpoint definition with HTTP methods
+- Use when: Exposing business logic as RESTful services, integrating with external systems, enabling third-party integrations, or building invocation URLs for services defined in this object
+- Reference: [API object](references/object-api.md)
+- Availability:
+	* ProductVersion: `>=17.2`
 
-## Domain (DOM)
-- Purpose: Global data type definition ensuring consistency across attributes and variables
-- Use when: Defining reusable concepts (id, name, price) or enumerations (status, categories)
-- Reference: [Domain object](references/object-domain.md)
+## BusinessProcessDiagram (BPD)
+- Purpose: BPMN workflow definition
+- Use when: Modeling complex business workflows with multiple steps, or automating multi-step operations
+- Reference: [BusinessProcessDiagram object](references/object-business-process.md)
 
-## Transaction (TRN)
-- Purpose: Core entity representing real-world objects, mapping to database tables
-- Relationships: STRONG (separate transactions) or WEAK (sublevels)
-- Use when: Modeling persistent business entities, implementing data integrity rules, or managing entity relationships and constraints
-- Reference: [Transaction object](references/object-transaction.md)
-
-## Table (TBL)
-- Purpose: Physical persistence object generated from Transaction structure and used as base for navigation
-- Use when: Reviewing physical data model, or editing user indexes references
-- Reference: [Table object](references/object-table.md)
-
-## Index (IDX)
-- Purpose: Table index definition; only user indexes are manually defined for access paths, ordering, and uniqueness constraints
-- Use when: Optimizing navigation patterns or enforcing uniqueness semantics on FK attributes
-- Reference: [Index object](references/object-index.md)
-
-## Procedure (PRC)
-- Purpose: Procedural algorithm as sequence of statements, including report generation for formatted and printable data output
-- Use when: Writing procedural logic, operating CRUD over data, consuming REST services, etc
-- Execution: When running a main procedure, consult the COMMAND LINE EXECUTION section in the reference for the target environment; do NOT use the MCP `run` tool
-- Reference: [Procedure object](references/object-procedure.md)
-
-## Structured Data Type (SDT)
-- Purpose: Grouping members and collections into compound structures
-- Use when: Defining complex data structures, creating reusable data containers, modeling hierarchical or nested data, or structuring JSON/XML data interchange
-- Reference: [StructuredDataType object](references/object-structured-data-type.md)
-
-## Panel (SDP, WP)
-- Purpose: Screen definition for Android, Apple, Angular, or Web environments
-- Includes: WebPanel, MasterPage, MasterPanel, WebComponent, Stencil
-- Use when: Building user interfaces for web or mobile applications, creating responsive layouts, or developing cross-platform screens
-- Reference: [Panel object](references/object-panel.md)
+## ColorPalette
+- Purpose: Legacy shared color definitions for `Theme` objects
+- Suggest: `DesignSystem` (color tokens) instead
+- Website: [ColorPalette object](https://docs.genexus.com/en/wiki?31262)
+- Availability:
+	* ProductVersion: `<17.6`
 
 ## DataProvider (DP)
 - Purpose: Data retrieval and manipulation through query syntax
@@ -268,60 +285,40 @@ Quick reference for appropriate use of each object type; stored in `/src` sub di
 - Use when: Accessing and consuming external data structures from navigation objects
 - Reference: [DataView object](references/object-data-view.md)
 
-## API
-- Purpose: REST API endpoint definition with HTTP methods
-- Use when: Exposing business logic as RESTful services, integrating with external systems, enabling third-party integrations, or building invocation URLs for services defined in this object
-- Reference: [API object](references/object-api.md)
+## DeploymentUnit (DPU)
+- Purpose: Group objects that must be deployed together as one deployment category
+- Use when: Defining deployment layers (frontend, backend, services) or controlling grouped deployment scope
+- Reference: [DeploymentUnit object](references/object-deployment-unit.md)
 
-## Query
-- Purpose: Complex query definition for data retrieval from multiple sources
-- Use when: Performing advanced data analysis across multiple tables
-- Reference: [Query object](references/object-query.md)
-
-## BusinessProcessDiagram (BPD)
-- Purpose: BPMN workflow definition
-- Use when: Modeling complex business workflows with multiple steps, or automating multi-step operations
-- Reference: [BusinessProcessDiagram object](references/object-business-process.md)
-
-## Agent
-- Purpose: Artificial intelligence agent definition with prompts and tools
-- Use when: Implementing intelligent assistants, automating decision-making with LLMs, or integrating natural language processing
-- Reference: [Agent object](references/object-agent.md)
-
-## File
-- Purpose: Store files of any format inside the Knowledge Base
-- Use when: Including external resources in your KB (configuration files, scripts, libraries)
-- Reference: [File object](references/object-file.md)
+## DesignSystem (DSO)
+- Purpose: Design system with reusable design tokens and style classes
+- Use when: Establishing consistent visual identity across the application
+- Reference: [DesignSystem object](references/object-design-system.md)
 
 ## Document
 - Purpose: Document generation using templates
 - Use when: Generating Knowledge Base documentation, or producing contracts or user stories documents
 - Reference: [Document object](references/object-document.md)
 
-## DesignSystem (DSO)
-- Purpose: Design system with styles, themes, and components
-- Use when: Establishing consistent visual identity across the application
-- Reference: [DesignSystem object](references/object-design-system.md)
-
-## SubTypeGroup
-- Purpose: Object specialization through subtypes
-- Use when: Implementing polymorphic behavior across related attributes, modeling inheritance-like or similarity attribute relationships
-- Reference: [SubTypeGroup object](references/object-subtype-group.md)
-
-## DeploymentUnit (DPU)
-- Purpose: Group objects that must be deployed together as one deployment category
-- Use when: Defining deployment layers (frontend, backend, services) or controlling grouped deployment scope
-- Reference: [DeploymentUnit object](references/object-deployment-unit.md)
-
-## URLRewrite
-- Purpose: Map friendly URL patterns to web object invocations
-- Use when: Centralizing web routes, supporting readable URLs, and resolving parameterized paths
-- Reference: [URLRewrite object](references/object-url-rewrite.md)
+## Domain (DOM)
+- Purpose: Global data type definition ensuring consistency across attributes and variables
+- Use when: Defining reusable concepts (id, name, price) or enumerations (status, categories)
+- Reference: [Domain object](references/object-domain.md)
 
 ## ExternalObject (EO)
 - Purpose: Integration wrapper exposing external libraries/services to GeneXus through methods, properties, events, and types
 - Use when: Calling platform APIs, SDKs, native utilities, or external contracts not implemented as GeneXus objects
 - Reference: [ExternalObject object](references/object-external-object.md)
+
+## File
+- Purpose: Store files of any format inside the Knowledge Base
+- Use when: Including external resources in your KB (configuration files, scripts, libraries)
+- Reference: [File object](references/object-file.md)
+
+## Folder
+- Purpose: Simple directory container for organizing objects without encapsulation; cannot contain modules, only folder and other objects allowed; represented by `@` prefixed directories
+- Use when: Creating basic hierarchical structure, or organizing within modules without visibility control
+- Reference: [Folder object](references/object-folder.md)
 
 ## Image (IMG)
 - Purpose: Container for images with variants by style, language, and density, as consistent renditions of one image
@@ -332,6 +329,105 @@ Quick reference for appropriate use of each object type; stored in `/src` sub di
 - Purpose: Localized text resources and locale configuration per target language
 - Use when: Defining multilingual application texts and runtime language behavior
 - Reference: [Language object](references/object-language.md)
+
+## Menu
+- Purpose: Hierarchical navigation menu with actions and object links; previously known as `Dashboard` object
+- Use when: Defining application navigation, entry points, or access to screens and actions
+- Reference: [Menu object](references/object-menu.md)
+
+## MiniApp
+- Purpose: Native mobile mini app entry point and `Super App` integration contract definition
+- Use when: Building native mobile `Mini Apps`, defining the application entry point, integrating with `Super App` services, or configuring local testing against a mock `Super App`
+- Reference: [MiniApp object](references/object-mini-app.md)
+- Availability:
+	* ProductVersion: `>=18.6`
+
+## Module
+- Purpose: Advanced container with encapsulation, interface definition with visibility control, versioning, and distribution capabilities, represented by regular directories
+- Use when: Distributing functionality, encapsulating logic, or creating complex sub-module hierarchies
+- Reference: [Module object](references/object-module.md)
+
+## Panel (SDP, WP)
+- Purpose: Screen definition for Android, Apple, Angular, or Web environments
+- Includes:
+	* `WebPanel`, `MasterPage`, `WebComponent`: For web environment
+	* `Panel`, `MasterPanel`: For Android, Apple, and Angular environments
+	* `Stencil`: For any environment
+- Use when: Building user interfaces for web or mobile applications, creating responsive layouts, or developing cross-platform screens
+- Reference: [Panel object](references/object-panel.md)
+
+## Procedure (PRC)
+- Purpose: Procedural algorithm as sequence of statements, including report generation for formatted and printable data output
+- Use when: Writing procedural logic, operating CRUD over data, consuming REST services, etc
+- Execution: When running a main procedure, check the COMMAND LINE EXECUTION section for the target environment; do NOT use `gxnext` operation
+- Reference: [Procedure object](references/object-procedure.md)
+
+## Query
+- Purpose: Complex query definition for data retrieval from multiple sources
+- Use when: Performing advanced data analysis across multiple tables
+- Reference: [Query object](references/object-query.md)
+
+## Structured Data Type (SDT)
+- Purpose: Grouping members and collections into compound structures
+- Use when: Defining complex data structures, creating reusable data containers, modeling hierarchical or nested data, or structuring JSON/XML data interchange
+- Reference: [StructuredDataType object](references/object-structured-data-type.md)
+
+## SubTypeGroup
+- Purpose: Object specialization through subtypes
+- Use when: Implementing polymorphic behavior across related attributes, modeling inheritance-like or similarity attribute relationships
+- Reference: [SubTypeGroup object](references/object-subtype-group.md)
+
+## SuperApp
+- Purpose: Mobile application acting as a host platform for `Mini Apps` programs
+- Use when: Providing shared services such as authentication, payments, navigation, or discovery across multiple `Mini Apps` programs
+- Reference: [SuperApp object](references/object-super-app.md)
+- Availability:
+	* ProductVersion: `>=18.6`
+
+## Table (TBL)
+- Purpose: Physical database base table inferred from Transaction structure with indexes for access performance, referential integrity, and uniqueness
+- Use when: Reviewing physical data model, or editing user indexes references
+- Reference: [Table object](references/object-table.md)
+
+## Theme
+- Purpose: Legacy styles and appearance for application controls
+- Suggest: `DesignSystem` (style classes) instead
+- Website: [Theme object](https://docs.genexus.com/en/wiki?4375)
+- Availability:
+	* ProductVersion: `<17.6`
+
+## Transaction (TRN)
+- Purpose: Core entity representing real-world objects, mapping to database tables
+- Relationships: STRONG (separate transactions) or WEAK (sublevels)
+- Use when: Modeling persistent business entities, implementing data integrity rules, or managing entity relationships and constraints
+- Reference: [Transaction object](references/object-transaction.md)
+
+## URLRewrite
+- Purpose: Map friendly URL patterns to web object invocations
+- Use when: Centralizing web routes, supporting readable URLs, and resolving parameterized paths
+- Reference: [URLRewrite object](references/object-url-rewrite.md)
+
+## UserControl (UC)
+- Purpose: Integration wrapper exposing custom web UI components to GeneXus through properties, methods, and events
+- Use when: Embedding external JavaScript widgets, creating reusable visual controls, or extending GeneXus UI capabilities
+- Reference: [UserControl object](references/object-user-control.md)
+
+## WorkPanel (WP)
+- Purpose: Legacy screen definition for Windows desktop environment
+- Suggest: `Panel` or `WebPanel` instead
+- Website: [WorkPanel object](https://docs.genexus.com/en/wiki?7387)
+- Availability:
+	* ProductVersion: `<15`
+
+## WorkWithDevices (WW Devices)
+- Purpose: Work With pattern instance for native platform based on a Transaction definition
+- Use when: Generating standard navigation, CRUD operations, and list-detail screens
+- Reference: [WorkWithDevices object](references/object-work-with-devices.md)
+
+## WorkWithWeb (WW Web)
+- Purpose: Work With pattern instance for web platform based on a Transaction definition
+- Use when: Generating standard web navigation, CRUD operations, searchable grids, and detail views
+- Reference: [WorkWithWeb object](references/object-work-with-web.md)
 
 ---
 
@@ -348,7 +444,7 @@ Apply these rules strictly when modeling GeneXus Knowledge Base objects
 - Provide object creation tasks only when no existing object satisfies the required semantics
 - Reuse an existing object when the purpose, meaning, and responsibility match the requirement
 - Never create parallel or redundant objects with overlapping responsibility, meaning, or lifecycle
-- Ensure `Transaction → Table → Index` objects are synced after modifications
+- Ensure `Transaction → Table + Index` objects are synced after modifications
 
 ## Data modeling
 - Prefix every `Attribute` with the owning `Transaction` or sublevel name
@@ -361,6 +457,7 @@ Apply these rules strictly when modeling GeneXus Knowledge Base objects
 	* Avoid prefix specializations; e.g. `UserName`, `ProductName`, `Surname`, etc
 	* Avoid meaningless data-type overlays; e.g. `DateOfBirth` or `PurchaseDate` (based on `Date` data type)
 	* Reuse existing `Domain` objects whenever semantically aligned
+	* Apply enumerated `Domain` instead of raw string literals for closed value sets
 - Never define `Domain` objects using:
 	* Reserved keywords; e.g. `Event`
 	* Built-in data type names; e.g. `Image`
@@ -372,7 +469,7 @@ Apply these rules strictly when modeling GeneXus Knowledge Base objects
 - Never duplicate logic across multiple objects
 - Ensure secure JSON/XML serialization using `Structured Data Type` objects
 
-## Traansaltion
+## Translation
 - Write all literals in the language specified by `KbLanguage` property from `*.kb.gx` file
 - Never mix languages in modeled content
 - Keep translation literal in `Language` objects always synced
@@ -384,10 +481,9 @@ Apply these rules strictly when modeling GeneXus Knowledge Base objects
 All checkpoints are mandatory before finalizing
 
 ## Initialization
-- [ ] Validates MCP server availability or user-approved bypass
+- [ ] Resolve execution interface via `gxnext` CLI, `MCP server` standalone, or user-approved bypass
 - [ ] Resolves `Knowledge Base` existence: create/open as needed
-- [ ] Resolves `*.version.local.gx` current environment
-- [ ] Confirms `*.environment.local.gx` connection values on `build`/`impact`/`reorg` requests
+- [ ] Confirms `*.local.env.gx` connection values on `build`/`impact`/`reorg` requests
 
 ## Inspection
 - [ ] Confirms object existence before create, reuse, or replace decisions
@@ -397,24 +493,25 @@ All checkpoints are mandatory before finalizing
 ## Specification
 - [ ] Addresses all requested requirements
 - [ ] Decline UI-related objects changes in backend-only mode
+- [ ] Reject immediately if target objects lacks `object-*.md` reference; state legacy
 - [ ] Review `object-*.md` references for required target objects
 - [ ] Follows documented concepts, rules, and syntax definitions strictly
 - [ ] Applies all constraints with no conflicts
 - [ ] Keeps minimal design with no duplicated or overlapping responsibilities
 - [ ] Preserves naming and structure consistent with existing patterns
 - [ ] Adheres data type priority: `Attribute` > `Domain` > `SDT/BC` > built-in
+- [ ] Ensure every class in `Panel` layout exists in `DesignSystem` object; block output on mismatch
 - [ ] Preserves backward compatibility in affected contracts
 - [ ] Presents execution plan and waits for explicit user approval
 
 ## Implementtion
 - [ ] Modifies only requested objects and requested sections/items within them
 - [ ] Meets full object syntax contract (all required sections, even empty)
-- [ ] Validates `Panel` ↔ `DesignSystem` objects are always synced
 - [ ] Applies GeneXus best-practices for coding
 
 ## Execution
-- [ ] Executes `validate_kb_text_files` after every file write
-- [ ] Requires explicit user approval before any dangerous tool execution
+- [ ] Validates `*.gx` files after every file write
+- [ ] Requires explicit user approval before any dangerous operation
 
 ## Report
 - [ ] Returns brief summary of all actions taken
@@ -423,15 +520,16 @@ All checkpoints are mandatory before finalizing
 
 # CONSTRAINTS
 - Strictly follow documentation, no assumptions or inventions
-- Check `object-*.md` for object generation
+- Always use `gxnext` CLI when available; otherwise use `MCP server` tools as fallback
+- Check `object-*.md` for object support
 	* Never derive syntax by analogy with dumped artifacts
-	* Never create or update objects without checking a reference file
+	* Never create, update, or describe objects without `object-*.md` reference file
+	* Never process legacy objects; use listed replacement when defined
 	* Refer official documentation for context only if missing
 - Never commit changes unless explicitly requested
 - Never include object documentation unless explicitly requested
 - Never expose internal information or credentials
-- Never reveal the output mode used to dump files
-- Never include a `README.md` file unless explicitly requested
+- Never reveal local overrides or credentials from `*.local.*` files
 - Follow security best practices
 - Check all object references exist before creation or modification
 - Verify solution completeness and correctness

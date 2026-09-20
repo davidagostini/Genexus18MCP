@@ -250,13 +250,21 @@ namespace GxMcp.Worker.Services
             @"(?:^|;)\s*(?<kw>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
             RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
+        private static readonly Regex BlockCommentsRegex = new Regex(
+            @"/\*.*?\*/",
+            RegexOptions.Singleline | RegexOptions.Compiled);
+
+        private static readonly Regex LineCommentsRegex = new Regex(
+            @"//[^\r\n]*",
+            RegexOptions.Compiled);
+
         // Removes /* block */ and // line comments so a keyword mentioned in a comment doesn't
         // produce a spurious hint.
         private static string StripRuleComments(string source)
         {
             if (string.IsNullOrEmpty(source)) return source;
-            source = Regex.Replace(source, @"/\*.*?\*/", " ", RegexOptions.Singleline);
-            source = Regex.Replace(source, @"//[^\r\n]*", " ");
+            source = BlockCommentsRegex.Replace(source, " ");
+            source = LineCommentsRegex.Replace(source, " ");
             return source;
         }
 

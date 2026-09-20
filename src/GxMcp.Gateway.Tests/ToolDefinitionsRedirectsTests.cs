@@ -7,7 +7,8 @@ namespace GxMcp.Gateway.Tests
 {
     // Item #13 (v2.6.4): tool descriptions front-load WWP routing hints so the
     // LLM picks the right entry point from `tools/list` without exploration.
-    // Item #1: analyze.mode dropped 'explain'. Item #12: genexus_recipe registered.
+    // Item #1: analyze.mode=explain remains a typed legacy-compatibility route.
+    // Item #12: genexus_recipe registered.
     public class ToolDefinitionsRedirectsTests
     {
         private static JArray LoadToolDefinitions()
@@ -108,20 +109,22 @@ namespace GxMcp.Gateway.Tests
             var actions = (JArray)t!["inputSchema"]!["properties"]!["action"]!["enum"]!;
             var actionNames = actions.Select(x => x.ToString()).ToList();
             Assert.Contains("list", actionNames);
-            Assert.Contains("run", actionNames);
+            Assert.DoesNotContain("run", actionNames);
+            Assert.Contains("crystallize", actionNames);
+            Assert.Contains("suggest_macro", actionNames);
         }
 
         [Fact]
-        public void GenexusAnalyze_ModeEnumDoesNotIncludeExplain()
+        public void GenexusAnalyze_ModeEnumIncludesLegacyExplainCompatibilityAction()
         {
-            // Item #1: analyze mode 'explain' was a stub returning hardcoded
-            // "Code analysis simulation". Removed from the schema; legacy
-            // dispatchers respond NotImplemented.
+            // Issue #136: the legacy explain route is intentionally exposed in
+            // the schema so the gateway can return its typed NotImplemented
+            // envelope instead of rejecting the call as InvalidArgs.
             var t = FindTool("genexus_analyze");
             Assert.NotNull(t);
             var modeEnum = (JArray)t!["inputSchema"]!["properties"]!["mode"]!["enum"]!;
             var names = modeEnum.Select(m => m.ToString()).ToList();
-            Assert.DoesNotContain("explain", names);
+            Assert.Contains("explain", names);
             // Sanity: the canonical modes are still there.
             Assert.Contains("summary", names);
             Assert.Contains("linter", names);

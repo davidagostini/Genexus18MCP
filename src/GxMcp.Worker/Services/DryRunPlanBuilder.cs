@@ -27,6 +27,15 @@ namespace GxMcp.Worker.Services
                 var broken = validator.AnalyzeImpact(targetName, afterXml);
                 if (broken != null && broken.Count > 0)
                     plan.BrokenRefs.AddRange(broken);
+                if (!validator.IsImpactAnalysisAvailable())
+                {
+                    plan.Warnings.Add(new PlanWarning
+                    {
+                        Code = "impactAnalysisUnavailable",
+                        Message = "Impact analysis was not run because the active object index is not loaded; brokenRefs may be incomplete.",
+                        Path = "/plan/brokenRefs"
+                    });
+                }
             }
             else
             {

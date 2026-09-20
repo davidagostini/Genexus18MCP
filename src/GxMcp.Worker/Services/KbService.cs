@@ -4,11 +4,15 @@ using System.Diagnostics;
 using System.Threading;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Xml.Linq;
 using Newtonsoft.Json.Linq;
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Artech.Architecture.Common.Objects;
+using Artech.Genexus.Common;
+using Artech.Genexus.Common.Entities;
+using Artech.Genexus.Common.ModelParts;
 
 namespace GxMcp.Worker.Services
 {
@@ -23,6 +27,157 @@ namespace GxMcp.Worker.Services
         private static volatile int _totalCount = 0;
         private static volatile bool _isIndexing = false;
         private static volatile string _currentStatus = "";
+        private Thread _liteIndexThread;
+        private Thread _enrichIndexThread;
+        private Thread _deltaIndexThread;
+        private IndexBuildWatchdog _indexWatchdog;
+        private readonly IndexOperationCoordinator _indexOperations = new IndexOperationCoordinator();
+
+        private void MarkIndexProgressHeartbeat(int generation)
+        {
+            if (!_indexOperations.MarkProgress(generation)) return;
+            _indexWatchdog?.Beat();
+            if (string.Equals(_currentStatus, "Index worker stalled: no observable progress", StringComparison.Ordinal))
+                _currentStatus = "Index worker resumed";
+        }
+
+        private void MarkIndexStalled(int generation)
+        {
+            if (!_indexOperations.MarkStalled(generation)) return;
+            _currentStatus = "Index worker stalled: no observable progress";
+            Logger.Warn("[INDEX-STALLED] worker remains alive without observable progress; recovery requires action=index force=true.");
+        }
+
+        private bool CancelStalledIndexBuild()
+        {
+            const int recoveryJoinTimeoutMs = 5000;
+            int processed = _processedCount;
+            DateTime last = _indexWatchdog?.LastProgressUtc ?? DateTime.UtcNow;
+            _indexWatchdog?.Stop();
+            try { _indexCacheService.EndLiteWalk(); } catch { }
+
+            bool workersStopped = true;
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(recoveryJoinTimeoutMs);
+            foreach (var thread in new[] { _liteIndexThread, _enrichIndexThread, _deltaIndexThread })
+            {
+                if (thread == null || !thread.IsAlive) continue;
+                try
+                {
+                    thread.Abort();
+                    int remainingMs = (int)Math.Max(0, (deadline - DateTime.UtcNow).TotalMilliseconds);
+                    if (remainingMs == 0 || !thread.Join(remainingMs))
+                        workersStopped = false;
+                }
+                catch (Exception ex)
+                {
+                    workersStopped = false;
+                    Logger.Warn("Index recovery could not stop thread: " + ex.Message);
+                }
+            }
+
+            // Never start a new SDK generation while an old STA worker remains
+            // alive. A pending recovery can be retried explicitly after the
+            // bounded join window expires.
+            foreach (var thread in new[] { _liteIndexThread, _enrichIndexThread, _deltaIndexThread })
+                if (thread != null && thread.IsAlive) workersStopped = false;
+
+            try { _indexCacheService.MarkIndexFailed(); } catch { }
+            _currentStatus = workersStopped
+                ? "Error: index build cancelled after no progress"
+                : "Index recovery pending: previous worker did not stop";
+            if (workersStopped) _isIndexing = false;
+            Logger.Info("[INDEX-RECOVERY] cancelled stalled operation; processed=" + processed
+                + " lastProgressAtUtc=" + last.ToString("o")
+                + " workersStopped=" + workersStopped);
+            return workersStopped;
+        }
+
+        private void StartIndexWatchdog(int generation)
+        {
+            _indexWatchdog = new IndexBuildWatchdog(
+                cancelBuild: () => CancelStalledIndexBuild(),
+                onStalled: () => MarkIndexStalled(generation));
+            _indexWatchdog.Start();
+        }
+
+        private bool IsIndexWorkerAlive()
+        {
+            return _isIndexing && new[] { _liteIndexThread, _enrichIndexThread, _deltaIndexThread }
+                .Any(thread => thread != null && thread.IsAlive);
+        }
+
+        private bool FinishIndexOperation(int generation)
+        {
+            bool completed = _indexOperations.Complete(generation);
+            if (!completed) return false;
+            _indexWatchdog?.Stop();
+            _isIndexing = false;
+            return true;
+        }
+
+        private bool IsCurrentIndexOperation(int generation)
+        {
+            return _indexOperations.IsCurrent(generation);
+        }
+
+        private void MarkIndexOperationFailed(int generation, string message)
+        {
+            if (!IsCurrentIndexOperation(generation)) return;
+            try { _indexCacheService.MarkIndexFailed(); } catch { }
+            _currentStatus = "Error: " + message;
+        }
+
+        public string IndexOperationId
+        {
+            get { return _indexOperations.GetSnapshot(IsIndexWorkerAlive()).OperationId; }
+        }
+
+        public string IndexBuildState
+        {
+            get { return _indexOperations.GetSnapshot(IsIndexWorkerAlive()).State; }
+        }
+
+        public bool IndexWorkerAlive
+        {
+            get { return IsIndexWorkerAlive(); }
+        }
+
+        public bool IndexRecoveryAvailable
+        {
+            get
+            {
+                var snapshot = _indexOperations.GetSnapshot(IsIndexWorkerAlive());
+                return snapshot.Recoverable;
+            }
+        }
+
+        public DateTime? IndexStalledAtUtc
+        {
+            get { return _indexOperations.GetSnapshot(IsIndexWorkerAlive()).StalledAtUtc; }
+        }
+
+        public DateTime? IndexLastProgressAtUtc
+        {
+            get
+            {
+                DateTime last = _indexWatchdog?.LastProgressUtc ?? default(DateTime);
+                return last == default(DateTime) ? (DateTime?)null : last;
+            }
+        }
+
+        private JObject BuildIndexOperationResult(string operationId, string hint, bool reused)
+        {
+            var snapshot = _indexOperations.GetSnapshot(IsIndexWorkerAlive());
+            return new JObject
+            {
+                ["operationId"] = operationId,
+                ["operationState"] = snapshot.State,
+                ["reused"] = reused,
+                ["workerAlive"] = snapshot.WorkerAlive,
+                ["recoverable"] = snapshot.Recoverable,
+                ["hint"] = hint
+            };
+        }
 
         // Fase 0 instrumentation: last KB-open / datastore-probe elapsed, so Program.cs
         // can attribute them in the consolidated [COLD-START-BREAKDOWN] line without
@@ -57,6 +212,13 @@ namespace GxMcp.Worker.Services
         public int IndexTotal => _totalCount;
         public string IndexStatus => _currentStatus;
         public bool IsOpen { get { lock (_kbLock) { return _kb != null; } } }
+
+        // Read the coordinator once so public index telemetry cannot mix an
+        // old operationId with a new generation's state during recovery.
+        internal IndexOperationCoordinator.Snapshot GetIndexOperationSnapshot()
+        {
+            return _indexOperations.GetSnapshot(IsIndexWorkerAlive());
+        }
 
         // v2.6.6 Stream D — expose the open KB handle + lock so BuildService can
         // run GeneXus MSBuild tasks in-process against the same KB instance
@@ -139,6 +301,8 @@ namespace GxMcp.Worker.Services
 
         public string OpenKB(string path)
         {
+            var destinationError = WriteDestinationGuard.CheckOpen(path);
+            if (destinationError != null) return destinationError;
             // issue #38 defect #1: reject a structurally-invalid path fast, before the
             // heavy KnowledgeBase.Open call. A GeneXus environment/model subfolder has no
             // .gxw / knowledgebase.connection; opening it always throws deep in the SDK.
@@ -186,6 +350,8 @@ namespace GxMcp.Worker.Services
                     catch { }
                     try { _kb.Close(); } catch { }
                     _kb = null;
+                    try { _indexCacheService.Clear(); }
+                    catch (Exception clearEx) { Logger.Warn("Index cache clear during KB switch failed: " + clearEx.Message); }
                 }
 
                 _isOpenInProgress = true;
@@ -228,25 +394,54 @@ namespace GxMcp.Worker.Services
                 // Publish the handle.
                 lock (_kbLock) { _kb = opened; }
 
+                // Warm reload is intentionally attempted after the SDK handle is
+                // published, but before the caller receives KbOpened. This makes the
+                // restored catalogue immediately available to list/search/impact while
+                // preserving the regular on-disk cache as a fallback when the explicit
+                // warm snapshot is absent or rejected.
+                JObject warmReload = null;
+                try
+                {
+                    _indexCacheService.Initialize(path, proactiveLoad: false);
+                    warmReload = _indexCacheService.TryRestoreWarmSnapshot(path);
+                }
+                catch (Exception warmEx)
+                {
+                    warmReload = new JObject
+                    {
+                        ["attempted"] = true,
+                        ["loaded"] = false,
+                        ["fallback"] = true,
+                        ["fallbackReason"] = "restore-failed",
+                        ["error"] = warmEx.Message
+                    };
+                    Logger.Warn("Warm index restore failed: " + warmEx.Message);
+                }
+
                 sw.Stop();
                 LastOpenElapsedMs = sw.ElapsedMilliseconds;
                 Logger.Info($"[KB-OPEN] elapsedMs={sw.ElapsedMilliseconds} path={path}");
                 // Diagnostic (read-only, no DB connect): record which data store the
                 // active environment points at. The GeneXus SDK may try to reach this
                 // server during open; when it's unreachable, KB-OPEN above balloons or
-                // hangs. This line lets a slow/hung open be correlated with the target
-                // DB from worker_debug.log alone. Best-effort — never gates readiness.
-                // Fase 0: time the probe separately — it does SDK metadata reads and can
-                // balloon if the DB server is unreachable, masquerading as slow KB-open.
-                var dsSw = Stopwatch.StartNew();
-                try { using (SdkGate.Enter()) Logger.Info($"[KB-OPEN-DATASTORE] {DescribeActiveDataStore(opened)}"); }
-                catch (Exception dsEx) { Logger.Debug($"[KB-OPEN-DATASTORE] probe failed: {dsEx.Message}"); }
-                dsSw.Stop();
-                LastDatastoreProbeMs = dsSw.ElapsedMilliseconds;
+                // Diagnostic (read-only, no DB connect): record which data store the
+                // active environment points at in the background so it never gates readiness.
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    var dsSw = Stopwatch.StartNew();
+                    try { using (SdkGate.Enter()) Logger.Info($"[KB-OPEN-DATASTORE] {DescribeActiveDataStore(opened)}"); }
+                    catch (Exception dsEx) { Logger.Debug($"[KB-OPEN-DATASTORE] probe failed: {dsEx.Message}"); }
+                    dsSw.Stop();
+                    LastDatastoreProbeMs = dsSw.ElapsedMilliseconds;
+                });
                 return Models.McpResponse.Ok(
                     target: path,
                     code: "KbOpened",
-                    result: new JObject { ["elapsedMs"] = sw.ElapsedMilliseconds });
+                    result: new JObject
+                    {
+                        ["elapsedMs"] = sw.ElapsedMilliseconds,
+                        ["warmReload"] = warmReload
+                    });
             }
             catch (Exception ex)
             {
@@ -316,42 +511,23 @@ namespace GxMcp.Worker.Services
         private static string DescribeActiveDataStore(dynamic kb)
         {
             if (kb == null) return "kb=null";
-            Func<Func<string>, string> s = f => { try { return f() ?? ""; } catch { return ""; } };
+            // Reuse the same active-TargetModel-only resolver used by db_info and
+            // records_query. The previous DesignModel-first lookup could report a
+            // datastore from another environment during KB open.
+            JObject entry = DatabaseInfoService.GetDefaultDataStoreInfo(kb);
+            if (entry == null) return "datastore=<unresolved>";
 
-            // Primary: the DataStoresPart accessor (shared with DatabaseInfoService). The
-            // legacy Environment.DataStores / TargetModel.DataStore paths return null on many
-            // KBs, which is why this used to log <unresolved> even though the store exists.
-            dynamic def = null;
-            try
-            {
-                var stores = DatabaseInfoService.EnumerateViaDataStoresPart(kb);
-                foreach (dynamic ds in stores)
-                {
-                    if (ds == null) continue;
-                    if (def == null) def = ds;
-                    bool isDefault = false;
-                    try { isDefault = (bool)ds.IsDefault; } catch { }
-                    if (isDefault) { def = ds; break; }
-                }
-            }
-            catch { }
-            if (def == null) { try { def = kb.DesignModel?.Environment?.TargetModel?.DataStore; } catch { } }
-            if (def == null) return "datastore=<unresolved>";
+            string name = entry["name"]?.ToString();
+            string family = entry["dialect"]?.ToString();
+            string provider = entry["provider"]?.ToString();
+            string server = entry["serverName"]?.ToString();
+            string schema = entry["schema"]?.ToString();
 
-            string name = s(() => (string)def.Name);
-            if (name.Length == 0) name = s(() => (string)def.Category.Name);
-            if (name.Length == 0) name = s(() => (string)def.Type);
-            int dbms = -1; try { dbms = (int)def.Dbms; } catch { }
-            string family = ""; try { family = ExecutionPlanFetcher.ResolveDbmsFamily(dbms); } catch { }
-            string server = s(() => (string)def.ServerName);
-            if (server.Length == 0) server = s(() => (string)def.Server);
-            string schema = s(() => (string)def.DatabaseSchema);
-            if (schema.Length == 0) schema = s(() => (string)def.Schema);
-
-            return "name=" + (name.Length == 0 ? "?" : name)
-                 + " type=" + (family.Length == 0 ? ("dbms" + dbms) : family)
-                 + " server=" + (server.Length == 0 ? "<none>" : server)
-                 + " schema=" + (schema.Length == 0 ? "<none>" : schema);
+            return "name=" + (string.IsNullOrWhiteSpace(name) ? "?" : name)
+                 + " type=" + (string.IsNullOrWhiteSpace(family) ? "unknown" : family)
+                 + " provider=" + (string.IsNullOrWhiteSpace(provider) ? "<none>" : provider)
+                 + " server=" + (string.IsNullOrWhiteSpace(server) ? "<none>" : server)
+                 + " schema=" + (string.IsNullOrWhiteSpace(schema) ? "<none>" : schema);
         }
 
         private static string ResolveKbDirectory(string kbPath)
@@ -492,9 +668,27 @@ namespace GxMcp.Worker.Services
             }
 
             Logger.Info($"BulkIndex(force={force}) requested — fast index path (lite + lazy enrichment).");
-            if (_isIndexing) return Models.McpResponse.Ok(
-                code: "AlreadyInProgress",
-                result: new JObject { ["hint"] = "An index build is already running; poll genexus_whoami for progress." });
+            var lease = _indexOperations.Acquire(force, IsIndexWorkerAlive(), CancelStalledIndexBuild);
+            string operationId = lease.OperationId;
+            int operationGeneration = lease.Generation;
+            if (lease.RecoveryPending)
+            {
+                return Models.McpResponse.Ok(
+                    code: "IndexRecoveryPending",
+                    result: BuildIndexOperationResult(
+                        operationId,
+                        "The previous index worker is still stopping; retry genexus_lifecycle action=index force=true after workerAlive=false.",
+                        reused: true));
+            }
+            if (lease.Reused)
+            {
+                return Models.McpResponse.Ok(
+                    code: "AlreadyInProgress",
+                    result: BuildIndexOperationResult(
+                        operationId,
+                        "An index build is already running; poll genexus_lifecycle action=status for progress.",
+                        reused: true));
+            }
 
             // Wait briefly for the KB to open — same warm-up window as the legacy path.
             try
@@ -520,7 +714,7 @@ namespace GxMcp.Worker.Services
                     try
                     {
                         _indexCacheService.Clear();
-                        _indexCacheService.DeleteOnDiskSnapshot();
+                        // Preserve the last certified snapshot as a crash fallback; new shard writes are atomic.
                         _indexCacheService.MarkReindexStarted(0);
                     }
                     catch (Exception ex) { Logger.Warn("BulkIndex(fast) force-clear failed: " + ex.Message); }
@@ -546,17 +740,22 @@ namespace GxMcp.Worker.Services
                             && validation.CanDeltaAcrossDll;
                         if (Configuration.UseDeltaOnOpen && (validation.CanDelta || dllRebaseline))
                         {
-                            try { _indexCacheService.MarkIndexComplete(loaded.Objects.Count); } catch { }
+                            try { _indexCacheService.MarkIndexRefreshing(); } catch { }
                             _isIndexing = true;
-                            StartDeltaRefreshThread(validation.HighWaterMark, loaded.Objects.Count);
+                            StartIndexWatchdog(operationGeneration);
+                            StartDeltaRefreshThread(validation.HighWaterMark, loaded.Objects.Count, operationGeneration);
                             Logger.Info($"BulkIndex(fast): warm cache delta-eligible ({loaded.Objects.Count} objects, hwm={validation.HighWaterMark:o}, dllRebaseline={dllRebaseline}) — delta refresh started.");
+                            var deltaResult = BuildIndexOperationResult(
+                                operationId,
+                                "Snapshot restored; the delta refresh is running. Wait with action=status wait=30 freshness=current.",
+                                reused: false);
+                            deltaResult["objects"] = loaded.Objects.Count;
+                            // Issue #209: a warm snapshot is restored but not current until
+                            // this delta publishes its fresh high-water mark.
+                            deltaResult["hint"] = "Snapshot restored from the warm cache; index-dependent reads stay blocked until freshness=current. Wait with genexus_lifecycle action=status wait=30 freshness=current.";
                             return Models.McpResponse.Ok(
                                 code: "DeltaStarted",
-                                result: new JObject
-                                {
-                                    ["objects"] = loaded.Objects.Count,
-                                    ["hint"] = "Index is usable now from the warm cache; objects changed since last index are being refreshed in the background."
-                                });
+                                result: deltaResult);
                         }
                         Logger.Info($"BulkIndex(fast): cache present but not delta-eligible (canDelta={validation.CanDelta} canDeltaAcrossDll={validation.CanDeltaAcrossDll} metaPresent={validation.MetaPresent} schemaMatch={validation.SchemaMatch} dllMatch={validation.DllMatch}) — full rebuild to re-establish the delta baseline.");
                     }
@@ -579,12 +778,13 @@ namespace GxMcp.Worker.Services
                     dynamic kb = GetKB();
                     if (kb == null)
                     {
-                        _isIndexing = false;
-                        _currentStatus = "Error: KB not open";
+                        MarkIndexOperationFailed(operationGeneration, "KB not open");
+                        FinishIndexOperation(operationGeneration);
                         return;
                     }
 
                     _currentStatus = "Lite-index pass: walking KB objects...";
+                    _indexCacheService.BeginLiteWalk();
                     Logger.Info(_currentStatus);
 
                     // Fase 0 instrumentation: split the lite-pass wall-clock into
@@ -605,6 +805,7 @@ namespace GxMcp.Worker.Services
 
                     foreach (global::Artech.Architecture.Common.Objects.KBObject obj in objectList)
                     {
+                        if (!IsCurrentIndexOperation(operationGeneration)) return;
                         long objStart = Stopwatch.GetTimestamp();
                         _totalCount++;
                         // issue #25 #1: keep the observable "processed" counter moving
@@ -613,6 +814,7 @@ namespace GxMcp.Worker.Services
                         // showed processed:0 with no way to gauge progress. In the lite
                         // pass every walked object IS processed, so track them together.
                         _processedCount = _totalCount;
+                        MarkIndexProgressHeartbeat(operationGeneration);
                         string typeName = null;
                         try { typeName = obj.TypeDescriptor?.Name; } catch { }
                         if (string.IsNullOrEmpty(typeName)) typeName = obj.GetType().Name;
@@ -626,18 +828,27 @@ namespace GxMcp.Worker.Services
                         // forcing the user to wait for enrichment.
                         DateTime lu = DateTime.MinValue, ca = DateTime.MinValue;
                         string lub = null;
-                        try { lu = obj.LastUpdate; } catch { }
-                        try { ca = obj.VersionDate; } catch { }
+                        try { lu = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate); } catch { }
+                        try { ca = SdkTimestampNormalizer.NormalizeUtc(obj.VersionDate); } catch { }
                         try { lub = obj.UserName; } catch { }
                         // Fase 1: track the delta baseline (max LastUpdate) during the walk.
                         if (lu != DateTime.MinValue) _indexCacheService.ObserveLastUpdate(lu);
+                        var hierarchy = _indexCacheService.ResolveHierarchyForIndex(obj);
 
                         liteEntries.Add(new SearchIndex.IndexEntry
                         {
                             Guid = obj.Guid.ToString(),
+                            EntityKey = SafeEntityKey(obj),
+                            EntityTypeGuid = SafeEntityTypeGuid(obj),
+                            EntityId = SafeEntityId(obj),
                             Name = obj.Name,
                             Type = typeName,
                             Description = description,
+                            Parent = hierarchy.ParentName,
+                            ParentPath = hierarchy.ParentPath,
+                            ParentFolderPath = string.IsNullOrEmpty(hierarchy.ParentPath) ? "Root Module" : "Root Module/" + hierarchy.ParentPath,
+                            Path = hierarchy.Path,
+                            Module = hierarchy.ModuleName,
                             LastUpdate = lu,
                             CreatedAt = ca,
                             LastModifiedBy = lub,
@@ -690,6 +901,7 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
+                    if (!IsCurrentIndexOperation(operationGeneration)) return;
                     _indexCacheService.ReplaceAll(liteEntries);
                     _indexCacheService.MarkLitePassComplete(_totalCount);
 
@@ -700,7 +912,10 @@ namespace GxMcp.Worker.Services
                     // every warm start would full-rebuild. Writing it here makes warm start
                     // delta-eligible immediately; DeltaRefreshOnOpen resumes enrichment for any
                     // entries still flagged IsEnriched=false.
-                    try { _indexCacheService.FlushNow(); _indexCacheService.WriteMetaSidecar(_totalCount); }
+                    // Issue #208: stamp the sidecar only when the flush certified all dirty state;
+                    // a timed-out flush keeps the previous sidecar (older hwm) instead of
+                    // claiming changes the on-disk body does not contain.
+                    try { _indexCacheService.FlushAndStampSidecar(_totalCount, "lite-complete"); }
                     catch (Exception fx) { Logger.Warn("Lite-complete flush/sidecar failed: " + fx.Message); }
 
                     // Wire the enrichment queue BEFORE starting the background drain, so callers
@@ -742,10 +957,11 @@ namespace GxMcp.Worker.Services
                         // specific target. The lite-complete sidecar already persisted above keeps
                         // warm start delta-eligible.
                         _processedCount = _totalCount;
+                        if (!IsCurrentIndexOperation(operationGeneration)) return;
                         _indexCacheService.MarkIndexComplete(_totalCount);
                         bulkSw.Stop();
                         _currentStatus = "Complete";
-                        _isIndexing = false;
+                        FinishIndexOperation(operationGeneration);
                         Logger.Info($"[ENRICH-LAZY] eager drain skipped — {_totalCount} objects catalogued, enrichment on-demand. litePassMs={liteSw.ElapsedMilliseconds}");
                         return;
                     }
@@ -762,6 +978,7 @@ namespace GxMcp.Worker.Services
                                 (proc, tot) => { _processedCount = proc; _indexCacheService.MarkEnrichmentProgress(proc, tot); })
                                 .GetAwaiter().GetResult();
                             _processedCount = _totalCount;
+                            if (!IsCurrentIndexOperation(operationGeneration)) return;
                             _indexCacheService.MarkIndexComplete(_totalCount);
                             // Fase 0.5: coalesced final flush — the per-object enrichment
                             // flushes are now throttled (30s), so force one write here to
@@ -770,8 +987,9 @@ namespace GxMcp.Worker.Services
                             // sidecar — its presence marks the on-disk body as delta-eligible.
                             try
                             {
-                                _indexCacheService.FlushNow();
-                                _indexCacheService.WriteMetaSidecar(_totalCount);
+                                // Issue #208: the sidecar is stamped only when the flush certified
+                                // all dirty state; a timeout must not advance the persisted hwm.
+                                _indexCacheService.FlushAndStampSidecar(_totalCount, "final-enrich");
                             }
                             catch (Exception fx) { Logger.Warn("Final enrich flush/sidecar failed: " + fx.Message); }
                             enrichSw.Stop();
@@ -786,24 +1004,25 @@ namespace GxMcp.Worker.Services
                         catch (Exception ex)
                         {
                             Logger.Error("[BULK-INDEX-ENRICH-FAIL] error=" + ex.Message);
-                            try { _indexCacheService.MarkIndexFailed(); } catch { }
-                            _currentStatus = "Error: " + ex.Message;
+                            MarkIndexOperationFailed(operationGeneration, ex.Message);
                         }
-                        finally { _isIndexing = false; }
+                        finally { FinishIndexOperation(operationGeneration); }
                     }) {
                         IsBackground = true,
                         Priority = ThreadPriority.BelowNormal,
                         Name = "GxMcp-Enrich"
                     };
                     enrichThread.SetApartmentState(ApartmentState.STA);
+                    _enrichIndexThread = enrichThread;
                     enrichThread.Start();
                 }
                 catch (Exception ex)
                 {
+                    if (IsCurrentIndexOperation(operationGeneration))
+                        _indexCacheService.EndLiteWalk();
                     Logger.Error("[BULK-INDEX-LITE-FAIL] error=" + ex.Message);
-                    try { _indexCacheService.MarkIndexFailed(); } catch { }
-                    _currentStatus = "Error: " + ex.Message;
-                    _isIndexing = false;
+                    MarkIndexOperationFailed(operationGeneration, ex.Message);
+                    FinishIndexOperation(operationGeneration);
                 }
             }) {
                 IsBackground = true,
@@ -811,24 +1030,30 @@ namespace GxMcp.Worker.Services
                 Name = "GxMcp-Lite"
             };
             liteThread.SetApartmentState(ApartmentState.STA);
+            _liteIndexThread = liteThread;
+            _indexOperations.MarkWorkerStarted(operationGeneration);
+            StartIndexWatchdog(operationGeneration);
             liteThread.Start();
 
             return Models.McpResponse.Ok(
                 code: "LiteStarted",
-                result: new JObject { ["hint"] = "list_objects is usable after a few seconds; analyze impact uses on-demand enrichment." });
+                result: BuildIndexOperationResult(
+                    operationId,
+                    "list_objects is usable after a few seconds; analyze impact uses on-demand enrichment.",
+                    reused: false));
         }
 
         // Shared enrich-one-entry closure used by the lite-pass queue, the delta resume queue,
-        // and on-demand PromoteAsync: resolve the full SDK object by Guid and UpdateEntry it.
+        // and on-demand PromoteAsync: resolve the full SDK object by EntityKey/GUID/path.
         private IndexEntryEnricher BuildEnricher(dynamic kb, string logLabel)
         {
             return new IndexEntryEnricher(e =>
             {
                 try
                 {
-                    if (string.IsNullOrEmpty(e?.Guid)) return;
-                    if (!Guid.TryParse(e.Guid, out var g)) return;
-                    var fullObj = kb.DesignModel.Objects.Get(g);
+                    if (e == null) return;
+                    string resolutionStrategy;
+                    var fullObj = ObjectService.ResolveIndexedObject(kb.DesignModel, e, out resolutionStrategy);
                     if (fullObj == null) return;
                     _indexCacheService.UpdateEntry(fullObj);
                 }
@@ -836,24 +1061,50 @@ namespace GxMcp.Worker.Services
             });
         }
 
+        // EntityKey is the SDK identity that survives modular-name qualification.
+        // Keep its scalar pieces in the index so a warm process can reconstruct it
+        // without depending on a facade object's Guid lookup.
+        private static string SafeEntityKey(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.ToString(); } catch { return null; }
+        }
+
+        private static string SafeEntityTypeGuid(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Type.ToString(); } catch { return null; }
+        }
+
+        private static int? SafeEntityId(global::Artech.Architecture.Common.Objects.KBObject obj)
+        {
+            try { return obj?.Key?.Id; } catch { return null; }
+        }
+
         // Fase 1: bounded delta refresh on warm start. The in-memory index is already
         // hydrated from the validated on-disk cache and serving reads; here we ask the SDK
         // (same GetKeys(timestamp) primitive KbWatcherService uses) for objects changed
         // since the persisted high-water-mark, re-index ONLY those, advance the hwm, and
         // re-persist. This replaces the full 38k re-walk on every warm start.
-        // NOTE (Fase 1 scope): deletions/renames-to-a-new-key are not reconciled here — a
-        // deleted object lingers as a stale entry until a force reindex. Fase 2 wires the
-        // watcher + a Guid key-set diff to handle that.
-        private void StartDeltaRefreshThread(DateTime highWaterMark, int loadedCount)
+        // The refresh also performs a count/change-gated Guid sweep so deletions and
+        // rename-to-new-key cases do not linger indefinitely in the restored index.
+        private void StartDeltaRefreshThread(DateTime highWaterMark, int loadedCount, int operationGeneration)
         {
             var deltaThread = new Thread(() =>
             {
                 var sw = Stopwatch.StartNew();
                 int changed = 0;
+                bool retryScheduled = false;
                 try
                 {
+                    MarkIndexProgressHeartbeat(operationGeneration);
                     dynamic kb = GetKB();
-                    if (kb == null) { _currentStatus = "Error: KB not open"; return; }
+                    if (kb == null)
+                    {
+                        // Issue #209: a delta that cannot even start must leave an observable
+                        // terminal state (Cold/stale), not just a descriptive status string.
+                        MarkIndexOperationFailed(operationGeneration, "KB not open");
+                        FinishIndexOperation(operationGeneration);
+                        return;
+                    }
 
                     // Wire the on-demand enrichment queue NOW (lazy OR eager) so AnalyzeService can
                     // PromoteAsync a target after a warm-start restart. The lite pass is the only
@@ -864,19 +1115,25 @@ namespace GxMcp.Worker.Services
 
                     // 2s safety margin for clock granularity / same-second edits (mirrors the
                     // watcher's > hwm re-filter below).
-                    DateTime safeHwm = highWaterMark.AddSeconds(-2);
-                    DateTime newHwm = highWaterMark;
+                    DateTime normalizedHwm = SdkTimestampNormalizer.NormalizeUtc(highWaterMark);
+                    DateTime safeHwm = normalizedHwm > DateTime.MinValue.AddSeconds(2)
+                        ? normalizedHwm.AddSeconds(-2)
+                        : DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+                    DateTime newHwm = normalizedHwm;
 
                     var changedKeys = kb.DesignModel.Objects.GetKeys(safeHwm);
                     foreach (var key in (System.Collections.IEnumerable)changedKeys)
                     {
+                        if (!IsCurrentIndexOperation(operationGeneration)) return;
                         try
                         {
                             var obj = kb.DesignModel.Objects.Get((Artech.Udm.Framework.EntityKey)key);
                             if (obj == null) continue;
-                            if (obj.LastUpdate <= safeHwm) continue; // re-filter like KbWatcherService
+                            DateTime objectLastUpdate = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate);
+                            if (objectLastUpdate <= safeHwm) continue; // re-filter like KbWatcherService
                             _indexCacheService.UpdateEntry(obj);
-                            if (obj.LastUpdate > newHwm) newHwm = obj.LastUpdate;
+                            MarkIndexProgressHeartbeat(operationGeneration);
+                            if (objectLastUpdate > newHwm) newHwm = objectLastUpdate;
                             changed++;
                         }
                         catch { /* skip individual object failures */ }
@@ -911,14 +1168,16 @@ namespace GxMcp.Worker.Services
                     }
                     catch (Exception dex) { Logger.Warn("Delta deletion sweep failed: " + dex.Message); }
 
+                    int effectiveCount = _indexCacheService.GetIndex().Objects.Count;
+                    if (!IsCurrentIndexOperation(operationGeneration)) return;
                     _indexCacheService.ObserveLastUpdate(newHwm);
-                    _indexCacheService.MarkIndexComplete(loadedCount);
+                    _indexCacheService.MarkIndexComplete(effectiveCount);
                     // Persist the merged body + refreshed sidecar (advances the hwm baseline).
-                    try { _indexCacheService.FlushNow(); _indexCacheService.WriteMetaSidecar(loadedCount); }
+                    try { _indexCacheService.FlushAndStampSidecar(effectiveCount, "delta-refresh"); }
                     catch (Exception fx) { Logger.Warn("Delta refresh flush/sidecar failed: " + fx.Message); }
 
                     sw.Stop();
-                    Logger.Info($"[DELTA-REFRESH] elapsedMs={sw.ElapsedMilliseconds} changed={changed} deleted={deleted} hwmBefore={highWaterMark:o} hwmAfter={newHwm:o} objects={loadedCount}");
+                    Logger.Info($"[DELTA-REFRESH] elapsedMs={sw.ElapsedMilliseconds} changed={changed} deleted={deleted} hwmBefore={highWaterMark:o} hwmAfter={newHwm:o} objects={effectiveCount}");
 
                     // Fase 1 (robustness): if the persisted body was lite-only or partially
                     // enriched (worker evicted mid-enrichment before), resume enrichment for the
@@ -937,20 +1196,40 @@ namespace GxMcp.Worker.Services
                         enrichQueue.DrainAsync(default(CancellationToken),
                             (proc, tot) => _indexCacheService.MarkEnrichmentProgress(proc, tot))
                             .GetAwaiter().GetResult();
-                        _indexCacheService.MarkIndexComplete(loadedCount);
-                        try { _indexCacheService.FlushNow(); _indexCacheService.WriteMetaSidecar(loadedCount); }
+                        int resumedCount = _indexCacheService.GetIndex().Objects.Count;
+                        _indexCacheService.MarkIndexComplete(resumedCount);
+                        try { _indexCacheService.FlushAndStampSidecar(resumedCount, "delta-resume-enrich"); }
                         catch (Exception fx) { Logger.Warn("Resume-enrich flush/sidecar failed: " + fx.Message); }
                         Logger.Info($"[DELTA-RESUME-ENRICH-DONE] enriched={pendingEnrich.Count} {IndexCacheService.GetEnrichTimingSummary()}");
                     }
 
+                    Interlocked.Exchange(ref _deltaRetryAttempt, 0);
                     _currentStatus = "Complete";
                 }
                 catch (Exception ex)
                 {
+                    // Issue #209 (policy A): a failed delta used to leave the index at
+                    // Freshness=refreshing forever, indistinguishable from a refresh still in
+                    // progress, with nothing pointing at the manual recovery path.
                     Logger.Error("[DELTA-REFRESH-FAIL] error=" + ex.Message);
-                    _currentStatus = "Error: " + ex.Message;
+                    if (IsCurrentIndexOperation(operationGeneration))
+                    {
+                        MarkIndexOperationFailed(operationGeneration, ex.Message);
+                        retryScheduled = ScheduleDeltaRetry(highWaterMark, loadedCount, operationGeneration);
+                    }
                 }
-                finally { _isIndexing = false; }
+                finally
+                {
+                    if (retryScheduled)
+                    {
+                        _indexWatchdog?.Stop();
+                        _isIndexing = false;
+                    }
+                    else
+                    {
+                        FinishIndexOperation(operationGeneration);
+                    }
+                }
             })
             {
                 IsBackground = true,
@@ -958,7 +1237,78 @@ namespace GxMcp.Worker.Services
                 Name = "GxMcp-Delta"
             };
             deltaThread.SetApartmentState(ApartmentState.STA);
+            _deltaIndexThread = deltaThread;
+            _indexOperations.MarkWorkerStarted(operationGeneration);
             deltaThread.Start();
+        }
+
+        // Issue #209 (policy A): bounded self-healing for a failed warm-start delta. The delta
+        // is the only path that advances the persisted high-water-mark, so a transient SDK
+        // failure must not need a human to notice and run `action=index force=true`.
+        private int _deltaRetryAttempt;
+        private const int DeltaRetryMaxAttempts = 3;
+        private static readonly int[] DeltaRetryBackoffMs = { 5000, 15000, 60000 };
+
+        private bool ScheduleDeltaRetry(DateTime highWaterMark, int loadedCount, int operationGeneration)
+        {
+            int attempt = Interlocked.Increment(ref _deltaRetryAttempt);
+            if (attempt > DeltaRetryMaxAttempts)
+            {
+                Logger.Error(
+                    $"[DELTA-RETRY] giving up after {DeltaRetryMaxAttempts} attempts — the index stays Cold/stale. "
+                    + "Recover with genexus_lifecycle action=index force=true.");
+                return false;
+            }
+
+            int delayMs = DeltaRetryBackoffMs[Math.Min(attempt - 1, DeltaRetryBackoffMs.Length - 1)];
+            Logger.Warn($"[DELTA-RETRY] scheduling attempt {attempt}/{DeltaRetryMaxAttempts} in {delayMs}ms.");
+            if (!_indexOperations.MarkRetryPending(operationGeneration, pending: true)) return false;
+
+            var retryThread = new Thread(() =>
+            {
+                try
+                {
+                    Thread.Sleep(delayMs);
+                    // A full rebuild (or an explicit action=index) supersedes the retry.
+                    if (_isIndexing)
+                    {
+                        Logger.Info("[DELTA-RETRY] an index run is already in progress — retry dropped.");
+                        if (_indexOperations.IsCurrent(operationGeneration))
+                        {
+                            _indexOperations.MarkRetryPending(operationGeneration, pending: false);
+                            FinishIndexOperation(operationGeneration);
+                        }
+                        return;
+                    }
+                    if (!_indexOperations.IsCurrent(operationGeneration)) return;
+                    if (GetKB() == null)
+                    {
+                        Logger.Warn("[DELTA-RETRY] KB is no longer open — retry abandoned.");
+                        FinishIndexOperation(operationGeneration);
+                        return;
+                    }
+                    _isIndexing = true;
+                    StartIndexWatchdog(operationGeneration);
+                    StartDeltaRefreshThread(highWaterMark, loadedCount, operationGeneration);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("[DELTA-RETRY] scheduling failed: " + ex.Message);
+                    if (_indexOperations.IsCurrent(operationGeneration))
+                    {
+                        _indexOperations.MarkRetryPending(operationGeneration, pending: false);
+                        FinishIndexOperation(operationGeneration);
+                    }
+                }
+            })
+            {
+                IsBackground = true,
+                Priority = ThreadPriority.BelowNormal,
+                Name = "GxMcp-DeltaRetry"
+            };
+            retryThread.SetApartmentState(ApartmentState.STA);
+            retryThread.Start();
+            return true;
         }
 
         // v2.3.8 (post-self-review) — force flag closes the "stale snapshot" gap.
@@ -970,9 +1320,27 @@ namespace GxMcp.Worker.Services
         private string BulkIndexLegacy(bool force)
         {
             Logger.Info($"BulkIndex(force={force}) requested.");
-            if (_isIndexing) return Models.McpResponse.Ok(
-                code: "AlreadyInProgress",
-                result: new JObject { ["hint"] = "An index build is already running; poll genexus_whoami for progress." });
+            var lease = _indexOperations.Acquire(force, IsIndexWorkerAlive(), CancelStalledIndexBuild);
+            string operationId = lease.OperationId;
+            int operationGeneration = lease.Generation;
+            if (lease.RecoveryPending)
+            {
+                return Models.McpResponse.Ok(
+                    code: "IndexRecoveryPending",
+                    result: BuildIndexOperationResult(
+                        operationId,
+                        "The previous index worker is still stopping; retry genexus_lifecycle action=index force=true after workerAlive=false.",
+                        reused: true));
+            }
+            if (lease.Reused)
+            {
+                return Models.McpResponse.Ok(
+                    code: "AlreadyInProgress",
+                    result: BuildIndexOperationResult(
+                        operationId,
+                        "An index build is already running; poll genexus_lifecycle action=status for progress.",
+                        reused: true));
+            }
 
             // Wait briefly for the KB to open. The Gateway fires BulkIndex from the
             // initialize hook before the worker has opened the KB, so IsIndexMissing
@@ -991,7 +1359,7 @@ namespace GxMcp.Worker.Services
                     try
                     {
                         _indexCacheService.Clear();
-                        _indexCacheService.DeleteOnDiskSnapshot();
+                        // Preserve the last certified snapshot as a crash fallback; new shard writes are atomic.
                         _indexCacheService.MarkReindexStarted(0);
                     }
                     catch (Exception ex) { Logger.Warn("BulkIndex force-clear failed (continuing with rebuild anyway): " + ex.Message); }
@@ -1011,13 +1379,15 @@ namespace GxMcp.Worker.Services
                         // where the index was already in memory before the BulkIndex call.
                         try { _indexCacheService.MarkIndexComplete(loaded.Objects.Count); } catch { }
                         Logger.Info($"BulkIndex skipped — cache already populated ({loaded.Objects.Count} objects). Pass force=true to rebuild.");
+                        var alreadyIndexed = BuildIndexOperationResult(
+                            operationId,
+                            "Pass force=true to force a full SDK rescan when entries are missing edges or new objects exist.",
+                            reused: false);
+                        alreadyIndexed["objects"] = loaded.Objects.Count;
+                        FinishIndexOperation(operationGeneration);
                         return Models.McpResponse.Ok(
                             code: "AlreadyIndexed",
-                            result: new JObject
-                            {
-                                ["objects"] = loaded.Objects.Count,
-                                ["hint"] = "Pass force=true to force a full SDK rescan when entries are missing edges or new objects exist."
-                            });
+                            result: alreadyIndexed);
                     }
                 }
             }
@@ -1035,8 +1405,8 @@ namespace GxMcp.Worker.Services
                 try {
                     dynamic kb = GetKB();
                     if (kb == null) {
-                        _isIndexing = false;
-                        _currentStatus = "Error: KB not open";
+                        MarkIndexOperationFailed(operationGeneration, "KB not open");
+                        FinishIndexOperation(operationGeneration);
                         return;
                     }
 
@@ -1062,6 +1432,7 @@ namespace GxMcp.Worker.Services
                     var indexSw = Stopwatch.StartNew();
                     foreach (var snapshotEntry in objectSnapshot)
                     {
+                        if (!IsCurrentIndexOperation(operationGeneration)) return;
                         try {
                             // Fetch object safely by stable identity. Name-based dynamic dispatch
                             // can bind to the wrong GeneXus SDK overload during bulk indexing.
@@ -1070,6 +1441,7 @@ namespace GxMcp.Worker.Services
 
                             _indexCacheService.UpdateEntry(obj);
                             _processedCount++;
+                            MarkIndexProgressHeartbeat(operationGeneration);
                             
                             int notifyInterval = Math.Max(500, _totalCount / 100);
                             if (_processedCount % notifyInterval == 0 || _processedCount == _totalCount) {
@@ -1106,21 +1478,21 @@ namespace GxMcp.Worker.Services
                         }
                     }
 
+                    if (!IsCurrentIndexOperation(operationGeneration)) return;
                     _currentStatus = "Complete";
-                    _isIndexing = false;
                     bulkSw.Stop();
                     // v2.3.8 (Task 1.1): publish completion to IndexState.
                     try { _indexCacheService?.MarkIndexComplete(_processedCount); } catch { }
+                    FinishIndexOperation(operationGeneration);
                     Logger.Info($"[BULK-INDEX] elapsedMs={bulkSw.ElapsedMilliseconds} processed={_processedCount} total={_totalCount}");
                 } catch (Exception ex) {
                     bulkSw.Stop();
                     Logger.Error($"[BULK-INDEX-FAIL] elapsedMs={bulkSw.ElapsedMilliseconds} error={ex.Message}");
-                    _isIndexing = false;
-                    _currentStatus = "Error: " + ex.Message;
                     // v2.3.8 (Task 1.1 review): reset IndexState on failure so callers don't
                     // see a permanent "Reindexing" status when bulk indexing throws after
                     // MarkReindexStarted. Wrapped in try/catch for resilience.
-                    try { _indexCacheService?.MarkIndexFailed(); } catch { }
+                    MarkIndexOperationFailed(operationGeneration, ex.Message);
+                    FinishIndexOperation(operationGeneration);
                 }
             }) { 
                 IsBackground = true, 
@@ -1128,11 +1500,17 @@ namespace GxMcp.Worker.Services
                 Priority = ThreadPriority.BelowNormal 
             };
             indexThread.SetApartmentState(ApartmentState.STA);
+            _liteIndexThread = indexThread;
+            _indexOperations.MarkWorkerStarted(operationGeneration);
+            StartIndexWatchdog(operationGeneration);
             indexThread.Start();
 
             return Models.McpResponse.Ok(
                 code: "Started",
-                result: new JObject { ["hint"] = "Full SDK index started in the background; poll genexus_whoami for progress." });
+                result: BuildIndexOperationResult(
+                    operationId,
+                    "Full SDK index started in the background; poll genexus_lifecycle action=status for progress.",
+                    reused: false));
         }
 
         public string GetIndexStatus()
@@ -1148,7 +1526,30 @@ namespace GxMcp.Worker.Services
             json["totalKnown"] = !_isIndexing;
             json["objectsWalked"] = _totalCount;
             json["status"] = _currentStatus;
-            json["isBusy"] = _isIndexing || _isOpenInProgress;
+            var operation = _indexOperations.GetSnapshot(IsIndexWorkerAlive());
+            json["operationId"] = operation.OperationId != null ? (JToken)operation.OperationId : JValue.CreateNull();
+            json["operationState"] = operation.State;
+            json["workerAlive"] = operation.WorkerAlive;
+            json["recoverable"] = operation.Recoverable
+                || (string.Equals(_indexCacheService?.GetState()?.Status, "Cold", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(operation.State, "Idle", StringComparison.OrdinalIgnoreCase));
+            if (operation.StalledAtUtc.HasValue)
+                json["stalledAtUtc"] = operation.StalledAtUtc.Value.ToUniversalTime().ToString("o");
+            DateTime? lastProgress = IndexLastProgressAtUtc;
+            if (lastProgress.HasValue)
+            {
+                json["lastProgressAtUtc"] = lastProgress.Value.ToString("o");
+            }
+            json["noProgressTimeoutSec"] = IndexBuildWatchdog.ResolveNoProgressSeconds();
+            json["stalled"] = operation.Stalled;
+            if (operation.Active && (operation.Stalled || !operation.WorkerAlive))
+                json["recoveryAction"] = "genexus_lifecycle action=index force=true";
+            var state = _indexCacheService?.GetState();
+            json["freshness"] = state?.Freshness ?? "stale";
+            json["lastSuccessfulScanAt"] = state?.LastSuccessfulScanAt.HasValue == true
+                ? (JToken)state.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
+                : JValue.CreateNull();
+            json["isBusy"] = _isIndexing || operation.Active || _isOpenInProgress;
             // Issue #27 item 3 (measured): when the index is loaded from the warm/delta
             // cache, the in-session walk counters (_totalCount/_processedCount) are never
             // set, so this reported total:0 / processed:0 / objectsWalked:0 even with a
@@ -1192,16 +1593,721 @@ namespace GxMcp.Worker.Services
             lock (_kbLock)
             {
                 if (_kb == null) return null;
-                // SDK exposes multiple shapes across major versions; probe in order
-                // and swallow individually so a missing property on one branch
-                // doesn't strand the whole call.
-                try { var v = _kb.Environment?.Name; if (v != null) return v.ToString(); } catch { }
-                try { var v = _kb.UserInterface?.ActiveEnvironment?.Name; if (v != null) return v.ToString(); } catch { }
-                try { var v = _kb.DesignModel?.Environment?.Name; if (v != null) return v.ToString(); } catch { }
-                try { var v = _kb.ActiveModel?.Name; if (v != null) return v.ToString(); } catch { }
+                // SDK exposes multiple shapes across major versions. U5 can return
+                // an environment container whose public Name property is empty but
+                // whose inherited property bag or TargetModel carries the name.
+                // Probe all of those representations independently.
+                object[] candidates =
+                {
+                    TryGet(() => (object)_kb.Environment?.TargetModel),
+                    TryGet(() => (object)_kb.DesignModel?.Environment?.TargetModel),
+                    TryGet(() => (object)_kb.ActiveModel),
+                    TryGet(() => (object)_kb.Environment),
+                    TryGet(() => (object)_kb.UserInterface?.ActiveEnvironment),
+                    TryGet(() => (object)_kb.DesignModel?.Environment)
+                };
+                foreach (var candidate in candidates)
+                {
+                    if (candidate == null) continue;
+                    try
+                    {
+                        if (_kb?.DesignModel != null && ReferenceEquals(candidate, _kb.DesignModel))
+                            continue;
+                    }
+                    catch { }
+
+                    string typeStr = TryGetMember(candidate, "Type")?.ToString();
+                    if (string.Equals(typeStr, "Design", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(typeStr, "Backup", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var name = TryGetEnvironmentName(candidate);
+                    if (!string.IsNullOrWhiteSpace(name)) return name;
+                }
                 return null;
             }
         }
+
+        // Resolve the actual <KB>\<environment>\web output root. The SDK's
+        // display name can differ from the physical target folder;
+        // probing TargetPath/TargetName keeps build evidence scoped to the active
+        // environment instead of accidentally selecting another environment's newer files.
+        public string GetActiveEnvironmentWebPath()
+        {
+            lock (_kbLock)
+            {
+                if (_kb == null) return null;
+                string kbPath = Environment.GetEnvironmentVariable("GX_KB_PATH");
+                if (string.IsNullOrWhiteSpace(kbPath) || !Directory.Exists(kbPath)) return null;
+
+                object[] candidates =
+                {
+                    TryGet(() => (object)_kb.Environment),
+                    TryGet(() => (object)_kb.UserInterface?.ActiveEnvironment),
+                    TryGet(() => (object)_kb.DesignModel?.Environment),
+                    TryGet(() => (object)_kb.ActiveModel),
+                    TryGet(() => (object)_kb.Environment?.TargetModel),
+                    TryGet(() => (object)_kb.Environment?.DesignModel)
+                };
+                string activeName = GetActiveEnvironment();
+                List<string> environmentRoots;
+                try
+                {
+                    environmentRoots = Directory.GetDirectories(kbPath)
+                        .Where(d => Directory.Exists(Path.Combine(d, "web")))
+                        .ToList();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("Active environment web-path probe unavailable: " + ex.Message);
+                    environmentRoots = new List<string>();
+                }
+                // Prefer an unambiguous semantic match before probing SDK
+                // properties: U5 can expose a stale TargetPath from another
+                // environment even while GetActiveEnvironment reports development.
+                string classifiedRoot = ResolveEnvironmentRoot(environmentRoots, activeName);
+                if (!string.IsNullOrWhiteSpace(classifiedRoot))
+                    return Path.Combine(classifiedRoot, "web");
+                foreach (var candidate in candidates)
+                {
+                    if (candidate == null) continue;
+                    foreach (var propertyName in new[] { "TargetPath", "OutputPath", "WebPath", "TargetName", "Name", "EnvironmentName" })
+                    {
+                        var value = TryGetMember(candidate, propertyName)?.ToString();
+                        var webPath = ResolveEnvironmentWebPath(kbPath, value);
+                        if (!string.IsNullOrWhiteSpace(webPath)
+                            && IsCompatibleEnvironmentPath(webPath, activeName))
+                            return webPath;
+                    }
+                }
+
+                return null;
+            }
+        }
+
+        private static string ResolveEnvironmentRoot(IEnumerable<string> roots, string activeName)
+        {
+            if (roots == null || string.IsNullOrWhiteSpace(activeName)) return null;
+            var rootList = roots.ToList();
+            string exact = rootList.FirstOrDefault(d =>
+                string.Equals(Path.GetFileName(d), activeName.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (exact != null) return exact;
+
+            bool production = activeName.IndexOf("prod", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool development = activeName.IndexOf("dev", StringComparison.OrdinalIgnoreCase) >= 0
+                || activeName.IndexOf("desenv", StringComparison.OrdinalIgnoreCase) >= 0;
+            var classified = rootList.Where(d =>
+            {
+                string folder = Path.GetFileName(d) ?? string.Empty;
+                bool isProductionFolder = folder.IndexOf("prod", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isDevelopmentFolder = folder.IndexOf("dev", StringComparison.OrdinalIgnoreCase) >= 0
+                    || folder.IndexOf("desenv", StringComparison.OrdinalIgnoreCase) >= 0
+                    || folder.IndexOf("web", StringComparison.OrdinalIgnoreCase) >= 0;
+                return production ? isProductionFolder : development && !isProductionFolder && isDevelopmentFolder;
+            }).ToList();
+            return classified.Count == 1 ? classified[0] : null;
+        }
+
+        private static bool IsCompatibleEnvironmentPath(string webPath, string activeName)
+        {
+            if (string.IsNullOrWhiteSpace(webPath) || string.IsNullOrWhiteSpace(activeName)) return true;
+            string folder = Path.GetFileName(Path.GetDirectoryName(webPath)) ?? string.Empty;
+            bool pathIsProduction = folder.IndexOf("prod", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool activeIsProduction = activeName.IndexOf("prod", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool activeIsDevelopment = activeName.IndexOf("dev", StringComparison.OrdinalIgnoreCase) >= 0
+                || activeName.IndexOf("desenv", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (activeIsDevelopment && pathIsProduction) return false;
+            if (activeIsProduction && !pathIsProduction) return false;
+            return true;
+        }
+
+        private static string ResolveEnvironmentWebPath(string kbPath, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            string trimmed = value.Trim();
+            var candidates = new List<string>();
+            if (Path.IsPathRooted(trimmed))
+            {
+                candidates.Add(trimmed);
+                candidates.Add(Path.Combine(trimmed, "web"));
+            }
+            else
+            {
+                candidates.Add(Path.Combine(kbPath, trimmed, "web"));
+                candidates.Add(Path.Combine(kbPath, trimmed));
+            }
+
+            foreach (var candidate in candidates)
+            {
+                if (string.Equals(Path.GetFileName(candidate), "web", StringComparison.OrdinalIgnoreCase)
+                    && Directory.Exists(candidate))
+                    return candidate;
+                if (Directory.Exists(Path.Combine(candidate, "web")))
+                    return Path.Combine(candidate, "web");
+            }
+            return null;
+        }
+
+        // Enumerate all environment models configured in the open KB.
+        public string ListEnvironments()
+        {
+            try
+            {
+                lock (_kbLock)
+                {
+                    if (_kb == null) throw new InvalidOperationException("Knowledge Base is not open.");
+
+                string activeName = GetActiveEnvironment();
+                string activeWebPath = GetActiveEnvironmentWebPath();
+                string kbPath = GetKbPath() ?? Environment.GetEnvironmentVariable("GX_KB_PATH");
+
+                var envModels = EnumerateEnvironmentModels();
+                var envArray = new JArray();
+                var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var model in envModels)
+                {
+                    if (model == null) continue;
+                    string name = TryGetEnvironmentName(model);
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        name = TryGetMember(model, "Name")?.ToString();
+                    }
+                    if (string.IsNullOrWhiteSpace(name) || seenNames.Contains(name))
+                        continue;
+
+                    seenNames.Add(name);
+
+                    string description = TryGetMember(model, "Description")?.ToString() ?? string.Empty;
+                    bool isActive = !string.IsNullOrWhiteSpace(activeName) &&
+                                    string.Equals(name, activeName, StringComparison.OrdinalIgnoreCase);
+
+                    string targetPath = TryGetMember(model, "TargetPath")?.ToString();
+                    string webPath = null;
+                    if (isActive && !string.IsNullOrWhiteSpace(activeWebPath))
+                    {
+                        webPath = activeWebPath;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(targetPath) && !string.IsNullOrWhiteSpace(kbPath))
+                    {
+                        webPath = ResolveEnvironmentWebPath(kbPath, targetPath);
+                    }
+                    if (string.IsNullOrWhiteSpace(webPath) && !string.IsNullOrWhiteSpace(kbPath))
+                    {
+                        webPath = ResolveEnvironmentWebPath(kbPath, name);
+                    }
+
+                    string generator = ResolveModelGenerator(model);
+
+                    var envObj = new JObject
+                    {
+                        ["name"] = name,
+                        ["description"] = description,
+                        ["generator"] = generator,
+                        ["isActive"] = isActive,
+                        ["webPath"] = webPath
+                    };
+                    envArray.Add(envObj);
+                }
+
+                // If active environment was not among enumerated models, add it as fallback entry
+                if (!string.IsNullOrWhiteSpace(activeName) &&
+                    !string.Equals(activeName, "Design", StringComparison.OrdinalIgnoreCase) &&
+                    !seenNames.Contains(activeName))
+                {
+                    var activeObj = new JObject
+                    {
+                        ["name"] = activeName,
+                        ["description"] = string.Empty,
+                        ["generator"] = null,
+                        ["isActive"] = true,
+                        ["webPath"] = activeWebPath
+                    };
+                    envArray.Add(activeObj);
+                }
+
+                var response = new JObject
+                {
+                    ["activeEnvironment"] = activeName,
+                    ["environments"] = envArray
+                };
+
+                    return response.ToString(Newtonsoft.Json.Formatting.None);
+                }
+            }
+            catch (Exception ex)
+            {
+                return McpResponse.Err(
+                    code: "EnvironmentListFailed",
+                    message: "The GeneXus environment list could not be read: " + ex.Message,
+                    hint: "Retry after the KB finishes opening or inspect the Worker log for the SDK member that is unavailable on this GeneXus major.",
+                    extra: new JObject { ["operation"] = "list_environments", ["sdkType"] = ex.GetType().FullName });
+            }
+        }
+
+        private List<object> EnumerateEnvironmentModels()
+        {
+            var models = new List<object>();
+            var seen = new HashSet<object>();
+
+            void AddModel(object m)
+            {
+                if (m == null) return;
+
+                try
+                {
+                    if (m is KBModel kbM)
+                    {
+                        if (_kb?.DesignModel is KBModel dm && (ReferenceEquals(kbM, dm) || kbM.Id == dm.Id))
+                            return;
+                        if (kbM.Type == Artech.Udm.Framework.ModelType.Design ||
+                            kbM.Type == Artech.Udm.Framework.ModelType.Backup)
+                            return;
+                    }
+                    else if (_kb?.DesignModel != null)
+                    {
+                        if (ReferenceEquals(m, _kb.DesignModel))
+                            return;
+                        var mId = TryGetMember(m, "Id");
+                        var dId = TryGetMember(_kb.DesignModel, "Id");
+                        if (mId != null && dId != null && Equals(mId, dId))
+                            return;
+                    }
+                }
+                catch { }
+
+                string typeStr = TryGetMember(m, "Type")?.ToString() ?? string.Empty;
+                if (string.Equals(typeStr, "Design", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(typeStr, "Backup", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                if (seen.Add(m))
+                    models.Add(m);
+            }
+
+            try { AddModel((object)_kb.DesignModel?.Environment?.TargetModel); } catch { }
+            try { AddModel((object)_kb.Environment?.TargetModel); } catch { }
+            try { AddModel((object)_kb.ActiveModel); } catch { }
+
+            try
+            {
+                var envModels = _kb.DesignModel?.Environment?.Models;
+                if (envModels is System.Collections.IEnumerable envEnum)
+                {
+                    foreach (var m in envEnum) AddModel(m);
+                }
+            }
+            catch { }
+
+            try
+            {
+                var envModels = _kb.Environment?.Models;
+                if (envModels is System.Collections.IEnumerable envEnum)
+                {
+                    foreach (var m in envEnum) AddModel(m);
+                }
+            }
+            catch { }
+
+            try
+            {
+                var allModels = _kb.Models;
+                if (allModels != null)
+                {
+                    try
+                    {
+                        int designId = _kb.DesignModel.Id;
+                        var children = allModels.GetChildren(designId);
+                        if (children is System.Collections.IEnumerable childEnum)
+                        {
+                            foreach (var m in childEnum) AddModel(m);
+                        }
+                    }
+                    catch { }
+
+                    try
+                    {
+                        var all = allModels.GetAll();
+                        if (all is System.Collections.IEnumerable allEnum)
+                        {
+                            foreach (var m in allEnum)
+                            {
+                                AddModel(m);
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            return models;
+        }
+
+        private static string ResolveModelGenerator(object model)
+        {
+            try
+            {
+                if (model is KBModel kbModel)
+                {
+                    try
+                    {
+                        dynamic gxModel = kbModel.GetAs<GxModel>() ?? new GxModel(kbModel);
+                        var mainGen = gxModel?.Generator;
+                        if (mainGen != null)
+                        {
+                            string text = mainGen.ToString();
+                            if (!string.IsNullOrWhiteSpace(text))
+                                return text;
+                            string desc = (string)mainGen.Description;
+                            if (!string.IsNullOrWhiteSpace(desc))
+                                return desc;
+                        }
+                    }
+                    catch { }
+
+                    dynamic part = null;
+                    foreach (var p in kbModel.Parts)
+                    {
+                        if (p == null) continue;
+                        string pName = p.GetType().Name;
+                        if (string.Equals(pName, "GeneratorsPart", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(pName, "EnvironmentsPart", StringComparison.OrdinalIgnoreCase))
+                        {
+                            part = p;
+                            break;
+                        }
+                    }
+
+                    if (part?.Generators != null)
+                    {
+                        object bestGen = null;
+                        foreach (dynamic g in part.Generators)
+                        {
+                            if (g == null) continue;
+                            bool isReorg = false;
+                            try { isReorg = g.IsReorgGen == true; } catch { }
+                            if (isReorg) continue;
+
+                            string catName = null;
+                            try { catName = (string)g.Category?.Name?.ToString(); } catch { }
+                            string genStr = null;
+                            try { genStr = (string)g.ToString(); } catch { }
+
+                            if (string.Equals(catName, "Web", StringComparison.OrdinalIgnoreCase))
+                            {
+                                bestGen = g;
+                                break;
+                            }
+                            if (genStr != null && genStr.IndexOf("Default", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                bestGen = g;
+                            }
+                            else if (bestGen == null)
+                            {
+                                bestGen = g;
+                            }
+                        }
+
+                        if (bestGen != null)
+                        {
+                            dynamic bg = bestGen;
+                            string text = bg.ToString();
+                            string desc = null;
+                            try { desc = (string)bg.Description; } catch { }
+                            return !string.IsNullOrWhiteSpace(text) ? text : desc;
+                        }
+                    }
+                }
+                else
+                {
+                    // Fallback for mock/fake objects in unit tests or dynamic wrappers
+                    var directGen = TryGetMember(model, "Generator");
+                    if (directGen != null)
+                    {
+                        if (directGen is string s && !string.IsNullOrWhiteSpace(s))
+                            return s;
+
+                        string text = directGen.ToString();
+                        if (!string.IsNullOrWhiteSpace(text) && text != directGen.GetType().FullName)
+                            return text;
+                        string desc = TryGetMember(directGen, "Description")?.ToString();
+                        if (!string.IsNullOrWhiteSpace(desc))
+                            return desc;
+                    }
+
+                    dynamic dyn = model;
+                    dynamic parts = null;
+                    try { parts = dyn.Parts; } catch { }
+                    if (parts != null)
+                    {
+                        dynamic part = null;
+                        try { part = parts.Get("Generators") ?? parts.Get("Environments"); } catch { }
+                        if (part == null)
+                        {
+                            try
+                            {
+                                foreach (dynamic p in parts)
+                                {
+                                    if (p == null) continue;
+                                    string pName = p.GetType().Name;
+                                    if (string.Equals(pName, "GeneratorsPart", StringComparison.OrdinalIgnoreCase) ||
+                                        string.Equals(pName, "EnvironmentsPart", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        part = p;
+                                        break;
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                        if (part?.Generators != null)
+                        {
+                            object bestGen = null;
+                            foreach (dynamic gen in part.Generators)
+                            {
+                                if (gen == null) continue;
+                                bool isReorg = false;
+                                try { isReorg = gen.IsReorgGen == true; } catch { }
+                                if (isReorg) continue;
+
+                                string catName = null;
+                                try { catName = (string)gen.Category?.Name?.ToString(); } catch { }
+                                string genStr = null;
+                                try { genStr = (string)gen.ToString(); } catch { }
+
+                                if (string.Equals(catName, "Web", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    bestGen = gen;
+                                    break;
+                                }
+                                if (genStr != null && genStr.IndexOf("Default", StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    bestGen = gen;
+                                }
+                                else if (bestGen == null)
+                                {
+                                    bestGen = gen;
+                                }
+                            }
+
+                            if (bestGen != null)
+                            {
+                                dynamic bg = bestGen;
+                                string text = null;
+                                try { text = (string)bg.ToString(); } catch { }
+                                if (!string.IsNullOrWhiteSpace(text) && text != bestGen.GetType().FullName)
+                                    return text;
+                                string desc = null;
+                                try { desc = (string)bg.Description?.ToString(); } catch { }
+                                if (!string.IsNullOrWhiteSpace(desc))
+                                    return desc;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        // Switch the active GeneXus environment. Prefers direct SDK model activation
+        // under _kbLock to avoid MSBuild task UI Dispatcher issues in headless workers,
+        // with fallback to the MSBuild task if direct model setting is inconclusive.
+        public string SetActiveEnvironment(string environmentName)
+        {
+            if (string.IsNullOrWhiteSpace(environmentName))
+                throw new ArgumentException("Environment name is required.", nameof(environmentName));
+
+            string trimmed = environmentName.Trim();
+
+            lock (_kbLock)
+            {
+                if (_kb == null) throw new InvalidOperationException("Knowledge Base is not open.");
+
+                string previous = GetActiveEnvironment();
+
+                // Find candidate model for the requested environment
+                var envModels = EnumerateEnvironmentModels();
+                object targetModel = envModels.FirstOrDefault(m =>
+                {
+                    if (m == null) return false;
+                    string name = TryGetEnvironmentName(m);
+                    if (string.IsNullOrWhiteSpace(name))
+                        name = TryGetMember(m, "Name")?.ToString();
+                    if (string.Equals(name, trimmed, StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    string targetPath = TryGetMember(m, "TargetPath")?.ToString();
+                    if (!string.IsNullOrWhiteSpace(targetPath) &&
+                        string.Equals(Path.GetFileName(targetPath), trimmed, StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    return false;
+                });
+
+                bool switched = false;
+
+                // 1. Direct SDK activation (Headless-safe: avoids MSBuild task UI Dispatcher / Output exceptions)
+                if (targetModel != null)
+                {
+                    try
+                    {
+                        var designEnv = TryGet(() => (object)_kb.DesignModel?.Environment);
+                        if (designEnv != null)
+                        {
+                            var prop = designEnv.GetType().GetProperty("TargetModel", BindingFlags.Public | BindingFlags.Instance);
+                            prop?.SetValue(designEnv, targetModel, null);
+                            try { designEnv.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance)?.SetValue(designEnv, TryGetEnvironmentName(targetModel), null); } catch { }
+                        }
+
+                        var kbEnv = TryGet(() => (object)_kb.Environment);
+                        if (kbEnv != null)
+                        {
+                            var prop = kbEnv.GetType().GetProperty("TargetModel", BindingFlags.Public | BindingFlags.Instance);
+                            prop?.SetValue(kbEnv, targetModel, null);
+                            try { kbEnv.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance)?.SetValue(kbEnv, TryGetEnvironmentName(targetModel), null); } catch { }
+                        }
+
+                        try
+                        {
+                            dynamic user = _kb.User;
+                            if (user != null)
+                            {
+                                dynamic dynTarget = targetModel;
+                                dynamic dynDesign = TryGet(() => dynTarget.GetDesignModel()) ?? _kb.DesignModel;
+                                user.SetTargetModel(dynDesign, targetModel);
+                                user.Save();
+                            }
+                        }
+                        catch (Exception exUser)
+                        {
+                            Logger.Warn("[KB-SET-ENV] User.SetTargetModel warning: " + exUser.Message);
+                        }
+
+                        string current = GetActiveEnvironment();
+                        if (string.Equals(current, trimmed, StringComparison.OrdinalIgnoreCase) ||
+                            (targetModel != null && string.Equals(current, TryGetEnvironmentName(targetModel), StringComparison.OrdinalIgnoreCase)))
+                        {
+                            switched = true;
+                            Logger.Info($"[KB-SET-ENV] Switched active environment to '{current}' directly via SDK.");
+                        }
+                    }
+                    catch (Exception exDirect)
+                    {
+                        Logger.Warn("[KB-SET-ENV] Direct SDK switch failed: " + exDirect.Message);
+                    }
+                }
+
+                // 2. Fallback to MSBuild task if direct switch did not complete
+                if (!switched)
+                {
+                    try
+                    {
+                        Type taskType = ResolveMsBuildTaskType("Genexus.MsBuild.Tasks.SetActiveEnvironment");
+                        object task = Activator.CreateInstance(taskType);
+                        SetTaskProperty(task, "KB", _kb);
+                        SetTaskProperty(task, "EnvironmentName", trimmed);
+                        SetTaskProperty(task, "RedirectIPC", false);
+
+                        var execute = taskType.GetMethod("Execute", BindingFlags.Public | BindingFlags.Instance);
+                        if (execute != null && execute.Invoke(task, null) is bool ok && ok)
+                        {
+                            switched = true;
+                        }
+                    }
+                    catch (TargetInvocationException tie)
+                    {
+                        Logger.Warn("[KB-SET-ENV] MSBuild task execution failed: " + (tie.InnerException?.Message ?? tie.Message));
+                    }
+                    catch (Exception exTask)
+                    {
+                        Logger.Warn("[KB-SET-ENV] MSBuild task execution error: " + exTask.Message);
+                    }
+                }
+
+                string active = GetActiveEnvironment();
+                bool matches = string.Equals(active, trimmed, StringComparison.OrdinalIgnoreCase) ||
+                               (targetModel != null && string.Equals(active, TryGetEnvironmentName(targetModel), StringComparison.OrdinalIgnoreCase));
+
+                if (!matches)
+                {
+                    throw new InvalidOperationException(
+                        $"GeneXus could not activate environment '{trimmed}'. The active environment remained '{active ?? "<unknown>"}'.");
+                }
+
+                return new JObject
+                {
+                    ["previous"] = previous,
+                    ["requested"] = trimmed,
+                    ["active"] = active,
+                    ["changed"] = !string.Equals(previous, active, StringComparison.OrdinalIgnoreCase)
+                }.ToString(Newtonsoft.Json.Formatting.None);
+            }
+        }
+
+        private static Type ResolveMsBuildTaskType(string fullName)
+        {
+            var loaded = AppDomain.CurrentDomain.GetAssemblies()
+                .Select(a => a.GetType(fullName, false))
+                .FirstOrDefault(t => t != null);
+            if (loaded != null) return loaded;
+
+            string gxPath = Environment.GetEnvironmentVariable("GX_PROGRAM_DIR") ?? string.Empty;
+            string assemblyPath = Path.Combine(gxPath, "Genexus.MsBuild.Tasks.dll");
+            if (!File.Exists(assemblyPath))
+                throw new FileNotFoundException("GeneXus MSBuild task assembly was not found.", assemblyPath);
+
+            var assembly = Assembly.LoadFrom(assemblyPath);
+            return assembly.GetType(fullName, true);
+        }
+
+        private static void SetTaskProperty(object task, string name, object value)
+        {
+            var property = task.GetType().GetProperty(
+                name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            if (property == null || !property.CanWrite)
+                throw new MissingMemberException(task.GetType().FullName, name);
+            property.SetValue(task, value, null);
+        }
+
+        private static object TryGet(Func<object> getter)
+        {
+            try { return getter(); } catch { return null; }
+        }
+
+        private static string TryGetEnvironmentName(object candidate)
+            => TryGetEnvironmentName(candidate, 0, new HashSet<object>());
+
+        private static string TryGetEnvironmentName(object candidate, int depth, HashSet<object> seen)
+        {
+            if (candidate == null || depth > 8 || !seen.Add(candidate)) return null;
+
+            foreach (var propertyName in new[] { "Name", "EnvironmentName" })
+            {
+                var value = TryGetMember(candidate, propertyName);
+                if (value != null && !string.IsNullOrWhiteSpace(value.ToString()))
+                    return value.ToString();
+
+                value = TryGetPropertyBagValue(candidate, propertyName);
+                if (value != null && !string.IsNullOrWhiteSpace(value.ToString()))
+                    return value.ToString();
+            }
+
+            foreach (var childName in new[] { "TargetModel", "ActiveModel", "Model" })
+            {
+                var child = TryGetMember(candidate, childName);
+                var name = TryGetEnvironmentName(child, depth + 1, seen);
+                if (!string.IsNullOrWhiteSpace(name)) return name;
+            }
+            return null;
+        }
+
+        private static object TryGetMember(object target, string name) =>
+            ReflectionHelper.TryGetMember(target, name);
+
+        private static object TryGetPropertyBagValue(object target, string name) =>
+            ReflectionHelper.TryGetPropertyBagValue(target, name);
 
         public string GetActiveEnvironmentVersion()
         {

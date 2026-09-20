@@ -13,16 +13,21 @@ namespace GxMcp.Worker.Helpers
 {
     public static class TableDependencyInjector
     {
+        private static readonly Regex TablePatternRegex = new Regex(
+            @"\b(?:for\s+each|new|delete)\s+(\w+)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         public static void InjectTableDependencies(KBObject obj, string code, SearchIndex index)
         {
             var variablesPart = obj.Parts.Get<VariablesPart>();
             if (variablesPart == null) return;
 
-            var matches = Regex.Matches(code, @"(?i)\b(?:for\s+each|new|delete)\s+(\w+)");
-            var tableNames = matches.Cast<Match>()
-                .Select(m => m.Groups[1].Value)
-                .Distinct()
-                .ToList();
+            var matches = TablePatternRegex.Matches(code);
+            var tableNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < matches.Count; i++)
+            {
+                tableNames.Add(matches[i].Groups[1].Value);
+            }
 
             foreach (var tableName in tableNames)
             {

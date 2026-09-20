@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using System.Collections.Concurrent;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -18,6 +19,30 @@ namespace GxMcp.Gateway
                                       string.Equals(readPart, "WebForm", StringComparison.OrdinalIgnoreCase) ||
                                       string.Equals(readPart, "PatternInstance", StringComparison.OrdinalIgnoreCase) ||
                                       string.Equals(readPart, "PatternVirtual", StringComparison.OrdinalIgnoreCase));
+
+            // PERFORMANCE (G-T1): fast structural pre-check to avoid full tree serialization
+            // on obviously small responses (whoami, status, inspect, short reads, mutations).
+            if (result is JObject quickObj)
+            {
+                bool mayExceedBudget = false;
+                foreach (var prop in quickObj.Properties())
+                {
+                    if (prop.Value is JValue jv && jv.Value is string s && s.Length > (isXmlMetadataRead ? 100000 : 15000))
+                    {
+                        mayExceedBudget = true;
+                        break;
+                    }
+                    if (prop.Value is JArray jarr && jarr.Count > 10)
+                    {
+                        mayExceedBudget = true;
+                        break;
+                    }
+                }
+                if (!mayExceedBudget)
+                {
+                    return result;
+                }
+            }
 
             string raw = result.ToString(Formatting.None);
             // issue #25 #6: the worker already paginates genexus_read to ~200 lines /
@@ -168,12 +193,22 @@ namespace GxMcp.Gateway
             }
             else if (result is JArray arr)
             {
-                // Truncate arrays if they exceed limits
-                while (arr.Count > 5 && arr.ToString(Formatting.None).Length > 80000)
+                // Truncate arrays if they exceed limits.
+                // PERF: this used to serialize the entire array inside the while condition
+                // after every single removal (O(n²) on large lists). Measure once, drop an
+                // estimated block of items (avg serialized bytes per item, small safety
+                // margin), and re-measure only after each block — not per item.
+                int totalLen = arr.ToString(Formatting.None).Length;
+                while (arr.Count > 5 && totalLen > 80000)
                 {
-                    arr.RemoveAt(arr.Count - 1);
+                    long avgItemLen = Math.Max(1L, totalLen / arr.Count);
+                    long estimatedRemove = (long)Math.Ceiling((totalLen - 80000) / (double)avgItemLen * 1.05);
+                    int block = (int)Math.Min(arr.Count - 5L, Math.Max(1L, estimatedRemove));
+                    for (int i = 0; i < block; i++)
+                        arr.RemoveAt(arr.Count - 1);
+                    totalLen = arr.ToString(Formatting.None).Length;
                 }
-                if (arr.ToString(Formatting.None).Length > 80000)
+                if (totalLen > 80000)
                 {
                     return JToken.FromObject(new { 
                         error = "Array response exceeded 80k token budget. Try lower limits or pagination.", 
@@ -186,65 +221,267 @@ namespace GxMcp.Gateway
             return new JValue(raw.Substring(0, 75000) + "... [TRUNCATED]");
         }
 
-        private static bool IsMutatingTool(string toolName, JObject? args)
+        /// <summary>
+        /// Extracts the object name a mutating call targets, when the whole mutation is
+        /// scoped to that one object. Used for granular semantic-cache invalidation:
+        /// only cached reads referencing this target are dropped instead of the entire
+        /// store. Returns null (→ full Clear) for KB-wide mutations or unknown arg
+        /// shapes. Conservative: prefer returning null over a wrong name.
+        /// </summary>
+        internal static string? ExtractMutationTarget(string toolName, JObject? args)
         {
-            if (string.IsNullOrWhiteSpace(toolName)) return false;
+            if (args == null) return null;
 
-            if (string.Equals(toolName, "genexus_import_object", StringComparison.OrdinalIgnoreCase))
+            // KB-wide / multi-object mutations must never be scoped to one target.
+            if (string.Equals(toolName, "genexus_rename_across_kb", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(toolName, "genexus_kb_import", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(toolName, "genexus_import_object", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            // Common single-target shapes across the tool surface.
+            string? name = args["name"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(name)) return name;
+            string? target = args["target"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(target)) return target;
+
+            // genexus_read-style arrays: only when exactly one target is present —
+            // a write against [A,B] invalidates both, so fall back to full clear.
+            if (args["targets"] is JArray arr && arr.Count == 1)
             {
-                return true;
+                string? single = arr[0]?.ToString();
+                if (!string.IsNullOrWhiteSpace(single)) return single;
             }
 
-            if (toolName.Contains("write", StringComparison.OrdinalIgnoreCase) ||
-                toolName.Contains("edit", StringComparison.OrdinalIgnoreCase) ||
-                toolName.Contains("patch", StringComparison.OrdinalIgnoreCase) ||
-                toolName.Contains("create", StringComparison.OrdinalIgnoreCase) ||
-                toolName.Contains("refactor", StringComparison.OrdinalIgnoreCase) ||
-                toolName.Contains("add_variable", StringComparison.OrdinalIgnoreCase) ||
-                toolName.Contains("modify_variable", StringComparison.OrdinalIgnoreCase))
+            return null;
+        }
+
+        /// <summary>
+        /// Enumerates every object named by a mutating payload. Recovery fences
+        /// must cover multi-target edits and explicit change sets as well as the
+        /// legacy single-name shape; returning duplicates is intentionally
+        /// avoided so one fence produces one deterministic block.
+        /// </summary>
+        internal static IEnumerable<string> EnumerateMutationTargets(string toolName, JObject? args)
+        {
+            if (args == null) yield break;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void Add(string? value)
             {
-                return true;
+                if (!string.IsNullOrWhiteSpace(value)) seen.Add(value.Trim());
             }
 
-            if (string.Equals(toolName, "genexus_properties", StringComparison.OrdinalIgnoreCase))
+            Add(args["name"]?.ToString());
+            Add(args["target"]?.ToString());
+
+            if (args["targets"] is JArray targets)
             {
-                return string.Equals(args?["action"]?.ToString(), "set", StringComparison.OrdinalIgnoreCase);
+                foreach (var token in targets)
+                {
+                    if (token is JObject item)
+                    {
+                        Add(item["name"]?.ToString());
+                        Add(item["target"]?.ToString());
+                    }
+                    else Add(token?.ToString());
+                }
             }
 
-            if (string.Equals(toolName, "genexus_asset", StringComparison.OrdinalIgnoreCase))
+            if (args["changeSet"] is JObject changeSet)
             {
-                return string.Equals(args?["action"]?.ToString(), "write", StringComparison.OrdinalIgnoreCase);
+                var changes = changeSet["changes"] as JArray ?? changeSet["targets"] as JArray;
+                foreach (var token in changes?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+                {
+                    Add(token["name"]?.ToString());
+                    Add(token["target"]?.ToString());
+                }
             }
 
-            if (string.Equals(toolName, "genexus_history", StringComparison.OrdinalIgnoreCase))
+            foreach (string target in seen) yield return target;
+        }
+
+        internal static IEnumerable<(string Target, string Part)> EnumerateMutationRecoveryTargets(string toolName, JObject? args)
+        {
+            if (args == null) yield break;
+
+            var found = new Dictionary<string, (string Target, string Part)>(StringComparer.OrdinalIgnoreCase);
+            void Add(string? target, string? part)
             {
-                string? action = args?["action"]?.ToString();
-                return string.Equals(action, "save", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(action, "restore", StringComparison.OrdinalIgnoreCase);
+                if (string.IsNullOrWhiteSpace(target)) return;
+                string normalizedTarget = target.Trim();
+                string normalizedPart = string.IsNullOrWhiteSpace(part) ? "Source" : part.Trim();
+                found[normalizedTarget + "|" + normalizedPart] = (normalizedTarget, normalizedPart);
             }
 
-            if (string.Equals(toolName, "genexus_structure", StringComparison.OrdinalIgnoreCase))
+            string? defaultPart = args["part"]?.ToString();
+            Add(args["name"]?.ToString(), defaultPart);
+            Add(args["target"]?.ToString(), defaultPart);
+
+            if (args["targets"] is JArray targets)
             {
-                return string.Equals(args?["action"]?.ToString(), "update_visual", StringComparison.OrdinalIgnoreCase);
+                foreach (var token in targets)
+                {
+                    if (token is JObject item)
+                        Add(item["name"]?.ToString() ?? item["target"]?.ToString(), item["part"]?.ToString() ?? defaultPart);
+                    else
+                        Add(token?.ToString(), defaultPart);
+                }
             }
 
-            if (string.Equals(toolName, "genexus_layout", StringComparison.OrdinalIgnoreCase))
+            if (args["changeSet"] is JObject changeSet)
             {
-                string? action = args?["action"]?.ToString();
-                return string.Equals(action, "set_property", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(action, "set_properties", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(action, "rename_printblock", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(action, "add_printblock", StringComparison.OrdinalIgnoreCase);
+                var changes = changeSet["changes"] as JArray ?? changeSet["targets"] as JArray;
+                if (changes != null)
+                {
+                    foreach (var token in changes)
+                    {
+                        if (token is JObject item)
+                            Add(item["name"]?.ToString() ?? item["target"]?.ToString(), item["part"]?.ToString() ?? defaultPart);
+                        else
+                            Add(token?.ToString(), defaultPart);
+                    }
+                }
             }
 
-            if (string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
+            foreach (var item in found.Values
+                .OrderBy(value => value.Target, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(value => value.Part, StringComparer.OrdinalIgnoreCase))
+                yield return item;
+        }
+
+        // Semantic-cache invalidation gate: returns true when a tool call may
+        // change KB object state, so DispatchCore can clear _semanticCache before
+        // (and only before) a mutation. A MISS here means the next identical read
+        // replays a stale envelope — the read-after-delete staleness bug (a
+        // genexus_delete_object was not recognised as mutating, so a cached
+        // part=Structure read survived the delete). The verb-substring heuristic
+        // covers names like edit/create/refactor; umbrella tools and
+        // action-dependent tools need the explicit cases below.
+        internal static void MarkRecordWriteOutcomeUnknown(JObject payload)
+        {
+            payload["retriable"] = false;
+            payload["retryable"] = false;
+            payload["reconciliationRequired"] = true;
+            payload["retrySafe"] = false;
+            payload["persisted"] = JValue.CreateNull();
+            payload["commitState"] = "Indeterminate";
+            payload["rereadConfirmed"] = false;
+        }
+
+        internal static bool IsTransactionRecordOperation(string toolName, JObject? args)
+        {
+            if (!string.Equals(toolName, "genexus_db", StringComparison.OrdinalIgnoreCase)) return false;
+            string? action = args?["action"]?.ToString();
+            return string.Equals(action, "records_query", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "records_insert", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(action, "records_update", StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static bool IsPatternSettingsObservation(string toolName, JObject? args)
+        {
+            if (string.Equals(toolName, "genexus_wwp", StringComparison.OrdinalIgnoreCase))
+                return ((string?)args?["action"])?.StartsWith("settings_", StringComparison.OrdinalIgnoreCase) == true;
+            if (!string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)) return false;
+            bool IsSettings(string? value) => string.Equals(value?.Trim().Replace(" ", ""), "PatternSettings", StringComparison.OrdinalIgnoreCase);
+            // An untyped identity can resolve to Settings even when the requested
+            // part is Source. Resolve it again instead of replaying an old token.
+            bool untypedIdentity = string.IsNullOrWhiteSpace((string?)args?["type"])
+                && (!string.IsNullOrWhiteSpace((string?)args?["guid"])
+                    || !string.IsNullOrWhiteSpace((string?)args?["entityKey"])
+                    || Guid.TryParse((string?)args?["name"], out _));
+            return IsSettings((string?)args?["type"]) || IsSettings((string?)args?["part"])
+                || (args?["parts"] is JArray parts && parts.Any(p => IsSettings((string?)p)))
+                || IsSettings(((string?)args?["name"])?.Split(':')[0]) || untypedIdentity;
+        }
+
+        // Record reads and previews are live database observations. Neither an empty
+        // query nor an earlier successful mutation may bypass a fresh worker call.
+        // The action classifier is also the cache safety boundary: action-dependent
+        // file/browser side effects must not be cached merely because the legacy
+        // invalidation list does not know about them yet.
+        internal static string? CreateSemanticCacheKey(string kbScope, string toolName,
+            JObject? args, bool isMutating, bool isLiveTool)
+        {
+            if (isMutating || isLiveTool
+                || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
+                || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args))
+                return null;
+            return $"{kbScope}|{toolName}:{args?.ToString(Newtonsoft.Json.Formatting.None)}";
+        }
+
+        internal static bool IsLiveToolForCache(string toolName, string? action)
+        {
+            bool liveLifecycle = string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(action, "status", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "result", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(action, "cancel", StringComparison.OrdinalIgnoreCase));
+
+            return liveLifecycle
+                || string.Equals(toolName, "genexus_doctor", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(toolName, "genexus_logs", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(toolName, "genexus_gxserver", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Builds a deterministic semantic-cache key. The legacy overload above
+        /// preserves the pre-v3 shape for callers that only need the classifier;
+        /// the dispatch path supplies a KB generation and optional model/environment
+        /// identity so equivalent JSON with different property order shares a key.
+        /// </summary>
+        internal static string? CreateSemanticCacheKey(string kbScope, string toolName,
+            JObject? args, bool isMutating, bool isLiveTool, long cacheRevision,
+            string? modelScope, string? environmentScope)
+        {
+            if (isMutating || isLiveTool
+                || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
+                || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args))
+                return null;
+
+            var canonicalArgs = CanonicalizeJson(args ?? new JObject());
+            string normalizedKb = (kbScope ?? string.Empty).Trim().ToLowerInvariant();
+            if (normalizedKb.Length == 0)
+                return null;
+            string normalizedTool = (toolName ?? string.Empty).Trim().ToLowerInvariant();
+            string model = CanonicalizeScopePart(modelScope);
+            string environment = CanonicalizeScopePart(environmentScope);
+
+            return StateScopedCacheKey.Create(
+                StateScope.ProcessScopeId,
+                normalizedKb,
+                cacheRevision,
+                normalizedTool + ":" + canonicalArgs.ToString(Newtonsoft.Json.Formatting.None)
+                    + $"|model={model}|env={environment}").ToString();
+        }
+
+        /// <summary>Sorts object properties recursively while preserving array order.</summary>
+        internal static JToken CanonicalizeJson(JToken token)
+        {
+            if (token is JObject obj)
             {
-                string? action = args?["action"]?.ToString();
-                return string.Equals(action, "index", StringComparison.OrdinalIgnoreCase) ||
-                       string.Equals(action, "reorg", StringComparison.OrdinalIgnoreCase);
+                var sorted = new JObject();
+                foreach (var property in obj.Properties().OrderBy(p => p.Name, StringComparer.Ordinal))
+                    sorted.Add(property.Name, CanonicalizeJson(property.Value));
+                return sorted;
             }
 
-            return false;
+            if (token is JArray array)
+            {
+                var sorted = new JArray();
+                foreach (var item in array)
+                    sorted.Add(CanonicalizeJson(item));
+                return sorted;
+            }
+
+            return token.DeepClone();
+        }
+
+        private static string CanonicalizeScopePart(string? value)
+            => string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
+
+        internal static bool IsMutatingTool(string toolName, JObject? args)
+        {
+            return !string.IsNullOrWhiteSpace(toolName)
+                && OperationClassifier.IsMutationCandidate(toolName, args);
         }
 
         // Items 54/55/56: resolve a "KB ref" argument that may be either an alias
@@ -298,53 +535,274 @@ namespace GxMcp.Gateway
             }
         }
 
-        private static JObject BuildToolTextResponse(JToken? idToken, JToken payload, bool isError, string? toolName = null, JObject? toolArgs = null)
+        // PERF: primary-collection keys probed by NormalizeToolPayloadForAxi on every
+        // response. Was a per-call allocated string[] before the perf-review pass.
+        private static readonly string[] CollectionKeys =
         {
-            JToken axiPayload = NormalizeToolPayloadForAxi(payload, toolName ?? "unknown", toolArgs, isError);
+            "results", "objects", "items", "tools", "checks", "entries", "nodes", "controls",
+            // Additional primary-collection keys used by non-search tools:
+            "endpoints", "history", "snapshots", "versions", "modules",
+            "pending", "ignored", "conflicts", "targets", "pipelines"
+        };
+
+        // PERF: compact-projection field sets are immutable and reused across every
+        // query/list response — no per-call HashSet allocation.
+        private static readonly HashSet<string> CompactFieldsQuery =
+            new HashSet<string>(new[] { "name", "type", "path", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> CompactFieldsListObjects =
+            new HashSet<string>(new[] { "name", "type", "path", "parentPath", "lastUpdate", "guid", "entityKey", "entityTypeGuid", "entityId" }, StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> CompactFieldsSearch =
+            new HashSet<string>(new[] { "name", "type", "description", "path", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<string> MinimalProjectionFields =
+            new HashSet<string>(new[] { "name", "type", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+
+        internal static JObject BuildToolTextResponse(JToken? idToken, JToken payload, bool isError, string? toolName = null, JObject? toolArgs = null, bool payloadOwned = false)
+        {
             return new JObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = idToken?.DeepClone(),
-                ["result"] = JToken.FromObject(new
+                ["result"] = BuildToolResultContent(payload, isError, toolName, toolArgs, payloadOwned)
+            };
+        }
+
+        internal static JObject BuildToolResultContent(
+            JToken payload,
+            bool isError,
+            string? toolName = null,
+            JObject? toolArgs = null,
+            bool payloadOwned = false)
+        {
+            JToken axiPayload = NormalizeToolPayloadForAxi(payload, toolName ?? "unknown", toolArgs, isError);
+            string? kbAlias = _currentKb.Value?.Alias;
+            if (!string.IsNullOrWhiteSpace(kbAlias))
+            {
+                // Worker responses are detached immediately before this method is called,
+                // so the gateway can add the correlation metadata in place. Gateway-created
+                // or shared payloads keep the defensive clone contract of the public helper.
+                axiPayload = payloadOwned
+                    ? AttachKbContextMetadataToOwnedPayload(axiPayload, kbAlias!)
+                    : AddKbContextMetadata(axiPayload, kbAlias!);
+            }
+
+            var result = new JObject
+            {
+                ["resultType"] = "complete",
+                ["isError"] = isError,
+                ["content"] = new JArray { new JObject
                 {
-                    content = new[] { new { type = "text", text = axiPayload.ToString(Formatting.None) } },
-                    isError
-                })
+                    ["type"] = "text",
+                    ["text"] = axiPayload.ToString(Formatting.None)
+                } }
+            };
+            // Legacy stdio clients (including OpenCode's text-oriented MCP path)
+            // need the resolved KB in-band to correlate a response. Modern clients
+            // can use the protocol metadata without reparsing the text.
+            if (!string.IsNullOrWhiteSpace(kbAlias))
+            {
+                result["_meta"] = new JObject { ["kbAlias"] = kbAlias };
+            }
+            // MCP's structuredContent lets modern clients consume the JSON result
+            // without reparsing the text content. Keep the text representation for
+            // legacy clients and omit structuredContent on tool errors. Lifecycle is
+            // the one published tool with outputSchema: even in lean mode it must carry
+            // structuredContent or strict MCP clients reject the successful result as
+            // -32600. Other tools retain the lean omission behavior.
+            // Perf: structuredContent duplicates the whole payload (~+55% bytes per
+            // response, measured). Gated by Server.EmitStructuredContent / env
+            // GXMCP_NO_STRUCTURED_CONTENT for tools without an advertised output schema.
+            if (!isError
+                && (EmitStructuredContentEnabledCached()
+                    || string.Equals(toolName, "genexus_lifecycle", StringComparison.OrdinalIgnoreCase))
+                && (axiPayload.Type == JTokenType.Object || axiPayload.Type == JTokenType.Array))
+            {
+                result["structuredContent"] = axiPayload;
+            }
+            return result;
+        }
+
+        // Resolved per call (cheap: one env lookup + one static field read) so a config
+        // reload or env change takes effect without restart. Env wins over config file.
+        internal static bool EmitStructuredContentEnabled()
+        {
+            string? noEnv = Environment.GetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT");
+            if (string.Equals(noEnv, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(noEnv, "true", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            string? emitEnv = Environment.GetEnvironmentVariable("GXMCP_EMIT_STRUCTURED_CONTENT");
+            if (!string.IsNullOrWhiteSpace(emitEnv))
+            {
+                return string.Equals(emitEnv, "1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(emitEnv, "true", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return ActiveConfig?.Server?.EmitStructuredContent ?? true;
+        }
+
+        // Resolved per call like EmitStructuredContentEnabled. Env wins.
+        internal static bool TerseResponsesEnabled()
+        {
+            string? env = Environment.GetEnvironmentVariable("GXMCP_TERSE");
+            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return ActiveConfig?.Server?.TerseResponses ?? false;
+        }
+
+        // PERFORMANCE (perf-review round 3): short-TTL cache for the env-var probes the
+        // response path reads on every tool call (TerseResponsesEnabled runs 2-3x per
+        // request; GXMCP_LEGACY_TOOL_ALIASES once more). Environment.GetEnvironmentVariable
+        // is a Win32 call each time — a 5s TTL keeps config-change responsiveness while
+        // removing the per-request syscall cost. Env change still lands within one TTL;
+        // tests that flip these variables use SetEnvVarForTests below to bypass the cache.
+        private static readonly object _envGate = new();
+        private static DateTime _envCacheAt = DateTime.MinValue;
+        private static bool _terseCached;
+        private static bool _structuredContentCached;
+        private static bool _legacyAliasesDisabled;
+
+        internal static TimeSpan EnvProbeTtl { get; set; } = TimeSpan.FromSeconds(5);
+
+        private static void RefreshEnvProbeCache()
+        {
+            var now = DateTime.UtcNow;
+            lock (_envGate)
+            {
+                if (now - _envCacheAt < EnvProbeTtl) return;
+                _terseCached = ResolveTerseUncached();
+                _structuredContentCached = ResolveStructuredContentUncached();
+                _legacyAliasesDisabled = string.Equals(Environment.GetEnvironmentVariable("GXMCP_LEGACY_TOOL_ALIASES"), "0", StringComparison.Ordinal);
+                _envCacheAt = now;
+            }
+        }
+
+        private static bool ResolveTerseUncached()
+        {
+            string? env = Environment.GetEnvironmentVariable("GXMCP_TERSE");
+            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return ActiveConfig?.Server?.TerseResponses ?? false;
+        }
+
+        private static bool ResolveStructuredContentUncached()
+        {
+            string? env = Environment.GetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT");
+            if (string.Equals(env, "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(env, "true", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return ActiveConfig?.Server?.EmitStructuredContent ?? true;
+        }
+
+        internal static bool TerseResponsesEnabledCached()
+        {
+            RefreshEnvProbeCache();
+            lock (_envGate) return _terseCached;
+        }
+
+        internal static bool EmitStructuredContentEnabledCached()
+        {
+            RefreshEnvProbeCache();
+            lock (_envGate) return _structuredContentCached;
+        }
+
+        // Test hook: drop the probe cache so an env/config change is observed immediately.
+
+        // PERF round 3: GXMCP_LEGACY_TOOL_ALIASES probe (per tool call) behind the same
+        // short-TTL cache as the terse/structured-content flags. Default: aliases ON.
+        internal static bool LegacyToolAliasesDisabledCached()
+        {
+            RefreshEnvProbeCache();
+            lock (_envGate) return _legacyAliasesDisabled;
+        }
+
+        internal static void InvalidateEnvProbeCache()
+        {
+            lock (_envGate) _envCacheAt = DateTime.MinValue;
+        }
+
+        internal static JToken AttachKbContextMetadataToOwnedPayload(JToken payload, string kbAlias)
+        {
+            if (payload == null) throw new ArgumentNullException(nameof(payload));
+            if (string.IsNullOrWhiteSpace(kbAlias)) throw new ArgumentException("KB alias is required.", nameof(kbAlias));
+
+            string alias = kbAlias.Trim();
+            if (payload is JObject obj)
+            {
+                // A parent means another response tree still owns this token. Keep the
+                // defensive behavior instead of mutating that tree unexpectedly.
+                if (obj.Parent != null) return AddKbContextMetadata(obj, alias);
+                obj["kbAlias"] = alias;
+                return obj;
+            }
+
+            if (payload is JArray array)
+            {
+                return new JObject
+                {
+                    ["results"] = array.Parent == null ? array : array.DeepClone(),
+                    ["kbAlias"] = alias
+                };
+            }
+
+            return new JObject
+            {
+                ["value"] = payload.Parent == null ? payload : payload.DeepClone(),
+                ["kbAlias"] = alias
+            };
+        }
+
+        private static void DetachResponsePayload(JObject response, JToken? payload)
+        {
+            if (payload == null) return;
+            if (ReferenceEquals(response["result"], payload))
+            {
+                response.Remove("result");
+            }
+            else if (ReferenceEquals(response["error"], payload))
+            {
+                response.Remove("error");
+            }
+        }
+
+        internal static JToken AddKbContextMetadata(JToken payload, string kbAlias)
+        {
+            if (payload == null) throw new ArgumentNullException(nameof(payload));
+            if (string.IsNullOrWhiteSpace(kbAlias)) throw new ArgumentException("KB alias is required.", nameof(kbAlias));
+
+            if (payload is JObject obj)
+            {
+                var clone = (JObject)obj.DeepClone();
+                clone["kbAlias"] = kbAlias.Trim();
+                return clone;
+            }
+
+            if (payload is JArray array)
+            {
+                return new JObject
+                {
+                    ["results"] = array.DeepClone(),
+                    ["kbAlias"] = kbAlias.Trim()
+                };
+            }
+
+            return new JObject
+            {
+                ["value"] = payload.DeepClone(),
+                ["kbAlias"] = kbAlias.Trim()
             };
         }
 
         private static JToken NormalizeToolPayloadForAxi(JToken? payload, string toolName, JObject? toolArgs, bool isError)
         {
-            JObject sourceObj;
-            if (payload is JArray arrayPayload)
-            {
-                sourceObj = new JObject
-                {
-                    ["results"] = arrayPayload.DeepClone()
-                };
-            }
-            else if (payload is JObject objPayload)
-            {
-                sourceObj = objPayload;
-            }
-            else
-            {
-                return payload ?? JValue.CreateNull();
-            }
-
-            var obj = (JObject)sourceObj.DeepClone();
-            // Per-response meta is intentionally lean: `schemaVersion` is emitted
-            // once in the `initialize` handshake (`_meta.schemaVersion`) and the
-            // client already knows which tool it called, so neither field is
-            // repeated per response (~60B/response saved). Only emit `meta` when
-            // a real signal (truncated/fields/totalByType/…) gets attached below.
-            var meta = obj["meta"] as JObject ?? new JObject();
             HashSet<string>? requestedFields = ParseRequestedFields(toolArgs);
             // Friction 2026-05-22 #64: projection=minimal|standard|verbose lets the
             // agent opt into a smaller or larger field set without having to enumerate
             // fields[]. Resolves to a HashSet that overrides the axiCompact default —
             // explicit fields[] still wins (highest specificity).
-            string projection = toolArgs?["projection"]?.ToString();
+            string? projection = toolArgs?["projection"]?.ToString();
             bool verboseRequested = !string.IsNullOrWhiteSpace(projection)
                 && string.Equals(projection.Trim(), "verbose", StringComparison.OrdinalIgnoreCase);
             if (requestedFields == null && !string.IsNullOrWhiteSpace(projection))
@@ -358,6 +816,62 @@ namespace GxMcp.Gateway
             {
                 requestedFields = GetDefaultCompactFields(toolName);
             }
+
+            bool shouldProject = requestedFields != null && requestedFields.Count > 0 && ShouldProjectFieldsForTool(toolName);
+
+            JObject obj;
+            string? matchedKey = null;
+
+            if (payload is JArray arrayPayload)
+            {
+                matchedKey = "results";
+                obj = new JObject
+                {
+                    ["results"] = shouldProject ? ProjectArrayItems(arrayPayload, requestedFields!) : arrayPayload.DeepClone()
+                };
+            }
+            else if (payload is JObject objPayload)
+            {
+                matchedKey = CollectionKeys.FirstOrDefault(k => objPayload[k] is JArray);
+                if (shouldProject && matchedKey != null)
+                {
+                    obj = new JObject();
+                    foreach (var prop in objPayload.Properties())
+                    {
+                        if (string.Equals(prop.Name, matchedKey, StringComparison.Ordinal))
+                        {
+                            obj[prop.Name] = ProjectArrayItems((JArray)prop.Value, requestedFields!);
+                        }
+                        else
+                        {
+                            obj[prop.Name] = prop.Value.DeepClone();
+                        }
+                    }
+                }
+                else
+                {
+                    // PERFORMANCE (perf-review): mutate the payload in place instead of
+                    // DeepCloning it. The tree is exclusively owned by this response path
+                    // at this point: TruncateResponseIfNeeded already mutates it upstream,
+                    // OperationTracker.DeepClone()s its telemetry snapshot, the semantic
+                    // cache hands out clones on hit, and IdempotencyMiddleware clones
+                    // before storing. The old DeepClone copied the full tree of EVERY
+                    // response — the single largest per-response allocation for
+                    // genexus_read / genexus_whoami / edit results.
+                    obj = objPayload;
+                }
+            }
+            else
+            {
+                return payload ?? JValue.CreateNull();
+            }
+
+            // Per-response meta is intentionally lean: `schemaVersion` is emitted
+            // once in the `initialize` handshake (`_meta.schemaVersion`) and the
+            // client already knows which tool it called, so neither field is
+            // repeated per response (~60B/response saved). Only emit `meta` when
+            // a real signal (truncated/fields/totalByType/…) gets attached below.
+            var meta = obj["meta"] as JObject ?? new JObject();
 
             if (obj["isTruncated"]?.Value<bool>() == true)
             {
@@ -385,22 +899,24 @@ namespace GxMcp.Gateway
                 obj["noChange"] = true;
             }
 
-            string[] collectionKeys = {
-                "results", "objects", "items", "tools", "checks", "entries", "nodes", "controls",
-                // Additional primary-collection keys used by non-search tools:
-                "endpoints", "history", "snapshots", "versions", "modules",
-                "pending", "ignored", "conflicts", "targets", "pipelines"
-            };
+            bool isErrorResponse = isError
+                || string.Equals(obj["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase)
+                || obj["error"] != null
+                || (obj["result"] is JObject resObj && (resObj["error"] != null || string.Equals(resObj["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase)));
+
+            if (isErrorResponse && obj["diagnosticContext"] == null)
+            {
+                obj["diagnosticContext"] = BuildDiagnosticContext();
+            }
 
             // Where the collection lives: top-level first (search tools), then inside the
             // canonical `result` object (McpResponse.Ok producers). Deterministic lookup —
             // never auto-detect "the sole array property" (would wrongly pick up per-row
             // sub-arrays like `endpoints[i].parms`).
             JObject collectionHost = obj;
-            string? matchedKey = collectionKeys.FirstOrDefault(k => obj[k] is JArray);
             if (matchedKey == null && obj["result"] is JObject resultObj)
             {
-                matchedKey = collectionKeys.FirstOrDefault(k => resultObj[k] is JArray);
+                matchedKey = CollectionKeys.FirstOrDefault(k => resultObj[k] is JArray);
                 if (matchedKey != null)
                 {
                     collectionHost = resultObj;
@@ -411,14 +927,9 @@ namespace GxMcp.Gateway
             {
                 var arr = (JArray)collectionHost[matchedKey]!;
 
-                if (collectionHost == obj &&
-                    requestedFields != null &&
-                    requestedFields.Count > 0 &&
-                    ShouldProjectFieldsForTool(toolName))
+                if (collectionHost == obj && shouldProject)
                 {
-                    obj[matchedKey] = ProjectArrayItems(arr, requestedFields);
-                    meta["fields"] = new JArray(requestedFields.OrderBy(field => field, StringComparer.OrdinalIgnoreCase));
-                    arr = (JArray)obj[matchedKey]!;
+                    meta["fields"] = new JArray(requestedFields!.OrderBy(field => field, StringComparer.OrdinalIgnoreCase));
                 }
 
                 if (meta["totalByType"] == null)
@@ -503,6 +1014,41 @@ namespace GxMcp.Gateway
             // clients that don't know about it ignore it.
             try
             {
+                // Terse mode: skip next_legal_actions injection entirely, and also strip
+                // the worker's per-response UX sugar from the inner _meta block
+                // (suggested_next / alternative_views / aggregates / enrichmentHint —
+                // measured ~420 bytes on list_objects, ~480 on query). The actionable
+                // fields (tokens hint stays out via InjectMetaTokens gate; match_quality
+                // and empty_reason are kept — they change how the agent reads results).
+                if (TerseResponsesEnabledCached())
+                {
+                    if (obj["_meta"] is JObject innerMeta)
+                    {
+                        innerMeta.Remove("suggested_next");
+                        innerMeta.Remove("alternative_views");
+                        innerMeta.Remove("aggregates");
+                        innerMeta.Remove("enrichmentHint");
+                        innerMeta.Remove("autoInjected");
+                        innerMeta.Remove("autoInjectedType");
+                        if (!innerMeta.Properties().Any()) obj.Remove("_meta");
+                    }
+                    // Static one-liner the agent reads once and never needs again
+                    // (~160 bytes on every inspect).
+                    obj.Remove("sourceReadHint");
+                    // Debug correlation GUID — only useful when pasting logs for support.
+                    obj.Remove("correlationId");
+                    // Name-resolution echoes: name/type are already top-level.
+                    obj.Remove("resolvedAs");
+                    obj.Remove("alsoMatches");
+                    // Prose that restates the structured payload (~110 bytes).
+                    obj.Remove("summary");
+                    // SDK-internal value, never actionable for the agent.
+                    if (obj["wwpMetadata"] is JObject wwp) wwp.Remove("masterPage");
+                    // Machine host\\user noise; lastUpdate (actionable) stays.
+                    if (obj["lifecycle"] is JObject lc) lc.Remove("lastModifiedBy");
+                    return obj;
+                }
+
                 if (obj["next_legal_actions"] == null)
                 {
                     JArray? actions = NextLegalActionsBuilder.BuildFor(toolName, toolArgs, obj, isError);
@@ -541,26 +1087,23 @@ namespace GxMcp.Gateway
         private static bool ShouldProjectFieldsForTool(string toolName)
         {
             return string.Equals(toolName, "genexus_query", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(toolName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase);
+                   string.Equals(toolName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(toolName, "genexus_search", StringComparison.OrdinalIgnoreCase);
         }
 
         private static JObject BuildTotalsByType(JArray arr)
         {
             var totals = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var row in arr.OfType<JObject>())
+            foreach (var row in arr)
             {
-                string type = row["type"]?.ToString() ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(type))
+                if (row is JObject rowObj)
                 {
-                    continue;
+                    if (rowObj.TryGetValue("type", StringComparison.OrdinalIgnoreCase, out var typeTok) &&
+                        typeTok is JValue jv && jv.Value is string s && !string.IsNullOrWhiteSpace(s))
+                    {
+                        totals[s] = totals.TryGetValue(s, out int count) ? count + 1 : 1;
+                    }
                 }
-
-                if (!totals.ContainsKey(type))
-                {
-                    totals[type] = 0;
-                }
-
-                totals[type] += 1;
             }
 
             var outObj = new JObject();
@@ -584,11 +1127,11 @@ namespace GxMcp.Gateway
                 }
 
                 var outRow = new JObject();
-                foreach (var field in fields)
+                foreach (var prop in rowObj.Properties())
                 {
-                    if (rowObj.TryGetValue(field, StringComparison.OrdinalIgnoreCase, out var value))
+                    if (fields.Contains(prop.Name))
                     {
-                        outRow[field] = value.DeepClone();
+                        outRow[prop.Name] = prop.Value.DeepClone();
                     }
                 }
 
@@ -637,9 +1180,8 @@ namespace GxMcp.Gateway
                 // exactly: {name, type, lastUpdate}. (Prior versions also whitelisted
                 // 'kind' defensively but no worker emits it today — keeping the
                 // field-set tight so 'minimal' is honest about its contract.)
-                return new HashSet<string>(
-                    new[] { "name", "type", "lastUpdate" },
-                    StringComparer.OrdinalIgnoreCase);
+                // PERF: cached static set — immutable, reused across responses.
+                return MinimalProjectionFields;
             }
             if (p == "standard")
             {
@@ -692,11 +1234,13 @@ namespace GxMcp.Gateway
 
         private static HashSet<string>? GetDefaultCompactFields(string toolName)
         {
+            // PERF: cached statics (see CompactFields* fields above) — the caller
+            // only reads them (Contains/Count/OrderBy), never mutates.
             if (string.Equals(toolName, "genexus_query", StringComparison.OrdinalIgnoreCase))
             {
                 // v2.6.8: lastUpdate is part of the compact projection — same
                 // rationale as list_objects (small, answers "what changed").
-                return new HashSet<string>(new[] { "name", "type", "path", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+                return CompactFieldsQuery;
             }
 
             if (string.Equals(toolName, "genexus_list_objects", StringComparison.OrdinalIgnoreCase))
@@ -704,7 +1248,16 @@ namespace GxMcp.Gateway
                 // v2.6.8: keep lastUpdate in the compact projection — it's the
                 // signal that powers "what changed?" workflows and is cheap (~30b).
                 // createdAt/lastModifiedBy stay verbose-only at the worker.
-                return new HashSet<string>(new[] { "name", "type", "path", "parentPath", "lastUpdate" }, StringComparer.OrdinalIgnoreCase);
+                return CompactFieldsListObjects;
+            }
+
+            if (string.Equals(toolName, "genexus_search", StringComparison.OrdinalIgnoreCase))
+            {
+                // genexus_search returns 50-item result pages with per-item type
+                // metadata (guid/length/decimals) that a scanning agent rarely needs.
+                // Same allowlist as query — name/type/description/path identify the hit;
+                // lastUpdate powers recency workflows. Explicit fields[] still wins.
+                return CompactFieldsSearch;
             }
 
             return null;
@@ -755,6 +1308,60 @@ namespace GxMcp.Gateway
             }
 
             return null;
+        }
+
+        internal static JObject BuildDiagnosticContext()
+        {
+            var context = new JObject();
+            try
+            {
+                string? gxPath = _activeConfig?.GeneXus?.InstallationPath;
+                var probe = WorkerSdkCompatibilityProbe.Check(gxPath);
+                var sdk = new JObject
+                {
+                    ["installedPath"] = gxPath ?? probe.InstallationPath,
+                    ["version"] = probe.Version,
+                    ["major"] = probe.Major,
+                    ["supportedMajors"] = JArray.FromObject(GeneXusVersionCatalog.SupportedMajors)
+                };
+                context["sdk"] = sdk;
+            }
+            catch
+            {
+                // best-effort diagnostic context
+            }
+
+            try
+            {
+                var currentKb = _currentKb.Value;
+                if (currentKb != null)
+                {
+                    context["kb"] = new JObject
+                    {
+                        ["alias"] = currentKb.Alias,
+                        ["path"] = currentKb.Path
+                    };
+                }
+                else
+                {
+                    string? defaultKb = _activeConfig?.Environment?.RawDefaultKb ?? _activeConfig?.Environment?.DefaultKb;
+                    if (!string.IsNullOrWhiteSpace(defaultKb))
+                    {
+                        context["kb"] = new JObject
+                        {
+                            ["defaultKb"] = defaultKb
+                        };
+                    }
+                }
+            }
+            catch
+            {
+                // best-effort diagnostic context
+            }
+
+            context["reportIssue"] = "If this error indicates an SDK incompatibility or bug, please ask the user to run 'pwsh -File scripts/collect-diagnostics.ps1' (or 'genexus-mcp doctor --format json') and submit an issue at https://github.com/lennix1337/Genexus18MCP/issues with the diagnostics bundle.";
+
+            return context;
         }
 
     }

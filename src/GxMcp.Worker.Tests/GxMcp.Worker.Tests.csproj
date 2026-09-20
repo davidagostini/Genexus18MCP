@@ -6,6 +6,9 @@
     <Platforms>x86</Platforms>
     <PlatformTarget>x86</PlatformTarget>
     <Prefer32Bit>true</Prefer32Bit>
+    <!-- GeneXus SDK assemblies bring an unavoidable mscorlib version conflict
+         into the net48 test host; the Worker project uses the same scoped guard. -->
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -34,6 +37,20 @@
       <HintPath>$(GX_PATH)\Artech.Architecture.Common.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
     <Reference Include="Microsoft.Build.Framework" />
   </ItemGroup>
+
+  <Target Name="CopyGeneXusSdkDependencies" AfterTargets="Build" Condition="Exists('$(GX_PATH)\Artech.Architecture.Common.dll')">
+    <ItemGroup>
+      <GeneXusSdkDependency Include="$(GX_PATH)\*.dll;$(GX_PATH)\Packages\*.dll" />
+      <!-- Preserve NuGet/project dependencies; refresh SDK files when GX_PATH changes. -->
+      <GeneXusSdkDependency Remove="@(ReferenceCopyLocalPaths)" MatchOnMetadata="Filename" MatchOnMetadataOptions="CaseInsensitive" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(GeneXusSdkDependency)"
+      DestinationFolder="$(TargetDir)"
+      SkipUnchangedFiles="true" />
+  </Target>
 </Project>

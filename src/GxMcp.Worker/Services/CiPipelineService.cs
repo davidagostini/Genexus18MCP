@@ -1,10 +1,12 @@
 using System;
 using Artech.Architecture.Common.Objects;
+#if HAS_TEAMDEV_CI
 using Artech.Architecture.Common.Services.TeamDevData.Client;
+using Ci = GeneXus.TeamDevClient.Architecture.BL.Services;
+#endif
 using GxMcp.Worker.Helpers;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
-using Ci = GeneXus.TeamDevClient.Architecture.BL.Services;
 
 namespace GxMcp.Worker.Services
 {
@@ -32,6 +34,12 @@ namespace GxMcp.Worker.Services
 
         public string Run(string action, JObject args)
         {
+#if !HAS_TEAMDEV_CI
+            return McpResponse.Err(
+                code: "ContinuousIntegrationServiceUnavailable",
+                message: "Continuous Integration pipelines are not supported in this GeneXus version.",
+                hint: "CI pipeline actions require GeneXus 17+ with GXserver CI support.");
+#else
             action = (action ?? "").Trim().ToLowerInvariant();
 
             switch (action)
@@ -153,8 +161,10 @@ namespace GxMcp.Worker.Services
                 // A KB that isn't GXserver-linked (or an unauthenticated session) surfaces here.
                 return NotConnected(ex.Message);
             }
+#endif
         }
 
+#if HAS_TEAMDEV_CI
         private static string NeedProject()
             => McpResponse.Err("BadArgs", "This pipeline action requires project.", "Pass project=<pipeline/project name> (see pipeline_list).");
 
@@ -172,5 +182,6 @@ namespace GxMcp.Worker.Services
             try { var v = f(); return v == null ? JValue.CreateNull() : JToken.FromObject(v); }
             catch (Exception ex) { return new JObject { ["_serializeError"] = ex.Message }; }
         }
+#endif
     }
 }

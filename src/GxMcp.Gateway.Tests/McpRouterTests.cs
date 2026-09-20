@@ -1,11 +1,20 @@
 using Newtonsoft.Json.Linq;
 using Xunit;
 using System;
+using System.Threading.Tasks;
 
 namespace GxMcp.Gateway.Tests
 {
     public class McpRouterTests
     {
+        [Fact]
+        public void IsJsonRpcNotification_ShouldSuppressMissingOrNullIds()
+        {
+            Assert.True(Program.IsJsonRpcNotification(JObject.Parse("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}")));
+            Assert.True(Program.IsJsonRpcNotification(JObject.Parse("{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}")));
+            Assert.False(Program.IsJsonRpcNotification(JObject.Parse("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}")));
+        }
+
         [Fact]
         public void Handle_Initialize_ShouldExposeCurrentProtocolVersion()
         {
@@ -15,6 +24,45 @@ namespace GxMcp.Gateway.Tests
 
             var json = JObject.FromObject(result!);
             Assert.Equal(McpRouter.SupportedProtocolVersion, json["protocolVersion"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_Initialize_ShouldEchoKnownRequestedProtocolVersion()
+        {
+            var request = JObject.Parse("""{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-03-26"}}""");
+
+            var result = McpRouter.Handle(request);
+
+            Assert.Equal("2025-03-26", JObject.FromObject(result!)["protocolVersion"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_Initialize_ShouldNotAcceptModernPerRequestVersion()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2026-07-28"}}"""
+            );
+
+            Assert.Null(McpRouter.Handle(request));
+        }
+
+        [Fact]
+        public void Handle_ServerDiscover_ShouldAdvertiseModernAndLegacyVersions()
+        {
+            var request = JObject.Parse("""{"jsonrpc":"2.0","id":"discover","method":"server/discover"}""");
+
+            var result = JObject.FromObject(McpRouter.Handle(request)!);
+
+            var versions = result["supportedVersions"] as JArray;
+            Assert.NotNull(versions);
+            Assert.Contains(McpRouter.ModernProtocolVersion, versions!.Values<string>());
+            Assert.Contains(McpRouter.SupportedProtocolVersion, versions.Values<string>());
+            Assert.Equal("genexus-mcp-server", result["_meta"]?["io.modelcontextprotocol/serverInfo"]?["name"]?.ToString());
+            Assert.NotNull(result["capabilities"]?["extensions"]?["io.modelcontextprotocol/tasks"]);
+            Assert.True(result["capabilities"]?["tools"]?["listChanged"]?.Value<bool>());
+            Assert.True(result["capabilities"]?["resources"]?["listChanged"]?.Value<bool>());
+            Assert.True(result["capabilities"]?["resources"]?["subscribe"]?.Value<bool>());
+            Assert.True(result["ttlMs"]!.Value<int>() > 0);
         }
 
         [Fact]
@@ -58,10 +106,22 @@ namespace GxMcp.Gateway.Tests
 
             var result = McpRouter.Handle(request);
 
-            var json = JObject.FromObject(result!);
-            Assert.Equal("Invalid prompt arguments.", json["description"]?.ToString());
-            var text = json["messages"]![0]!["content"]?["text"]?.ToString() ?? string.Empty;
-            Assert.Contains("Missing required argument 'goal'", text);
+            var error = Assert.IsType<McpRouterError>(result);
+            Assert.Equal(-32602, error.Code);
+            Assert.Contains("Missing required argument 'goal'", error.Message);
+        }
+
+        [Fact]
+        public async Task ProcessMcpRequest_PromptsGetInvalidArguments_ShouldReturnJsonRpcError()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"prompts/get","params":{"name":"gx_agent_ship_change","arguments":{"objectName":"InvoiceEntry"}}}"""
+            );
+
+            var response = await Program.ProcessMcpRequest(request);
+
+            Assert.Equal(-32602, response?["error"]?["code"]?.Value<int>());
+            Assert.Contains("Missing required argument 'goal'", response?["error"]?["message"]?.ToString());
         }
 
         [Fact]
@@ -75,6 +135,7 @@ namespace GxMcp.Gateway.Tests
             var resources = (JArray)json["resources"]!;
             Assert.Contains(resources, resource => resource?["uri"]?.ToString() == "genexus://kb/agent-playbook");
             Assert.Contains(resources, resource => resource?["uri"]?.ToString() == "genexus://kb/llm-playbook");
+            Assert.Contains(resources, resource => resource?["uri"]?.ToString() == "genexus://kb/skills/nexa");
         }
 
         [Fact]
@@ -85,6 +146,9 @@ namespace GxMcp.Gateway.Tests
             var result = McpRouter.Handle(request);
 
             var json = JObject.FromObject(result!);
+            Assert.Equal("complete", json["resultType"]?.ToString());
+            Assert.True(json["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", json["cacheScope"]?.ToString());
             var contents = (JArray)json["contents"]!;
             var first = (JObject)contents[0]!;
             Assert.Equal("genexus://kb/agent-playbook", first["uri"]?.ToString());
@@ -101,12 +165,40 @@ namespace GxMcp.Gateway.Tests
             var result = McpRouter.Handle(request);
 
             var json = JObject.FromObject(result!);
+            Assert.Equal("complete", json["resultType"]?.ToString());
+            Assert.True(json["ttlMs"]!.Value<int>() > 0);
+            Assert.Equal("public", json["cacheScope"]?.ToString());
             var contents = (JArray)json["contents"]!;
             var first = (JObject)contents[0]!;
             Assert.Equal("genexus://kb/llm-playbook", first["uri"]?.ToString());
             Assert.Equal("text/markdown", first["mimeType"]?.ToString());
             Assert.Contains("LLM CLI+MCP Playbook", first["text"]?.ToString());
             Assert.Contains("mcp-axi/2", first["text"]?.ToString());
+            Assert.Contains("genexus://kb/skills/nexa", first["text"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_ResourcesRead_ShouldReturnOfficialNexaReferenceContents()
+        {
+            const string resourceUri = "genexus://kb/skills/nexa/references/object-transaction.md";
+            var request = JObject.Parse($"{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"resources/read\",\"params\":{{\"uri\":\"{resourceUri}\"}}}}");
+
+            var result = McpRouter.Handle(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("complete", json["resultType"]?.ToString());
+            var first = (JObject)((JArray)json["contents"]!)[0]!;
+            Assert.Equal(resourceUri, first["uri"]?.ToString());
+            Assert.Equal("text/markdown", first["mimeType"]?.ToString());
+            Assert.Contains("Transaction", first["text"]?.ToString());
+        }
+
+        [Fact]
+        public void Handle_ResourcesRead_ShouldRejectUnsafeNexaReferencePath()
+        {
+            var request = JObject.Parse("""{"jsonrpc":"2.0","id":"1","method":"resources/read","params":{"uri":"genexus://kb/skills/nexa/references/../SKILL.md"}}""");
+
+            Assert.Null(McpRouter.Handle(request));
         }
 
         [Fact]
@@ -179,6 +271,7 @@ namespace GxMcp.Gateway.Tests
             var templates = (JArray)json["resourceTemplates"]!;
             Assert.Contains(templates, template => template?["uriTemplate"]?.ToString() == "genexus://objects/{name}/indexes");
             Assert.Contains(templates, template => template?["uriTemplate"]?.ToString() == "genexus://objects/{name}/logic-structure");
+            Assert.Contains(templates, template => template?["uriTemplate"]?.ToString() == "genexus://kb/skills/nexa/references/{name}");
         }
 
         [Fact]
@@ -256,6 +349,20 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ConvertResourceCall_ShouldMapPerKbCapabilitiesResource()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"resources/read","params":{"uri":"genexus://kb/capabilities"}}"""
+            );
+
+            var result = JObject.FromObject(McpRouter.ConvertResourceCall(request)!);
+
+            Assert.Equal("SdkProbe", result["module"]?.ToString());
+            Assert.Equal("Capabilities", result["action"]?.ToString());
+            Assert.Equal("_self", result["target"]?.ToString());
+        }
+
+        [Fact]
         public void ConvertResourceCall_ShouldMapLogicStructureResource()
         {
             var request = JObject.Parse(
@@ -287,6 +394,33 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void ConvertResourceCall_ShouldUnscopeKbQualifiedObjectResource()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"resources/read","params":{"uri":"genexus://kb/sales/objects/Customer/logic-structure"}}"""
+            );
+
+            var result = JObject.FromObject(McpRouter.ConvertResourceCall(request)!);
+
+            Assert.Equal("Structure", result["module"]?.ToString());
+            Assert.Equal("GetLogicStructure", result["action"]?.ToString());
+            Assert.Equal("Customer", result["target"]?.ToString());
+            Assert.True(McpRouter.TryGetScopedResourceKb(request, out var kbAlias));
+            Assert.Equal("sales", kbAlias);
+        }
+
+        [Fact]
+        public void TryGetScopedResourceKb_DoesNotTreatLegacySkillUriAsScoped()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"resources/read","params":{"uri":"genexus://kb/skills/navigation"}}"""
+            );
+
+            Assert.False(McpRouter.TryGetScopedResourceKb(request, out var kbAlias));
+            Assert.Null(kbAlias);
+        }
+
+        [Fact]
         public void ConvertToolCall_ShouldMapCreateObjectTool()
         {
             var request = JObject.Parse(
@@ -303,8 +437,9 @@ namespace GxMcp.Gateway.Tests
         }
 
         // issue #50: a requested folder/module destination is forwarded to the worker (as
-        // folder/destModule/parentPath) so it can reject with FolderPlacementUnsupported instead
-        // of silently creating in Root Module. `module` is remapped to destModule to avoid
+        // folder/destModule/parentPath) so the object actually lands there — since v2.35.0 the
+        // worker creates in Root Module and then moves, reporting the outcome under `placement`,
+        // instead of the earlier up-front rejection. `module` is remapped to destModule to avoid
         // colliding with the routing `module=Object` field.
         [Fact]
         public void ConvertToolCall_CreateObject_ForwardsFolderDestination()
@@ -321,6 +456,40 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("eSocialSMT", json["folder"]?.ToString());
             Assert.Equal("MyModule", json["destModule"]?.ToString());
             Assert.Equal("Root Module/eSocialSMT", json["parentPath"]?.ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_MoveObject_ForwardsSafetyOptions()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"move","name":"InvoiceHelper","type":"Procedure","targetModule":"operacional","baseVersion":"639222302350000000","dryRun":true,"rollbackOnFailure":true}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Move", json["action"]?.ToString());
+            Assert.Equal("InvoiceHelper", json["target"]?.ToString());
+            Assert.Equal("operacional", json["targetModule"]?.ToString());
+            Assert.Equal("operacional", json["destination"]?.ToString());
+            Assert.Equal("Module", json["destKind"]?.ToString());
+            Assert.Equal("639222302350000000", json["baseVersion"]?.ToString());
+            Assert.True(json["dryRun"]?.ToObject<bool>());
+            Assert.True(json["rollbackOnFailure"]?.ToObject<bool>());
+        }
+
+        [Fact]
+        public void ConvertToolCall_MoveObject_ExplicitDestinationDoesNotInheritTargetModuleKind()
+        {
+            var request = JObject.Parse(
+                """{"method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"move","name":"InvoiceHelper","destination":"Archive","targetModule":"ignored-alias"}}}"""
+            );
+
+            var json = JObject.FromObject(McpRouter.ConvertToolCall(request)!);
+
+            Assert.Equal("Archive", json["destination"]?.ToString());
+            Assert.True(json["destKind"]?.Type is JTokenType.Null or JTokenType.Undefined);
         }
 
         [Fact]
@@ -425,6 +594,80 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("Customer", json["target"]?.ToString());
             Assert.Equal("Description", json["propertyName"]?.ToString());
             Assert.Equal("Updated", json["value"]?.ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithFilteringAndProjection()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","propertyName":"Description","projection":"minimal"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Equal("Customer", json["target"]?.ToString());
+            Assert.Equal("Description", json["propertyName"]?.ToString());
+            Assert.Equal("minimal", json["projection"]?.ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithPropertyNamesArray()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","propertyNames":["Description","Name"],"projection":"standard"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Equal("Customer", json["target"]?.ToString());
+            var names = json["propertyNames"] as JArray;
+            Assert.NotNull(names);
+            Assert.Equal(2, names.Count);
+            Assert.Equal("Description", names[0].ToString());
+            Assert.Equal("Name", names[1].ToString());
+            Assert.Equal("standard", json["projection"]?.ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithArrayInPropertyName()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","propertyName":["Description","Title"]}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Null(json["propertyName"]?.Value<string>());
+            var names = json["propertyNames"] as JArray;
+            Assert.NotNull(names);
+            Assert.Equal(2, names.Count);
+            Assert.Equal("Description", names[0].ToString());
+            Assert.Equal("Title", names[1].ToString());
+        }
+
+        [Fact]
+        public void ConvertToolCall_ShouldMapPropertiesGetTool_WithQuery()
+        {
+            var request = JObject.Parse(
+                """{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"genexus_properties","arguments":{"action":"get","name":"Customer","query":"*Commit*"}}}"""
+            );
+
+            var result = McpRouter.ConvertToolCall(request);
+
+            var json = JObject.FromObject(result!);
+            Assert.Equal("Property", json["module"]?.ToString());
+            Assert.Equal("Get", json["action"]?.ToString());
+            Assert.Equal("Customer", json["target"]?.ToString());
+            Assert.Equal("*Commit*", json["query"]?.ToString());
         }
 
         [Fact]
@@ -702,12 +945,35 @@ namespace GxMcp.Gateway.Tests
         [Fact]
         public void ToolHelpCatalog_HasEntriesForTrimmedTools()
         {
-            string[] expected = { "genexus_query", "genexus_lifecycle", "genexus_edit", "genexus_analyze", "genexus_read" };
+            string[] expected = { "genexus_query", "genexus_lifecycle", "genexus_edit", "genexus_analyze", "genexus_read", "genexus_worker_reload" };
             foreach (var name in expected)
             {
                 var help = ToolHelpCatalog.Get(name);
                 Assert.False(string.IsNullOrWhiteSpace(help), $"No help text for {name}");
                 Assert.True(help!.Length >= 200, $"Help for {name} should be more detailed than the trimmed description");
+            }
+        }
+
+        [Fact]
+        public void ToolHelpCatalog_HasEntriesForMultiActionTools()
+        {
+            string[] expected =
+            {
+                "genexus_structure",
+                "genexus_layout",
+                "genexus_versioning",
+                "genexus_io",
+                "genexus_kb_version",
+                "genexus_doc",
+                "genexus_recipe",
+                "genexus_refactor"
+            };
+
+            foreach (var name in expected)
+            {
+                var help = ToolHelpCatalog.Get(name);
+                Assert.False(string.IsNullOrWhiteSpace(help), $"No help text for {name}");
+                Assert.True(help!.Length >= 200, $"Help for {name} should be detailed (at least 200 chars)");
             }
         }
 
@@ -754,6 +1020,24 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("genexus://kb/tool-help/genexus_query", first["uri"]!.ToString());
             Assert.Equal("text/markdown", first["mimeType"]!.ToString());
             Assert.Contains("Query prefixes", first["text"]!.ToString());
+        }
+
+        [Fact]
+        public void ResourcesRead_ToolHelp_ReturnsWorkerReloadGuidance()
+        {
+            var request = JObject.Parse(@"{
+                ""method"": ""resources/read"",
+                ""params"": { ""uri"": ""genexus://kb/tool-help/genexus_worker_reload"" }
+            }");
+
+            var result = McpRouter.Handle(request);
+            Assert.NotNull(result);
+
+            var json = JObject.FromObject(result!);
+            var text = ((JArray)json["contents"]!)[0]!["text"]!.ToString();
+            Assert.Contains("genexus_worker_reload", text);
+            Assert.Contains("mode=soft", text);
+            Assert.Contains("force=true", text);
         }
 
         [Fact]
