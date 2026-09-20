@@ -2,11 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **`records_query` can use an explicit read-only profile connection alias.** When GeneXus omits server/database metadata, a `dataStoreAlias` can select non-secret connection metadata from the MCP profile while credentials remain on the Worker host. Responses include the effective alias, masked connection identifiers, a confirmed configuration reread, elapsed time, row count, and rows without returning connection strings or credentials. See `docs/transaction-records.md`.
+- Missing, duplicate, cross-KB, or invalid aliases fail closed before SQL execution; writes reject `dataStoreAlias`, and the selected read alias is reread before every `records_query` to detect profile/environment drift.
+
 ### Fixed
 
 - **Reads recover after an idle Worker is reopened.** Index bootstrap is re-armed when a new Worker is registered, including lazy respawn and explicit reopen, instead of retaining the previous process's one-shot latch. A restored `Ready/stale/Idle` snapshot now offers a non-forced refresh hint; healthy active operations are not cancelled and reads still require `freshness=current`.
-
 - **Index recovery now distinguishes a live build from a stalled or exited worker.** Status polling no longer cancels a slow index build. Concurrent `action=index` requests are idempotent, return the active `operationId`, and `force=true` starts a new generation only after the old STA worker has stopped; if that bounded stop cannot complete, recovery remains pending instead of running two SDK generations concurrently. Read tools expose the recoverable state and the exact recovery hint without running any GeneXus lifecycle action.
+- **`records_query` profile aliases now escape provider-specific identifier delimiters, preserve string-path KB catalog entries during alias scoping, and isolate shared Worker hosts by profile configuration path.**
 
 ## v3.7.0 - 2026-09-19
 
