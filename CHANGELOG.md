@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Internal
+
+- [#248](https://github.com/lennix1337/Genexus18MCP/issues/248) **Windows test teardown waits for scoped Gateway stubs to exit.** The cleanup now waits for the exact process IDs selected from the suite's own temporary directory before retrying removal, preventing false `EPERM` failures after otherwise successful Node tests.
+
 ## v3.7.0 - 2026-09-19
 
 
