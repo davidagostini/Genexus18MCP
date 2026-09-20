@@ -105,6 +105,27 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void DefaultDataStoreInfo_RecognizesModernPostgresCodeWithoutProvider()
+        {
+            var targetPart = new DataStoresPart();
+            targetPart.DataStores.Add(new DataStore { Name = "TargetPostgres", Dbms = 15, IsDefault = true });
+            var target = new Model();
+            target.Parts.Add(targetPart);
+            var kb = new FakeKb
+            {
+                DesignModel = new Model(),
+                Environment = new EnvironmentModel { TargetModel = target }
+            };
+
+            var info = DatabaseInfoService.GetDefaultDataStoreInfo(kb);
+
+            Assert.Equal("postgres", info["dialect"]?.ToString());
+            Assert.Equal("PostgreSQL", info["type"]?.ToString());
+            Assert.Equal(string.Empty, info["provider"]?.ToString());
+            Assert.Equal(15, info["dbmsCode"]?.Value<int>());
+        }
+
+        [Fact]
         public void GetInfo_UsesActiveEnvironmentTargetInsteadOfDesignModel()
         {
             var designPart = new DataStoresPart();
@@ -140,6 +161,7 @@ namespace GxMcp.Worker.Tests
         [InlineData(4, "Oracle")]
         [InlineData(5, "MySQL")]
         [InlineData(6, "PostgreSQL")]
+        [InlineData(15, "PostgreSQL")]
         [InlineData(7, "Oracle")]
         [InlineData(8, "Db2/AS400")]
         [InlineData(9, "Db2Universal")]

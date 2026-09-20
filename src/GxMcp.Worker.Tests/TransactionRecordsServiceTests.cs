@@ -78,6 +78,7 @@ namespace GxMcp.Worker.Tests
         [InlineData("Npgsql", 0, "postgres")]
         [InlineData("PostgreSQL", 0, "postgres")]
         [InlineData(null, 6, "postgres")]
+        [InlineData(null, 15, "postgres")]
         [InlineData("System.Data.SqlClient", 0, "sqlserver")]
         public void DetectFamily_RecognizesPostgreSqlProviderAndDbms(string provider, int dbms, string expected)
             => Assert.Equal(expected, DetectFamily(provider, dbms));

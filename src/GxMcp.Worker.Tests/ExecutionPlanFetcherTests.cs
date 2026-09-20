@@ -24,6 +24,19 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void ModernPostgresDbmsCode_UsesPostgresFamily()
+        {
+            Assert.Equal("postgres", ExecutionPlanFetcher.ResolveDbmsFamily(15));
+        }
+
+        [Fact]
+        public void ProviderAndDbmsCode_UseTheSameFamilyResolution()
+        {
+            Assert.Equal("postgres", ExecutionPlanFetcher.ResolveDbmsFamily("Npgsql", 0));
+            Assert.Equal("postgres", ExecutionPlanFetcher.ResolveDbmsFamily(null, 15));
+        }
+
+        [Fact]
         public void AttachExecutionPlans_AlwaysMarksUnavailable()
         {
             var queries = new JArray {

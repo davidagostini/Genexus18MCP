@@ -62,7 +62,7 @@ namespace GxMcp.Worker.Services
                 case 1: case 12: return "sqlserver";
                 case 4: case 7: return "oracle";
                 case 5: return "mysql";
-                case 6: return "postgres";
+                case 6: case 15: return "postgres";
                 case 2: case 8: case 9: return "db2";
                 case 3: return "informix";
                 case 10: return "saphana";
