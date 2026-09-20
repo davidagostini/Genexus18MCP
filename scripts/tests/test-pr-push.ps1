@@ -18,6 +18,8 @@ foreach ($requiredText in @(
     'git merge-base --is-ancestor',
     'integration-preflight.ps1',
     '-BaseRef $preflightRef',
+    'git ls-remote',
+    'remote head verified',
     'No push was attempted.'
 )) {
     if ($source -notmatch [regex]::Escape($requiredText)) {

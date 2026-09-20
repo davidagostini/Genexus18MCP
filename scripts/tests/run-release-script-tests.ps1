@@ -14,6 +14,7 @@ $tests = @(
     'test-release-workflow.ps1',
     'test-pr-preflight-ripwire.ps1',
     'test-pr-push.ps1',
+    'test-pr-review-tooling.ps1',
     'test-integration-preflight.ps1',
     'test-release-status.ps1',
     'test-warning-baseline.ps1',

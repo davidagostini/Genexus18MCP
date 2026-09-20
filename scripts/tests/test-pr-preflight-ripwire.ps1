@@ -50,7 +50,7 @@ try {
     Expect-Failure { Get-GhJson -Arguments @('issue', 'view', '1') -GhPath $fakeGh } 'Invalid GitHub JSON was accepted.'
 
     $missing = Join-Path $temp 'missing.cmd'
-    $result = Invoke-RipwireGate -BaseRef 'base' -RipwirePath $missing -RepositoryPath $gitRepo
+    $result = Invoke-RipwireGate -BaseRef 'base' -RipwirePath $missing -RepositoryPath $gitRepo -TokenBudget 4000
     if ($result.status -ne 'skipped' -or $result.exitCode -ne 0) { throw 'Missing optional ripwire must be reported as skipped.' }
 
     $result = Invoke-RipwireGate -BaseRef 'base' -RipwirePath $missing -RepositoryPath $gitRepo -Require
@@ -79,7 +79,14 @@ try {
     $result = Invoke-RipwireGate -BaseRef 'base' -RipwirePath $fake -RepositoryPath $gitRepo
     if ($result.status -ne 'failed' -or $result.exitCode -ne 65) { throw 'An empty ripwire response must fail closed.' }
 
-    Write-Host 'pr-preflight ripwire policy: absent, valid, exit failure, materialization failure and empty-output paths passed' -ForegroundColor Green
+    $source = Get-Content -LiteralPath $scriptPath -Raw
+    foreach ($requiredText in @('RipwireTokenBudget', '--token-budget=', 'Select-Object -Last 40')) {
+        if ($source -notmatch [regex]::Escape($requiredText)) {
+            throw "pr-preflight lost bounded ripwire output guard: $requiredText"
+        }
+    }
+
+    Write-Host 'pr-preflight ripwire policy: absent, valid, exit failure, materialization failure, empty-output and bounded-output paths passed' -ForegroundColor Green
 }
 finally {
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }

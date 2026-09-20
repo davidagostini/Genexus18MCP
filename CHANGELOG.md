@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v3.7.1 - 2026-09-20
+
+
 ### Added
 
 - **`records_query` can use an explicit read-only profile connection alias.** When GeneXus omits server/database metadata, a `dataStoreAlias` can select non-secret connection metadata from the MCP profile while credentials remain on the Worker host. Responses include the effective alias, masked connection identifiers, a confirmed configuration reread, elapsed time, row count, and rows without returning connection strings or credentials. See `docs/transaction-records.md`.
@@ -27,6 +30,8 @@
 ### Internal
 
 - [#248](https://github.com/lennix1337/Genexus18MCP/issues/248) **Windows test teardown waits for scoped Gateway stubs to exit.** The cleanup now waits for the exact process IDs selected from the suite's own temporary directory before retrying removal, preventing false `EPERM` failures after otherwise successful Node tests.
+
+- **Multi-PR review orchestration is now bounded and reproducible.** Review lanes can use isolated worktrees with exact-head verification, batch all fixes before one final validation wave, run scoped ripwire reports with an output budget, verify pushed heads by readback, and merge competing `CHANGELOG.md` Unreleased sections deterministically.
 
 ## v3.7.0 - 2026-09-19
 

@@ -2,7 +2,9 @@
 param(
     [Parameter(Position = 0)]
     [int]$PullRequest = 0,
-    [switch]$RequireRipwire
+    [switch]$RequireRipwire,
+    [ValidateRange(2000, 50000)]
+    [int]$RipwireTokenBudget = 12000
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,7 +61,13 @@ function Get-RipwireChangedPathCount([string]$BaseRef, [string]$RepositoryPath =
     return @($paths | Select-Object -Unique).Count
 }
 
-function Invoke-RipwireGate([string]$BaseRef, [switch]$Require, [string]$RipwirePath, [string]$RepositoryPath = '.') {
+function Invoke-RipwireGate(
+    [string]$BaseRef,
+    [switch]$Require,
+    [string]$RipwirePath,
+    [string]$RepositoryPath = '.',
+    [int]$TokenBudget = 12000
+) {
     if ([string]::IsNullOrWhiteSpace($RipwirePath)) {
         $command = Get-Command ripwire -ErrorAction SilentlyContinue
         if ($command) { $RipwirePath = $command.Source }
@@ -76,13 +84,13 @@ function Invoke-RipwireGate([string]$BaseRef, [switch]$Require, [string]$Ripwire
 
     $output = @()
     try {
-        $output = @(& $RipwirePath $RepositoryPath "--pr-context=$BaseRef" 2>&1 | ForEach-Object { $_.ToString() })
+        $output = @(& $RipwirePath $RepositoryPath "--pr-context=$BaseRef" "--token-budget=$TokenBudget" 2>&1 | ForEach-Object { $_.ToString() })
         $exitCode = $LASTEXITCODE
     } catch {
         $exitCode = 1
         $output = @($_.Exception.Message)
     }
-    foreach ($line in $output) { Write-Host "    $line" }
+    foreach ($line in @($output | Select-Object -Last 40)) { Write-Host "    $line" }
     if ($exitCode -ne 0) {
         return [pscustomobject]@{ status = 'failed'; exitCode = $exitCode; reason = "ripwire exited with code $exitCode." }
     }
@@ -176,7 +184,7 @@ if ($notPassing.Count -gt 0) {
 }
 
 $baseRef = if ($pr.baseRefName) { "origin/$($pr.baseRefName)" } else { "origin/main" }
-$ripwireResult = Invoke-RipwireGate -BaseRef $baseRef -Require:$RequireRipwire
+$ripwireResult = Invoke-RipwireGate -BaseRef $baseRef -Require:$RequireRipwire -TokenBudget $RipwireTokenBudget
 if ($ripwireResult.status -eq 'passed') {
     Write-Host "Running ripwire architectural blast radius analysis..."
     Write-Host "  ripwire: blast radius and caller analysis passed." -ForegroundColor Green

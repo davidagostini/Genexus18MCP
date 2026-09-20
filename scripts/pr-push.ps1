@@ -109,5 +109,17 @@ if ($PSCmdlet.ShouldProcess("$headRepo/$headRef", "push local HEAD")) {
     if ($LASTEXITCODE -ne 0) {
         Fail-Push "git push failed with exit code $LASTEXITCODE."
     }
-    Write-Host "Push completed." -ForegroundColor Green
+    $localHead = (& git rev-parse HEAD 2>&1).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($localHead)) {
+        Fail-Push "Could not read the local HEAD after push."
+    }
+    $remoteOutput = @(& git ls-remote $targetUrl $targetRef 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $remoteOutput.Count -eq 0) {
+        Fail-Push "Could not read back the pushed remote head."
+    }
+    $remoteHead = (($remoteOutput[0].ToString().Trim() -split '\s+')[0]).Trim()
+    if ($remoteHead -ne $localHead) {
+        Fail-Push "Remote head verification failed: local=$localHead, remote=$remoteHead."
+    }
+    Write-Host "Push completed; remote head verified: $remoteHead" -ForegroundColor Green
 }

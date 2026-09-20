@@ -191,6 +191,12 @@ issue with the release URL first, then close it.
 
 ## Merge discipline
 
+For multi-PR review, use the two-phase workflow in
+[`docs/pr-review-playbook.md`](pr-review-playbook.md). It creates one detached
+worktree per exact PR head, batches each lane's fixes before the final test
+wave, bounds ripwire output, and requires a clean local tree plus a verified
+remote head before a lane is considered complete.
+
 Two PRs that both edit `CHANGELOG.md` can conflict regardless of merge order.
 Before merging, probe with `git merge-tree --write-tree` and, when needed, a
 read-only `git commit-tree` simulation. For a fork PR, resolve the Unreleased
@@ -198,6 +204,19 @@ sections in a temporary worktree, preserve CRLF, commit with the canonical
 GitHub merge message, and push the explicit ref. After a manual main update,
 rebase the local branch onto `origin/main` and resolve the changelog by
 combining sections in project order.
+
+When both sides changed `CHANGELOG.md`, the reviewed conflict sides can be
+combined deterministically with:
+
+```powershell
+.\scripts\merge-unreleased-changelog.ps1 `
+  -OursPath .\CHANGELOG.ours.md -TheirsPath .\CHANGELOG.theirs.md `
+  -OutputPath .\CHANGELOG.md -Force
+```
+
+The helper refuses conflict markers or a missing `## Unreleased`, preserves the
+non-Unreleased base from the coordinator's copy, deduplicates exact bullet
+blocks, and writes atomically. Inspect its diff before committing.
 
 Before merging, run the executable gate and wait for every local/independent
 review to finish before acting on its result:
@@ -216,7 +235,9 @@ the repository/ref resolved by GitHub CLI:
 
 The helper rejects pushes from `main` and pins the exact remote head OID for a
 force-with-lease push, preventing a same-named branch from being updated in the
-base repository by accident.
+base repository by accident. After a successful push it reads the explicit
+remote ref back and fails if it does not equal the local reviewed `HEAD`; a
+local commit alone is never completion evidence.
 
 `pr-push.ps1` is also the mandatory local submission gate. Before it invokes
 Git, it requires a clean worktree, fetches the PR base into an isolated local
