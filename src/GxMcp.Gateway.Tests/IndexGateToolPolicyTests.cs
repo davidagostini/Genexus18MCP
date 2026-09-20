@@ -100,6 +100,22 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Theory]
+        [InlineData("stale", "Idle", false, true)]
+        [InlineData("current", "Idle", false, false)]
+        [InlineData("refreshing", "Building", true, false)]
+        [InlineData("stale", "Starting", false, false)]
+        public void ReadyIndex_RecoveryDistinguishesIdleStaleFromCompletedOrStarting(
+            string freshness, string operationState, bool workerAlive, bool recoverable)
+        {
+            var envelope = Program.BuildIndexNotReadyEnvelopeForTest(
+                "Ready", freshness, 1200, null, null,
+                operationState: operationState, workerAlive: workerAlive);
+            Assert.Equal(recoverable, envelope["recoverable"]!.Value<bool>());
+            Assert.Equal(recoverable, envelope["hint"]!.Value<string>()!.Contains("action=index force=false"));
+            Assert.DoesNotContain("force=true", envelope["hint"]!.Value<string>()!);
+        }
+
+        [Theory]
         [InlineData("IndexNotReady")]
         [InlineData("Reindexing")]
         [InlineData("IndexCold")]

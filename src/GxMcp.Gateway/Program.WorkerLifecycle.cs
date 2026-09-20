@@ -16,6 +16,14 @@ namespace GxMcp.Gateway
             _kbResolver = new KbResolver(config);
             _workerPool = new WorkerPool(config);
             _workerPool.OnRpcResponseWithContext += HandleWorkerResponse;
+            _workerPool.OnWorkerStarted += kb =>
+            {
+                // An idle exit keeps the Gateway alive. Every replacement, including
+                // lazy acquire and explicit reopen, needs its own warm-cache refresh.
+                InvalidateIndexStateForKb(kb.NormalizedAlias);
+                ResetIndexBootstrapForAlias(kb.NormalizedAlias);
+                TriggerIndexBootstrapOnce(kb.NormalizedAlias);
+            };
             _workerPool.OnWorkerExited += (kb, stopReason) => {
                 string alias = kb.NormalizedAlias;
                 int aborted = 0;
@@ -89,14 +97,6 @@ namespace GxMcp.Gateway
                             await respawnPool!.AcquireAsync(kb, ctSrc.Token).ConfigureAwait(false);
                             _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
                             Log($"[Respawn] Replacement worker spawned for KB '{kb.Alias}' (attempt {attempt}).");
-                            // issue #25 #2: the index bootstrap fires once per gateway process,
-                            // so a crash-respawned worker (same gateway) otherwise never gets a
-                            // reindex trigger and its index stays Cold until an explicit
-                            // lifecycle call — forcing the agent to re-walk. Re-arm and re-fire
-                            // the one-shot: BulkIndex(force:false) reuses the persisted on-disk
-                            // snapshot (delta-on-open) instead of a cold 38k re-walk.
-                            ResetIndexBootstrapForAlias(kb.NormalizedAlias);
-                            TriggerIndexBootstrapOnce(kb.NormalizedAlias);
                             return;
                         }
                         catch (Exception ex)
@@ -144,8 +144,6 @@ namespace GxMcp.Gateway
                             await respawnPool!.AcquireAsync(kb, slowCts.Token).ConfigureAwait(false);
                             _respawnFailures.TryRemove(kb.NormalizedAlias, out _);
                             Log($"[Respawn] Slow-retry respawn succeeded for KB '{kb.Alias}' (retry {slow}).");
-                            ResetIndexBootstrapForAlias(kb.NormalizedAlias);
-                            TriggerIndexBootstrapOnce(kb.NormalizedAlias);
                             return;
                         }
                         catch (Exception ex)

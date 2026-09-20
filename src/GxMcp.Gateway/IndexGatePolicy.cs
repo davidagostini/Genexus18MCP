@@ -54,8 +54,11 @@ namespace GxMcp.Gateway
             string? operationId = null, string? operationState = null, bool? workerAlive = null,
             bool? recoverable = null, bool? stalled = null)
         {
+            bool idleStale = string.Equals(freshness, "stale", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(operationState, "Idle", StringComparison.OrdinalIgnoreCase)
+                    && workerAlive == false;
             bool isRecoverable = recoverable == true
-                || IsStalledIndexStatus(status, operationState, workerAlive);
+                || IsStalledIndexStatus(status, operationState, workerAlive) || idleStale;
             var envelope = new JObject
             {
                 ["status"] = "Indexing",
@@ -74,7 +77,9 @@ namespace GxMcp.Gateway
                 // caller into a wait that can only time out. Mirrors whoami's indexSuggestion.
                 ["hint"] = "Wait instead of polling: genexus_lifecycle action=status wait=30 freshness=current, "
                     + "then re-issue this tool. genexus_whoami observes progress but does not block."
-                    + (isRecoverable
+                    + (idleStale
+                        ? " No index refresh is active. If the state persists, start a warm refresh with genexus_lifecycle action=index force=false."
+                        : isRecoverable
                         ? " This index is not progressing on its own — if that wait times out, recover with genexus_lifecycle action=index force=true."
                         : string.Empty),
                 ["retryAfterMs"] = etaMs ?? DefaultIndexRetryAfterMs,

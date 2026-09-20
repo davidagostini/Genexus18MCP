@@ -68,6 +68,14 @@ If discovery works but `tools/call` fails, inspect worker startup and GeneXus SD
 
 ### Native index recovery
 
+After an idle timeout, the Gateway starts a warm-cache refresh when the Worker
+is acquired again. It does not eagerly respawn an intentionally idle Worker.
+`Ready` alone does not mean reads are available: wait for `freshness=current`.
+If `Ready/stale/Idle` persists with no index thread active, use `action=index
+force=false` to refresh the existing snapshot rather than discard it.
+`index.workerAlive` describes the indexing thread, not the SDK process;
+`Ready/current/Idle` with `index.workerAlive=false` is a normal completed scan.
+
 The native index reports build activity separately from index availability. A
 status of `Building` means the worker is alive and making progress; `Stalled`
 means the worker is alive but has exceeded the no-progress window; `Starting`
