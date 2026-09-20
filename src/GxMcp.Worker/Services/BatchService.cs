@@ -47,6 +47,10 @@ namespace GxMcp.Worker.Services
                     foreach (var change in changes)
                     {
                         string partName = change["part"]?.ToString() ?? "Source";
+                        string styleError = ThemeStyleEditHelper.IsStylePartName(partName)
+                            ? ThemeStyleEditHelper.ValidateInlineDataUris(change["content"]?.ToString()) : null;
+                        if (styleError != null)
+                            return McpResponse.Err(code: "ThemeStyleValidationFailed", message: styleError, target: target);
                         if (!TextPayloadGuard.AppliesToPart(partName)) continue;
 
                         string literalLineBreakError = TextPayloadGuard.BuildWriteError(
