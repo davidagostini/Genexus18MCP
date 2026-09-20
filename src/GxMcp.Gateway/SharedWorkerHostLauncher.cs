@@ -18,7 +18,7 @@ namespace GxMcp.Gateway
             string? legacyProvider = null,
             int timeoutMs = 30000)
         {
-            var identity = SharedWorkerIdentity.Create(workerPath, kb.Path, installationPath, driver, major);
+            var identity = SharedWorkerIdentity.Create(workerPath, kb.Path, installationPath, driver, major, Configuration.CurrentConfigPath);
             SharedWorkerRecord record = WaitForLiveRecord(identity, timeoutMs, config, kb, workerPath, installationPath, driver, major, legacyProvider);
             var connection = new SharedWorkerConnection(identity, record, "gateway-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N"));
             connection.Connect(Math.Min(timeoutMs, 30000));
@@ -109,6 +109,8 @@ namespace GxMcp.Gateway
             info.EnvironmentVariables["GX_KB_PATH"] = kb.Path ?? string.Empty;
             info.EnvironmentVariables["GXMCP_DRIVER"] = driver ?? string.Empty;
             info.EnvironmentVariables["GXMCP_TARGET_MAJOR"] = major ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(Configuration.CurrentConfigPath))
+                info.EnvironmentVariables["GXMCP_PROFILE_CONFIG_PATH"] = Configuration.CurrentConfigPath;
             if (!string.IsNullOrWhiteSpace(legacyProvider))
                 info.EnvironmentVariables["GXMCP_GXPUBLIC_PROVIDER"] = legacyProvider;
             info.EnvironmentVariables["GXMCP_SHARED_HOST"] = "1";

@@ -775,7 +775,7 @@ namespace GxMcp.Gateway
             {
                 connection = SharedWorkerHostLauncher.Connect(_config, Kb, workerPath,
                     workerInstallationPath ?? string.Empty, workerDriver, workerMajor, legacyProvider);
-                _sharedIdentity = SharedWorkerIdentity.Create(workerPath, Kb.Path, workerInstallationPath, workerDriver, workerMajor);
+                _sharedIdentity = SharedWorkerIdentity.Create(workerPath, Kb.Path, workerInstallationPath, workerDriver, workerMajor, Configuration.CurrentConfigPath);
                 _sharedConnection = connection;
                 connection.LineReceived += line =>
                 {
