@@ -124,7 +124,7 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("postgres", info["dialect"]?.ToString());
             Assert.Equal("PostgreSQL", info["type"]?.ToString());
             Assert.Equal(string.Empty, info["provider"]?.ToString());
-            Assert.Equal(15, info["dbmsCode"]?.Value<int>());
+            Assert.Equal(15, info["dbmsCode"].ToObject<int>());
         }
 
         [Fact]
