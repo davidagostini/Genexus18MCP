@@ -1069,7 +1069,7 @@ namespace GxMcp.Worker.Services
             return definition;
         }
 
-        private static IEnumerable<JObject> ReadProfileKbEntries(JToken token)
+        internal static IEnumerable<JObject> ReadProfileKbEntries(JToken token)
         {
             if (token is JArray array)
             {
@@ -1080,6 +1080,15 @@ namespace GxMcp.Worker.Services
             {
                 foreach (var property in map.Properties())
                 {
+                    if (property.Value.Type == JTokenType.String)
+                    {
+                        yield return new JObject
+                        {
+                            ["Alias"] = property.Name,
+                            ["Path"] = property.Value.ToString()
+                        };
+                        continue;
+                    }
                     if (property.Value is JObject entry)
                     {
                         if (ReadJsonText(entry, "Alias") == null) entry["Alias"] = property.Name;
@@ -1337,7 +1346,14 @@ namespace GxMcp.Worker.Services
             var parts = name.Split('.');
             string quote = family == "sqlserver" ? "[" : family == "mysql" ? "`" : "\"";
             string close = family == "sqlserver" ? "]" : quote;
-            return string.Join(".", parts.Select(part => quote + part.Trim().Trim('[', ']', '`', '"') + close));
+            return string.Join(".", parts.Select(part => QuoteIdentifierPart(part, quote, close)));
+        }
+
+        private static string QuoteIdentifierPart(string part, string quote, string close)
+        {
+            string value = part.Trim().Trim('[', ']', '`', '"');
+            value = quote == "[" ? value.Replace("]", "]]") : value.Replace(quote, quote + quote);
+            return quote + value + close;
         }
 
         internal static bool IsWriteAllowed(bool dryRun, string expectedVersion)

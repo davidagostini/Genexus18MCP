@@ -75,6 +75,22 @@ namespace GxMcp.Worker.Tests
         public void IdentifiersAreQuotedByProvider(string family, string expected)
             => Assert.Equal(expected, QuoteIdentifier("sales.Order", family));
 
+        [Fact]
+        public void IdentifiersEscapeProviderClosingDelimiters()
+            => Assert.Equal("[dbo]]; DROP TABLE Users;--].[Order]",
+                QuoteIdentifier("dbo]; DROP TABLE Users;--.Order", "sqlserver"));
+
+        [Fact]
+        public void ProfileAliasKbCatalogMapPreservesStringPathScope()
+        {
+            var entries = TransactionRecordsService.ReadProfileKbEntries(
+                JObject.Parse(@"{ ""production"": ""C:\\KBs\\Production"" }")).ToList();
+
+            var entry = Assert.Single(entries);
+            Assert.Equal("production", entry["Alias"]?.Value<string>());
+            Assert.Equal(@"C:\KBs\Production", entry["Path"]?.Value<string>());
+        }
+
         [Theory]
         [InlineData("Npgsql", 0, "postgres")]
         [InlineData("PostgreSQL", 0, "postgres")]
