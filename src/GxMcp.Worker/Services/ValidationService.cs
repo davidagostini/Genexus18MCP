@@ -29,6 +29,12 @@ namespace GxMcp.Worker.Services
         {
             try
             {
+                string styleError = ThemeStyleEditHelper.IsStylePartName(partName)
+                    ? ThemeStyleEditHelper.ValidateInlineDataUris(code) : null;
+                if (styleError != null)
+                    return McpResponse.Err(code: "SyntaxError", message: styleError, target: target,
+                        extra: new JObject { ["isPreflight"] = true });
+
                 var busyMsg = _kbService.EnsureNotIndexing();
                 if (busyMsg != null) return busyMsg;
 
@@ -76,6 +82,14 @@ namespace GxMcp.Worker.Services
                 KBObjectPart part = PartAccessor.GetPart(obj, normalizedPartName);
 
                 if (part == null) return McpResponse.Ok(target: target, code: "ValidationSkipped", result: new JObject { ["message"] = "Validation not applicable for this part type." });
+
+                if (ThemeStyleEditHelper.Applies(obj, normalizedPartName, out _))
+                {
+                    styleError = ThemeStyleEditHelper.ValidateInlineDataUris(code);
+                    if (styleError != null)
+                        return McpResponse.Err(code: "SyntaxError", message: styleError, target: target,
+                            extra: new JObject { ["isPreflight"] = true });
+                }
 
                 // 3. Capture errors using a mock transaction
                 var kb = _kbService.GetKB();

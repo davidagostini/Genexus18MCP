@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Style edits, validation and direct batch edits reject oversized inline data URIs before invoking the SDK.** The GeneXus style lexer can terminate the x86 Worker with a stack overflow even during a dry run. Raw CSS and structured `css`/`source` edits now reject data URIs over 1,024 characters (including the prefix) and advise using an Image object or an external asset URL. This conservative limit applies to the embedded URI, not the size of the stylesheet.
+
 ## v3.7.1 - 2026-09-20
 
 

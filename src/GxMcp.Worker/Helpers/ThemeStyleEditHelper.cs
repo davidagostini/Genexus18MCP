@@ -19,6 +19,10 @@ namespace GxMcp.Worker.Helpers
     /// </summary>
     public static class ThemeStyleEditHelper
     {
+        // The SDK lexer can terminate the x86 Worker on long inline data URIs.
+        // Keep these below the observed failure range; larger assets belong in Image objects.
+        private const int MaxInlineDataUriLength = 1024;
+
         public static bool Applies(KBObject obj, string partName, out object part)
         {
             part = null;
@@ -65,7 +69,7 @@ namespace GxMcp.Worker.Helpers
             if (css != null) return ValidateCss(css);
             if (request != null && request["properties"] != null && request["properties"].Type != JTokenType.Object)
                 return "Style properties must be a JSON object.";
-            return ValidateCss(content);
+            return request == null ? ValidateCss(content) : null;
         }
 
         /// <summary>
@@ -160,6 +164,8 @@ namespace GxMcp.Worker.Helpers
         public static string ValidateCss(string css)
         {
             if (css == null) return "Style content is required.";
+            string payloadError = ValidateInlineDataUris(css);
+            if (payloadError != null) return payloadError;
             int depth = 0;
             bool quoted = false;
             char quote = '\0';
@@ -186,6 +192,40 @@ namespace GxMcp.Worker.Helpers
                 }
             }
             return depth == 0 ? null : "Style content contains an unmatched opening brace.";
+        }
+
+        internal static bool IsStylePartName(string partName) =>
+            string.Equals(partName, "Styles", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(partName, "StyleSheet", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(partName, "ThemeStyles", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(partName, "Theme", StringComparison.OrdinalIgnoreCase);
+
+        internal static string ValidateInlineDataUris(string css)
+        {
+            if (css == null) return null;
+            for (int start = css.IndexOf("data:", StringComparison.OrdinalIgnoreCase); start >= 0;)
+            {
+                if (start > 0 && (char.IsLetterOrDigit(css[start - 1]) || css[start - 1] == '-' || css[start - 1] == '_'))
+                {
+                    start = css.IndexOf("data:", start + 5, StringComparison.OrdinalIgnoreCase);
+                    continue;
+                }
+                bool quotedValue = start > 0 && (css[start - 1] == '\'' || css[start - 1] == '"');
+                bool payload = false;
+                int end = start;
+                while (end < css.Length && !char.IsWhiteSpace(css[end])
+                    && css[end] != '\'' && css[end] != '"' && css[end] != ')'
+                    && css[end] != '{' && css[end] != '}'
+                    && (css[end] != ';' || !payload || quotedValue))
+                {
+                    if (css[end] == ',') payload = true;
+                    if (++end - start > MaxInlineDataUriLength)
+                        return "Inline data URIs longer than " + MaxInlineDataUriLength
+                            + " characters are not sent to the GeneXus style parser because they can terminate the Worker. Use a GeneXus Image object or an external asset URL.";
+                }
+                start = css.IndexOf("data:", end, StringComparison.OrdinalIgnoreCase);
+            }
+            return null;
         }
 
         private static JObject TryParseStructured(string content, out string error)
