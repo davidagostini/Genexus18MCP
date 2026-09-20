@@ -1972,7 +1972,12 @@ namespace GxMcp.Gateway
                 "persistedMatchCount", "oldContentPresent", "verification", "rollback",
                 "rolledBack", "versionToken", "persistedVerifyError", "replacementPresent",
                 "reReadConfirmed", "commentOnly", "commentStyle", "before", "after",
-                "matchedCount", "implicitOperations", "diagnosticContext"
+                "matchedCount", "implicitOperations", "diagnosticContext",
+                // Patch safety evidence: retain the distinction between a save attempt
+                // and verified persistence, plus the fresh-read failure envelope. These
+                // fields are part of the fail-closed patch contract, not debug-only detail.
+                "saveAttempted", "verificationUnavailable", "postSaveVerification",
+                "readCode", "readCompleted", "readError"
             };
             foreach (var k in diagnosticKeys)
             {
