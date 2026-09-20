@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { Readable, Writable } = require('node:stream');
 const path = require('node:path');
 const os = require('node:os');
@@ -68,23 +68,29 @@ function removeTempPath(targetPath, options = {}, deps = {}) {
     }
 }
 
-// Issue #211 teardown safety net: a probe child that outlives its terminate
+// Issue #211/#248 teardown safety net: a probe child that outlives its terminate
 // signal keeps the stubbed GxMcp.Gateway.exe image mapped, which turns the
 // cleanup rmSync into EPERM. Terminate only processes started from this test's
 // own temp dir — never a machine-wide GxMcp.Gateway.exe sweep, which would hit
 // other checkouts and the operator's own gateways.
 function stopLingeringGatewayStubs(dirPath, deps = {}) {
     const platform = deps.platform || process.platform;
-    const run = deps.run || ((command, args) => spawnSync(command, args, { encoding: 'utf8', windowsHide: true }));
+    const run = deps.run || ((command, args) => spawnSync(command, args, {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 20000
+    }));
     if (platform !== 'win32') return false;
 
-    const escapedDir = String(dirPath).replace(/'/g, "''");
-    const script = [
-        "$ErrorActionPreference = 'SilentlyContinue'",
+    let canonicalDir = String(dirPath);
+    try { canonicalDir = fs.realpathSync.native(canonicalDir); } catch { }
+    const escapedDir = canonicalDir.replace(/'/g, "''");
+    const processPipeline = [
         `Get-CimInstance Win32_Process -Filter "Name = 'GxMcp.Gateway.exe'"`,
-        `Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetDirectoryName($_.ExecutablePath) -eq '${escapedDir}') }`,
-        'ForEach-Object { Stop-Process -Id $_.ProcessId -Force }'
+        'Where-Object { if (-not $_.ExecutablePath -or -not $targetDirectory) { return $false }; $processDirectory = (Get-Item -LiteralPath ([System.IO.Path]::GetDirectoryName($_.ExecutablePath)) -ErrorAction SilentlyContinue).FullName; $processDirectory -and [System.StringComparer]::OrdinalIgnoreCase.Equals($processDirectory, $targetDirectory) }',
+        'ForEach-Object { $processId = $_.ProcessId; Stop-Process -Id $processId -Force; try { Wait-Process -Id $processId -Timeout 5 -ErrorAction SilentlyContinue } catch { } }'
     ].join(' | ');
+    const script = `$ErrorActionPreference = 'SilentlyContinue'; $targetDirectory = (Get-Item -LiteralPath '${escapedDir}' -ErrorAction SilentlyContinue).FullName; ${processPipeline}`;
     try {
         run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
     } catch { }
@@ -92,9 +98,16 @@ function stopLingeringGatewayStubs(dirPath, deps = {}) {
 }
 
 test.after(() => {
-    removeTempPath(testGxPath, { recursive: true, force: true });
     stopLingeringGatewayStubs(testGatewayDir);
-    removeTempPath(testGatewayDir, { recursive: true, force: true });
+    let firstError = null;
+    for (const directory of [testGxPath, testGatewayDir]) {
+        try {
+            removeTempPath(directory, { recursive: true, force: true });
+        } catch (error) {
+            if (!firstError) firstError = error;
+        }
+    }
+    if (firstError) throw firstError;
 });
 
 function runCli(args, opts = {}) {
@@ -176,9 +189,64 @@ test('lingering gateway stub cleanup stays scoped to the test temp dir', () => {
     assert.equal(windowsCalls[0][0], 'powershell.exe');
 
     const script = windowsCalls[0][1].join(' ');
+    assert.ok(script.includes("'SilentlyContinue'; $targetDirectory") && script.includes('; Get-CimInstance'), 'must set PowerShell error handling before starting the process pipeline');
     assert.ok(script.includes("GxMcp.Gateway.exe"), 'must target the stubbed gateway image');
     assert.ok(script.includes('C:\\Temp\\genexus-mcp-test-1'), 'must be scoped to the test temp dir');
+    assert.ok(script.includes('Wait-Process -Id $processId -Timeout 5'), 'must wait for targeted processes to exit before removing the temp directory');
     assert.ok(!script.includes('Stop-Process -Name'), 'must never terminate by process name machine-wide');
+});
+
+test('lingering gateway stub cleanup escapes PowerShell path literals', () => {
+    const calls = [];
+    stopLingeringGatewayStubs("C:\\Temp\\o'brien", {
+        platform: 'win32',
+        run: (_command, args) => calls.push(args.join(' '))
+    });
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].includes("C:\\Temp\\o''brien"), 'single quotes must be doubled inside the PowerShell literal');
+});
+
+function waitForChildExit(child, timeoutMs = 10000) {
+    return new Promise((resolve) => {
+        if (!child || child.exitCode !== null || child.signalCode !== null) {
+            resolve(true);
+            return;
+        }
+        const timer = setTimeout(() => resolve(false), timeoutMs);
+        child.once('exit', () => {
+            clearTimeout(timer);
+            resolve(true);
+        });
+    });
+}
+
+test('windows cleanup stops a real scoped gateway stub before removal', { skip: process.platform !== 'win32' }, async () => {
+    const probeDir = path.join(testGatewayDir, 'wait-probe');
+    const probePath = path.join(probeDir, 'GxMcp.Gateway.exe');
+    fs.mkdirSync(probeDir, { recursive: true });
+    fs.copyFileSync(testGatewayPath, probePath);
+    const child = spawn(probePath, ['/c', 'ping 127.0.0.1 -n 5 > nul'], {
+        stdio: 'ignore',
+        windowsHide: true
+    });
+    await new Promise((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+    });
+
+    stopLingeringGatewayStubs(probeDir);
+    let removeError = null;
+    try {
+        fs.rmSync(probeDir, { recursive: true, force: true });
+    } catch (error) {
+        removeError = error;
+    }
+    const exited = await waitForChildExit(child);
+    if (!exited) {
+        try { child.kill(); } catch { }
+    }
+    assert.equal(removeError, null, `the scoped cleanup must release the gateway image before removal: ${removeError?.message || removeError}`);
+    assert.equal(exited, true, 'the scoped cleanup must terminate the gateway stub before directory removal');
 });
 
 test('a failed stub cleanup does not mask the test result', () => {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using GxMcp.Gateway;
@@ -16,9 +17,69 @@ namespace GxMcp.Gateway.Tests
         public WorkerCrashRespawnLifecycleTests()
         {
             Program.ResetWorkerLifecycleForTest();
+            Program.IndexBootstrapTriggerForTest = () => { };
         }
 
         public void Dispose() => Program.ResetWorkerLifecycleForTest();
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task WorkerStartedSubscriberFailure_DoesNotPoisonAcquireOrReload(bool reload)
+        {
+            var config = new Configuration();
+            var kb = new KbHandle("observer-kb", @"C:\Models\ObserverKb");
+            var pool = new WorkerPool(config);
+            pool.SpawnFactoryForTest = handle => new WorkerProcess(config, handle);
+            if (reload) await pool.AcquireAsync(kb, CancellationToken.None);
+            pool.OnWorkerStarted += _ => throw new InvalidOperationException("observer failed");
+
+            var worker = reload
+                ? await pool.DrainAndReplaceAsync(kb, 1000, CancellationToken.None)
+                : await pool.AcquireAsync(kb, CancellationToken.None);
+
+            Assert.Same(worker, pool.TryGet(kb.NormalizedAlias));
+            Assert.Same(worker, await pool.AcquireAsync(kb, CancellationToken.None));
+        }
+
+        [Theory]
+        [InlineData(WorkerStopReason.IdleTimeout)]
+        [InlineData(WorkerStopReason.ExplicitClose)]
+        public async Task IntentionalExit_LazyReopenBootstrapsOnceWithoutEagerRespawn(WorkerStopReason reason)
+        {
+            var config = new Configuration();
+            var kb = new KbHandle("warm-kb", @"C:\Models\WarmKb");
+            int spawns = 0;
+            int bootstraps = 0;
+            Program.IndexBootstrapTriggerForTest = () => Interlocked.Increment(ref bootstraps);
+            Program.StartWorkerForTest(config);
+            var pool = Program.GetWorkerPool()!;
+            pool.SpawnFactoryForTest = handle =>
+            {
+                Interlocked.Increment(ref spawns);
+                return new WorkerProcess(config, handle);
+            };
+            var initial = await pool.AcquireAsync(kb, CancellationToken.None);
+            // Explicit open also requests bootstrap; a subsequent lazy reopen must
+            // not inherit that process's one-shot latch.
+            typeof(Program).GetMethod("TriggerIndexBootstrapOnce",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(null, new object[] { kb.NormalizedAlias });
+            Assert.Equal(1, bootstraps);
+
+            initial.StopWithReason(reason);
+            Assert.Null(pool.TryGet(kb.NormalizedAlias));
+            Assert.Equal(1, spawns);
+            Assert.Equal(1, bootstraps);
+
+            var replacements = await Task.WhenAll(
+                System.Linq.Enumerable.Range(0, 8)
+                    .Select(_ => pool.AcquireAsync(kb, CancellationToken.None)));
+            Assert.All(replacements, replacement => Assert.Same(replacements[0], replacement));
+            Assert.NotSame(initial, replacements[0]);
+            Assert.Equal(2, spawns);
+            Assert.Equal(2, bootstraps);
+        }
 
         [Fact]
         public async Task UnexpectedExit_AbortsAllPendingRequests_ExactlyOnce()
@@ -77,10 +138,10 @@ namespace GxMcp.Gateway.Tests
 
             await EventuallyAsync(() => ReferenceEquals(pool.TryGet("respawn-kb"), replacement)
                 && delays.Count == 2
-                && Volatile.Read(ref bootstrapCount) == 1);
+                && Volatile.Read(ref bootstrapCount) == 2);
             Assert.Equal(4, spawnAttempts);
             Assert.Equal(2, delays.Count);
-            Assert.Equal(1, bootstrapCount);
+            Assert.Equal(2, bootstrapCount);
             Assert.Same(replacement, pool.TryGet("respawn-kb"));
         }
 
