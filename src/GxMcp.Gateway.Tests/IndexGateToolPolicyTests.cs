@@ -78,8 +78,8 @@ namespace GxMcp.Gateway.Tests
 
             Assert.Equal("idx-123", stalled["operationId"]?.ToString());
             Assert.Equal("Stalled", stalled["operationState"]?.ToString());
-            Assert.True((bool)stalled["workerAlive"]);
-            Assert.True((bool)stalled["recoverable"]);
+            Assert.True(stalled["workerAlive"]?.ToObject<bool>() == true);
+            Assert.True(stalled["recoverable"]?.ToObject<bool>() == true);
             Assert.Contains("action=index force=true", stalled["hint"]?.ToString());
         }
 
@@ -96,7 +96,7 @@ namespace GxMcp.Gateway.Tests
                 progress: null, etaMs: null, operationId: "idx-active",
                 operationState: operationState, workerAlive: workerAlive);
 
-            Assert.Equal(expectRecoveryHint, (bool)envelope["recoverable"]);
+            Assert.Equal(expectRecoveryHint, envelope["recoverable"]?.ToObject<bool>() == true);
             Assert.Equal(expectRecoveryHint,
                 envelope["hint"]?.ToString()?.Contains("action=index force=true") == true);
         }

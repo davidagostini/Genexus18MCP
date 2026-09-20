@@ -700,11 +700,13 @@ namespace GxMcp.Gateway
             bool? recoverable = TryReadBoolean(state["recoverable"]);
             bool? stalled = TryReadBoolean(state["stalled"]);
             DateTime? lastProgressAtUtc = null;
-            if (state["lastProgressAtUtc"] != null && state["lastProgressAtUtc"].Type != JTokenType.Null)
-                lastProgressAtUtc = TryParseUtc(state["lastProgressAtUtc"]);
+            var lastProgressAt = state["lastProgressAtUtc"];
+            if (lastProgressAt != null && lastProgressAt.Type != JTokenType.Null)
+                lastProgressAtUtc = TryParseUtc(lastProgressAt);
             DateTime? stalledAtUtc = null;
-            if (state["stalledAtUtc"] != null && state["stalledAtUtc"].Type != JTokenType.Null)
-                stalledAtUtc = TryParseUtc(state["stalledAtUtc"]);
+            var stalledAt = state["stalledAtUtc"];
+            if (stalledAt != null && stalledAt.Type != JTokenType.Null)
+                stalledAtUtc = TryParseUtc(stalledAt);
             UpdateLastKnownIndexState(status, totalObjects, lastIndexedAt, progress, etaMs,
                 flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged,
                 freshness, lastSuccessfulScanAt, kbAlias, operationId, operationState,
