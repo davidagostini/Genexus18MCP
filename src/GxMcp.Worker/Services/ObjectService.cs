@@ -5305,13 +5305,61 @@ namespace GxMcp.Worker.Services
         {
             try
             {
-                var type = typeof(Artech.Architecture.Common.Objects.KBObject).Assembly.GetType("Artech.Architecture.Common.Cache.SingleInstanceModelObjectCache");
-                if (type == null) return false;
-                var method = type.GetMethod("Invalidate", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                if (method == null) return false;
-                method.Invoke(null, new object[] { obj });
-                Logger.Debug("InvalidateCache: Object invalidated via reflection.");
-                return true;
+                var assembly = typeof(Artech.Architecture.Common.Objects.KBObject).Assembly;
+                var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance;
+                var cacheType = assembly.GetType("Artech.Architecture.Common.Cache.SingleInstanceModelObjectCache");
+                if (cacheType != null)
+                {
+                    var staticInvalidate = cacheType.GetMethods(flags).FirstOrDefault(m =>
+                        m.IsStatic
+                        && string.Equals(m.Name, "Invalidate", StringComparison.Ordinal)
+                        && m.GetParameters().Length == 1
+                        && m.GetParameters()[0].ParameterType.IsInstanceOfType(obj));
+                    if (staticInvalidate != null)
+                    {
+                        staticInvalidate.Invoke(null, new[] { obj });
+                        Logger.Debug("InvalidateCache: Object invalidated through the static SDK cache API.");
+                        return true;
+                    }
+                }
+
+                // Current GX18 builds expose the cache as an instance owned by
+                // KBModel.Objects. Keep this reflective so older supported SDKs
+                // can continue using their static cache member when present.
+                var modelProperty = obj.GetType().GetProperties(flags).FirstOrDefault(p =>
+                    string.Equals(p.Name, "Model", StringComparison.Ordinal)
+                    && string.Equals(p.PropertyType.FullName, "Artech.Architecture.Common.Objects.KBModel", StringComparison.Ordinal)
+                    && p.GetIndexParameters().Length == 0);
+                object model = modelProperty?.GetValue(obj, null);
+                var objectsProperty = model?.GetType().GetProperties(flags).FirstOrDefault(p =>
+                    string.Equals(p.Name, "Objects", StringComparison.Ordinal)
+                    && p.GetIndexParameters().Length == 0);
+                object objects = objectsProperty?.GetValue(model, null);
+                if (objects != null)
+                {
+                    var cacheContract = assembly.GetType("Artech.Architecture.Common.Objects.IKBModelObjectsCacheConfiguration");
+                    MethodInfo invalidate = cacheContract != null && cacheContract.IsInstanceOfType(objects)
+                        ? cacheContract.GetMethods(flags).FirstOrDefault(m =>
+                            string.Equals(m.Name, "Invalidate", StringComparison.Ordinal)
+                            && m.GetParameters().Length == 1)
+                        : null;
+                    if (invalidate == null)
+                    {
+                        invalidate = objects.GetType().GetMethods(flags).FirstOrDefault(m =>
+                            !m.IsStatic
+                            && string.Equals(m.Name, "Invalidate", StringComparison.Ordinal)
+                            && m.GetParameters().Length == 1
+                            && m.GetParameters()[0].ParameterType.IsInstanceOfType(obj));
+                    }
+                    if (invalidate != null)
+                    {
+                        invalidate.Invoke(invalidate.IsStatic ? null : objects, new[] { obj });
+                        Logger.Debug("InvalidateCache: Object invalidated through the KB model cache API.");
+                        return true;
+                    }
+                }
+
+                return false;
             }
             catch (Exception ex)
             {

@@ -26,6 +26,7 @@
 - **Index recovery now distinguishes a live build from a stalled or exited worker.** Status polling no longer cancels a slow index build. Concurrent `action=index` requests are idempotent, return the active `operationId`, and `force=true` starts a new generation only after the old STA worker has stopped; if that bounded stop cannot complete, recovery remains pending instead of running two SDK generations concurrently. Read tools expose the recoverable state and the exact recovery hint without running any GeneXus lifecycle action.
 
 - **`records_query` profile aliases now escape provider-specific identifier delimiters, preserve string-path KB catalog entries during alias scoping, and isolate shared Worker hosts by profile configuration path.**
+- **Native SDK post-save verification supports the current GeneXus 18 object-cache boundary.** The Worker now invalidates both the legacy static cache API and the current `KBModel.Objects` instance cache before a fresh persistence read, keeping fail-closed write verification without rejecting valid SDK saves.
 
 ### Internal
 
