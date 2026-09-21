@@ -12,10 +12,10 @@ namespace GxMcp.Worker.Services
             @"^(erro|error)\s*,\s*line\s*:\s*\d+\s*$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-        public static bool IsUnchangedSourceWrite(string existingSource, string incomingSource) =>
+        public static bool IsUnchangedSourceWrite(string existingSource, string incomingSource, bool exact = false) =>
             string.Equals(
-                NormalizeSourceForComparison(existingSource),
-                NormalizeSourceForComparison(incomingSource),
+                exact ? existingSource ?? string.Empty : NormalizeSourceForComparison(existingSource),
+                exact ? incomingSource ?? string.Empty : NormalizeSourceForComparison(incomingSource),
                 StringComparison.Ordinal);
 
         public static string NormalizeSourceForComparison(string text)

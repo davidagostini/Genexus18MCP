@@ -4,6 +4,39 @@ Detailed, task-specific guidance for agents working on this repository. The
 short project rules and navigation pointers live in `AGENTS.md`; read the
 relevant section here when a task touches the corresponding behavior.
 
+## Full Source save verification
+
+For `genexus_edit mode=full part=Source`, send the last complete read's
+`expectedVersion` (or `baseVersion`) and an explicit `verifyMode`. A full read
+with `limit=0` preserves every SDK character, including EOLs and the final
+newline. Post-save verification invalidates caches, resolves the same object
+through the public-read route, and uses that same complete representation.
+A missing/freshness-unconfirmed read is unknown evidence, never a text mismatch.
+
+`verifyMode=exact` compares ordinal text; EOL and module-qualification changes
+remain differences, with typed reasons and bounded expected/read line previews.
+The older patch exact contract still treats CRLF/LF as logically equivalent.
+`sdkSaveCompleted` and `saved` describe physical save completion independently
+from `persisted`/`verified` (requested text confirmed) and `persistedStateKnown`
+(reliable reread). Unknown save completion is null. `postSaveVerification`
+identifies `representation=genexus_read`, matches and the observed versionToken.
+Async result polling retains this evidence even on error. Do not retry a write
+because verification failed; obtain a new complete read and version first.
+
+Dry runs do not save. No implicit lifecycle action or forceWrite is added.
+Full Source rollback does not perform a second write without an atomic
+version-conditional SDK restore: a requested restore returns
+`rollback.reason=AtomicRollbackUnavailable`, `attempted=false`, preserving the
+snapshot and observed state for explicit recovery. If the reread already equals
+the snapshot, no save is required. This prevents a newer concurrent edit from
+being overwritten by an unsafe best-effort restore.
+Full Source `requireObjectSave=true` checks `objectSaved` emitted only after the
+SDK object save and transaction commit return; missing evidence returns
+`ObjectSaveIncomplete`. An unchanged source remains a no-op without a new save.
+Non-exact full writes retain existing SDK casing/module-qualification tolerance.
+The Events patch isolation
+block remains in effect. See [#265](https://github.com/lennix1337/Genexus18MCP/issues/265).
+
 ## Formal legacy configuration migration
 
 Migration is explicit and copy-based; startup commands do not alter legacy configuration. Run:

@@ -3158,42 +3158,21 @@ namespace GxMcp.Worker.Services
             }
 
             InvalidateAllReadCaches();
-            var kb = _kbService.GetKB();
-            try
+            // Resolve through the same module-aware route as genexus_read after
+            // invalidation. Loading by EntityKey here bypassed that route and could
+            // expose a different Source representation from the public read.
+            var fresh = FindObject(target, typeFilter);
+            if (fresh == null || fresh.Guid != seed.Guid || object.ReferenceEquals(fresh, seed))
             {
-                var byEntityKey = kb?.DesignModel.Objects.Get(seed.Key);
-                if (byEntityKey != null)
+                _lastResolutionDiagnostic = new JObject
                 {
-                    if (object.ReferenceEquals(byEntityKey, seed))
-                    {
-                        _lastResolutionDiagnostic = new JObject
-                        {
-                            ["code"] = "FreshReadUnavailable",
-                            ["message"] = "The SDK returned the same in-memory object for a requested fresh verification read.",
-                            ["hint"] = "Retry after the Worker has exclusive access to the KB, or use a separate Worker for independent verification."
-                        };
-                        return null;
-                    }
-                    return byEntityKey;
-                }
+                    ["code"] = "FreshReadUnavailable",
+                    ["message"] = "The public read resolver did not return a fresh instance of the same object (or returned the same in-memory object).",
+                    ["hint"] = "Re-read independently before deciding whether another edit is needed. Do not retry the write automatically."
+                };
+                return null;
             }
-            catch { }
-            try
-            {
-                var byGuid = kb?.DesignModel.Objects.Get(seed.Guid);
-                if (byGuid != null && object.ReferenceEquals(byGuid, seed))
-                {
-                    _lastResolutionDiagnostic = new JObject
-                    {
-                        ["code"] = "FreshReadUnavailable",
-                        ["message"] = "The SDK returned the same in-memory object for a requested fresh verification read.",
-                        ["hint"] = "Retry after the Worker has exclusive access to the KB, or use a separate Worker for independent verification."
-                    };
-                    return null;
-                }
-                return byGuid;
-            }
-            catch { return null; }
+            return fresh;
         }
 
         private string FormatReadNotFound(string target)
@@ -3453,6 +3432,7 @@ namespace GxMcp.Worker.Services
             {
                 var payload = JObject.Parse(response);
                 payload["verificationSource"] = "fresh-sdk-read";
+                payload["representation"] = "genexus_read";
                 if (payload["versionToken"] == null
                     && payload["source"]?.Type == JTokenType.String)
                 {

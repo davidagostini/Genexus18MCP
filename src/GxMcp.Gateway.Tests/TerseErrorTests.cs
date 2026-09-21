@@ -7,6 +7,15 @@ namespace GxMcp.Gateway.Tests
     public class TerseErrorTests
     {
         [Fact]
+        public void TrimErrorEnvelope_PreservesPhysicalSaveAndTypedDiff()
+        {
+            var input = JObject.Parse("{code:'WriteNotPersisted',message:'mismatch',saved:true,sdkSaveCompleted:true,persistedStateKnown:true,persisted:false,objectSaved:true,partPersisted:false,requireObjectSave:true,saveContract:'transactional-object-save',metadataStampPersisted:true,versionToken:'35',postSaveVerification:{representation:'genexus_read',matches:false},mutation:{diff:{reason:'contentMismatch',firstDifferentLine:2,expectedLine:'a',readLine:'b'}},implicitLifecycleActions:[]}");
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            foreach (string key in new[] { "saved", "sdkSaveCompleted", "persistedStateKnown", "persisted", "versionToken", "postSaveVerification", "mutation", "implicitLifecycleActions", "objectSaved", "partPersisted", "requireObjectSave", "saveContract", "metadataStampPersisted" })
+                Assert.True(JToken.DeepEquals(input[key], trimmed[key]), key);
+        }
+
+        [Fact]
         public void TrimErrorEnvelope_DefaultDropsStackAndKeepsMessage()
         {
             // Friction 2026-05-25 item #5: `details` (and a handful of diagnostic

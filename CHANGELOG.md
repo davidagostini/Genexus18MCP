@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Full Source save verification ([#265](https://github.com/lennix1337/Genexus18MCP/issues/265)) now preserves complete public-read text (including original line endings and trailing newline), forwards `verifyMode` and `requireObjectSave`, and reports physical SDK save separately from post-save comparison. Exact differences carry bounded expected/read lines and typed reasons; unknown reads and concurrent rollback state fail closed without automatic write retries or lifecycle actions.
+
 ### Internal
 
 - Consolidate duplicate v3.7.0 subsections and the repeated #241 release bullet, preserving all distinct entries and the tracked-issue link; no release is republished ([#258](https://github.com/lennix1337/Genexus18MCP/issues/258)).

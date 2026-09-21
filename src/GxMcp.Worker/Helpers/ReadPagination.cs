@@ -53,7 +53,16 @@ namespace GxMcp.Worker.Helpers
             // Explicit opt-out: limit == 0 means "no pagination, return everything from offset".
             if (limit.HasValue && limit.Value == 0)
             {
-                var slice = string.Join(Environment.NewLine, lines.GetRange(start, totalLines - start));
+                start = Math.Min(start, totalLines);
+                int position = 0;
+                for (int line = 0; line < start && position < content.Length; line++)
+                {
+                    while (position < content.Length && content[position] != '\r' && content[position] != '\n') position++;
+                    if (position < content.Length && content[position++] == '\r'
+                        && position < content.Length && content[position] == '\n') position++;
+                }
+                // A full read is evidence: never synthesize EOLs or drop the final newline.
+                var slice = content.Substring(position);
                 return new ReadPage
                 {
                     Content = slice,
