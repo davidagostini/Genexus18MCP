@@ -769,6 +769,13 @@ namespace GxMcp.Worker.Services
             foreach (var kv in index.Objects)
             {
                 var entry = kv.Value;
+                if (!string.Equals(entry.FullSourcePart, ObjectService.ResolveSearchPartName(entry.Type), StringComparison.OrdinalIgnoreCase))
+                {
+                    // Both warm sidecars and legacy/sharded loads pass here before
+                    // token postings are rebuilt. An old body cannot prove absence.
+                    entry.FullSource = null;
+                    entry.FullSourcePart = null;
+                }
                 string parent = entry.ParentPath ?? entry.Parent ?? "";
                 if (!byParent.TryGetValue(parent, out var list))
                 {
@@ -2227,6 +2234,7 @@ namespace GxMcp.Worker.Services
             lock (current)
             {
                 if (current.FullSource != null) return false;
+                current.FullSourcePart = ObjectService.ResolveSearchPartName(current.Type);
                 current.FullSource = source;
             }
 
@@ -2324,8 +2332,8 @@ namespace GxMcp.Worker.Services
             {
                 try
                 {
-                    var primarySource = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is ISource) as ISource;
-                    if (primarySource != null) entry.FullSource = primarySource.Source ?? string.Empty;
+                    entry.FullSourcePart = ObjectService.ResolveSearchPartName(entry.Type);
+                    entry.FullSource = ObjectService.ReadPartSourceUncached(obj, entry.FullSourcePart.ToLowerInvariant());
                 }
                 catch { }
             }
@@ -2334,10 +2342,8 @@ namespace GxMcp.Worker.Services
             if (obj is global::Artech.Genexus.Common.Objects.Procedure || obj is global::Artech.Genexus.Common.Objects.DataProvider)
             {
                 try {
-                    dynamic sourcePart = obj.Parts.Cast<KBObjectPart>().FirstOrDefault(p => p is ISource);
-                    if (sourcePart != null) {
-                        string src = sourcePart.Source ?? "";
-                        entry.FullSource = src;
+                    if (entry.FullSource != null) {
+                        string src = entry.FullSource;
                         entry.Complexity = src.Split('\n').Length;
                         // Source is already in hand here — extract code metrics for KB-wide
                         // analytics (genexus_analyze mode=code_metrics) at ~no extra cost.

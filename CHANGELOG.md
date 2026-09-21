@@ -2,7 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- `genexus_compare` now returns bounded, per-part unified text diffs for divergent
+  content, with read aliases and explicit omission reasons; SDK equality and
+  properties mode are preserved. CRLF/CR normalize to LF; each input/output is
+  capped at 1,048,576 input / 16,384 output UTF-16 code units per part, with a
+  131,072-byte serialized evidence budget and linear-time contiguous hunks instead
+  of an unbounded LCS matrix. ([#261](https://github.com/lennix1337/Genexus18MCP/issues/261))
+  No discovery budget increase: approximately 31,481 tokens (LF), 31,497 (CRLF), below 31,500;
+  detailed limits and omission semantics live in tool help.
+
 ### Internal
+
+- Clear the managed read cache before the count-cap fixture lowers its limit,
+  avoiding order-dependent failures from prior source-search fixtures; runtime
+  eviction behavior is unchanged. Found while validating [#261](https://github.com/lennix1337/Genexus18MCP/issues/261)
+  and [#262](https://github.com/lennix1337/Genexus18MCP/issues/262).
 
 - Consolidate duplicate v3.7.0 subsections and the repeated #241 release bullet, preserving all distinct entries and the tracked-issue link; no release is republished ([#258](https://github.com/lennix1337/Genexus18MCP/issues/258)).
 
@@ -13,6 +29,8 @@
 - Wait for the MTA executor's active-slot cleanup in the burst concurrency test. Callback completion precedes the executor's `finally` block, so an immediate zero-count assertion could fail after all work completed.
 
 ### Fixed
+
+- Source search uses Events as the primary source of WebPanels and Transactions, including cold reads, promotion and hit labels. Explicit and mixed scopes no longer discard candidates based on a different indexed part. Persisted sources without matching part provenance are discarded on hydration before rebuilding token postings; object and graph snapshots remain usable. The first search after upgrade and scans of explicit parts may take longer; existing timeout/cursor limits still apply ([#262](https://github.com/lennix1337/Genexus18MCP/issues/262)).
 
 - `workerHealth.sharingMode` now reports canonical `isolated`/`shared-host`, consistent with `worker.sharingMode`; `diagnostics.mode` retains its separate attachment vocabulary. This corrects a value without renaming fields ([#257](https://github.com/lennix1337/Genexus18MCP/issues/257)).
 
