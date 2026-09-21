@@ -117,6 +117,9 @@ namespace GxMcp.Worker.Models
             public bool IsEnriched { get; set; }
             public string SourceSnippet { get; set; }
             public string FullSource { get; set; }
+            // Legacy snapshots may contain Rules instead of the primary source. Certify the
+            // part so hydration can discard only that ambiguous derived text.
+            public string FullSourcePart { get; set; }
             public int Complexity { get; set; }
 
             // Code metrics (Procedure/DataProvider source), extracted once at enrichment so
@@ -176,6 +179,7 @@ namespace GxMcp.Worker.Models
             {
                 if (entry == null) continue;
                 entry.Type = InternShared(entry.Type);
+                entry.FullSourcePart = InternShared(entry.FullSourcePart);
                 entry.Module = InternShared(entry.Module);
                 entry.Parent = InternShared(entry.Parent);
                 entry.ParentPath = InternShared(entry.ParentPath);
