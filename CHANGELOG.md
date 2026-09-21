@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Typed WorkWithPlus grid columns.** `genexus_wwp` supports `move_grid_column` (including caption-only updates) and `add_grid_variable` for Character/VarChar presentation values. Both require a read version and an unambiguous grid path. Native saves retain normal automatic pattern projection, verify bindings and unrelated content, and never invoke an explicit lifecycle or retry an ambiguous write. Pre-commit failures roll back the SDK transaction; post-commit divergence reports evidence and refuses unsafe compensation. Live SDK save/projection acceptance remains pending ([#268](https://github.com/lennix1337/Genexus18MCP/issues/268)).
+
 ### Internal
 
 - Consolidate duplicate v3.7.0 subsections and the repeated #241 release bullet, preserving all distinct entries and the tracked-issue link; no release is republished ([#258](https://github.com/lennix1337/Genexus18MCP/issues/258)).

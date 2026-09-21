@@ -314,6 +314,10 @@ namespace GxMcp.Gateway
             }
 
             string? defaultPart = args["part"]?.ToString();
+            if (string.Equals(toolName, "genexus_wwp", StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(args["action"]?.ToString(), "move_grid_column", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(args["action"]?.ToString(), "add_grid_variable", StringComparison.OrdinalIgnoreCase)))
+                defaultPart = "PatternInstance";
             Add(args["name"]?.ToString(), defaultPart);
             Add(args["target"]?.ToString(), defaultPart);
 

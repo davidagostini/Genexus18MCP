@@ -68,6 +68,8 @@ namespace GxMcp.Gateway.Tests
             Assert.Contains("remove_tab", actions);
             Assert.Contains("set_table_type", actions);
             Assert.Contains("add_grid_attribute", actions);
+            Assert.Contains("move_grid_column", actions);
+            Assert.Contains("add_grid_variable", actions);
             Assert.Contains("add_user_action", actions);
             Assert.NotNull(schema["properties"]!["containerName"]);
             Assert.NotNull(schema["properties"]!["rollbackOnFailure"]);
@@ -117,6 +119,34 @@ namespace GxMcp.Gateway.Tests
             var args = new JObject { ["action"] = "settings_templates", [identity] = value };
             if (withName) args["name"] = "WorkWithPlus";
             AssertWorkWithPlusRoute(args, withName ? "WorkWithPlus" : null);
+        }
+
+        [Theory]
+        [InlineData("move_grid_column", "attribute")]
+        [InlineData("move_grid_column", "variable")]
+        [InlineData("add_grid_variable", "variable")]
+        public void WorkWithPlusGridFieldsReachWorkerUnchanged(string action, string selector)
+        {
+            var args = new JObject
+            {
+                ["action"] = action, ["name"] = "SampleModule.SampleComponent",
+                ["gridPath"] = "/instance/level/selection/table[0]/grid",
+                [selector] = "Status", ["before"] = "Machine", ["caption"] = "Processing",
+                ["basicType"] = "VarChar", ["length"] = 80, ["expectedVersion"] = "read-token",
+                ["dryRun"] = true, ["rollbackOnFailure"] = true
+            };
+            AssertWorkWithPlusRoute(args, "SampleModule.SampleComponent");
+        }
+
+        [Fact]
+        public void WorkWithPlusPresentationVariableSchemaIsBounded()
+        {
+            var props = FindTool("genexus_wwp")["inputSchema"]!["properties"]!;
+            Assert.Equal(new[] { "Character", "VarChar" },
+                ((JArray)props["basicType"]!["enum"]!).Select(value => value.ToString()));
+            Assert.Equal(1, (int)props["length"]!["minimum"]!);
+            Assert.Equal(9999, (int)props["length"]!["maximum"]!);
+            Assert.Contains("including dryRun", (string)props["expectedVersion"]!["description"]!);
         }
 
         private static void AssertWorkWithPlusRoute(JObject args, string? expectedTarget)

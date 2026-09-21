@@ -1977,7 +1977,13 @@ namespace GxMcp.Gateway
                 // and verified persistence, plus the fresh-read failure envelope. These
                 // fields are part of the fail-closed patch contract, not debug-only detail.
                 "saveAttempted", "verificationUnavailable", "postSaveVerification",
-                "readCode", "readCompleted", "readError"
+                "readCode", "readCompleted", "readError",
+                // Typed Pattern receipts remain actionable in terse mode, including
+                // physical commit evidence and failures before/after projection.
+                "sdkSaveCompleted", "commitCompleted", "persistedStateKnown",
+                "partialPersistenceDetected", "preCommitVerification", "stateRestoredExactly",
+                "snapshot", "implicitLifecycleActions", "failureCode", "objectSaveReturned",
+                "transactionFinalizationError", "rollbackError", "verificationError", "rollbackPerformed"
             };
             foreach (var k in diagnosticKeys)
             {

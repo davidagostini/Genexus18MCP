@@ -5,7 +5,7 @@
     "src/GxMcp.Gateway/OperationClassifier.cs"
   ],
   "toolCount": 54,
-  "actionCount": 267,
+  "actionCount": 270,
   "tools": [
     {
       "tool": "genexus_data_view",
@@ -2019,6 +2019,15 @@
           "invalidation": []
         },
         {
+          "action": "changed_objects",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": []
+        },
+        {
           "action": "freeze",
           "kind": "mutating",
           "effects": "kb.write",
@@ -3294,6 +3303,32 @@
         },
         {
           "action": "add_grid_attribute",
+          "kind": "mutating",
+          "effects": "kb.write",
+          "execution": "worker",
+          "retry": "operation_key",
+          "cache": "never",
+          "invalidation": [
+            "kb",
+            "dependents",
+            "collections"
+          ]
+        },
+        {
+          "action": "move_grid_column",
+          "kind": "mutating",
+          "effects": "kb.write",
+          "execution": "worker",
+          "retry": "operation_key",
+          "cache": "never",
+          "invalidation": [
+            "kb",
+            "dependents",
+            "collections"
+          ]
+        },
+        {
+          "action": "add_grid_variable",
           "kind": "mutating",
           "effects": "kb.write",
           "execution": "worker",

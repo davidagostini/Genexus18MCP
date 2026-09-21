@@ -5279,7 +5279,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed WorkWithPlus action, form-level action, tab, grid, native table-type, and structural edits with dryRun, optimistic concurrency, exact snapshots, post-save reread, projection verification, and rollback. set_table_type mutates only an existing table type through the native PatternInstance SDK and preserves children, bindings, events, names, classes, defaultType, and childrenOrderedList. No lifecycle operation is implicit. Settings: embedded and separate WWP templates, paged reads and exact table-class dryRun; saves remain blocked.",
+      "description": "Typed native WorkWithPlus edits with dryRun, concurrency, snapshots, independent reread and projection verification. Preserve unrelated metadata and children. No implicit lifecycle. Settings: template reads and exact table-class previews; saves blocked.",
       "inputSchema": {
         "examples": [
           {
@@ -5354,7 +5354,7 @@
         ],
         "properties": {
           "action": {
-            "description": "WorkWithPlus action-group, tab, grid-attribute, or explicit native structural operation to perform.",
+            "description": "Typed WorkWithPlus instance or Settings operation.",
             "enum": [
               "list",
               "add_action",
@@ -5367,6 +5367,8 @@
               "remove_tab",
               "set_table_type",
               "add_grid_attribute",
+              "move_grid_column",
+              "add_grid_variable",
               "replace_web_component_with_user_action",
               "settings_templates",
               "settings_read",
@@ -5379,11 +5381,23 @@
             "type": "string"
           },
           "attribute": {
-            "description": "add_grid_attribute: GeneXus Attribute name.",
+            "description": "Attribute column name; move_grid_column selects attribute OR variable.",
             "type": "string"
           },
           "baseVersion": {
             "description": "Optimistic-concurrency token returned by dryRun/read.",
+            "type": "string"
+          },
+          "basicType": {
+            "description": "add_grid_variable: presentation variable type; no table change.",
+            "enum": [
+              "Character",
+              "VarChar"
+            ],
+            "type": "string"
+          },
+          "before": {
+            "description": "Insert before this column; omit to append on add or preserve position on caption-only move.",
             "type": "string"
           },
           "buttonClass": {
@@ -5391,11 +5405,11 @@
             "type": "string"
           },
           "caption": {
-            "description": "Action caption. For a DropDownComponent pass the GeneXus expression used for the closed button, for example &Context.EmpresaDescricao.",
+            "description": "Action/column caption; required for variable add. DropDownComponent accepts a GeneXus expression.",
             "type": "string"
           },
           "children": {
-            "description": "add_tab controls; flat children are wrapped in a responsive table. Nested table children accept the same control shape.",
+            "description": "add_tab: typed controls; flat children gain a responsive table. Tables accept nested controls.",
             "items": {
               "additionalProperties": false,
               "properties": {
@@ -5495,11 +5509,15 @@
             "type": "string"
           },
           "expectedVersion": {
-            "description": "Alias for baseVersion.",
+            "description": "Required for grid move/add including dryRun; baseVersion/versionToken aliases accepted.",
             "type": "string"
           },
           "fromGroup": {
             "description": "move_action: source group (optional; searched across groups when omitted).",
+            "type": "string"
+          },
+          "gridPath": {
+            "description": "Required for grid move/add: absolute element-type path, e.g. /instance/level/selection/table[0]/grid. Indexes are zero-based same-type siblings; ambiguity fails.",
             "type": "string"
           },
           "group": {
@@ -5511,7 +5529,7 @@
             "type": "string"
           },
           "gxobject": {
-            "description": "replace_web_component_with_user_action: existing WebComponent Gxobject to retain; it must match the current node.",
+            "description": "Replacement WebComponent reference; must match the existing node.",
             "type": "string"
           },
           "icon": {
@@ -5522,13 +5540,19 @@
             "description": "KB alias.",
             "type": "string"
           },
+          "length": {
+            "description": "add_grid_variable: presentation variable length.",
+            "maximum": 9999,
+            "minimum": 1,
+            "type": "integer"
+          },
           "limit": {
             "description": "Settings nodes per page; offset=0, limit=0 includes full separate-template XML.",
             "minimum": 0,
             "type": "integer"
           },
           "name": {
-            "description": "Transaction, WebPanel, or WorkWithPlus<Object> host.",
+            "description": "Transaction, WebPanel, WebComponent, or WorkWithPlus host; resolved by identity.",
             "type": "string"
           },
           "nodePath": {
@@ -5570,11 +5594,11 @@
             "type": "string"
           },
           "tablePath": {
-            "description": "set_table_type: existing table breadcrumb by names or indexed table segments; replace_web_component_with_user_action: full breadcrumb including the source node, for example TableHeader > TableUserRole > EmpresaSelector.",
+            "description": "Existing table breadcrumb for set_table_type; include source node for replace_web_component_with_user_action.",
             "type": "string"
           },
           "tableType": {
-            "description": "set_table_type: requested native WWP table type. Only the existing table @type changes; defaultType and all child identity/metadata remain guarded.",
+            "description": "set_table_type: native table type; preserves defaultType and children.",
             "enum": [
               "Regular",
               "Responsive"
@@ -5602,10 +5626,14 @@
             "type": "string"
           },
           "userActionName": {
-            "description": "replace_web_component_with_user_action: resulting UserAction name; defaults to sourceName.",
+            "description": "Replacement UserAction name; defaults to sourceName.",
             "type": "string"
           },
           "value": {
+            "type": "string"
+          },
+          "variable": {
+            "description": "Presentation variable name to add, or existing column to move.",
             "type": "string"
           },
           "versionToken": {

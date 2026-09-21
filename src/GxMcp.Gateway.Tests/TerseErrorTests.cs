@@ -102,6 +102,41 @@ namespace GxMcp.Gateway.Tests
             Assert.Empty((JArray)trimmed["implicitOperations"]!);
         }
 
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public void TrimErrorEnvelope_PatternFailureRetainsPhysicalAndRecoveryEvidence(bool committed, bool restored)
+        {
+            // Exact McpResponse.Err(extra: receipt) wire shape: error is nested,
+            // receipt fields are at the root (Worker model cannot be referenced by Gateway).
+            var receipt = new JObject
+            {
+                ["saved"] = committed, ["sdkSaveCompleted"] = true, ["commitCompleted"] = committed,
+                ["persisted"] = false, ["persistedStateKnown"] = true,
+                ["partialPersistenceDetected"] = committed,
+                ["postSaveVerification"] = new JObject { ["matches"] = false },
+                ["preCommitVerification"] = new JObject { ["matches"] = true },
+                ["rollback"] = new JObject { ["attempted"] = restored, ["verified"] = restored },
+                ["rollbackPerformed"] = restored, ["objectSaveReturned"] = true,
+                ["transactionFinalizationError"] = "dispose failure", ["verificationError"] = "reread unavailable",
+                ["stateRestoredExactly"] = restored,
+                ["snapshot"] = new JObject { ["versionToken"] = "before" },
+                ["versionToken"] = "after", ["implicitLifecycleActions"] = new JArray(),
+                ["failureCode"] = "ProjectionMismatch"
+            };
+            var input = (JObject)receipt.DeepClone();
+            input["status"] = "error";
+            input["error"] = new JObject { ["code"] = "WwpVerificationFailed", ["message"] = "Projection diverged." };
+            input["stack"] = "internal trace";
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            Assert.Equal("WwpVerificationFailed", (string?)trimmed["code"]);
+            foreach (var field in receipt.Properties())
+                Assert.True(JToken.DeepEquals(field.Value, trimmed[field.Name]), field.Name);
+            Assert.Null(trimmed["stack"]);
+        }
+
         [Fact]
         public void TrimErrorEnvelope_VerbosePassesThrough()
         {

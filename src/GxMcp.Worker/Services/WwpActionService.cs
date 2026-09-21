@@ -38,6 +38,9 @@ namespace GxMcp.Worker.Services
                 return new PatternSettingsService(_objects).Run(target, args);
             try
             {
+                string gridOperation = NormalizeOperation(args?["action"]?.ToString());
+                if (gridOperation == "move_grid_column" || gridOperation == "add_grid_variable")
+                    return RunGridColumnOperation(target, gridOperation, args);
                 KBObject requestedObject = _objects.FindObject(
                     target,
                     typeFilter: "WorkWithPlus",

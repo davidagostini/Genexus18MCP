@@ -98,6 +98,28 @@ namespace GxMcp.Gateway.Tests
                 targets.Select(item => item.Target + "|" + item.Part));
         }
 
+        [Theory]
+        [InlineData("move_grid_column")]
+        [InlineData("add_grid_variable")]
+        public void GridMutationRequiresPatternReadbackNotSource(string action)
+        {
+            var args = new JObject { ["action"] = action, ["name"] = "SampleHost" };
+            var target = Assert.Single(Program.EnumerateMutationRecoveryTargets("genexus_wwp", args));
+            Assert.Equal("PatternInstance", target.Part);
+            var registry = new MutationRecoveryRegistry();
+            registry.RequireRead("kb", target.Target, target.Part, "grid-op");
+
+            Assert.False(registry.ConfirmRead("kb", "SampleHost", "Source"));
+            Assert.True(registry.TryGet("kb", target.Target, target.Part, out _));
+            Assert.True(registry.ConfirmRead("kb", "SampleHost", "PatternInstance"));
+            Assert.False(registry.TryGet("kb", target.Target, target.Part, out _));
+            Assert.True(Program.IsMutatingTool("genexus_wwp", args));
+            args["async"] = true;
+            Assert.False(Program.ShouldRunMutationAsync("genexus_wwp", args));
+            args["dryRun"] = true;
+            Assert.False(Program.IsMutatingTool("genexus_wwp", args));
+        }
+
         [Fact]
         public void PartialReadbackKeepsOtherTargetFenceAndCompleteReadbackClearsAll()
         {
