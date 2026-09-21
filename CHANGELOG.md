@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- `genexus_compare` now returns bounded, per-part unified text diffs for divergent
+  content, with read aliases and explicit omission reasons; SDK equality and
+  properties mode are preserved. CRLF/CR normalize to LF; each input/output is
+  capped at 1,048,576 input / 16,384 output UTF-16 code units per part, with a
+  131,072-byte serialized evidence budget and linear-time contiguous hunks instead
+  of an unbounded LCS matrix. ([#261](https://github.com/lennix1337/Genexus18MCP/issues/261))
+  No discovery budget increase: approximately 31,481 tokens (LF), 31,497 (CRLF), below 31,500;
+  detailed limits and omission semantics live in tool help.
+
 ### Internal
 
 - Consolidate duplicate v3.7.0 subsections and the repeated #241 release bullet, preserving all distinct entries and the tracked-issue link; no release is republished ([#258](https://github.com/lennix1337/Genexus18MCP/issues/258)).

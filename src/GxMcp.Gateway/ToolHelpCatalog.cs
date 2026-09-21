@@ -15,6 +15,14 @@ namespace GxMcp.Gateway
 
         private static readonly Dictionary<string, string> _helpTexts = new(System.StringComparer.OrdinalIgnoreCase)
         {
+            ["genexus_compare"] =
+                "# genexus_compare\n\n" +
+                "Read-only comparison of objectA and objectB. The SDK remains authoritative for equal and differences (SDK part descriptor names); mode=properties is unchanged.\n\n" +
+                "When content differs, diffs describes shared parts: part is the genexus_read alias, partType is the SDK descriptor, and unified is an A-to-B unified diff with three context lines. Each diff uses a/part and b/part headers; use its enclosing part field to identify the source. One contiguous replacement hunk is emitted, not necessarily the shortest edit script.\n" +
+                "CRLF and bare CR normalize to LF. Final-newline differences are preserved with standard no-newline markers. SDK equality is not overridden: normalizedTextEqual means the SDK differs but normalized text does not.\n" +
+                "Input bodies are capped at 1,048,576 UTF-16 code units; unified output at 16,384 units per part, with a 131,072-byte serialized JSON evidence budget across parts (metadata is retained). Over-limit evidence is omitted entirely with omittedReason=truncated, truncated=true and limit/maxChars or maxBytes; no incomplete patch is returned.\n" +
+                "Other per-part omittedReason values: nonTextualPart, readFailed, compareFailed. Comparison failures do not assert a difference; enumeration failure sets diffsOmittedReason=readFailed. Other parts and the top-level SDK verdict survive. Parts absent from either object are not compared. No writes, merge, build or execution.\n",
+
             ["genexus_query"] =
                 "# genexus_query\n\n" +
                 "Search objects in the active Knowledge Base.\n\n" +

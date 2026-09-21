@@ -629,7 +629,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Diff two KB objects — IDE 'Compare Objects' parity over the SDK's IComparerService. mode=content (default) diffs full object content; mode=properties diffs top-level properties only. Read-only.",
+      "description": "Read-only SDK comparison. content adds diffs (part=read alias, partType, unified/omittedReason), preserving equal/differences. CRLF/CR to LF. Limits: input 1M UTF-16 units, diff 16K/part, JSON evidence 128KiB total; excess omitted. properties unchanged. See genexus_help.",
       "inputSchema": {
         "examples": [
           {
