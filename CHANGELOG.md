@@ -15,6 +15,11 @@
 
 ### Internal
 
+- Clear the managed read cache before the count-cap fixture lowers its limit,
+  avoiding order-dependent failures from prior source-search fixtures; runtime
+  eviction behavior is unchanged. Found while validating [#261](https://github.com/lennix1337/Genexus18MCP/issues/261)
+  and [#262](https://github.com/lennix1337/Genexus18MCP/issues/262).
+
 - Consolidate duplicate v3.7.0 subsections and the repeated #241 release bullet, preserving all distinct entries and the tracked-issue link; no release is republished ([#258](https://github.com/lennix1337/Genexus18MCP/issues/258)).
 
 - Test-only filesystem guards reject operator client/launcher configuration mutations before backup or write and terminate the runner nonzero, including caught client errors. Parent-captured registry roots are passed to isolated CLI children; disposable fixtures remain writable ([#256](https://github.com/lennix1337/Genexus18MCP/issues/256)).
