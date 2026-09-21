@@ -5279,7 +5279,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed native WorkWithPlus edits with dryRun, concurrency, snapshots, independent reread and projection verification. Preserve unrelated metadata and children. No implicit lifecycle. Settings: template reads and exact table-class previews; saves blocked.",
+      "description": "Native WorkWithPlus edits: dryRun, concurrency, snapshots, reread/projection checks; preserve unrelated content. No implicit lifecycle. Settings: read/preview only.",
       "inputSchema": {
         "examples": [
           {
@@ -5389,7 +5389,7 @@
             "type": "string"
           },
           "basicType": {
-            "description": "add_grid_variable: presentation variable type; no table change.",
+            "description": "Presentation type; no table change.",
             "enum": [
               "Character",
               "VarChar"
@@ -5397,7 +5397,7 @@
             "type": "string"
           },
           "before": {
-            "description": "Insert before this column; omit to append on add or preserve position on caption-only move.",
+            "description": "Preceding insertion anchor; omit to append on add or keep position on caption-only move.",
             "type": "string"
           },
           "buttonClass": {
@@ -5517,7 +5517,7 @@
             "type": "string"
           },
           "gridPath": {
-            "description": "Required for grid move/add: absolute element-type path, e.g. /instance/level/selection/table[0]/grid. Indexes are zero-based same-type siblings; ambiguity fails.",
+            "description": "Grid move/add: absolute type path, e.g. /instance/level/selection/table[0]/grid. Zero-based same-type indices; ambiguity fails.",
             "type": "string"
           },
           "group": {
@@ -5541,7 +5541,7 @@
             "type": "string"
           },
           "length": {
-            "description": "add_grid_variable: presentation variable length.",
+            "description": "Presentation variable length.",
             "maximum": 9999,
             "minimum": 1,
             "type": "integer"
