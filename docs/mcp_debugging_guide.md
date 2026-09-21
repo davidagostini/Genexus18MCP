@@ -10,6 +10,25 @@ This guide documents how to debug the current MCP-first runtime.
 
 ## Primary checks
 
+### Worker sharing and transport diagnostics
+
+`genexus_whoami` reports Worker ownership separately from the client transport:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `worker.sharingMode`, running `workerHealth.sharingMode` | `isolated`, `shared-host` | Dedicated Worker or attachment to a shared WorkerHost. |
+| `worker.diagnostics.mode` | `stdio-isolated`, `shared-host` | Existing Worker attachment diagnostic vocabulary; `stdio-isolated` denotes the direct Worker path, including an HTTP Gateway. |
+| Configuration `GatewayMode` | `stdio-isolated`, `http-shared` | Client-facing Gateway transport/deployment mode. |
+
+An isolated Worker can serve either Gateway mode. A shared WorkerHost is
+configured with `GatewayMode=stdio-isolated`. Do not infer the Gateway's HTTP
+or stdio transport from `worker.diagnostics.mode`.
+
+Issue #257 corrects the running health envelope's previous `stdio-isolated`
+sharing value to the canonical `isolated`, matching `worker.sharingMode`.
+Consumers matching the old health value should accept `isolated`; field names,
+envelope shape and `worker.diagnostics.mode` remain unchanged.
+
 ### HTTP MCP sanity
 
 Validate against `/mcp`.

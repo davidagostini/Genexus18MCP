@@ -12,6 +12,8 @@
 
 ### Fixed
 
+- `workerHealth.sharingMode` now reports canonical `isolated`/`shared-host`, consistent with `worker.sharingMode`; `diagnostics.mode` retains its separate attachment vocabulary. This corrects a value without renaming fields ([#257](https://github.com/lennix1337/Genexus18MCP/issues/257)).
+
 - Compact lifecycle and tracked-operation status omit absent/null `error` values to conform to the published output schema while preserving error messages and structured responses in lean mode ([#254](https://github.com/lennix1337/Genexus18MCP/issues/254)).
 
 - **Style edits, validation and direct batch edits reject oversized inline data URIs before invoking the SDK.** The GeneXus style lexer can terminate the x86 Worker with a stack overflow even during a dry run. Raw CSS and structured `css`/`source` edits now reject data URIs over 1,024 characters (including the prefix) and advise using an Image object or an external asset URL. This conservative limit applies to the embedded URI, not the size of the stylesheet.
