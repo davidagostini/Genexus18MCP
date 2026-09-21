@@ -516,7 +516,29 @@
       "router": "SystemRouter",
       "actions": [
         {
-          "action": null,
+          "action": "recover",
+          "kind": "mutating",
+          "effects": "process.write",
+          "execution": "worker",
+          "retry": "operation_key",
+          "cache": "never",
+          "invalidation": [
+            "kb",
+            "dependents",
+            "collections"
+          ]
+        },
+        {
+          "action": "journal_status",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": []
+        },
+        {
+          "action": "journal_repair",
           "kind": "mutating",
           "effects": "process.write",
           "execution": "worker",

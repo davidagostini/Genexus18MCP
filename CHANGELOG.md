@@ -5,8 +5,21 @@
 ### Added
 
 - **Typed WorkWithPlus grid columns.** `genexus_wwp` supports `move_grid_column` (including caption-only updates) and `add_grid_variable` for Character/VarChar presentation values. Both require a read version and an unambiguous grid path. Native saves retain normal automatic pattern projection, verify bindings and unrelated content, and never invoke an explicit lifecycle or retry an ambiguous write. Pre-commit failures roll back the SDK transaction; post-commit divergence reports evidence and refuses unsafe compensation. Live SDK save/projection acceptance remains pending ([#268](https://github.com/lennix1337/Genexus18MCP/issues/268)).
+- `genexus_compare` now returns bounded, per-part unified text diffs for divergent
+  content, with read aliases and explicit omission reasons; SDK equality and
+  properties mode are preserved. CRLF/CR normalize to LF; each input/output is
+  capped at 1,048,576 input / 16,384 output UTF-16 code units per part, with a
+  131,072-byte serialized evidence budget and linear-time contiguous hunks instead
+  of an unbounded LCS matrix. ([#261](https://github.com/lennix1337/Genexus18MCP/issues/261))
+  No discovery budget increase: approximately 31,481 tokens (LF), 31,497 (CRLF), below 31,500;
+  detailed limits and omission semantics live in tool help.
 
 ### Internal
+
+- Clear the managed read cache before the count-cap fixture lowers its limit,
+  avoiding order-dependent failures from prior source-search fixtures; runtime
+  eviction behavior is unchanged. Found while validating [#261](https://github.com/lennix1337/Genexus18MCP/issues/261)
+  and [#262](https://github.com/lennix1337/Genexus18MCP/issues/262).
 
 - Consolidate duplicate v3.7.0 subsections and the repeated #241 release bullet, preserving all distinct entries and the tracked-issue link; no release is republished ([#258](https://github.com/lennix1337/Genexus18MCP/issues/258)).
 
@@ -18,9 +31,13 @@
 
 ### Fixed
 
+- Source search uses Events as the primary source of WebPanels and Transactions, including cold reads, promotion and hit labels. Explicit and mixed scopes no longer discard candidates based on a different indexed part. Persisted sources without matching part provenance are discarded on hydration before rebuilding token postings; object and graph snapshots remain usable. The first search after upgrade and scans of explicit parts may take longer; existing timeout/cursor limits still apply ([#262](https://github.com/lennix1337/Genexus18MCP/issues/262)).
+
 - `workerHealth.sharingMode` now reports canonical `isolated`/`shared-host`, consistent with `worker.sharingMode`; `diagnostics.mode` retains its separate attachment vocabulary. This corrects a value without renaming fields ([#257](https://github.com/lennix1337/Genexus18MCP/issues/257)).
 
 - Compact lifecycle and tracked-operation status omit absent/null `error` values to conform to the published output schema while preserving error messages and structured responses in lean mode ([#254](https://github.com/lennix1337/Genexus18MCP/issues/254)).
+
+- **Mutation recovery journals can be repaired without discarding pending reads.** Cross-process locking and atomic rename with verified readback prevent concurrent Gateways from overwriting recovery fences. Failed candidates and backups are retained, and pending fences no longer expire silently. `genexus_connection_recover` exposes `journal_status` and preview-first `journal_repair`; neither restarts Workers nor edits a KB. Corrupt evidence remains blocked for explicit investigation. Schema budget increases from 31,500 to 31,700 approximate tokens for these recovery actions.
 
 - **Style edits, validation and direct batch edits reject oversized inline data URIs before invoking the SDK.** The GeneXus style lexer can terminate the x86 Worker with a stack overflow even during a dry run. Raw CSS and structured `css`/`source` edits now reject data URIs over 1,024 characters (including the prefix) and advise using an Image object or an external asset URL. This conservative limit applies to the embedded URI, not the size of the stylesheet.
 

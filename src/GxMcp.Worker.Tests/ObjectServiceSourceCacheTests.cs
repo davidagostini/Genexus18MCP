@@ -187,10 +187,9 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void ReadCache_StaysBoundedPastCap()
         {
-            // _readCache is TTL-bound but was count-free: 12 distinct keys under
-            // cap=8 must leave at most 8 survivors (evict-oldest-one per insert
-            // past the cap). GUID prefix + per-test cleanup keep parallel classes
-            // unaffected; count-only assertion is immune to concurrent inserts.
+            // The suite is serial, but earlier fixtures can leave >20 entries under
+            // the default cap=256. Start empty before lowering the cap: one eviction
+            // per insertion does not retroactively shrink an already larger cache.
             string prefix = "cap-" + Guid.NewGuid().ToString("N") + "|";
             var setter = typeof(ObjectService).GetMethod(
                 "SetReadCache",
@@ -201,6 +200,7 @@ namespace GxMcp.Worker.Tests
                 .GetValue(null);
             try
             {
+                ObjectService.InvalidateAllReadCaches();
                 Environment.SetEnvironmentVariable("GXMCP_READ_CACHE_MAX", "20");
                 for (int i = 0; i < 30; i++)
                 {

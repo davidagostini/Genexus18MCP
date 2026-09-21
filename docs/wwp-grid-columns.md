@@ -57,3 +57,45 @@ time unavailable”; absence of that message means no recorded restart. A curren
 completion timestamp that can be overwritten by another execution is not historical
 restart evidence. Logging a timestamp for future events and populating the display
 variable are separate application changes; these actions do not invent past times.
+
+## Other typed WWP examples
+
+These examples live here to keep discovery within its token budget.
+
+```json
+[
+  {
+    "action": "list",
+    "name": "SampleOrderWW"
+  },
+  {
+    "action": "add_action",
+    "name": "SampleOrderWW",
+    "group": "Operations",
+    "actionName": "Retry",
+    "procedure": "RetrySampleOrder",
+    "selection": "multiple",
+    "dryRun": true
+  },
+  {
+    "action": "add_tab",
+    "name": "SamplePanel",
+    "controlName": "Details",
+    "title": "Details",
+    "children": [
+      {
+        "type": "variable",
+        "name": "Status",
+        "basicType": "VarChar",
+        "length": 40
+      },
+      {
+        "type": "userAction",
+        "name": "Refresh",
+        "caption": "Refresh"
+      }
+    ],
+    "dryRun": true
+  }
+]
+```
