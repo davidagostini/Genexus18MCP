@@ -296,9 +296,10 @@ namespace GxMcp.Gateway
                     ["timeoutCount"] = record.TimeoutCount,
                     ["startedAtUtc"] = record.StartedAtUtc,
                     ["updatedAtUtc"] = record.UpdatedAtUtc,
-                    ["completedAtUtc"] = record.CompletedAtUtc,
-                    ["error"] = record.LastError
+                    ["completedAtUtc"] = record.CompletedAtUtc
                 };
+                if (!string.IsNullOrWhiteSpace(record.LastError))
+                    status["error"] = record.LastError;
                 AttachTimedOutHint(status, record);
                 return status;
             }

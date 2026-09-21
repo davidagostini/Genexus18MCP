@@ -268,6 +268,15 @@ The XML or ops you sent didn't pass the SDK validator. Tips:
 - Use the `ops` mode for semantic operations (`set_attribute`, `add_rule`, …) instead of raw XML when possible — it's harder to break.
 - For `patch` mode, ensure your JSON-Patch ops target the canonical JSON shape (see [`docs/object_json_schema.md`](docs/object_json_schema.md)).
 
+### Client rejects a successful lifecycle status with a schema error
+
+Older compact lifecycle responses could include `error: null`, although the
+published output schema permits only a string when `error` is present. This is
+a response-shaping defect, not evidence that the build failed. The corrected
+Gateway omits absent/null errors and preserves real error strings, including in
+lean mode. Update the Gateway and reconnect the client; do not rebuild the KB
+solely to address this protocol validation error.
+
 ### `genexus_lifecycle` build hangs
 
 GeneXus builds can take minutes on large KBs. The MCP returns an `operationId` and you should poll:

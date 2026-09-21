@@ -1077,7 +1077,7 @@ namespace GxMcp.Gateway
                             ["status"] = "running",
                             ["alias"] = alias,
                             ["pid"] = activeWorker.Pid,
-                            ["sharingMode"] = activeWorker.IsSharedWorker ? "shared-host" : "stdio-isolated"
+                            ["sharingMode"] = activeWorker.IsSharedWorker ? "shared-host" : "isolated"
                         };
                         if (activeWorker.IsSharedWorker)
                         {
