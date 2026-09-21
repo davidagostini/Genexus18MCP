@@ -453,6 +453,8 @@ namespace GxMcp.Gateway
                 "# genexus_connection_recover\n\n" +
                 "Recover unhealthy gateway workers after calls hang, the connection closes, or repeated `WorkerBusy` responses occur.\n\n" +
                 "## Contract\n" +
+                "- `action: journal_status` inspects the durable mutation journal without touching a Worker.\n" +
+                "- `action: journal_repair` defaults to `dryRun: true`; explicitly set false to atomically merge valid journal/candidate fences and verify the committed file. It never discards pending reads or fixes corrupt/foreign entries by deleting them. Do not combine with force.\n" +
                 "- Default (`force: false`) probes every open worker and replaces only unhealthy workers.\n" +
                 "- `force: true` deliberately recovers all open workers, including responsive ones; use it only as an explicit administrative action.\n" +
                 "- This is a gateway/process operation, not an ordinary KB edit. It has no KB selector or per-KB lease input in the published schema, and it clears semantic cache after recovery.\n" +

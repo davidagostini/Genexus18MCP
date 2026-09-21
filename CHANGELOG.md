@@ -18,6 +18,8 @@
 
 - Compact lifecycle and tracked-operation status omit absent/null `error` values to conform to the published output schema while preserving error messages and structured responses in lean mode ([#254](https://github.com/lennix1337/Genexus18MCP/issues/254)).
 
+- **Mutation recovery journals can be repaired without discarding pending reads.** Cross-process locking and atomic rename with verified readback prevent concurrent Gateways from overwriting recovery fences. Failed candidates and backups are retained, and pending fences no longer expire silently. `genexus_connection_recover` exposes `journal_status` and preview-first `journal_repair`; neither restarts Workers nor edits a KB. Corrupt evidence remains blocked for explicit investigation. Schema budget increases from 31,500 to 31,700 approximate tokens for these recovery actions.
+
 - **Style edits, validation and direct batch edits reject oversized inline data URIs before invoking the SDK.** The GeneXus style lexer can terminate the x86 Worker with a stack overflow even during a dry run. Raw CSS and structured `css`/`source` edits now reject data URIs over 1,024 characters (including the prefix) and advise using an Image object or an external asset URL. This conservative limit applies to the embedded URI, not the size of the stylesheet.
 
 - **Index-mirror settling is now isolated per KB and cancellation-aware.** Parallel WorkerPool bootstraps no longer overwrite each other's in-flight settle task, and a cancelled request or Gateway shutdown stops the bounded wait/refresh path instead of spending its full retry budget.

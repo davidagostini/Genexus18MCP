@@ -72,6 +72,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | Tool | Read-only actions | Mutating actions |
 | --- | --- | --- |
 | `genexus_data_view` | `inspect`, `dry_run` | `create`, `update`, `delete` |
+| `genexus_connection_recover` | `journal_status` | `recover`, `journal_repair` |
 | `genexus_recipe` | `list`, `describe`, `suggest_macro` | `crystallize` |
 | `genexus_lifecycle` | `inspect`, `reorg_preview`, `status`, `result`, `snapshots-list` | `build`, `build_all`, `cancel`, `reconcile`, `specify`, `validate`, `validate-kb`, `rebuild`, `reorg`, `sync`, `index`, `snapshots-restore` |
 | `genexus_refactor` | — | `RenameAttribute`, `RenameVariable`, `RenameObject`, `ExtractProcedure`, `ExtractSubroutine`, `WWPSetCondition` |
