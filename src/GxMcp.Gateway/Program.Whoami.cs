@@ -112,6 +112,10 @@ namespace GxMcp.Gateway
             public bool Stalled;
             public DateTime? LastProgressAtUtc;
             public DateTime? StalledAtUtc;
+            public int? ResumedFrom;
+            public bool CheckpointActive;
+            public DateTime? CheckpointCapturedAtUtc;
+            public JObject? CacheValidation;
             // v2.6.8: top-5 recently-changed projection from the worker's
             // in-memory index. Cached so subsequent whoami calls don't pay
             // another round-trip — refreshed every TryRefreshIndexStateFromWorkerAsync.
@@ -265,6 +269,38 @@ namespace GxMcp.Gateway
                 }
             }
             catch { /* never break the telemetry update over a background fetch */ }
+        }
+
+        private static void UpdateLastKnownIndexDiagnostics(string? kbAlias, int? resumedFrom,
+            bool? checkpointActive, DateTime? checkpointCapturedAtUtc, JObject? cacheValidation)
+        {
+            string? alias = NormalizeKbAlias(kbAlias) ?? ResolveKbAliasForIndexRefresh();
+            lock (_lastKnownIndexStateLock)
+            {
+                IndexStateSnapshot snapshot;
+                if (!string.IsNullOrEmpty(alias))
+                {
+                    if (!_lastKnownIndexStatesByKb.TryGetValue(alias!, out var existing) || existing == null)
+                        snapshot = new IndexStateSnapshot { KbAlias = alias };
+                    else
+                        snapshot = existing;
+                }
+                else
+                {
+                    snapshot = _lastKnownIndexState;
+                }
+
+                snapshot.ResumedFrom = resumedFrom ?? snapshot.ResumedFrom;
+                snapshot.CheckpointActive = checkpointActive ?? snapshot.CheckpointActive;
+                snapshot.CheckpointCapturedAtUtc = checkpointCapturedAtUtc ?? snapshot.CheckpointCapturedAtUtc;
+                if (cacheValidation != null)
+                    snapshot.CacheValidation = (JObject)cacheValidation.DeepClone();
+
+                if (!string.IsNullOrEmpty(alias))
+                    _lastKnownIndexStatesByKb[alias!] = snapshot;
+                else
+                    _lastKnownIndexState = snapshot;
+            }
         }
 
         private static string? NormalizeKbAlias(string? alias)
@@ -511,6 +547,10 @@ namespace GxMcp.Gateway
                 ["stalledAtUtc"] = snap.StalledAtUtc.HasValue
                     ? (JToken)snap.StalledAtUtc.Value.ToUniversalTime().ToString("o")
                     : JValue.CreateNull(),
+                ["resumedFrom"] = snap.ResumedFrom.HasValue
+                    ? (JToken)snap.ResumedFrom.Value
+                    : JValue.CreateNull(),
+                ["checkpoint"] = BuildCheckpointBlock(snap),
                 ["recoveryAction"] = snap.Recoverable
                     ? (JToken)"genexus_lifecycle action=index force=true"
                     : JValue.CreateNull(),
@@ -524,11 +564,25 @@ namespace GxMcp.Gateway
                         : JValue.CreateNull(),
                     ["lastError"] = snap.FlushLastError != null ? (JToken)snap.FlushLastError : JValue.CreateNull()
                 },
+                ["cacheValidation"] = snap.CacheValidation != null
+                    ? (JToken)snap.CacheValidation.DeepClone()
+                    : JValue.CreateNull(),
                 // v2.6.8: top-5 recently-changed objects — set only when the worker
                 // had populated lifecycle data to surface. Omitted otherwise so the
                 // whoami payload stays tight for cold/legacy KBs.
                 ["recentlyChanged"] = snap.RecentlyChanged != null
                     ? (JToken)snap.RecentlyChanged.DeepClone()
+                    : JValue.CreateNull()
+            };
+        }
+
+        private static JObject BuildCheckpointBlock(IndexStateSnapshot snapshot)
+        {
+            return new JObject
+            {
+                ["active"] = snapshot.CheckpointActive,
+                ["capturedAtUtc"] = snapshot.CheckpointCapturedAtUtc.HasValue
+                    ? (JToken)snapshot.CheckpointCapturedAtUtc.Value.ToUniversalTime().ToString("o")
                     : JValue.CreateNull()
             };
         }
@@ -711,10 +765,19 @@ namespace GxMcp.Gateway
             var stalledAt = state["stalledAtUtc"];
             if (stalledAt != null && stalledAt.Type != JTokenType.Null)
                 stalledAtUtc = TryParseUtc(stalledAt);
+            int? resumedFrom = state["resumedFrom"]?.ToObject<int?>();
+            bool? checkpointActive = TryReadBoolean(state["checkpointActive"]);
+            DateTime? checkpointCapturedAtUtc = null;
+            var checkpointCapturedAt = state["checkpointCapturedAtUtc"];
+            if (checkpointCapturedAt != null && checkpointCapturedAt.Type != JTokenType.Null)
+                checkpointCapturedAtUtc = TryParseUtc(checkpointCapturedAt);
+            JObject? cacheValidation = state["cacheValidation"] as JObject;
             UpdateLastKnownIndexState(status, totalObjects, lastIndexedAt, progress, etaMs,
                 flushFailuresConsecutive, flushLastSuccessUtc, flushLastError, recentlyChanged,
                 freshness, lastSuccessfulScanAt, kbAlias, operationId, operationState,
                 workerAlive, recoverable, stalled, lastProgressAtUtc, stalledAtUtc);
+            UpdateLastKnownIndexDiagnostics(kbAlias, resumedFrom, checkpointActive,
+                checkpointCapturedAtUtc, cacheValidation);
             return true;
         }
 

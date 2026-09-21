@@ -33,11 +33,6 @@ namespace GxMcp.Worker.Services
         // starts at -1 so a clean index still gets one real write on FlushNow().
         private long _dirtyGeneration = 0;
         private long _flushedGeneration = -1;
-        // Last non-source mutation. A source-only flush may carry forward the previous
-        // enrichment certificate; any ordinary index mutation must create an uncertified
-        // body until its caller explicitly writes a new sidecar.
-        private long _lastNonSourceDirtyGeneration = 0;
-
         // Plan 003: bare MarkDirty() (no key known at the call site) conservatively marks
         // every shard dirty — used by whole-index replace paths (ReplaceAll/UpdateIndex).
         // MarkDirtyForKey is the precise per-object path (UpdateEntry/RemoveEntry/…) that
@@ -49,9 +44,7 @@ namespace GxMcp.Worker.Services
         // e gravar _flushedGeneration sem a mutação (stale-index-forever).
         private long MarkNonSourceDirty()
         {
-            long generation = System.Threading.Interlocked.Increment(ref _dirtyGeneration);
-            System.Threading.Interlocked.Exchange(ref _lastNonSourceDirtyGeneration, generation);
-            return generation;
+            return System.Threading.Interlocked.Increment(ref _dirtyGeneration);
         }
 
         internal void MarkDirty() { MarkAllShardsDirty(); MarkNonSourceDirty(); }
@@ -147,7 +140,10 @@ namespace GxMcp.Worker.Services
         private string _shardManifestPath => string.IsNullOrEmpty(ActiveShardDirPath) ? null : Path.Combine(ActiveShardDirPath, "manifest.json");
         private string _snapshotSlotsPath => string.IsNullOrEmpty(_indexPath) ? null : _indexPath + "_slots";
         private string _snapshotPointerPath => string.IsNullOrEmpty(_snapshotSlotsPath) ? null : Path.Combine(_snapshotSlotsPath, "certified.json");
+        private string _liteCheckpointSlotsPath => string.IsNullOrEmpty(_indexPath) ? null : _indexPath + "_checkpoints";
+        private string _liteCheckpointPointerPath => string.IsNullOrEmpty(_liteCheckpointSlotsPath) ? null : Path.Combine(_liteCheckpointSlotsPath, "latest.json");
         private string _certifiedSlotPath;
+        private const int SnapshotMutexTimeoutMs = 30000;
         private string ActiveShardDirPath => _certifiedSlotPath ?? _shardDirPath;
         private string ShardFilePath(int shardId) => Path.Combine(ActiveShardDirPath, string.Format("shard_{0:00}.json.gz", shardId));
 
@@ -1489,6 +1485,260 @@ namespace GxMcp.Worker.Services
             public ShardedIntegrityException(string message, Exception inner) : base(message, inner) { }
         }
 
+        private sealed class SnapshotMutexLease : IDisposable
+        {
+            private System.Threading.Mutex _mutex;
+
+            internal SnapshotMutexLease(System.Threading.Mutex mutex)
+            {
+                _mutex = mutex;
+            }
+
+            public void Dispose()
+            {
+                var mutex = System.Threading.Interlocked.Exchange(ref _mutex, null);
+                if (mutex == null) return;
+                try { mutex.ReleaseMutex(); } catch { }
+                mutex.Dispose();
+            }
+        }
+
+        private SnapshotMutexLease AcquireSnapshotMutex()
+        {
+            string identity = Path.GetFullPath(_snapshotSlotsPath ?? _indexPath ?? string.Empty).ToLowerInvariant();
+            string hash;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                hash = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(identity))).Replace("-", "");
+
+            var mutex = new System.Threading.Mutex(false, "Local\\GxMcp.IndexCache." + hash);
+            bool acquired = false;
+            try
+            {
+                try { acquired = mutex.WaitOne(SnapshotMutexTimeoutMs); }
+                catch (System.Threading.AbandonedMutexException) { acquired = true; }
+                if (!acquired)
+                    throw new IOException("Timed out acquiring the index snapshot publication lock.");
+                return new SnapshotMutexLease(mutex);
+            }
+            catch
+            {
+                mutex.Dispose();
+                throw;
+            }
+        }
+
+        private string ReadCertifiedSlotPath()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_snapshotPointerPath) || !File.Exists(_snapshotPointerPath)) return null;
+                var pointer = Newtonsoft.Json.JsonConvert.DeserializeObject<SnapshotPointer>(File.ReadAllText(_snapshotPointerPath));
+                if (pointer == null || string.IsNullOrEmpty(pointer.Slot) || string.IsNullOrEmpty(pointer.Generation)
+                    || !string.Equals(pointer.Slot, pointer.Generation, StringComparison.Ordinal)) return null;
+                string root = Path.GetFullPath(_snapshotSlotsPath);
+                string slot = Path.GetFullPath(Path.Combine(root, pointer.Slot));
+                if (!slot.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    || !Directory.Exists(slot) || !File.Exists(Path.Combine(slot, "manifest.json"))) return null;
+                return slot;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Invalid certified snapshot pointer: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static long ReadSlotGeneration(string slotPath)
+        {
+            string name = string.IsNullOrEmpty(slotPath) ? string.Empty : Path.GetFileName(slotPath);
+            if (string.IsNullOrEmpty(name) || !name.StartsWith("generation-", StringComparison.OrdinalIgnoreCase)) return 0;
+            int start = "generation-".Length;
+            int end = name.IndexOf('-', start);
+            long generation;
+            return end > start && long.TryParse(name.Substring(start, end - start), out generation) ? generation : 0;
+        }
+
+        internal sealed class LiteWalkCheckpoint
+        {
+            internal SearchIndex Index { get; set; }
+            internal int ProcessedCount { get; set; }
+            internal string LastProcessedGuid { get; set; }
+            internal DateTime WalkStartedAtUtc { get; set; }
+            internal DateTime CapturedAtUtc { get; set; }
+        }
+
+        private sealed class LiteWalkCheckpointMetadata
+        {
+            public int SchemaVersion { get; set; }
+            public string KbPath { get; set; }
+            public int ProcessedCount { get; set; }
+            public string LastProcessedGuid { get; set; }
+            public string WalkStartedAtUtc { get; set; }
+            public string CapturedAtUtc { get; set; }
+        }
+
+        private sealed class LiteWalkCheckpointPointer
+        {
+            public string Slot { get; set; }
+        }
+
+        private string ReadLiteCheckpointSlot()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_liteCheckpointPointerPath) || !File.Exists(_liteCheckpointPointerPath)) return null;
+                var pointer = Newtonsoft.Json.JsonConvert.DeserializeObject<LiteWalkCheckpointPointer>(File.ReadAllText(_liteCheckpointPointerPath));
+                if (pointer == null || string.IsNullOrEmpty(pointer.Slot)) return null;
+                string root = Path.GetFullPath(_liteCheckpointSlotsPath);
+                string slot = Path.GetFullPath(Path.Combine(root, pointer.Slot));
+                if (!slot.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    || !Directory.Exists(slot)
+                    || !File.Exists(Path.Combine(slot, "body.json.gz"))
+                    || !File.Exists(Path.Combine(slot, "meta.json"))) return null;
+                return slot;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Invalid lite-walk checkpoint pointer: " + ex.Message);
+                return null;
+            }
+        }
+
+        internal LiteWalkCheckpoint TryLoadLiteWalkCheckpoint()
+        {
+            try
+            {
+                using (AcquireSnapshotMutex())
+                {
+                    string slot = ReadLiteCheckpointSlot();
+                    if (slot == null) return null;
+                    var metadata = Newtonsoft.Json.JsonConvert.DeserializeObject<LiteWalkCheckpointMetadata>(
+                        File.ReadAllText(Path.Combine(slot, "meta.json")));
+                    DateTime walkStarted;
+                    DateTime captured;
+                    if (metadata == null || metadata.SchemaVersion != CurrentSchemaVersion
+                        || !DateTime.TryParse(metadata.WalkStartedAtUtc, null, System.Globalization.DateTimeStyles.RoundtripKind, out walkStarted)
+                        || !DateTime.TryParse(metadata.CapturedAtUtc, null, System.Globalization.DateTimeStyles.RoundtripKind, out captured)
+                        || metadata.ProcessedCount <= 0)
+                        return null;
+
+                    string currentKbPath = _buildService?.GetKBPath();
+                    if (!string.IsNullOrWhiteSpace(currentKbPath) && !string.IsNullOrWhiteSpace(metadata.KbPath)
+                        && !string.Equals(NormalizeCachePath(currentKbPath), NormalizeCachePath(metadata.KbPath), StringComparison.OrdinalIgnoreCase))
+                        return null;
+
+                    var index = SearchIndex.FromJson(ReadGzippedText(Path.Combine(slot, "body.json.gz")));
+                    if (index == null || index.Objects == null || index.Objects.Count == 0) return null;
+                    Logger.Info($"[LITE-RESUME] checkpoint loaded processed={metadata.ProcessedCount} objects={index.Objects.Count} capturedAtUtc={captured:o}");
+                    return new LiteWalkCheckpoint
+                    {
+                        Index = index,
+                        ProcessedCount = metadata.ProcessedCount,
+                        LastProcessedGuid = metadata.LastProcessedGuid,
+                        WalkStartedAtUtc = walkStarted,
+                        CapturedAtUtc = captured
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("Lite-walk checkpoint load failed; starting a fresh walk: " + ex.Message);
+                return null;
+            }
+        }
+
+        internal bool WriteLiteWalkCheckpoint(SearchIndex snapshot, int processedCount, string lastProcessedGuid, DateTime walkStartedAtUtc)
+        {
+            if (snapshot == null || snapshot.Objects == null || snapshot.Objects.Count == 0 || processedCount <= 0) return false;
+            string slots = _liteCheckpointSlotsPath;
+            if (string.IsNullOrEmpty(slots)) return false;
+            using (AcquireSnapshotMutex())
+            {
+                string slotName = "checkpoint-" + DateTime.UtcNow.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N");
+                string tempSlot = Path.Combine(slots, ".write-" + Guid.NewGuid().ToString("N"));
+                string finalSlot = Path.Combine(slots, slotName);
+                try
+                {
+                    Directory.CreateDirectory(slots);
+                    Directory.CreateDirectory(tempSlot);
+                    string bodyPath = Path.Combine(tempSlot, "body.json.gz");
+                    using (var fs = File.Create(bodyPath))
+                    using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
+                    using (var writer = new StreamWriter(gz, new UTF8Encoding(false)))
+                        writer.Write(snapshot.ToJson());
+
+                    var metadata = new LiteWalkCheckpointMetadata
+                    {
+                        SchemaVersion = CurrentSchemaVersion,
+                        KbPath = _buildService?.GetKBPath(),
+                        ProcessedCount = processedCount,
+                        LastProcessedGuid = lastProcessedGuid,
+                        WalkStartedAtUtc = SdkTimestampNormalizer.NormalizeUtc(walkStartedAtUtc).ToString("o"),
+                        CapturedAtUtc = DateTime.UtcNow.ToString("o")
+                    };
+                    File.WriteAllText(Path.Combine(tempSlot, "meta.json"),
+                        Newtonsoft.Json.JsonConvert.SerializeObject(metadata), new UTF8Encoding(false));
+                    Directory.Move(tempSlot, finalSlot);
+
+                    string pointerTemp = _liteCheckpointPointerPath + ".tmp-" + Guid.NewGuid().ToString("N");
+                    try
+                    {
+                        File.WriteAllText(pointerTemp,
+                            Newtonsoft.Json.JsonConvert.SerializeObject(new LiteWalkCheckpointPointer { Slot = slotName }),
+                            new UTF8Encoding(false));
+                        if (File.Exists(_liteCheckpointPointerPath)) File.Replace(pointerTemp, _liteCheckpointPointerPath, null);
+                        else File.Move(pointerTemp, _liteCheckpointPointerPath);
+                    }
+                    finally { try { if (File.Exists(pointerTemp)) File.Delete(pointerTemp); } catch { } }
+
+                    foreach (var directory in Directory.GetDirectories(slots))
+                        if (!string.Equals(Path.GetFullPath(directory), Path.GetFullPath(finalSlot), StringComparison.OrdinalIgnoreCase))
+                            try { Directory.Delete(directory, true); } catch { }
+                    Logger.Info($"[LITE-CHECKPOINT] processed={processedCount} objects={snapshot.Objects.Count} capturedAtUtc={metadata.CapturedAtUtc}");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn("Lite-walk checkpoint write failed: " + ex.Message);
+                    return false;
+                }
+                finally { try { if (Directory.Exists(tempSlot)) Directory.Delete(tempSlot, true); } catch { } }
+            }
+        }
+
+        internal void LoadLiteWalkCheckpoint(SearchIndex checkpoint)
+        {
+            if (checkpoint == null) return;
+            lock (_lock)
+            {
+                SearchIndex.InternSharedStrings(checkpoint);
+                BuildParentIndex(checkpoint);
+                _index = checkpoint;
+                _initialized = true;
+                PrimeHierarchyCacheFromIndex(checkpoint);
+            }
+            MarkAllShardsDirty();
+        }
+
+        internal void DeleteLiteWalkCheckpoint()
+        {
+            if (string.IsNullOrEmpty(_liteCheckpointSlotsPath)) return;
+            try
+            {
+                using (AcquireSnapshotMutex())
+                {
+                    if (Directory.Exists(_liteCheckpointSlotsPath)) Directory.Delete(_liteCheckpointSlotsPath, true);
+                }
+            }
+            catch (Exception ex) { Logger.Warn("Delete lite-walk checkpoint failed: " + ex.Message); }
+        }
+
+        private static string NormalizeCachePath(string path)
+        {
+            try { return Path.GetFullPath(path).TrimEnd('\\', '/').ToLowerInvariant(); }
+            catch { return (path ?? string.Empty).Trim().TrimEnd('\\', '/').ToLowerInvariant(); }
+        }
+
         private void CompleteLoad(TaskCompletionSource<SearchIndex> state)
         {
             try { state.TrySetResult(LoadIndexCore()); }
@@ -1503,6 +1753,12 @@ namespace GxMcp.Worker.Services
         }
 
         private SearchIndex LoadIndexCore()
+        {
+            using (AcquireSnapshotMutex())
+                return LoadIndexCoreUnlocked();
+        }
+
+        private SearchIndex LoadIndexCoreUnlocked()
         {
             System.Threading.Interlocked.Increment(ref _loadInvocationCount);
             // A certified pointer is the commit record for a complete shard set.
@@ -1566,20 +1822,14 @@ namespace GxMcp.Worker.Services
 
         private bool TrySelectCertifiedSlot()
         {
-            try
+            string slot = ReadCertifiedSlotPath();
+            if (slot == null)
             {
-                if (string.IsNullOrEmpty(_snapshotPointerPath) || !File.Exists(_snapshotPointerPath)) return false;
-                var pointer = Newtonsoft.Json.JsonConvert.DeserializeObject<SnapshotPointer>(File.ReadAllText(_snapshotPointerPath));
-                if (pointer == null || string.IsNullOrEmpty(pointer.Slot) || string.IsNullOrEmpty(pointer.Generation)
-                    || !string.Equals(pointer.Slot, pointer.Generation, StringComparison.Ordinal)) return false;
-                string root = Path.GetFullPath(_snapshotSlotsPath);
-                string slot = Path.GetFullPath(Path.Combine(root, pointer.Slot));
-                if (!slot.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                    || !Directory.Exists(slot) || !File.Exists(Path.Combine(slot, "manifest.json"))) return false;
-                _certifiedSlotPath = slot;
-                return true;
+                _certifiedSlotPath = null;
+                return false;
             }
-            catch (Exception ex) { Logger.Warn("Invalid certified snapshot pointer: " + ex.Message); return false; }
+            _certifiedSlotPath = slot;
+            return true;
         }
 
         private sealed class SnapshotPointer
@@ -1630,7 +1880,7 @@ namespace GxMcp.Worker.Services
             return idx;
         }
 
-        private ShardManifest ReadAndValidateShardedSnapshot()
+        private ShardManifest ReadAndValidateShardedSnapshot(bool verifyHashes = true)
         {
             if (string.IsNullOrEmpty(_shardManifestPath) || !File.Exists(_shardManifestPath))
                 throw new ShardedIntegrityException("shard manifest is missing");
@@ -1642,7 +1892,7 @@ namespace GxMcp.Worker.Services
                 throw new ShardedIntegrityException("invalid shard manifest");
             for (int id = 0; id < ShardCount; id++)
                 if (!File.Exists(ShardFilePath(id))) throw new ShardedIntegrityException("missing shard: " + id);
-            if (manifest.ShardHashes != null)
+            if (verifyHashes && manifest.ShardHashes != null)
             {
                 if (manifest.ShardHashes.Count != ShardCount)
                     throw new ShardedIntegrityException("shard hash manifest is incomplete");
@@ -1893,7 +2143,25 @@ namespace GxMcp.Worker.Services
         /// </summary>
         public bool WriteMetaSidecar(int objectCount)
         {
-            return WriteMetaSidecarAt(Path.GetDirectoryName(_metaPath), objectCount, Path.GetFileName(_metaPath));
+            try
+            {
+                using (AcquireSnapshotMutex())
+                {
+                    string currentSlot = ReadCertifiedSlotPath();
+                    if (!string.IsNullOrEmpty(_certifiedSlotPath)
+                        && !string.Equals(Path.GetFullPath(_certifiedSlotPath), Path.GetFullPath(currentSlot ?? string.Empty), StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Warn("WriteMetaSidecar skipped because another Worker published a newer certified slot.");
+                        return false;
+                    }
+                    return WriteMetaSidecarAt(Path.GetDirectoryName(_metaPath), objectCount, Path.GetFileName(_metaPath));
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("WriteMetaSidecar publication lock failed: " + ex.Message);
+                return false;
+            }
         }
 
         private bool WriteMetaSidecarAt(string directory, int objectCount, string fileName = "meta.json")
@@ -1940,6 +2208,9 @@ namespace GxMcp.Worker.Services
             public bool DllMatch;
             public bool ShardedIntegrity = true;
             public DateTime HighWaterMark = DateTime.MinValue;
+            public bool CertifiedSlotPresent;
+            public long? SlotGeneration;
+            public string RejectionReason;
             public bool CanDelta => BodyPresent && MetaPresent && SchemaMatch && DllMatch && ShardedIntegrity && HighWaterMark != DateTime.MinValue;
             public bool CanDeltaAcrossDll => BodyPresent && MetaPresent && SchemaMatch && ShardedIntegrity && HighWaterMark != DateTime.MinValue;
         }
@@ -1950,40 +2221,89 @@ namespace GxMcp.Worker.Services
         /// </summary>
         public OnDiskCacheValidation ValidateOnDiskCache()
         {
+            return ValidateOnDiskCacheCore(verifyIntegrity: true);
+        }
+
+        internal OnDiskCacheValidation ValidateOnDiskCacheForDiagnostics()
+        {
+            return ValidateOnDiskCacheCore(verifyIntegrity: false);
+        }
+
+        private OnDiskCacheValidation ValidateOnDiskCacheCore(bool verifyIntegrity)
+        {
             var v = new OnDiskCacheValidation();
             try
             {
-                EnsureInitialized();
-                TrySelectCertifiedSlot();
-                bool hasManifest = !string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath);
-                v.ShardedIntegrity = !hasManifest;
-                if (hasManifest)
+                using (AcquireSnapshotMutex())
                 {
-                    try { ReadAndValidateShardedSnapshot(); v.ShardedIntegrity = true; }
-                    catch (Exception ex) { v.ShardedIntegrity = false; Logger.Warn("Invalid sharded cache: " + ex.Message); }
-                }
-                v.BodyPresent = hasManifest
-                    ? v.ShardedIntegrity
-                    : ((!string.IsNullOrEmpty(_indexPathGz) && File.Exists(_indexPathGz))
-                       || (!string.IsNullOrEmpty(_indexPath) && File.Exists(_indexPath)));
-                string metaPath = _metaPath;
-                v.MetaPresent = !string.IsNullOrEmpty(metaPath) && File.Exists(metaPath);
-                Logger.Info(string.Format("[INDEX-CACHE-PATHS] validate: bodyPresent={0} metaPresent={1} gz={2} meta={3}", v.BodyPresent, v.MetaPresent, _indexPathGz, metaPath));
-                if (v.MetaPresent)
-                {
-                    var meta = Newtonsoft.Json.JsonConvert.DeserializeObject<WarmIndexSnapshotMetadata>(File.ReadAllText(metaPath));
-                    v.SchemaMatch = meta != null && meta.SchemaVersion == CurrentSchemaVersion;
-                    string currentDll = WarmIndexSnapshot.ComputeWorkerDllSha256();
-                    v.DllMatch = meta != null && string.Equals(meta.WorkerDllSha256, currentDll, StringComparison.OrdinalIgnoreCase);
-                    if (meta != null && !string.IsNullOrEmpty(meta.HighWaterMarkUtc)
-                        && DateTime.TryParse(meta.HighWaterMarkUtc, null, System.Globalization.DateTimeStyles.RoundtripKind, out var hwm))
+                    EnsureInitialized();
+                    v.CertifiedSlotPresent = TrySelectCertifiedSlot();
+                    v.SlotGeneration = v.CertifiedSlotPresent ? (long?)ReadSlotGeneration(_certifiedSlotPath) : null;
+                    bool hasManifest = !string.IsNullOrEmpty(_shardManifestPath) && File.Exists(_shardManifestPath);
+                    v.ShardedIntegrity = !hasManifest;
+                    if (hasManifest)
                     {
-                        v.HighWaterMark = hwm;
+                        try { ReadAndValidateShardedSnapshot(verifyIntegrity); v.ShardedIntegrity = true; }
+                        catch (Exception ex) { v.ShardedIntegrity = false; Logger.Warn("Invalid sharded cache: " + ex.Message); }
                     }
+                    v.BodyPresent = hasManifest
+                        ? v.ShardedIntegrity
+                        : ((!string.IsNullOrEmpty(_indexPathGz) && File.Exists(_indexPathGz))
+                           || (!string.IsNullOrEmpty(_indexPath) && File.Exists(_indexPath)));
+                    string metaPath = _metaPath;
+                    v.MetaPresent = !string.IsNullOrEmpty(metaPath) && File.Exists(metaPath);
+                    Logger.Info(string.Format("[INDEX-CACHE-PATHS] validate: bodyPresent={0} metaPresent={1} gz={2} meta={3}", v.BodyPresent, v.MetaPresent, _indexPathGz, metaPath));
+                    if (v.MetaPresent)
+                    {
+                        var meta = Newtonsoft.Json.JsonConvert.DeserializeObject<WarmIndexSnapshotMetadata>(File.ReadAllText(metaPath));
+                        v.SchemaMatch = meta != null && meta.SchemaVersion == CurrentSchemaVersion;
+                        string currentDll = WarmIndexSnapshot.ComputeWorkerDllSha256();
+                        v.DllMatch = meta != null && string.Equals(meta.WorkerDllSha256, currentDll, StringComparison.OrdinalIgnoreCase);
+                        if (meta != null && !string.IsNullOrEmpty(meta.HighWaterMarkUtc)
+                            && DateTime.TryParse(meta.HighWaterMarkUtc, null, System.Globalization.DateTimeStyles.RoundtripKind, out var hwm))
+                        {
+                            v.HighWaterMark = hwm;
+                        }
+                    }
+                    v.RejectionReason = GetValidationRejectionReason(v);
                 }
             }
             catch (Exception ex) { Logger.Warn("ValidateOnDiskCache failed (treating as full-rebuild): " + ex.Message); }
             return v;
+        }
+
+        private static string GetValidationRejectionReason(OnDiskCacheValidation validation)
+        {
+            if (validation.CanDelta) return "delta-eligible";
+            if (!validation.BodyPresent) return "missing-body";
+            if (!validation.MetaPresent) return "missing-meta";
+            if (!validation.ShardedIntegrity) return "sharded-integrity-failure";
+            if (!validation.SchemaMatch) return "schema-mismatch";
+            if (validation.HighWaterMark == DateTime.MinValue) return "missing-high-water-mark";
+            if (!validation.DllMatch) return "worker-dll-mismatch";
+            return "unknown";
+        }
+
+        internal Newtonsoft.Json.Linq.JObject BuildCacheValidationDiagnostic(bool verifyIntegrity = false)
+        {
+            var validation = verifyIntegrity ? ValidateOnDiskCache() : ValidateOnDiskCacheForDiagnostics();
+            return new Newtonsoft.Json.Linq.JObject
+            {
+                ["bodyPresent"] = validation.BodyPresent,
+                ["metaPresent"] = validation.MetaPresent,
+                ["schemaMatch"] = validation.SchemaMatch,
+                ["dllMatch"] = validation.DllMatch,
+                ["shardedIntegrity"] = validation.ShardedIntegrity,
+                ["canDelta"] = validation.CanDelta,
+                ["canDeltaAcrossDll"] = validation.CanDeltaAcrossDll,
+                ["rejectionReason"] = validation.RejectionReason ?? "unknown",
+                ["slotGeneration"] = validation.SlotGeneration.HasValue
+                    ? (Newtonsoft.Json.Linq.JToken)validation.SlotGeneration.Value
+                    : Newtonsoft.Json.Linq.JValue.CreateNull(),
+                ["highWaterMark"] = validation.HighWaterMark == DateTime.MinValue
+                    ? Newtonsoft.Json.Linq.JValue.CreateNull()
+                    : (Newtonsoft.Json.Linq.JToken)validation.HighWaterMark.ToUniversalTime().ToString("o")
+            };
         }
 
         // Plan 003: small sidecar recording that the shard directory is a complete,
@@ -2038,15 +2358,24 @@ namespace GxMcp.Worker.Services
         {
             string slots = _snapshotSlotsPath;
             if (string.IsNullOrEmpty(slots)) throw new InvalidOperationException("Index snapshot path is not initialized.");
-            string slotName = "generation-" + generation + "-" + Guid.NewGuid().ToString("N");
-            string tempSlot = Path.Combine(slots, ".rebuild-" + Guid.NewGuid().ToString("N"));
-            string finalSlot = Path.Combine(slots, slotName);
-            try
+            using (AcquireSnapshotMutex())
             {
-                Directory.CreateDirectory(slots);
-                Directory.CreateDirectory(tempSlot);
-                var sourceDir = _certifiedSlotPath;
-                if (sourceDir == null && File.Exists(_shardManifestPath)) sourceDir = _shardDirPath;
+                string expectedSlot = _certifiedSlotPath;
+                string currentSlot = ReadCertifiedSlotPath();
+                if (!string.IsNullOrEmpty(expectedSlot)
+                    && !string.Equals(Path.GetFullPath(expectedSlot), Path.GetFullPath(currentSlot ?? string.Empty), StringComparison.OrdinalIgnoreCase))
+                    throw new StaleSnapshotPublicationException("certified slot changed while this Worker held an older snapshot");
+
+                long nextGeneration = Math.Max(ReadSlotGeneration(currentSlot) + 1, generation);
+                string slotName = "generation-" + nextGeneration + "-" + Guid.NewGuid().ToString("N");
+                string tempSlot = Path.Combine(slots, ".rebuild-" + Guid.NewGuid().ToString("N"));
+                string finalSlot = Path.Combine(slots, slotName);
+                try
+                {
+                    Directory.CreateDirectory(slots);
+                    Directory.CreateDirectory(tempSlot);
+                    var sourceDir = currentSlot ?? _certifiedSlotPath;
+                    if (sourceDir == null && File.Exists(_shardManifestPath)) sourceDir = _shardDirPath;
                 var buckets = new Dictionary<int, Dictionary<string, SearchIndex.IndexEntry>>();
                 foreach (var id in Enumerable.Range(0, ShardCount))
                     buckets[id] = new Dictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase);
@@ -2077,9 +2406,11 @@ namespace GxMcp.Worker.Services
                 }
 
                 WriteShardManifestAt(tempSlot, snapshot.Objects.Count);
-                // A source-only promotion does not invalidate the previous enrichment
-                // baseline. Carry its sidecar into this new generation; ordinary mutations
-                // deliberately leave the new body uncertified until an explicit sidecar write.
+                // The previous sidecar is a conservative lower bound for every new
+                // generation: the body contains the mutation, while GetKeys(previousHwm)
+                // will replay anything observed after that baseline on the next open.
+                // Never discard the last usable delta baseline merely because this flush
+                // was triggered by an ordinary watcher/enrichment mutation.
                 if (preservePreviousMeta && sourceDir != null)
                 {
                     string previousMeta = Path.Combine(sourceDir, "meta.json");
@@ -2105,8 +2436,14 @@ namespace GxMcp.Worker.Services
                             Directory.Delete(directory, true);
                 }
                 catch (Exception cleanup) { Logger.Warn("Snapshot slot cleanup deferred: " + cleanup.Message); }
+                }
+                finally { try { if (Directory.Exists(tempSlot)) Directory.Delete(tempSlot, true); } catch { } }
             }
-            finally { try { if (Directory.Exists(tempSlot)) Directory.Delete(tempSlot, true); } catch { } }
+        }
+
+        private sealed class StaleSnapshotPublicationException : IOException
+        {
+            internal StaleSnapshotPublicationException(string message) : base(message) { }
         }
 
         private void WriteShardManifestAt(string directory, int objectCount)
@@ -2144,8 +2481,6 @@ namespace GxMcp.Worker.Services
             // happened-before this read is visible to the serializer below, so on
             // success the on-disk body provably contains generation `gen`.
             long gen = System.Threading.Interlocked.Read(ref _dirtyGeneration);
-            long flushedBefore = System.Threading.Interlocked.Read(ref _flushedGeneration);
-            bool sourceOnly = System.Threading.Interlocked.Read(ref _lastNonSourceDirtyGeneration) <= flushedBefore;
 
             var idsToWrite = new List<int>();
             foreach (var id in _dirtyShards.Keys.ToArray())
@@ -2153,7 +2488,10 @@ namespace GxMcp.Worker.Services
 
             try
             {
-                FlushVersionedSlot(snapshot, idsToWrite, gen, sourceOnly);
+                // Every promotion carries the previous sidecar when one exists. Its
+                // high-water mark is an older, conservative lower bound, so the next
+                // warm start replays GetKeys(hwm) instead of falling back to a full walk.
+                FlushVersionedSlot(snapshot, idsToWrite, gen, preservePreviousMeta: true);
                 System.Threading.Interlocked.Exchange(ref _consecutiveFlushFailures, 0);
                 _lastFlushSuccessUtc = DateTime.UtcNow;
                 _lastFlushErrorMessage = null;
@@ -2162,6 +2500,15 @@ namespace GxMcp.Worker.Services
                     && System.Threading.Interlocked.CompareExchange(ref _flushedGeneration, gen, published) != published) { }
                 System.Threading.Interlocked.Increment(ref _flushWriteCount);
                 return true;
+            }
+            catch (StaleSnapshotPublicationException ex) {
+                // Another Worker published a newer certified slot after this
+                // instance loaded its snapshot. Keep the dirty shards for a rebase
+                // instead of reporting a disk failure or allowing a stale body to
+                // replace the newer generation.
+                foreach (var id in idsToWrite) _dirtyShards[id] = 1;
+                Logger.Warn("[INDEX-CACHE] publication skipped: " + ex.Message);
+                return false;
             }
             catch (Exception ex) {
                 // Includes failed certified-pointer publication: the old generation is
@@ -2950,22 +3297,26 @@ namespace GxMcp.Worker.Services
         // the stale gz/plain blob.
         public void DeleteOnDiskSnapshot()
         {
-            lock (_lock)
+            using (AcquireSnapshotMutex())
             {
-                try { if (!string.IsNullOrEmpty(_indexPathGz) && File.Exists(_indexPathGz)) File.Delete(_indexPathGz); } catch (Exception ex) { Logger.Warn("Delete gz snapshot failed: " + ex.Message); }
-                try { if (!string.IsNullOrEmpty(_indexPath) && File.Exists(_indexPath)) File.Delete(_indexPath); } catch (Exception ex) { Logger.Warn("Delete plain snapshot failed: " + ex.Message); }
-                // Plan 003: drop the sharded snapshot directory too.
-                try { if (!string.IsNullOrEmpty(_shardDirPath) && Directory.Exists(_shardDirPath)) Directory.Delete(_shardDirPath, true); } catch (Exception ex) { Logger.Warn("Delete shard dir failed: " + ex.Message); }
-                // Versioned slots are append-only until publication; remove both the
-                // certified generation and abandoned rebuild generations on a forced reset.
-                try { if (!string.IsNullOrEmpty(_snapshotSlotsPath) && Directory.Exists(_snapshotSlotsPath)) Directory.Delete(_snapshotSlotsPath, true); } catch (Exception ex) { Logger.Warn("Delete snapshot slots failed: " + ex.Message); }
-                _certifiedSlotPath = null;
-                // Fase 1: drop the validation sidecar + hwm so a forced rebuild starts clean.
-                try { if (!string.IsNullOrEmpty(_metaPath) && File.Exists(_metaPath)) File.Delete(_metaPath); } catch (Exception ex) { Logger.Warn("Delete meta sidecar failed: " + ex.Message); }
-                ResetHighWaterMark();
-                // Nothing durable on disk anymore — every shard needs (re)writing on the
-                // next flush, same as a fresh IndexCacheService instance.
-                MarkAllShardsDirty();
+                lock (_lock)
+                {
+                    try { if (!string.IsNullOrEmpty(_indexPathGz) && File.Exists(_indexPathGz)) File.Delete(_indexPathGz); } catch (Exception ex) { Logger.Warn("Delete gz snapshot failed: " + ex.Message); }
+                    try { if (!string.IsNullOrEmpty(_indexPath) && File.Exists(_indexPath)) File.Delete(_indexPath); } catch (Exception ex) { Logger.Warn("Delete plain snapshot failed: " + ex.Message); }
+                    // Plan 003: drop the sharded snapshot directory too.
+                    try { if (!string.IsNullOrEmpty(_shardDirPath) && Directory.Exists(_shardDirPath)) Directory.Delete(_shardDirPath, true); } catch (Exception ex) { Logger.Warn("Delete shard dir failed: " + ex.Message); }
+                    // Versioned slots are append-only until publication; remove both the
+                    // certified generation and abandoned rebuild generations on a forced reset.
+                    try { if (!string.IsNullOrEmpty(_snapshotSlotsPath) && Directory.Exists(_snapshotSlotsPath)) Directory.Delete(_snapshotSlotsPath, true); } catch (Exception ex) { Logger.Warn("Delete snapshot slots failed: " + ex.Message); }
+                    try { if (!string.IsNullOrEmpty(_liteCheckpointSlotsPath) && Directory.Exists(_liteCheckpointSlotsPath)) Directory.Delete(_liteCheckpointSlotsPath, true); } catch (Exception ex) { Logger.Warn("Delete lite-walk checkpoint failed: " + ex.Message); }
+                    _certifiedSlotPath = null;
+                    // Fase 1: drop the validation sidecar + hwm so a forced rebuild starts clean.
+                    try { if (!string.IsNullOrEmpty(_metaPath) && File.Exists(_metaPath)) File.Delete(_metaPath); } catch (Exception ex) { Logger.Warn("Delete meta sidecar failed: " + ex.Message); }
+                    ResetHighWaterMark();
+                    // Nothing durable on disk anymore — every shard needs (re)writing on the
+                    // next flush, same as a fresh IndexCacheService instance.
+                    MarkAllShardsDirty();
+                }
             }
         }
     }

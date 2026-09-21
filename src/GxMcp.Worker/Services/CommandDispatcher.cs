@@ -1118,6 +1118,16 @@ namespace GxMcp.Worker.Services
                     : JValue.CreateNull()
             };
 
+            // Keep the warm-start decision explainable without forcing callers to
+            // inspect worker logs. Integrity hashes are intentionally skipped here;
+            // lifecycle status is a hot path and the full hash validation remains
+            // on the index-open decision path.
+            try
+            {
+                j["cacheValidation"] = _indexCacheService.BuildCacheValidationDiagnostic();
+            }
+            catch { }
+
             // The index cache state says whether entries are usable; the KB activity
             // state says whether its worker is still building, stalled, or gone. Keep
             // both surfaces in the same read-only snapshot so whoami and the gateway
@@ -1128,7 +1138,8 @@ namespace GxMcp.Worker.Services
                 foreach (string field in new[]
                 {
                     "operationId", "operationState", "workerAlive", "recoverable",
-                    "stalled", "lastProgressAtUtc", "stalledAtUtc", "recoveryAction"
+                    "stalled", "lastProgressAtUtc", "stalledAtUtc", "recoveryAction",
+                    "resumedFrom", "checkpointActive", "checkpointCapturedAtUtc"
                 })
                 {
                     if (activity[field] != null) j[field] = activity[field].DeepClone();

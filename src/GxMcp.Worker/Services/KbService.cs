@@ -32,11 +32,33 @@ namespace GxMcp.Worker.Services
         private Thread _deltaIndexThread;
         private IndexBuildWatchdog _indexWatchdog;
         private readonly IndexOperationCoordinator _indexOperations = new IndexOperationCoordinator();
+        private volatile int _lastResumedFrom;
+        private volatile bool _checkpointActive;
+        private volatile string _checkpointCapturedAtUtc;
+        private long _lastIndexActivityNotificationTicks;
 
         private void MarkIndexProgressHeartbeat(int generation)
         {
             if (!_indexOperations.MarkProgress(generation)) return;
             _indexWatchdog?.Beat();
+            long nowTicks = DateTime.UtcNow.Ticks;
+            long previousTicks = Interlocked.Read(ref _lastIndexActivityNotificationTicks);
+            if (nowTicks - previousTicks >= TimeSpan.FromSeconds(5).Ticks
+                && Interlocked.CompareExchange(ref _lastIndexActivityNotificationTicks, nowTicks, previousTicks) == previousTicks)
+            {
+                try
+                {
+                    Program.SendNotification("notifications/worker/index_active", new
+                    {
+                        operationId = IndexOperationId,
+                        phase = _currentStatus,
+                        processed = _processedCount,
+                        total = _totalCount,
+                        resumedFrom = _lastResumedFrom > 0 ? (int?)_lastResumedFrom : null
+                    });
+                }
+                catch { }
+            }
             if (string.Equals(_currentStatus, "Index worker stalled: no observable progress", StringComparison.Ordinal))
                 _currentStatus = "Index worker resumed";
         }
@@ -175,8 +197,69 @@ namespace GxMcp.Worker.Services
                 ["reused"] = reused,
                 ["workerAlive"] = snapshot.WorkerAlive,
                 ["recoverable"] = snapshot.Recoverable,
+                ["resumedFrom"] = _lastResumedFrom > 0 ? (JToken)_lastResumedFrom : JValue.CreateNull(),
+                ["checkpointActive"] = _checkpointActive,
+                ["checkpointCapturedAtUtc"] = _checkpointCapturedAtUtc != null
+                    ? (JToken)_checkpointCapturedAtUtc
+                    : JValue.CreateNull(),
                 ["hint"] = hint
             };
+        }
+
+        private string PrepareFastIndex(bool force, string operationId, int operationGeneration,
+            out IndexCacheService.LiteWalkCheckpoint resumeCheckpoint)
+        {
+            resumeCheckpoint = null;
+            if (force)
+            {
+                Logger.Info("BulkIndex(fast): force=true — clearing in-memory + on-disk snapshot.");
+                try
+                {
+                    _indexCacheService.DeleteLiteWalkCheckpoint();
+                    _indexCacheService.Clear();
+                    _indexCacheService.MarkReindexStarted(0);
+                }
+                catch (Exception ex) { Logger.Warn("BulkIndex(fast) force-clear failed: " + ex.Message); }
+                return null;
+            }
+
+            resumeCheckpoint = _indexCacheService.TryLoadLiteWalkCheckpoint();
+            if (resumeCheckpoint != null)
+            {
+                _lastResumedFrom = resumeCheckpoint.ProcessedCount;
+                _checkpointActive = true;
+                _checkpointCapturedAtUtc = resumeCheckpoint.CapturedAtUtc.ToUniversalTime().ToString("o");
+                _indexCacheService.LoadLiteWalkCheckpoint(resumeCheckpoint.Index);
+                Logger.Info($"BulkIndex(fast): resuming lite walk from checkpoint processed={resumeCheckpoint.ProcessedCount} capturedAtUtc={_checkpointCapturedAtUtc}.");
+                return null;
+            }
+
+            if (_indexCacheService.IsIndexMissing) return null;
+            var loaded = _indexCacheService.GetIndex();
+            if (loaded == null || loaded.Objects.Count == 0) return null;
+
+            var validation = _indexCacheService.ValidateOnDiskCache();
+            bool dllRebaseline = !validation.CanDelta
+                && Configuration.DeltaAcrossWorkerDll
+                && validation.CanDeltaAcrossDll;
+            if (Configuration.UseDeltaOnOpen && (validation.CanDelta || dllRebaseline))
+            {
+                try { _indexCacheService.MarkIndexRefreshing(); } catch { }
+                _isIndexing = true;
+                StartIndexWatchdog(operationGeneration);
+                StartDeltaRefreshThread(validation.HighWaterMark, loaded.Objects.Count, operationGeneration);
+                Logger.Info($"BulkIndex(fast): warm cache delta-eligible ({loaded.Objects.Count} objects, hwm={validation.HighWaterMark:o}, dllRebaseline={dllRebaseline}) — delta refresh started.");
+                var deltaResult = BuildIndexOperationResult(
+                    operationId,
+                    "Snapshot restored; the delta refresh is running. Wait with action=status wait=30 freshness=current.",
+                    reused: false);
+                deltaResult["objects"] = loaded.Objects.Count;
+                deltaResult["hint"] = "Snapshot restored from the warm cache; index-dependent reads stay blocked until freshness=current. Wait with genexus_lifecycle action=status wait=30 freshness=current.";
+                return Models.McpResponse.Ok(code: "DeltaStarted", result: deltaResult);
+            }
+
+            Logger.Info($"BulkIndex(fast): cache present but not delta-eligible (canDelta={validation.CanDelta} canDeltaAcrossDll={validation.CanDeltaAcrossDll} metaPresent={validation.MetaPresent} schemaMatch={validation.SchemaMatch} dllMatch={validation.DllMatch}) — full rebuild to re-establish the delta baseline.");
+            return null;
         }
 
         // Fase 0 instrumentation: last KB-open / datastore-probe elapsed, so Program.cs
@@ -690,6 +773,11 @@ namespace GxMcp.Worker.Services
                         reused: true));
             }
 
+            _lastResumedFrom = 0;
+            _checkpointActive = false;
+            _checkpointCapturedAtUtc = null;
+            IndexCacheService.LiteWalkCheckpoint resumeCheckpoint = null;
+
             // Wait briefly for the KB to open — same warm-up window as the legacy path.
             try
             {
@@ -708,58 +796,8 @@ namespace GxMcp.Worker.Services
                     Thread.Sleep(200);
                     waitMs += 200;
                 }
-                if (force)
-                {
-                    Logger.Info("BulkIndex(fast): force=true — clearing in-memory + on-disk snapshot.");
-                    try
-                    {
-                        _indexCacheService.Clear();
-                        // Preserve the last certified snapshot as a crash fallback; new shard writes are atomic.
-                        _indexCacheService.MarkReindexStarted(0);
-                    }
-                    catch (Exception ex) { Logger.Warn("BulkIndex(fast) force-clear failed: " + ex.Message); }
-                }
-                else if (!_indexCacheService.IsIndexMissing)
-                {
-                    var loaded = _indexCacheService.GetIndex();
-                    if (loaded != null && loaded.Objects.Count > 0)
-                    {
-                        // Fase 1: instead of trusting the cache forever, validate it and run a
-                        // bounded delta refresh (only objects changed since the persisted
-                        // high-water-mark). The loaded index serves reads immediately; the
-                        // delta runs in the background. Falls through to a full rebuild when the
-                        // cache isn't delta-eligible (legacy/no-sidecar, schema or worker-DLL
-                        // change, or a body left partially enriched by a crashed worker).
-                        var validation = _indexCacheService.ValidateOnDiskCache();
-                        // Post-upgrade write-starvation fix: a worker-DLL change alone (DllMatch=False
-                        // but SchemaMatch=True) no longer forces a full re-walk that blocks writes for
-                        // minutes. Take the bounded delta and let StartDeltaRefreshThread re-baseline the
-                        // sidecar's DLL hash via WriteMetaSidecar. See Configuration.DeltaAcrossWorkerDll.
-                        bool dllRebaseline = !validation.CanDelta
-                            && Configuration.DeltaAcrossWorkerDll
-                            && validation.CanDeltaAcrossDll;
-                        if (Configuration.UseDeltaOnOpen && (validation.CanDelta || dllRebaseline))
-                        {
-                            try { _indexCacheService.MarkIndexRefreshing(); } catch { }
-                            _isIndexing = true;
-                            StartIndexWatchdog(operationGeneration);
-                            StartDeltaRefreshThread(validation.HighWaterMark, loaded.Objects.Count, operationGeneration);
-                            Logger.Info($"BulkIndex(fast): warm cache delta-eligible ({loaded.Objects.Count} objects, hwm={validation.HighWaterMark:o}, dllRebaseline={dllRebaseline}) — delta refresh started.");
-                            var deltaResult = BuildIndexOperationResult(
-                                operationId,
-                                "Snapshot restored; the delta refresh is running. Wait with action=status wait=30 freshness=current.",
-                                reused: false);
-                            deltaResult["objects"] = loaded.Objects.Count;
-                            // Issue #209: a warm snapshot is restored but not current until
-                            // this delta publishes its fresh high-water mark.
-                            deltaResult["hint"] = "Snapshot restored from the warm cache; index-dependent reads stay blocked until freshness=current. Wait with genexus_lifecycle action=status wait=30 freshness=current.";
-                            return Models.McpResponse.Ok(
-                                code: "DeltaStarted",
-                                result: deltaResult);
-                        }
-                        Logger.Info($"BulkIndex(fast): cache present but not delta-eligible (canDelta={validation.CanDelta} canDeltaAcrossDll={validation.CanDeltaAcrossDll} metaPresent={validation.MetaPresent} schemaMatch={validation.SchemaMatch} dllMatch={validation.DllMatch}) — full rebuild to re-establish the delta baseline.");
-                    }
-                }
+                string prepared = PrepareFastIndex(force, operationId, operationGeneration, out resumeCheckpoint);
+                if (prepared != null) return prepared;
             }
             catch { /* fall through and rebuild */ }
 
@@ -767,6 +805,7 @@ namespace GxMcp.Worker.Services
             _processedCount = 0;
             _totalCount = 0;
             _currentStatus = "Lite-index pass starting...";
+            try { _indexCacheService.MarkReindexStarted(_lastResumedFrom); } catch { }
 
             var bulkSw = Stopwatch.StartNew();
 
@@ -798,7 +837,19 @@ namespace GxMcp.Worker.Services
                     enumSw.Stop();
                     Logger.Info($"[LITE-ENUM] elapsedMs={enumSw.ElapsedMilliseconds}");
 
-                    var liteEntries = new List<SearchIndex.IndexEntry>();
+                    DateTime walkStartedAtUtc = resumeCheckpoint?.WalkStartedAtUtc ?? DateTime.UtcNow;
+                    var liteEntries = resumeCheckpoint == null
+                        ? new List<SearchIndex.IndexEntry>()
+                        : resumeCheckpoint.Index.Objects.Values.Where(e => e != null).ToList();
+                    var checkpointEntriesByGuid = resumeCheckpoint == null
+                        ? new Dictionary<string, SearchIndex.IndexEntry>(StringComparer.OrdinalIgnoreCase)
+                        : resumeCheckpoint.Index.Objects.Values
+                            .Where(e => e != null && !string.IsNullOrEmpty(e.Guid))
+                            .GroupBy(e => e.Guid, StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+                    var seenCheckpointGuids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var pendingBatch = new List<SearchIndex.IndexEntry>();
+                    const int checkpointInterval = 2000;
                     long readTicks = 0, flushTicks = 0;
                     // value: [0]=accumulated read ticks, [1]=object count
                     var typeBuckets = new Dictionary<string, long[]>(StringComparer.Ordinal);
@@ -818,42 +869,61 @@ namespace GxMcp.Worker.Services
                         string typeName = null;
                         try { typeName = obj.TypeDescriptor?.Name; } catch { }
                         if (string.IsNullOrEmpty(typeName)) typeName = obj.GetType().Name;
+                        string objectGuid = null;
+                        string objectName = null;
+                        try { objectGuid = obj.Guid.ToString(); } catch { }
+                        try { objectName = obj.Name; } catch { }
 
-                        string description = null;
-                        try { description = obj.Description; } catch { }
-
-                        // v2.6.8: lite pass also captures lifecycle metadata. Reads
-                        // are cheap on the KBObject handle (no part load), so we
-                        // pay the cost once during the lite walk instead of
-                        // forcing the user to wait for enrichment.
-                        DateTime lu = DateTime.MinValue, ca = DateTime.MinValue;
-                        string lub = null;
+                        // LastUpdate is the cheap resume discriminator. When the
+                        // checkpoint already contains an unchanged object, retain its
+                        // lite entry and skip the expensive hierarchy/description reads.
+                        DateTime lu = DateTime.MinValue;
                         try { lu = SdkTimestampNormalizer.NormalizeUtc(obj.LastUpdate); } catch { }
-                        try { ca = SdkTimestampNormalizer.NormalizeUtc(obj.VersionDate); } catch { }
-                        try { lub = obj.UserName; } catch { }
+                        SearchIndex.IndexEntry checkpointEntry = null;
+                        bool reusedCheckpoint = !string.IsNullOrEmpty(objectGuid)
+                            && checkpointEntriesByGuid.TryGetValue(objectGuid, out checkpointEntry)
+                            && checkpointEntry != null
+                            && checkpointEntry.LastUpdate == lu
+                            && string.Equals(checkpointEntry.Name, objectName, StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(checkpointEntry.Type, typeName, StringComparison.OrdinalIgnoreCase);
+                        if (!string.IsNullOrEmpty(objectGuid) && checkpointEntriesByGuid.ContainsKey(objectGuid))
+                            seenCheckpointGuids.Add(objectGuid);
+
                         // Fase 1: track the delta baseline (max LastUpdate) during the walk.
                         if (lu != DateTime.MinValue) _indexCacheService.ObserveLastUpdate(lu);
-                        var hierarchy = _indexCacheService.ResolveHierarchyForIndex(obj);
-
-                        liteEntries.Add(new SearchIndex.IndexEntry
+                        if (!reusedCheckpoint)
                         {
-                            Guid = obj.Guid.ToString(),
-                            EntityKey = SafeEntityKey(obj),
-                            EntityTypeGuid = SafeEntityTypeGuid(obj),
-                            EntityId = SafeEntityId(obj),
-                            Name = obj.Name,
-                            Type = typeName,
-                            Description = description,
-                            Parent = hierarchy.ParentName,
-                            ParentPath = hierarchy.ParentPath,
-                            ParentFolderPath = string.IsNullOrEmpty(hierarchy.ParentPath) ? "Root Module" : "Root Module/" + hierarchy.ParentPath,
-                            Path = hierarchy.Path,
-                            Module = hierarchy.ModuleName,
-                            LastUpdate = lu,
-                            CreatedAt = ca,
-                            LastModifiedBy = lub,
-                            IsEnriched = false
-                        });
+                            if (!string.IsNullOrEmpty(objectGuid))
+                                liteEntries.RemoveAll(e => e != null && string.Equals(e.Guid, objectGuid, StringComparison.OrdinalIgnoreCase));
+                            string description = null;
+                            try { description = obj.Description; } catch { }
+                            DateTime ca = DateTime.MinValue;
+                            string lub = null;
+                            try { ca = SdkTimestampNormalizer.NormalizeUtc(obj.VersionDate); } catch { }
+                            try { lub = obj.UserName; } catch { }
+                            var hierarchy = _indexCacheService.ResolveHierarchyForIndex(obj);
+                            var liteEntry = new SearchIndex.IndexEntry
+                            {
+                                Guid = objectGuid,
+                                EntityKey = SafeEntityKey(obj),
+                                EntityTypeGuid = SafeEntityTypeGuid(obj),
+                                EntityId = SafeEntityId(obj),
+                                Name = objectName,
+                                Type = typeName,
+                                Description = description,
+                                Parent = hierarchy.ParentName,
+                                ParentPath = hierarchy.ParentPath,
+                                ParentFolderPath = string.IsNullOrEmpty(hierarchy.ParentPath) ? "Root Module" : "Root Module/" + hierarchy.ParentPath,
+                                Path = hierarchy.Path,
+                                Module = hierarchy.ModuleName,
+                                LastUpdate = lu,
+                                CreatedAt = ca,
+                                LastModifiedBy = lub,
+                                IsEnriched = false
+                            };
+                            liteEntries.Add(liteEntry);
+                            pendingBatch.Add(liteEntry);
+                        }
 
                         long objTicks = Stopwatch.GetTimestamp() - objStart;
                         readTicks += objTicks;
@@ -876,11 +946,21 @@ namespace GxMcp.Worker.Services
                             long flushStart = Stopwatch.GetTimestamp();
                             try
                             {
-                                // Item 6: incremental AddOrUpdateBatch instead of ReplaceAll so
-                                // enriched entries already in the cache are never overwritten with
-                                // lite stubs during streaming progress flushes.
-                                _indexCacheService.AddOrUpdateBatch(new List<SearchIndex.IndexEntry>(liteEntries));
+                                // Incremental batches keep streaming O(N) and avoid
+                                // re-submitting the entire checkpoint on every progress tick.
+                                if (pendingBatch.Count > 0)
+                                {
+                                    _indexCacheService.AddOrUpdateBatch(pendingBatch);
+                                    pendingBatch.Clear();
+                                }
                                 _indexCacheService.MarkUltraLiteReady(_totalCount);
+                                if (_totalCount % checkpointInterval == 0)
+                                {
+                                    _checkpointActive = _indexCacheService.WriteLiteWalkCheckpoint(
+                                        _indexCacheService.TryGetLoadedIndex(), _lastResumedFrom + _totalCount, objectGuid, walkStartedAtUtc);
+                                    if (_checkpointActive)
+                                        _checkpointCapturedAtUtc = DateTime.UtcNow.ToString("o");
+                                }
                             }
                             catch { /* best-effort; full ReplaceAll at end is authoritative */ }
                             flushTicks += Stopwatch.GetTimestamp() - flushStart;
@@ -902,6 +982,19 @@ namespace GxMcp.Worker.Services
                     }
 
                     if (!IsCurrentIndexOperation(operationGeneration)) return;
+                    if (resumeCheckpoint != null)
+                    {
+                        liteEntries = liteEntries
+                            .Where(e => e != null && (string.IsNullOrEmpty(e.Guid)
+                                || !checkpointEntriesByGuid.ContainsKey(e.Guid)
+                                || seenCheckpointGuids.Contains(e.Guid)))
+                            .ToList();
+                    }
+                    if (pendingBatch.Count > 0)
+                    {
+                        _indexCacheService.AddOrUpdateBatch(pendingBatch);
+                        pendingBatch.Clear();
+                    }
                     _indexCacheService.ReplaceAll(liteEntries);
                     _indexCacheService.MarkLitePassComplete(_totalCount);
 
@@ -915,8 +1008,14 @@ namespace GxMcp.Worker.Services
                     // Issue #208: stamp the sidecar only when the flush certified all dirty state;
                     // a timed-out flush keeps the previous sidecar (older hwm) instead of
                     // claiming changes the on-disk body does not contain.
-                    try { _indexCacheService.FlushAndStampSidecar(_totalCount, "lite-complete"); }
+                    bool liteCertified = false;
+                    try { liteCertified = _indexCacheService.FlushAndStampSidecar(_totalCount, "lite-complete"); }
                     catch (Exception fx) { Logger.Warn("Lite-complete flush/sidecar failed: " + fx.Message); }
+                    if (liteCertified)
+                    {
+                        _indexCacheService.DeleteLiteWalkCheckpoint();
+                        _checkpointActive = false;
+                    }
 
                     // Wire the enrichment queue BEFORE starting the background drain, so callers
                     // that hit ImpactAnalysis the moment LiteReady is published can promote
@@ -985,13 +1084,19 @@ namespace GxMcp.Worker.Services
                             // guarantee the fully-enriched index reaches disk.
                             // Fase 1: only NOW (enrichment fully drained) write the validation
                             // sidecar — its presence marks the on-disk body as delta-eligible.
+                            bool enrichCertified = false;
                             try
                             {
                                 // Issue #208: the sidecar is stamped only when the flush certified
                                 // all dirty state; a timeout must not advance the persisted hwm.
-                                _indexCacheService.FlushAndStampSidecar(_totalCount, "final-enrich");
+                                enrichCertified = _indexCacheService.FlushAndStampSidecar(_totalCount, "final-enrich");
                             }
                             catch (Exception fx) { Logger.Warn("Final enrich flush/sidecar failed: " + fx.Message); }
+                            if (enrichCertified)
+                            {
+                                _indexCacheService.DeleteLiteWalkCheckpoint();
+                                _checkpointActive = false;
+                            }
                             enrichSw.Stop();
                             bulkSw.Stop();
                             _currentStatus = "Complete";
@@ -1542,6 +1647,11 @@ namespace GxMcp.Worker.Services
             }
             json["noProgressTimeoutSec"] = IndexBuildWatchdog.ResolveNoProgressSeconds();
             json["stalled"] = operation.Stalled;
+            json["resumedFrom"] = _lastResumedFrom > 0 ? (JToken)_lastResumedFrom : JValue.CreateNull();
+            json["checkpointActive"] = _checkpointActive;
+            json["checkpointCapturedAtUtc"] = _checkpointCapturedAtUtc != null
+                ? (JToken)_checkpointCapturedAtUtc
+                : JValue.CreateNull();
             if (operation.Active && (operation.Stalled || !operation.WorkerAlive))
                 json["recoveryAction"] = "genexus_lifecycle action=index force=true";
             var state = _indexCacheService?.GetState();
@@ -1549,6 +1659,11 @@ namespace GxMcp.Worker.Services
             json["lastSuccessfulScanAt"] = state?.LastSuccessfulScanAt.HasValue == true
                 ? (JToken)state.LastSuccessfulScanAt.Value.ToUniversalTime().ToString("o")
                 : JValue.CreateNull();
+            try
+            {
+                json["cacheValidation"] = _indexCacheService.BuildCacheValidationDiagnostic();
+            }
+            catch { }
             json["isBusy"] = _isIndexing || operation.Active || _isOpenInProgress;
             // Issue #27 item 3 (measured): when the index is loaded from the warm/delta
             // cache, the in-session walk counters (_totalCount/_processedCount) are never

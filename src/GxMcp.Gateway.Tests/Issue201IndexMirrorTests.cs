@@ -45,6 +45,41 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void Applying_worker_state_preserves_cache_and_checkpoint_diagnostics()
+        {
+            Program.ResetIndexStateMirrorForTest();
+            try
+            {
+                Assert.True(Program.ApplyIndexStateFromWorkerResult(new JObject
+                {
+                    ["indexStatus"] = "Reindexing",
+                    ["totalObjects"] = 2000,
+                    ["freshness"] = "refreshing",
+                    ["resumedFrom"] = 1000,
+                    ["checkpointActive"] = true,
+                    ["checkpointCapturedAtUtc"] = "2026-09-21T20:00:00Z",
+                    ["cacheValidation"] = new JObject
+                    {
+                        ["bodyPresent"] = true,
+                        ["metaPresent"] = false,
+                        ["rejectionReason"] = "missing-meta",
+                        ["slotGeneration"] = 7
+                    }
+                }, "diagnostics-kb"));
+
+                JObject block = Program.BuildIndexBlockForTest("diagnostics-kb");
+                Assert.Equal(1000, block["resumedFrom"]?.ToObject<int>());
+                Assert.True(block["checkpoint"]?["active"]?.ToObject<bool>());
+                Assert.Equal("missing-meta", block["cacheValidation"]?["rejectionReason"]?.ToString());
+                Assert.Equal(7, block["cacheValidation"]?["slotGeneration"]?.ToObject<long>());
+            }
+            finally
+            {
+                Program.ResetIndexStateMirrorForTest();
+            }
+        }
+
+        [Fact]
         public void Applying_worker_state_preserves_jsonnet_date_tokens()
         {
             Program.ResetIndexStateMirrorForTest();

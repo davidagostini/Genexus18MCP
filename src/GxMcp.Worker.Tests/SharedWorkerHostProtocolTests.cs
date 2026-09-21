@@ -221,6 +221,17 @@ namespace GxMcp.Worker.Tests
             Assert.True(broadcast);
             Assert.Null(attachmentId);
 
+            var indexActive = new JObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["method"] = "notifications/worker/index_active",
+                ["params"] = new JObject { ["processed"] = 100, ["total"] = 1000 }
+            };
+            Assert.True(SharedWorkerHostProtocol.TryRouteChildNotification(
+                indexActive, owners, out attachmentId, out routed, out broadcast, out error), error);
+            Assert.True(broadcast);
+            Assert.Null(attachmentId);
+
             var unknown = new JObject
             {
                 ["jsonrpc"] = "2.0",

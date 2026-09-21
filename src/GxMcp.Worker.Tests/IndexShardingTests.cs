@@ -84,6 +84,68 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
+        public void VersionedSnapshot_StaleWorkerCannotReplaceCertifiedGeneration()
+        {
+            string kbPath = UniqueKbPath();
+            var current = new IndexCacheService();
+            var lagging = new IndexCacheService();
+            current.Initialize(kbPath, proactiveLoad: false);
+            lagging.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                current.ReplaceAll(new[] { Entry("Procedure", "Initial") });
+                Assert.True(current.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+
+                // Force the second cache to remember the first certified generation.
+                Assert.True(lagging.GetIndex().Objects.ContainsKey("Procedure:Initial"));
+                current.AddOrUpdateBatch(new[] { Entry("Procedure", "NewerWorker") });
+                Assert.True(current.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                string currentPointer = File.ReadAllText(current.SnapshotPointerPathForTest);
+
+                lagging.AddOrUpdateBatch(new[] { Entry("Procedure", "OlderWorker") });
+                Assert.False(lagging.FlushNow(250));
+                Assert.Equal(currentPointer, File.ReadAllText(current.SnapshotPointerPathForTest));
+
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                var objects = reloaded.GetIndex().Objects;
+                Assert.True(objects.ContainsKey("Procedure:NewerWorker"));
+                Assert.False(objects.ContainsKey("Procedure:OlderWorker"));
+            }
+            finally
+            {
+                current.DeleteOnDiskSnapshot();
+                lagging.DeleteOnDiskSnapshot();
+            }
+        }
+
+        [Fact]
+        public void LiteWalkCheckpoint_RoundTripsPartialIndexForResume()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                var first = Entry("Procedure", "CheckpointFirst");
+                cache.ReplaceAll(new[] { first });
+                Assert.True(cache.WriteLiteWalkCheckpoint(cache.GetIndex(), 500, first.Guid, DateTime.UtcNow.AddMinutes(-1)));
+
+                var resumed = new IndexCacheService();
+                resumed.Initialize(kbPath, proactiveLoad: false);
+                var checkpoint = resumed.TryLoadLiteWalkCheckpoint();
+                Assert.NotNull(checkpoint);
+                Assert.Equal(500, checkpoint.ProcessedCount);
+                Assert.Equal(first.Guid, checkpoint.LastProcessedGuid);
+                Assert.True(checkpoint.Index.Objects.ContainsKey("Procedure:CheckpointFirst"));
+
+                resumed.LoadLiteWalkCheckpoint(checkpoint.Index);
+                Assert.True(resumed.GetIndex().Objects.ContainsKey("Procedure:CheckpointFirst"));
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
         public void VersionedSnapshot_FailedPublicationRetriesEveryDirtyShard()
         {
             string kbPath = UniqueKbPath();
@@ -217,7 +279,36 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void VersionedSnapshot_NewBodyRequiresItsOwnEnrichmentCertificate()
+        public void OrdinaryMutation_CarriesPreviousCertifiedSidecarAsConservativeBaseline()
+        {
+            string kbPath = UniqueKbPath();
+            var cache = new IndexCacheService();
+            cache.Initialize(kbPath, proactiveLoad: false);
+            try
+            {
+                cache.ReplaceAll(new[] { Entry("Procedure", "CertifiedBaseline") });
+                cache.ObserveLastUpdate(DateTime.UtcNow.AddMinutes(-30));
+                Assert.True(cache.FlushAndStampSidecar(1, "test"), IndexCacheService.LastFlushErrorMessage ?? "no error");
+                DateTime baseline = cache.ValidateOnDiskCache().HighWaterMark;
+
+                cache.AddOrUpdateBatch(new[] { Entry("Procedure", "OrdinaryMutation") });
+                Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
+
+                var validation = cache.ValidateOnDiskCache();
+                Assert.True(validation.MetaPresent);
+                Assert.Equal(baseline, validation.HighWaterMark);
+                Assert.True(validation.CanDelta);
+
+                var reloaded = new IndexCacheService();
+                reloaded.Initialize(kbPath, proactiveLoad: false);
+                Assert.True(reloaded.GetIndex().Objects.ContainsKey("Procedure:OrdinaryMutation"));
+                Assert.True(reloaded.ValidateOnDiskCache().CanDelta);
+            }
+            finally { cache.DeleteOnDiskSnapshot(); }
+        }
+
+        [Fact]
+        public void VersionedSnapshot_NewBodyCarriesExistingEnrichmentCertificate()
         {
             var cache = new IndexCacheService();
             cache.Initialize(UniqueKbPath(), proactiveLoad: false);
@@ -233,9 +324,9 @@ namespace GxMcp.Worker.Tests
                 Assert.True(cache.FlushNow(), IndexCacheService.LastFlushErrorMessage ?? "no error");
                 var validation = cache.ValidateOnDiskCache();
                 Assert.True(validation.BodyPresent);
-                Assert.False(validation.MetaPresent);
-                Assert.False(validation.CanDelta);
-                Assert.False(validation.CanDeltaAcrossDll);
+                Assert.True(validation.MetaPresent);
+                Assert.True(validation.CanDelta);
+                Assert.True(validation.CanDeltaAcrossDll);
             }
             finally { cache.DeleteOnDiskSnapshot(); }
         }

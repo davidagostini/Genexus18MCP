@@ -326,7 +326,8 @@ namespace GxMcp.Worker
             return string.Equals(method, "notifications/resources/updated", StringComparison.Ordinal)
                 || string.Equals(method, "notifications/worker/sdk_ready", StringComparison.Ordinal)
                 || string.Equals(method, "notifications/worker/restarting", StringComparison.Ordinal)
-                || string.Equals(method, "notifications/worker/build_active", StringComparison.Ordinal);
+                || string.Equals(method, "notifications/worker/build_active", StringComparison.Ordinal)
+                || string.Equals(method, "notifications/worker/index_active", StringComparison.Ordinal);
         }
 
         internal static bool TryCreateIdentityKey(

@@ -135,6 +135,7 @@ namespace GxMcp.Worker
         private string _lastChildError = string.Empty;
         private string _lastChildFailureDiagnostic = string.Empty;
         private DateTime _lastDetachUtc = DateTime.UtcNow;
+        private long _lastBackgroundActivityTicks = DateTime.UtcNow.Ticks;
         private long _generation = 1;
         private bool _sdkReady;
         private string _recordPath;
@@ -160,7 +161,10 @@ namespace GxMcp.Worker
                     if (!TryRespawnChild()) break;
                     continue;
                 }
-                if (_attachments.IsEmpty && (DateTime.UtcNow - _lastDetachUtc).TotalMilliseconds >= _options.IdleTimeoutMs)
+                DateTime lastBackgroundActivity = new DateTime(Interlocked.Read(ref _lastBackgroundActivityTicks), DateTimeKind.Utc);
+                if (_attachments.IsEmpty
+                    && (DateTime.UtcNow - _lastDetachUtc).TotalMilliseconds >= _options.IdleTimeoutMs
+                    && (DateTime.UtcNow - lastBackgroundActivity).TotalMilliseconds >= _options.IdleTimeoutMs)
                     break;
                 WriteRecord();
                 Thread.Sleep(250);
@@ -513,6 +517,11 @@ namespace GxMcp.Worker
                         _sdkReady = true;
                         lock (_recordGate) { _record.State = "ready"; }
                         WriteRecord();
+                    }
+                    if (string.Equals(method, "notifications/worker/build_active", StringComparison.Ordinal)
+                        || string.Equals(method, "notifications/worker/index_active", StringComparison.Ordinal))
+                    {
+                        Interlocked.Exchange(ref _lastBackgroundActivityTicks, DateTime.UtcNow.Ticks);
                     }
                     if (frame["id"] != null && frame["id"].Type != JTokenType.Null)
                     {

@@ -110,6 +110,9 @@ namespace GxMcp.Gateway
         private static readonly TimeSpan BuildActiveGraceWindow = TimeSpan.FromSeconds(90);
         // 0 = never signalled (IsBuildActive short-circuits on it).
         private long _lastBuildActiveUtcTicks;
+        // Index walks are background STA work too; keep idle and heap-recycle
+        // decisions from killing a Worker after the client has detached.
+        private long _lastIndexActiveUtcTicks;
         // Proactive idle heap-recycle ceiling (bytes; 0 = disabled) and a grace so we only
         // recycle a worker that has been genuinely idle, not one momentarily between commands.
         private readonly long _heapRecycleBytes;
@@ -1404,7 +1407,7 @@ namespace GxMcp.Gateway
             if (_heapRecycleBytes <= 0) return false;
             if (_isStarting) return false;
             if (Volatile.Read(ref _queuedCommands) > 0 || Volatile.Read(ref _inFlightCommands) > 0) return false;
-            if (IsBuildActive()) return false;
+            if (IsBuildActive() || IsIndexActive()) return false;
             if (DateTime.UtcNow - _lastActivityUtc < HeapRecycleIdleGrace) return false;
             return wsBytes > 0 && wsBytes > _heapRecycleBytes;
         }
@@ -1413,7 +1416,16 @@ namespace GxMcp.Gateway
         // notifications/worker/build_active (heartbeat every 20s during a build).
         private bool IsBuildActive()
         {
-            long ticks = Volatile.Read(ref _lastBuildActiveUtcTicks);
+            return IsBackgroundActivityFresh(Volatile.Read(ref _lastBuildActiveUtcTicks));
+        }
+
+        private bool IsIndexActive()
+        {
+            return IsBackgroundActivityFresh(Volatile.Read(ref _lastIndexActiveUtcTicks));
+        }
+
+        private static bool IsBackgroundActivityFresh(long ticks)
+        {
             return ticks != 0 && DateTime.UtcNow - new DateTime(ticks) < BuildActiveGraceWindow;
         }
 
@@ -1436,7 +1448,7 @@ namespace GxMcp.Gateway
 
             // A background build keeps the worker busy even with nothing in flight or
             // queued — never idle-reap (or heap-recycle) mid-build. issue #113.
-            if (IsBuildActive())
+            if (IsBuildActive() || IsIndexActive())
             {
                 return false;
             }
@@ -1469,6 +1481,14 @@ namespace GxMcp.Gateway
                         // worker mid-build.
                         MarkActivity();
                         Volatile.Write(ref _lastBuildActiveUtcTicks, DateTime.UtcNow.Ticks);
+                    }
+                    else if (string.Equals(method, "notifications/worker/index_active", StringComparison.Ordinal))
+                    {
+                        // A lite/delta index walk is background STA work and may have no
+                        // in-flight RPC after the initiating command returned. Treat its
+                        // heartbeat as activity for both idle reap guards.
+                        MarkActivity();
+                        Volatile.Write(ref _lastIndexActiveUtcTicks, DateTime.UtcNow.Ticks);
                     }
                     else if (string.Equals(method, "notifications/worker/persist_jobs_request", StringComparison.Ordinal))
                     {
