@@ -676,6 +676,12 @@ namespace GxMcp.Gateway
             // Replaces the manual scripts/mcp_recover.ps1 flow for agent-driven use.
             if (string.Equals(toolName, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase))
             {
+                // Journal reconciliation is gateway-only and must remain available
+                // when writes are fenced or there is no live Worker/session lease.
+                var journalResult = HandleMutationJournalAction(_mutationRecovery, args);
+                if (journalResult != null)
+                    return BuildToolTextResponse(idToken, journalResult,
+                        journalResult["error"] != null, toolName, args, payloadOwned: true);
                 JObject payload;
                 bool isError = false;
                 try

@@ -203,7 +203,8 @@ namespace GxMcp.Gateway.Tests
             //   2026-09-17 (typed WWP form UserAction): 31000 → 31500 for the
             //   add_user_action operation, container/event contract, and rollback option.
             //   Measured ~31229 tokens.
-            Assert.True(approxTokens < 31500, $"tool_definitions.json is ~{approxTokens} tokens; budget 31500.");
+            // 31500 -> 31700 for explicit journal status/repair actions and preview contract.
+            Assert.True(approxTokens < 31700, $"tool_definitions.json is ~{approxTokens} tokens; budget 31700.");
         }
     }
 }
