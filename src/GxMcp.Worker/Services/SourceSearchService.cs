@@ -295,14 +295,9 @@ namespace GxMcp.Worker.Services
                 // entries that demonstrably reference none of them.
                 var literals = ExtractLiteralTokens(c.Pattern, c.Callee);
 
-                // The literal pre-filter only sees indexed text (SourceSnippet/Name/Keywords),
-                // which never contains the WebForm XML. A WebForm scope scan would therefore
-                // be pre-filtered away before its part is ever read, so skip the pre-filter
-                // when the caller asked for the webForm/layout part.
-                bool scopeTouchesWebForm = (c.Scope ?? DefaultScope)
-                    .Any(s => string.Equals(s, "webForm", StringComparison.OrdinalIgnoreCase)
-                           || string.Equals(s, "layout", StringComparison.OrdinalIgnoreCase));
-                bool indexedSourceScope = !scopeTouchesWebForm && IsIndexedSourceScope(c.Scope);
+                // FullSource only proves absence for the primary-source aliases.
+                // Explicit or mixed parts must reach their own readers.
+                bool indexedSourceScope = IsIndexedSourceScope(c.Scope);
                 if (indexedSourceScope && literals.Count > 0)
                 {
                     // Test fixtures may load only Objects; production disk indexes
@@ -384,7 +379,6 @@ namespace GxMcp.Worker.Services
 
                     query = index.FindByTypes(targetTypes);
 
-                    query = query.Where(e => scopeTouchesWebForm || indexedSourceScope || MatchesAnyLiteral(e, literals));
                     if (indexedSourceScope && literals.Count > 0 && index.SourceTokenIndex != null)
                     {
                         var indexedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -515,6 +509,7 @@ namespace GxMcp.Worker.Services
                     foreach (var part in c.Scope ?? DefaultScope)
                     {
                         if (produced >= c.MaxResults || resolutionFailed) break;
+                        string resolvedPart = ObjectService.ResolveSearchPartName(e.Type, part);
                         string src = null;
                         bool haveSrc = false;
                         bool useIndexedSource = indexedSourceScope
@@ -526,7 +521,7 @@ namespace GxMcp.Worker.Services
                             haveSrc = true;
                         }
                         else if (_objectService != null && !string.IsNullOrEmpty(e.Guid)
-                            && _objectService.TryGetPartSourceRaw(e.Guid, part, out src))
+                            && _objectService.TryGetPartSourceRaw(e.Guid, resolvedPart, out src))
                         {
                             haveSrc = true;
                             sourceCacheHits++;
@@ -554,8 +549,8 @@ namespace GxMcp.Worker.Services
                             }
                             var sourceReadStart = System.Diagnostics.Stopwatch.GetTimestamp();
                             src = _objectService != null
-                                ? _objectService.ReadPartSourceRaw(obj, part)
-                                : TryGetPartSource(obj, part);
+                                ? _objectService.ReadPartSourceRaw(obj, resolvedPart)
+                                : TryGetPartSource(obj, resolvedPart);
                             haveSrc = src != null;
                             sourceReadTicks += System.Diagnostics.Stopwatch.GetTimestamp() - sourceReadStart;
                         }
@@ -577,7 +572,7 @@ namespace GxMcp.Worker.Services
                                     string ln = call.LineNumber - 1 < lines.Length ? lines[call.LineNumber - 1] : "";
                                     if (!rx.IsMatch(ln)) continue;
                                 }
-                                if (AddSourceHit(hits, BuildHit(e, useIndexedSource ? "Source" : part, lines, call.LineNumber, call),
+                                if (AddSourceHit(hits, BuildHit(e, resolvedPart, lines, call.LineNumber, call),
                                     ref produced, ref skippedHits, ref consumedHits, c.MaxResults))
                                 {
                                     entryReachedLimit = true;
@@ -608,7 +603,7 @@ namespace GxMcp.Worker.Services
                                 {
                                     if (rx.IsMatch(lines[li]))
                                     {
-                                        if (AddSourceHit(hits, BuildHit(e, useIndexedSource ? "Source" : part, lines, li + 1, null),
+                                        if (AddSourceHit(hits, BuildHit(e, resolvedPart, lines, li + 1, null),
                                             ref produced, ref skippedHits, ref consumedHits, c.MaxResults))
                                         {
                                             entryReachedLimit = true;
@@ -636,7 +631,7 @@ namespace GxMcp.Worker.Services
                                         pos++;
                                     }
                                     if (!ShouldEmitRegexHitLine(lineNo, ref lastHitLine)) continue;
-                                    if (AddSourceHit(hits, BuildHit(e, useIndexedSource ? "Source" : part, hitLines, lineNo, null),
+                                    if (AddSourceHit(hits, BuildHit(e, resolvedPart, hitLines, lineNo, null),
                                         ref produced, ref skippedHits, ref consumedHits, c.MaxResults))
                                     {
                                         entryReachedLimit = true;

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
+using GxMcp.Worker.Structure;
 using Artech.Architecture.Common.Objects;
 using Artech.Architecture.Common.Services;
 using GxMcp.Worker.Models;
@@ -133,7 +135,7 @@ namespace GxMcp.Worker.Services
 
                 if (!equal)
                 {
-                    result["differences"] = DiffPartNames(svc, objA, objB);
+                    AddPartDifferences(result, svc, objA, objB);
                 }
 
                 return McpResponse.Ok(code: "CompareCompleted", result: result);
@@ -144,41 +146,137 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        /// <summary>
-        /// Best-effort part-level breakdown: for each part TYPE present on both
-        /// objects (Rules, Layout, Events, Source, ...), reports the type name
-        /// when that pair's content differs. Not a full DiffNodes edit script —
-        /// just enough for the agent to know where to look next via genexus_read.
-        /// Any per-part failure is swallowed; the top-level 'equal:false' already
-        /// stands regardless of whether this breakdown succeeds.
-        /// </summary>
-        private static JArray DiffPartNames(IComparerService svc, KBObject objA, KBObject objB)
+        internal const int MaxSourceChars = 1024 * 1024;
+        internal const int MaxDiffChars = 16 * 1024;
+        internal const int MaxTotalDiffBytes = 128 * 1024;
+
+        private static void AddPartDifferences(JObject result, IComparerService svc, KBObject objA, KBObject objB)
         {
             var differences = new JArray();
+            var diffs = new JArray();
+            result["differences"] = differences;
+            result["diffs"] = diffs;
             try
             {
-                var partsB = new Dictionary<string, KBObjectPart>(StringComparer.OrdinalIgnoreCase);
+                var partsB = new Dictionary<Guid, KBObjectPart>();
                 foreach (KBObjectPart pb in objB.Parts)
                 {
-                    string key = pb?.TypeDescriptor?.Name;
-                    if (!string.IsNullOrEmpty(key) && !partsB.ContainsKey(key)) partsB[key] = pb;
+                    if (pb != null && !partsB.ContainsKey(pb.Type)) partsB[pb.Type] = pb;
                 }
 
                 foreach (KBObjectPart pa in objA.Parts)
                 {
                     string key = pa?.TypeDescriptor?.Name;
                     if (string.IsNullOrEmpty(key)) continue;
-                    if (!partsB.TryGetValue(key, out var pb)) continue;
+                    if (!partsB.TryGetValue(pa.Type, out var pb)) continue;
 
-                    bool partsEqual;
-                    try { partsEqual = svc.AreEqualInContent(pa, pb, false, CompareObjectOptions.Default); }
-                    catch { continue; }
-
-                    if (!partsEqual) differences.Add(key);
+                    AppendPartDifference(differences, diffs, key,
+                        ResolveReadPart(objA.TypeDescriptor?.Name, pa.Type, key),
+                        () => svc.AreEqualInContent(pa, pb, false, CompareObjectOptions.Default),
+                        SourceReader(pa), SourceReader(pb));
                 }
             }
-            catch { /* best-effort — content-level equal:false already surfaced */ }
-            return differences;
+            catch { result["diffsOmittedReason"] = "readFailed"; }
         }
+
+        internal static Func<string> SourceReader(object part)
+        {
+            if (part is ISource source) return () => source.Source ?? "";
+            // Match genexus_read's textual fallback (not SerializeToXml).
+            try
+            {
+                var property = part.GetType().GetProperty("Source");
+                return property?.PropertyType == typeof(string) && property.CanRead
+                    ? (Func<string>)(() => (string)property.GetValue(part, null) ?? "") : null;
+            }
+            catch { return () => throw new InvalidOperationException("Source reader unavailable."); }
+        }
+
+        internal static string ResolveReadPart(string objectType, Guid partType, string descriptor)
+        {
+            if (partType == PartAccessor.DesignSystemTokensPartGuid) return "Tokens";
+            if (partType == PartAccessor.DesignSystemStylesPartGuid) return "Styles";
+            foreach (string alias in new[] { "Events", "Rules", "Conditions", "Source", "Variables", "Structure", "WebForm", "Layout", "Help" })
+                if (partType != Guid.Empty && PartAccessor.GetPartGuid(objectType ?? "", alias) == partType)
+                    return alias;
+            return descriptor;
+        }
+
+        internal static void AppendPartDifference(JArray differences, JArray diffs, string descriptor,
+            string part, Func<bool> areEqual, Func<string> readA, Func<string> readB)
+        {
+            var item = new JObject { ["part"] = part, ["partType"] = descriptor };
+            try { if (areEqual()) return; }
+            catch
+            {
+                item["omittedReason"] = "compareFailed";
+                diffs.Add(item);
+                return; // Cannot assert this part differs; preserve the SDK verdict.
+            }
+            differences.Add(descriptor);
+            diffs.Add(item);
+            if (readA == null || readB == null) { item["omittedReason"] = "nonTextualPart"; return; }
+            try
+            {
+                var text = BuildTextDiff(readA(), readB());
+                item.Merge(text);
+                // Budget JSON bytes, including escaping, before crossing the Worker pipe.
+                // Reserve room below the Gateway's 220 KB guard for the SDK verdict/metadata.
+                if (item["unified"] != null && Encoding.UTF8.GetByteCount(diffs.ToString(Newtonsoft.Json.Formatting.None)) > MaxTotalDiffBytes)
+                {
+                    item.Remove("unified");
+                    item.Merge(TruncatedDiff());
+                    item["limit"] = "totalDiffBytes";
+                    item.Remove("maxChars");
+                    item["maxBytes"] = MaxTotalDiffBytes;
+                }
+            }
+            catch { item["omittedReason"] = "readFailed"; }
+        }
+
+        internal static JObject BuildTextDiff(string before, string after)
+        {
+            if (before == null || after == null) return new JObject { ["omittedReason"] = "readFailed" };
+            if (before.Length > MaxSourceChars || after.Length > MaxSourceChars)
+                return new JObject { ["omittedReason"] = "truncated", ["truncated"] = true,
+                    ["limit"] = "inputChars", ["maxChars"] = MaxSourceChars };
+            before = before.Replace("\r\n", "\n").Replace('\r', '\n');
+            after = after.Replace("\r\n", "\n").Replace('\r', '\n');
+            if (before == after) return new JObject { ["omittedReason"] = "normalizedTextEqual" };
+            string[] Lines(string text) => text.Length == 0 ? new string[0]
+                : (text.EndsWith("\n", StringComparison.Ordinal) ? text.Substring(0, text.Length - 1) : text).Split('\n');
+            var a = Lines(before);
+            var b = Lines(after);
+            bool Same(int i, int j) => a[i] == b[j]
+                && (i < a.Length - 1 || before.EndsWith("\n", StringComparison.Ordinal))
+                    == (j < b.Length - 1 || after.EndsWith("\n", StringComparison.Ordinal));
+            int prefix = 0, suffix = 0;
+            while (prefix < a.Length && prefix < b.Length && Same(prefix, prefix)) prefix++;
+            while (suffix < a.Length - prefix && suffix < b.Length - prefix
+                && Same(a.Length - suffix - 1, b.Length - suffix - 1)) suffix++;
+            int start = Math.Max(0, prefix - 3);
+            int endA = Math.Min(a.Length, a.Length - suffix + 3);
+            int endB = Math.Min(b.Length, b.Length - suffix + 3);
+            // ponytail: one contiguous replacement hunk keeps memory/time linear;
+            // use a bounded shortest-edit algorithm only if minimal hunks become required.
+            var diff = new StringBuilder("--- a/part\n+++ b/part\n");
+            diff.AppendFormat("@@ -{0},{1} +{2},{3} @@\n", endA == start ? start : start + 1,
+                endA - start, endB == start ? start : start + 1, endB - start);
+            bool Line(char marker, string[] lines, int index, string text)
+            {
+                diff.Append(marker).Append(lines[index]).Append('\n');
+                if (index == lines.Length - 1 && !text.EndsWith("\n", StringComparison.Ordinal))
+                    diff.Append("\\ No newline at end of file\n");
+                return diff.Length <= MaxDiffChars;
+            }
+            for (int i = start; i < prefix; i++) if (!Line(' ', a, i, before)) return TruncatedDiff();
+            for (int i = prefix; i < a.Length - suffix; i++) if (!Line('-', a, i, before)) return TruncatedDiff();
+            for (int i = prefix; i < b.Length - suffix; i++) if (!Line('+', b, i, after)) return TruncatedDiff();
+            for (int i = a.Length - suffix; i < endA; i++) if (!Line(' ', a, i, before)) return TruncatedDiff();
+            return new JObject { ["unified"] = diff.ToString(), ["truncated"] = false };
+        }
+
+        private static JObject TruncatedDiff() => new JObject
+        { ["omittedReason"] = "truncated", ["truncated"] = true, ["limit"] = "unifiedChars", ["maxChars"] = MaxDiffChars };
     }
 }

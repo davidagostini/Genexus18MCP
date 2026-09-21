@@ -2,6 +2,19 @@
 
 This document records the MCP-facing surface that is currently exposed by the repository.
 
+`genexus_compare` preserves SDK `equal`/`differences`. For divergent content it
+adds per-part `diffs` with a `genexus_read` alias (`part`), SDK descriptor
+(`partType`) and A-to-B `unified` evidence. CRLF/CR normalize to LF; final-newline
+changes remain explicit. A single contiguous replacement hunk has three context
+lines and is not necessarily minimal. Input bodies have a 1,048,576 UTF-16-unit
+cap; unified output has 16,384 units per part and a 131,072-byte serialized JSON
+evidence budget across parts (metadata is retained). Over-limit hunks are omitted
+entirely with `omittedReason=truncated`, `truncated=true`, `limit` and
+`maxChars`/`maxBytes`. Other omission reasons
+are `nonTextualPart`, `readFailed`, `compareFailed`, `normalizedTextEqual`.
+Enumeration failures report `diffsOmittedReason=readFailed`. Only shared parts
+are compared, and `mode=properties` is unchanged. This operation never writes.
+
 Agent usage reference:
 - [`docs/llm_cli_mcp_playbook.md`](llm_cli_mcp_playbook.md)
 
@@ -72,6 +85,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | Tool | Read-only actions | Mutating actions |
 | --- | --- | --- |
 | `genexus_data_view` | `inspect`, `dry_run` | `create`, `update`, `delete` |
+| `genexus_connection_recover` | `journal_status` | `recover`, `journal_repair` |
 | `genexus_recipe` | `list`, `describe`, `suggest_macro` | `crystallize` |
 | `genexus_lifecycle` | `inspect`, `reorg_preview`, `status`, `result`, `snapshots-list` | `build`, `build_all`, `cancel`, `reconcile`, `specify`, `validate`, `validate-kb`, `rebuild`, `reorg`, `sync`, `index`, `snapshots-restore` |
 | `genexus_refactor` | — | `RenameAttribute`, `RenameVariable`, `RenameObject`, `ExtractProcedure`, `ExtractSubroutine`, `WWPSetCondition` |

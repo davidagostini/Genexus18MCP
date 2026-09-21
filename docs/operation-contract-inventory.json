@@ -5,7 +5,7 @@
     "src/GxMcp.Gateway/OperationClassifier.cs"
   ],
   "toolCount": 54,
-  "actionCount": 267,
+  "actionCount": 270,
   "tools": [
     {
       "tool": "genexus_data_view",
@@ -516,7 +516,29 @@
       "router": "SystemRouter",
       "actions": [
         {
-          "action": null,
+          "action": "recover",
+          "kind": "mutating",
+          "effects": "process.write",
+          "execution": "worker",
+          "retry": "operation_key",
+          "cache": "never",
+          "invalidation": [
+            "kb",
+            "dependents",
+            "collections"
+          ]
+        },
+        {
+          "action": "journal_status",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": []
+        },
+        {
+          "action": "journal_repair",
           "kind": "mutating",
           "effects": "process.write",
           "execution": "worker",
@@ -2011,6 +2033,15 @@
       "actions": [
         {
           "action": "list",
+          "kind": "readOnly",
+          "effects": "kb.read",
+          "execution": "worker",
+          "retry": "safe",
+          "cache": "semantic",
+          "invalidation": []
+        },
+        {
+          "action": "changed_objects",
           "kind": "readOnly",
           "effects": "kb.read",
           "execution": "worker",

@@ -306,3 +306,26 @@ If none of the above helps:
    - Your `config.json` with paths redacted if sensitive
 
 That gets the issue triaged fast.
+# Mutation recovery journal unavailable
+
+`MutationRecoveryJournalUnavailable` blocks real writes while reads and previews
+remain available. Restarting a Worker does not repair the Gateway journal.
+
+1. Call `genexus_connection_recover` with `action: "journal_status"`.
+2. Preview `action: "journal_repair", dryRun: true`. Pending fences are preserved.
+3. If the journal and every candidate are valid, explicitly apply with
+   `action: "journal_repair", dryRun: false` and require `healthy`, `persisted`
+   and `verified` to be true. Do not pass `force`.
+4. Read each affected object part in full (`limit: 0`) and retry the authorized
+   patch using the fresh `expectedVersion`, `rollbackOnFailure: true`,
+   `return_post_state: true` and `verifyMode: "exact"`. Run its dry run first.
+   Confirm the persisted receipt and a new full read/version token afterward.
+
+Repair changes only the journal. It does not clear pending fences, replay writes,
+unlock GXServer objects, enable forceWrite, or run Specify/Generate/Build/tests.
+Corrupt or foreign-scope evidence is rejected and retained for investigation;
+do not delete it to bypass the block. Locks or permissions must be resolved at
+their owner. All Gateways sharing a journal must use the lock-aware version.
+When moving to a new package directory, preserve the entire `state` directory,
+including candidates and backups, while old Gateways are stopped. Binary
+rollback must not roll back newly created recovery evidence.

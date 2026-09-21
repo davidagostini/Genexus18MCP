@@ -102,6 +102,8 @@ namespace GxMcp.Gateway
             // genexus_edit used to serialize its full source payload into a key
             // for that doomed lookup on every call.
             bool isMutating = IsMutatingTool(tName, tArgs);
+            if (isMutating && !IsMutationPreview(tArgs))
+                _mutationRecovery.Refresh();
             if (isMutating
                 && !IsMutationPreview(tArgs)
                 && !_mutationRecovery.IsHealthy)
@@ -164,6 +166,18 @@ namespace GxMcp.Gateway
             string lcAction = tArgs?["action"]?.ToString()?.ToLowerInvariant();
             // Live diagnostics and progress reads must always reflect current state.
             bool isLiveTool = IsLiveToolForCache(tName, lcAction);
+            var recoveryReads = new List<(string Target, string Part, RecoveryRequirement? Observed)>();
+            if (string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
+            {
+                _mutationRecovery.Refresh();
+                foreach (var target in EnumerateMutationRecoveryTargets(tName, tArgs))
+                {
+                    _mutationRecovery.TryGet(kbScope, target.Target, target.Part, out var observed);
+                    recoveryReads.Add((target.Target, target.Part, observed));
+                }
+                // A cached response cannot reconcile an uncertain persisted write.
+                isLiveTool |= !_mutationRecovery.IsHealthy || _mutationRecovery.Count > 0;
+            }
 
             // Scope the semantic cache by the resolved KB: the same tool+args
             // against two different open KBs must not share envelopes (the
@@ -441,12 +455,6 @@ namespace GxMcp.Gateway
                     if (!isErr && OperationClassifier.IsKbEnvironmentMutation(tName, lcAction))
                         InvalidateDatabaseInfoCache(kbScope);
 
-                    if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase))
-                    {
-                        foreach (var recoveryTarget in EnumerateMutationRecoveryTargets(tName, tArgs))
-                            _mutationRecovery.ConfirmRead(kbScope, recoveryTarget.Target, recoveryTarget.Part);
-                    }
-
                     // Friction 2026-05-22 #63: attach suggested_next_step on every error
                     // envelope (verbose OR terse). McpRouter.AttachSuggestedNextStep is a
                     // pure pattern-match over code/message text; routes patch NoMatch →
@@ -482,6 +490,14 @@ namespace GxMcp.Gateway
                         var guard = new ResponseSizeGuard();
                         var (guarded, _) = guard.Apply(finalJObj, tName, tArgs);
                         finalResult = guarded;
+                    }
+
+                    // Reconcile only content that actually survives the wire guards.
+                    if (!isErr && string.Equals(tName, "genexus_read", StringComparison.OrdinalIgnoreCase)
+                        && IsCompleteMutationRecoveryRead(finalResult))
+                    {
+                        foreach (var recoveryTarget in recoveryReads)
+                            _mutationRecovery.ConfirmRead(kbScope, recoveryTarget.Target, recoveryTarget.Part, recoveryTarget.Observed);
                     }
 
                     // StripNulls: remove null-valued properties from the result to reduce wire size.

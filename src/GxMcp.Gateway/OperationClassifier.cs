@@ -88,6 +88,9 @@ namespace GxMcp.Gateway
         private static readonly Dictionary<string, ActionContract> ActionContracts =
             new Dictionary<string, ActionContract>(StringComparer.OrdinalIgnoreCase)
             {
+                ["genexus_connection_recover"] = Contract(
+                    readOnly: new[] { "journal_status" },
+                    mutating: new[] { "recover", "journal_repair" }),
                 ["genexus_data_view"] = Contract(
                     readOnly: new[] { "inspect", "dry_run" },
                     mutating: new[] { "create", "update", "delete" }),
@@ -195,6 +198,7 @@ namespace GxMcp.Gateway
         // dryRun=true. An arbitrary dryRun flag must not hide a write.
         private static readonly HashSet<string> DryRunCapableActions = new HashSet<string>(StringComparer.Ordinal)
         {
+            "genexus_connection_recover:journal_repair",
             "genexus_data_view:create",
             "genexus_data_view:update",
             "genexus_data_view:delete",
@@ -446,6 +450,10 @@ namespace GxMcp.Gateway
         {
             if (string.IsNullOrWhiteSpace(toolName)) return false;
             var effectiveArgs = NormalizeArguments(toolName, args, out var canonical);
+            if (string.Equals(canonical, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
+                && (effectiveArgs["action"]?.ToString() == "journal_status"
+                    || effectiveArgs["action"]?.ToString() == "journal_repair"))
+                return false;
             if (string.Equals(canonical, "genexus_worker_reload", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(canonical, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(canonical, "genexus_edit_and_build", StringComparison.OrdinalIgnoreCase)
@@ -484,6 +492,22 @@ namespace GxMcp.Gateway
         internal static OperationContract Describe(string toolName, JObject? args)
         {
             var effectiveArgs = NormalizeArguments(toolName, args, out var canonical);
+            if (string.Equals(canonical, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
+                && (effectiveArgs["action"]?.ToString() == "journal_status"
+                    || effectiveArgs["action"]?.ToString() == "journal_repair"))
+            {
+                bool preview = effectiveArgs["action"]?.ToString() == "journal_status"
+                    || effectiveArgs["dryRun"]?.ToObject<bool?>() != false;
+                return new OperationContract
+                {
+                    CanonicalName = canonical,
+                    Kind = preview ? OperationKind.ReadOnly : OperationKind.Mutating,
+                    Effects = preview ? "file.read" : "file.write",
+                    Execution = "gateway", Retry = preview ? "safe" : "operation_key",
+                    Cache = "never", Invalidation = preview ? Array.Empty<string>() : new[] { "files" },
+                    PreviewSupported = effectiveArgs["action"]?.ToString() == "journal_repair"
+                };
+            }
             OperationKind kind = ClassifyCanonicalTool(canonical, effectiveArgs);
             if (kind == OperationKind.ReadOnly
                 && HasKnownSideEffects(canonical, effectiveArgs["action"]?.ToString(), effectiveArgs))
@@ -578,6 +602,13 @@ namespace GxMcp.Gateway
             }
 
             canonicalTool = ToolIdentity.ResolveCanonical(effectiveTool);
+            if (string.Equals(canonicalTool, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
+                && effectiveArgs["action"] == null)
+                effectiveArgs["action"] = "recover";
+            if (string.Equals(canonicalTool, "genexus_connection_recover", StringComparison.OrdinalIgnoreCase)
+                && effectiveArgs["action"]?.ToString() == "journal_repair"
+                && effectiveArgs["dryRun"] == null)
+                effectiveArgs["dryRun"] = true;
             return effectiveArgs;
         }
 

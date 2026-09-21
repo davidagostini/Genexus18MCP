@@ -629,7 +629,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Diff two KB objects — IDE 'Compare Objects' parity over the SDK's IComparerService. mode=content (default) diffs full object content; mode=properties diffs top-level properties only. Read-only.",
+      "description": "Read-only SDK comparison. content adds diffs (part=read alias, partType, unified/omittedReason), preserving equal/differences. CRLF/CR to LF. Limits: input 1M UTF-16 units, diff 16K/part, JSON evidence 128KiB total; excess omitted. properties unchanged. See genexus_help.",
       "inputSchema": {
         "examples": [
           {
@@ -675,30 +675,45 @@
       "name": "genexus_compare"
     },
     {
-      "annotations": {
-        "destructiveHint": false,
-        "idempotentHint": true,
-        "openWorldHint": true,
-        "readOnlyHint": false
-      },
-      "description": "Self-healing recovery for a broken MCP connection (connection closed, unresponsive worker). Probes every open worker, kills and respawns only the unhealthy ones (force=true targets all), confirms SDK-ready, and clears the semantic cache. Use when calls hang or return WorkerBusy.",
+      "name": "genexus_connection_recover",
+      "description": "Probes every open worker and recovers unhealthy ones (force=true targets all). journal_status inspects recovery fences; journal_repair atomically merges valid candidates and verifies persistence. Repair defaults to dryRun=true, preserves pending reads and never touches Workers/KB. Do not combine journal actions with force.",
       "inputSchema": {
+        "type": "object",
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "default": false,
+            "description": "Recover ALL workers, even responsive ones."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "recover",
+              "journal_status",
+              "journal_repair"
+            ],
+            "default": "recover",
+            "description": "Worker recovery, journal inspection or explicit repair."
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Preview journal_repair; explicitly false to persist reconciliation.",
+            "default": true
+          }
+        },
         "examples": [
           {},
           {
             "force": true
           }
-        ],
-        "properties": {
-          "force": {
-            "default": false,
-            "description": "Recover ALL workers, even responsive ones.",
-            "type": "boolean"
-          }
-        },
-        "type": "object"
+        ]
       },
-      "name": "genexus_connection_recover"
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      }
     },
     {
       "annotations": {

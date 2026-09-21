@@ -179,7 +179,8 @@ namespace GxMcp.Worker.Tests
                 {
                     Name = "WarmProc",
                     Type = "Procedure",
-                    FullSource = "call MissingProc()"
+                    FullSource = "call MissingProc()",
+                    FullSourcePart = "Source"
                 };
                 byte[] payload = Encoding.UTF8.GetBytes(source.ToJson());
                 WarmIndexSnapshot.Save(
@@ -235,6 +236,34 @@ namespace GxMcp.Worker.Tests
             {
                 WarmIndexSnapshot.SetStoreForTests(null);
             }
+        }
+
+        [Theory]
+        [InlineData("WebPanel", null)]
+        [InlineData("Transaction", "Rules")]
+        [InlineData("Procedure", null)]
+        [InlineData("DataProvider", "Rules")]
+        public void WarmRestoreDiscardsAmbiguousPrimarySourceBeforeBuildingPostings(string type, string oldPart)
+        {
+            var store = new InMemoryStore();
+            WarmIndexSnapshot.SetStoreForTests(store);
+            try
+            {
+                string kbPath = @"C:\KBs\WarmSourceParts";
+                var source = new SearchIndex { LastUpdated = DateTime.UtcNow };
+                source.Objects[type + ":Probe"] = new SearchIndex.IndexEntry
+                {
+                    Name = "Probe", Type = type, FullSource = "WrongPartNeedle()", FullSourcePart = oldPart
+                };
+                WarmIndexSnapshot.Save(WarmIndexSnapshot.DefaultPath(kbPath), Encoding.UTF8.GetBytes(source.ToJson()),
+                    kbPath, objectCount: 1, schemaVersion: IndexCacheService.CurrentSchemaVersion,
+                    highWaterMarkUtc: DateTime.UtcNow.ToString("o"));
+                var cache = new IndexCacheService();
+                Assert.True(cache.TryRestoreWarmSnapshot(kbPath)["loaded"].ToObject<bool>());
+                Assert.Null(cache.GetIndex().Objects[type + ":Probe"].FullSource);
+                Assert.False(cache.GetIndex().SourceTokenIndex.ContainsKey("WrongPartNeedle"));
+            }
+            finally { WarmIndexSnapshot.SetStoreForTests(null); }
         }
 
         [Fact]

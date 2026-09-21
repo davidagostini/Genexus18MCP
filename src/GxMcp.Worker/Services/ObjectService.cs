@@ -3890,6 +3890,7 @@ namespace GxMcp.Worker.Services
         public string ReadPartSourceRaw(KBObject obj, string partName)
         {
             if (obj == null) return null;
+            partName = ResolveSearchPartName(obj.TypeDescriptor?.Name, partName);
             string key = BuildRawSourceCacheKey(obj.Guid, partName);
             if (TryGetReadCache(key, out string cached)) return cached;
             if (TryGetLargeRawSourceCache(key, out cached)) return cached;
@@ -3939,6 +3940,15 @@ namespace GxMcp.Worker.Services
         private static string NormalizeRawSourcePart(string partName)
         {
             return string.IsNullOrWhiteSpace(partName) ? "source" : partName.Trim().ToLowerInvariant();
+        }
+
+        internal static string ResolveSearchPartName(string type, string partName = null)
+        {
+            string part = NormalizeRawSourcePart(partName);
+            if (part != "source" && part != "code") return partName;
+            return string.Equals(type, "WebPanel", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(type, "Transaction", StringComparison.OrdinalIgnoreCase)
+                ? "Events" : "Source";
         }
 
         private static string BuildRawSourceCacheKey(Guid objectGuid, string partName)
@@ -4007,7 +4017,7 @@ namespace GxMcp.Worker.Services
 
         // The actual SDK read for ReadPartSourceRaw — mirrors SourceSearchService's legacy
         // TryGetPartSource so the cache layer can live here without changing semantics.
-        private static string ReadPartSourceUncached(KBObject obj, string normalizedPart)
+        internal static string ReadPartSourceUncached(KBObject obj, string normalizedPart)
         {
             try
             {
@@ -4981,7 +4991,6 @@ namespace GxMcp.Worker.Services
             if (objectGuid == Guid.Empty || payload == null || minimize
                 || !string.Equals(client, "mcp", StringComparison.OrdinalIgnoreCase)
                 || (offset.HasValue && offset.Value != 0)
-                || !string.Equals(NormalizeRawSourcePart(partName), "source", StringComparison.OrdinalIgnoreCase)
                 || !TryGetCompleteSource(payload, out string source)
                 || source.Length > RawSourceCacheMaxBytes)
             {
@@ -4994,7 +5003,9 @@ namespace GxMcp.Worker.Services
 
             string guid = objectGuid.ToString();
             SearchIndex.IndexEntry entry = index.FindByGuid(guid);
-            return entry != null && indexCache.PromoteSourceForSearch(entry, source);
+            return entry != null
+                && string.Equals(NormalizeRawSourcePart(partName), ResolveSearchPartName(entry.Type), StringComparison.OrdinalIgnoreCase)
+                && indexCache.PromoteSourceForSearch(entry, source);
         }
 
         private void ProcessSourceContent(KBObject obj, string content, int? offset, int? limit, JObject result, string client = "ide")

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Gateway
@@ -18,9 +19,11 @@ namespace GxMcp.Gateway
         private const string JournalSchemaVersion = "genexus-mutation-recovery/1";
         private const int MaxJournalEntries = 1024;
         private const long MaxJournalBytes = 1024 * 1024;
-        private static readonly TimeSpan JournalRetention = TimeSpan.FromDays(7);
 
-        private readonly ConcurrentDictionary<string, RecoveryRequirement> _pending = new();
+        private volatile ConcurrentDictionary<string, RecoveryRequirement> _pending = new();
+        private readonly Dictionary<string, RecoveryRequirement> _undurable = new();
+        private bool _journalObserved;
+        private volatile bool _journalBusy;
         private readonly string? _journalPath;
         private readonly OperationalStateKey? _defaultOwner;
         private readonly object _journalLock = new object();
@@ -47,8 +50,8 @@ namespace GxMcp.Gateway
             LoadJournal();
         }
 
-        public bool IsHealthy => _journalHealthy;
-        public string JournalError => _journalError;
+        public bool IsHealthy => _journalHealthy && !_journalBusy;
+        public string JournalError => _journalHealthy && _journalBusy ? "Mutation recovery journal busy; retry after the other Gateway finishes." : _journalError;
         public int Count => _pending.Count;
         public IReadOnlyCollection<RecoveryRequirement> Pending => _pending.Values
             .OrderBy(item => item.RequiredAtUtc)
@@ -79,8 +82,27 @@ namespace GxMcp.Gateway
                 OperationId = operationId?.Trim() ?? string.Empty,
                 RequiredAtUtc = DateTime.UtcNow
             };
-            _pending[Key(requirement.OwnerKey, requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
-            PersistJournal();
+            lock (_journalLock)
+            {
+                string key = Key(requirement.OwnerKey, requirement.KbAlias, requirement.Target, requirement.Part);
+                _undurable[key] = requirement;
+                try
+                {
+                    using var lease = AcquireJournalLock();
+                    ReloadTrustedJournal();
+                    _pending[key] = requirement;
+                    if (_journalHealthy) PersistJournal();
+                    else WriteCandidate(ValidateSize(new[] { requirement }));
+                }
+                catch (Exception ex)
+                {
+                    _pending[Key(requirement.OwnerKey, requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
+                    MarkJournalUnhealthy("Mutation recovery journal persistence failed: " + ex.Message);
+                    // Preserve newly observed uncertainty even if the existing
+                    // journal cannot be trusted or the destination is locked.
+                    try { WriteCandidate(ValidateSize(new[] { requirement })); } catch { }
+                }
+            }
         }
 
         public bool TryGet(string? kbAlias, string? target, out RecoveryRequirement requirement)
@@ -113,18 +135,53 @@ namespace GxMcp.Gateway
 
         internal bool ConfirmRead(OperationalStateKey owner, string target, string? part)
         {
-            if (!TryGet(owner, target, part, out var requirement)) return false;
-            bool removed = _pending.TryRemove(Key(owner.Token, requirement.KbAlias, requirement.Target, requirement.Part), out _);
-            if (removed) PersistJournal();
-            return removed;
+            return ConfirmReadCore(Key(owner.Token, owner.KbId, target, part), null, useCurrent: true);
         }
 
         public bool ConfirmRead(string? kbAlias, string? target, string? part)
         {
-            if (!TryGet(kbAlias, target, part, out var requirement)) return false;
-            bool removed = _pending.TryRemove(Key(_defaultOwner.HasValue ? _defaultOwner.Value.Token : string.Empty, requirement.KbAlias, requirement.Target, requirement.Part), out _);
-            if (removed) PersistJournal();
-            return removed;
+            if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return false;
+            return ConfirmReadCore(Key(_defaultOwner?.Token ?? string.Empty, kbAlias, target, part), null, useCurrent: true);
+        }
+
+        public bool ConfirmRead(string? kbAlias, string? target, string? part, RecoveryRequirement? observedRequirement)
+        {
+            if (string.IsNullOrWhiteSpace(kbAlias) || string.IsNullOrWhiteSpace(target)) return false;
+            return ConfirmReadCore(Key(_defaultOwner?.Token ?? string.Empty, kbAlias, target, part), observedRequirement, useCurrent: false);
+        }
+
+        private bool ConfirmReadCore(string key, RecoveryRequirement? observed, bool useCurrent)
+        {
+            lock (_journalLock)
+            {
+                if (!_journalHealthy) return false;
+                if (useCurrent) _pending.TryGetValue(key, out observed);
+                if (observed == null || Key(observed.OwnerKey, observed.KbAlias, observed.Target, observed.Part) != key) return false;
+                try
+                {
+                    using var lease = AcquireJournalLock();
+                    ReloadTrustedJournal();
+                    if (!_pending.TryGetValue(key, out var current)
+                        || current.RequiredAtUtc != observed.RequiredAtUtc
+                        || current.OperationId != observed.OperationId) return false;
+                    _pending.TryRemove(key, out _);
+                    _undurable.Remove(key);
+                    try { PersistJournal(); }
+                    catch
+                    {
+                        _pending[key] = current;
+                        _undurable[key] = current;
+                        try { WriteCandidate(ValidateSize(new[] { current })); } catch { }
+                        throw;
+                    }
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    RecordFault("Mutation recovery journal persistence failed: ", ex);
+                    return false;
+                }
+            }
         }
 
         public static JObject BuildBlockedEnvelope(RecoveryRequirement requirement)
@@ -156,131 +213,253 @@ namespace GxMcp.Gateway
 
         public static JObject BuildJournalBlockedEnvelope(string? journalError)
         {
+            bool busy = journalError?.StartsWith("Mutation recovery journal busy;", StringComparison.Ordinal) == true;
+            bool missing = journalError?.Contains("previously observed journal is missing", StringComparison.Ordinal) == true;
             return new JObject
             {
                 ["status"] = "error",
                 ["error"] = new JObject
                 {
-                    ["code"] = "MutationRecoveryJournalUnavailable",
-                    ["message"] = "The mutation recovery journal could not be trusted; writes are blocked until it is repaired.",
-                    ["hint"] = "Inspect the journal under the Gateway state directory, restore a valid versioned file, then restart the Gateway. Read-only calls remain available.",
-                    ["retryable"] = false,
-                    ["reconciliationRequired"] = true,
+                    ["code"] = busy ? "MutationRecoveryJournalBusy" : "MutationRecoveryJournalUnavailable",
+                    ["message"] = busy ? "Another Gateway holds the mutation recovery journal lock. Retry this call." : "The mutation recovery journal could not be trusted; writes are blocked until it is repaired.",
+                    ["hint"] = busy ? "Retry after the other Gateway finishes. No repair is required solely for lock contention."
+                        : missing ? "Stop writers and restore the missing journal from verified retained evidence before journal_repair. Do not restart to bypass this fence or replace it with an empty journal."
+                        : "Call genexus_connection_recover with action=journal_status, then action=journal_repair and dryRun=true. Review the pending fences before retrying journal_repair with dryRun=false. Read-only calls remain available.",
+                    ["retryable"] = busy,
+                    ["reconciliationRequired"] = !busy,
                     ["detail"] = string.IsNullOrWhiteSpace(journalError) ? null : journalError
                 }
             };
         }
 
-        private void LoadJournal()
+        private void LoadJournal() => Refresh();
+
+        // Read-only refresh is required at the write gate: several Gateways can
+        // share this path. An unhealthy instance recovers only via explicit repair.
+        public void Refresh()
         {
-            if (string.IsNullOrWhiteSpace(_journalPath) || !File.Exists(_journalPath)) return;
-            try
+            lock (_journalLock)
             {
-                var info = new FileInfo(_journalPath);
-                if (info.Length <= 0 || info.Length > MaxJournalBytes)
-                    throw new InvalidDataException("journal size is outside the accepted bounds");
-
-                string text = File.ReadAllText(_journalPath);
-                if (string.IsNullOrWhiteSpace(text))
-                    throw new InvalidDataException("journal is empty");
-
-                JToken root = JToken.Parse(text);
-                JArray entries;
-                if (root is JArray legacyEntries)
+                try
                 {
-                    // v0 was an array. Accept it once so upgrades do not discard
-                    // existing safety fences; the next mutation writes v1.
-                    entries = legacyEntries;
+                    using var lease = AcquireJournalLock();
+                    ReloadTrustedJournal();
                 }
-                else if (root is JObject envelope
-                    && string.Equals(envelope["schemaVersion"]?.ToString(), JournalSchemaVersion, StringComparison.Ordinal)
-                    && envelope["entries"] is JArray versionedEntries)
-                {
-                    entries = versionedEntries;
-                }
-                else
-                {
-                    throw new InvalidDataException("journal schemaVersion is missing or unsupported");
-                }
-
-                if (entries.Count > MaxJournalEntries)
-                    throw new InvalidDataException("journal contains too many recovery fences");
-
-                foreach (var item in entries)
-                {
-                    if (!(item is JObject json))
-                        throw new InvalidDataException("journal contains a non-object entry");
-                    var requirement = json.ToObject<RecoveryRequirement>();
-                    if (!IsValid(requirement))
-                        throw new InvalidDataException("journal contains an invalid recovery fence");
-                    if (_defaultOwner.HasValue
-                        && !string.Equals(requirement!.OwnerKey, _defaultOwner.Value.Token, StringComparison.Ordinal))
-                        throw new InvalidDataException("recovery fence belongs to another operational state scope");
-                    if (DateTime.UtcNow - requirement!.RequiredAtUtc.ToUniversalTime() <= JournalRetention)
-                    {
-                        requirement.RequiredAtUtc = requirement.RequiredAtUtc.ToUniversalTime();
-                        _pending[Key(requirement.OwnerKey, requirement.KbAlias, requirement.Target, requirement.Part)] = requirement;
-                    }
-                }
-
-                if (entries.Count != _pending.Count)
-                    PersistJournal();
-            }
-            catch (Exception ex)
-            {
-                _pending.Clear();
-                MarkJournalUnhealthy("Mutation recovery journal rejected: " + ex.Message);
+                catch (Exception ex) { RecordFault("Mutation recovery journal rejected: ", ex); }
             }
         }
 
-        private void PersistJournal()
+        internal JObject GetJournalStatus()
         {
-            if (string.IsNullOrWhiteSpace(_journalPath) || !_journalHealthy) return;
+            Refresh();
+            var result = new JObject
+            {
+                ["status"] = IsHealthy ? "ok" : "error",
+                ["healthy"] = IsHealthy,
+                ["pendingCount"] = Count,
+                ["pending"] = ProjectPending(Pending),
+                ["truncated"] = Count > 32
+            };
+            if (!IsHealthy) result["error"] = BuildJournalBlockedEnvelope(JournalError)["error"];
+            return result;
+        }
+
+        internal JObject RepairJournal(bool dryRun = true)
+        {
             lock (_journalLock)
             {
-                string? temporary = null;
                 try
                 {
-                    var entries = Pending.ToArray();
-                    if (entries.Length > MaxJournalEntries)
-                        throw new InvalidDataException("mutation recovery journal reached its entry limit");
-
-                    string? directory = Path.GetDirectoryName(_journalPath);
-                    if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
-                    temporary = _journalPath + ".tmp-" + Guid.NewGuid().ToString("N");
-                    var document = new JObject
+                    using var lease = AcquireJournalLock();
+                    if (_journalObserved && !string.IsNullOrWhiteSpace(_journalPath) && !File.Exists(_journalPath))
+                        throw new InvalidDataException("previously observed journal is missing");
+                    var candidates = new Dictionary<string, RecoveryRequirement>();
+                    foreach (var entry in _undurable.Values) Merge(candidates, entry);
+                    if (!string.IsNullOrWhiteSpace(_journalPath) && File.Exists(_journalPath))
+                        foreach (var entry in ReadJournal(_journalPath)) Merge(candidates, entry);
+                    var temporaries = TemporaryFiles();
+                    foreach (var temporary in temporaries)
+                        foreach (var entry in ReadJournal(temporary)) Merge(candidates, entry);
+                    ValidateSize(candidates.Values);
+                    if (!dryRun)
                     {
-                        ["schemaVersion"] = JournalSchemaVersion,
-                        ["entries"] = JArray.FromObject(entries)
-                    };
-                    byte[] bytes = Encoding.UTF8.GetBytes(document.ToString());
-                    if (bytes.LongLength > MaxJournalBytes)
-                        throw new InvalidDataException("mutation recovery journal exceeded its byte limit");
-
-                    using (var stream = new FileStream(
-                        temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                        4096, FileOptions.WriteThrough))
-                    {
-                        stream.Write(bytes, 0, bytes.Length);
-                        stream.Flush(true);
+                        if (!string.IsNullOrWhiteSpace(_journalPath) && File.Exists(_journalPath))
+                        {
+                            using var source = new FileStream(_journalPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                            using var backup = new FileStream(_journalPath + ".backup-" + Guid.NewGuid().ToString("N"),
+                                FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough);
+                            source.CopyTo(backup);
+                            backup.Flush(true);
+                        }
+                        _pending = new ConcurrentDictionary<string, RecoveryRequirement>(candidates);
+                        PersistJournal();
+                        // Preserve recovery evidence, but remove it from the active
+                        // candidate namespace only AFTER verified atomic publication.
+                        foreach (var temporary in temporaries)
+                            File.Move(temporary, temporary + ".reconciled");
+                        _journalError = string.Empty;
+                        _journalHealthy = true;
                     }
-
-                    if (File.Exists(_journalPath)) File.Replace(temporary, _journalPath, null);
-                    else File.Move(temporary, _journalPath);
-                    temporary = null;
+                    return new JObject
+                    {
+                        ["status"] = "ok", ["dryRun"] = dryRun,
+                        ["healthy"] = IsHealthy, ["repairable"] = true,
+                        ["repaired"] = !dryRun, ["persisted"] = !dryRun && !string.IsNullOrWhiteSpace(_journalPath),
+                        ["verified"] = !dryRun, ["pendingCount"] = candidates.Count,
+                        ["pending"] = ProjectPending(candidates.Values),
+                        ["truncated"] = candidates.Count > 32,
+                        ["recoveredTemporaryFiles"] = temporaries.Length
+                    };
                 }
                 catch (Exception ex)
                 {
-                    MarkJournalUnhealthy("Mutation recovery journal persistence failed: " + ex.Message);
-                }
-                finally
-                {
-                    if (temporary != null)
-                    {
-                        try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
-                    }
+                    RecordFault("Mutation recovery journal repair failed: ", ex);
+                    var result = BuildJournalBlockedEnvelope(JournalError);
+                    result["dryRun"] = dryRun;
+                    result["healthy"] = false;
+                    result["repaired"] = false;
+                    result["persisted"] = false;
+                    result["verified"] = false;
+                    result["pendingCount"] = Count;
+                    return result;
                 }
             }
+        }
+
+        private FileStream? AcquireJournalLock()
+        {
+            if (string.IsNullOrWhiteSpace(_journalPath)) return null;
+            var directory = Path.GetDirectoryName(Path.GetFullPath(_journalPath));
+            Directory.CreateDirectory(directory!);
+            var started = Environment.TickCount64;
+            while (true)
+            {
+                try
+                {
+                    var lease = new FileStream(_journalPath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                    _journalBusy = false;
+                    return lease;
+                }
+                catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33)
+                {
+                    if (Environment.TickCount64 - started >= 2000) throw new JournalBusyException();
+                    Thread.Sleep(20);
+                }
+            }
+        }
+
+        private string[] TemporaryFiles()
+        {
+            if (string.IsNullOrWhiteSpace(_journalPath)) return Array.Empty<string>();
+            string full = Path.GetFullPath(_journalPath);
+            return Directory.GetFiles(Path.GetDirectoryName(full)!, Path.GetFileName(full) + ".tmp-*")
+                .Where(path => !path.EndsWith(".reconciled", StringComparison.OrdinalIgnoreCase)).ToArray();
+        }
+
+        private void ReloadTrustedJournal()
+        {
+            if (string.IsNullOrWhiteSpace(_journalPath)) return;
+            var merged = new Dictionary<string, RecoveryRequirement>();
+            if (File.Exists(_journalPath))
+            {
+                foreach (var entry in ReadJournal(_journalPath)) Merge(merged, entry);
+                _journalObserved = true;
+            }
+            else if (_journalObserved) throw new InvalidDataException("previously observed journal is missing");
+            foreach (var entry in _undurable.Values) Merge(merged, entry);
+            _pending = new ConcurrentDictionary<string, RecoveryRequirement>(merged);
+            if (TemporaryFiles().Length != 0)
+                throw new InvalidDataException("uncommitted journal candidates require explicit journal_repair");
+        }
+
+        private IReadOnlyList<RecoveryRequirement> ReadJournal(string path)
+        {
+            var info = new FileInfo(path);
+            if (info.Length <= 0 || info.Length > MaxJournalBytes)
+                throw new InvalidDataException("journal size is outside the accepted bounds");
+            JToken root = JToken.Parse(File.ReadAllText(path));
+            JArray entries = root is JArray legacy ? legacy
+                : root is JObject envelope
+                    && string.Equals(envelope["schemaVersion"]?.ToString(), JournalSchemaVersion, StringComparison.Ordinal)
+                    && envelope["entries"] is JArray versioned ? versioned
+                : throw new InvalidDataException("journal schemaVersion is missing or unsupported");
+            if (entries.Count > MaxJournalEntries) throw new InvalidDataException("journal contains too many recovery fences");
+            var result = new List<RecoveryRequirement>();
+            foreach (var item in entries)
+            {
+                var requirement = item is JObject json ? json.ToObject<RecoveryRequirement>() : null;
+                if (!IsValid(requirement)) throw new InvalidDataException("journal contains an invalid recovery fence");
+                if (_defaultOwner.HasValue && !string.Equals(requirement!.OwnerKey, _defaultOwner.Value.Token, StringComparison.Ordinal))
+                    throw new InvalidDataException("recovery fence belongs to another operational state scope");
+                requirement!.RequiredAtUtc = requirement.RequiredAtUtc.ToUniversalTime();
+                result.Add(requirement);
+            }
+            return result;
+        }
+
+        private static void Merge(IDictionary<string, RecoveryRequirement> entries, RecoveryRequirement entry)
+        {
+            string key = Key(entry.OwnerKey, entry.KbAlias, entry.Target, entry.Part);
+            if (!entries.TryGetValue(key, out var previous) || entry.RequiredAtUtc >= previous.RequiredAtUtc)
+                entries[key] = entry;
+        }
+
+        private static byte[] ValidateSize(IEnumerable<RecoveryRequirement> entries)
+        {
+            var array = entries.ToArray();
+            if (array.Length > MaxJournalEntries) throw new InvalidDataException("mutation recovery journal reached its entry limit");
+            byte[] bytes = Encoding.UTF8.GetBytes(new JObject
+            {
+                ["schemaVersion"] = JournalSchemaVersion, ["entries"] = JArray.FromObject(array)
+            }.ToString());
+            if (bytes.LongLength > MaxJournalBytes) throw new InvalidDataException("mutation recovery journal exceeded its byte limit");
+            return bytes;
+        }
+
+        // Caller owns both locks. Never delete the destination to work around a
+        // sharing/ACL error: rename on the same volume is the atomic commit point.
+        private void PersistJournal()
+        {
+            if (string.IsNullOrWhiteSpace(_journalPath)) return;
+            var entries = Pending.ToArray();
+            byte[] bytes = ValidateSize(entries);
+            string temporary = WriteCandidate(bytes);
+            // File.Replace can fail on Windows with "Unable to remove the file
+            // to be replaced" even with a writable destination. Overwrite rename
+            // avoids its metadata-merging semantics and retains atomicity.
+            File.Move(temporary, _journalPath, overwrite: true);
+            var verified = ReadJournal(_journalPath);
+            if (!JToken.DeepEquals(JArray.FromObject(entries), JArray.FromObject(verified)))
+                throw new InvalidDataException("journal readback did not match the committed recovery fences");
+            _undurable.Clear();
+            _journalObserved = true;
+        }
+
+        private string WriteCandidate(byte[] bytes)
+        {
+            string temporary = _journalPath + ".tmp-" + Guid.NewGuid().ToString("N");
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush(true);
+            }
+            return temporary;
+        }
+
+        private static JArray ProjectPending(IEnumerable<RecoveryRequirement> pending) => new JArray(pending
+            .OrderBy(item => item.RequiredAtUtc).ThenBy(item => item.Target, StringComparer.OrdinalIgnoreCase)
+            .Take(32).Select(item => new JObject
+            {
+                ["kbAlias"] = item.KbAlias, ["target"] = item.Target, ["part"] = item.Part,
+                ["operationId"] = item.OperationId, ["requiredAtUtc"] = item.RequiredAtUtc
+            }));
+
+        private sealed class JournalBusyException : IOException { }
+
+        private void RecordFault(string prefix, Exception exception)
+        {
+            if (exception is JournalBusyException) _journalBusy = true;
+            else MarkJournalUnhealthy(prefix + exception.Message);
         }
 
         private void MarkJournalUnhealthy(string message)

@@ -1601,18 +1601,20 @@ namespace GxMcp.Gateway
         private static JObject BuildMutationRecoveryBlock()
         {
             var registry = _mutationRecovery;
+            registry.Refresh();
             var block = new JObject
             {
                 ["journalHealthy"] = registry.IsHealthy,
                 ["pendingCount"] = registry.Count,
+                ["truncated"] = registry.Count > 32,
                 ["automaticRetry"] = false,
-                ["hint"] = "Read each fenced object part before authorizing another mutation."
+                ["hint"] = "Inspect journal_status; if unhealthy, preview journal_repair then explicitly apply it. Read each fenced part in full before retrying with its versionToken."
             };
             if (!registry.IsHealthy)
                 block["journalError"] = registry.JournalError;
             if (registry.Count > 0)
             {
-                block["pending"] = JArray.FromObject(registry.Pending.Select(item => new
+                block["pending"] = JArray.FromObject(registry.Pending.Take(32).Select(item => new
                 {
                     kb = item.KbAlias,
                     target = item.Target,
