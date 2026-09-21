@@ -159,7 +159,7 @@ namespace GxMcp.Gateway.Tests
                 if (state == "Completed")
                     tracker.CompleteFromWorker("status-request", JObject.Parse("{result:{status:'Success'}}"));
                 else if (state == "Cancelled")
-                    tracker.MarkCancelled(operationId, error);
+                    tracker.MarkCancelled(operationId, error!);
 
                 var response = Program.BuildToolTextResponse(new JValue("1"), tracker.BuildOperationStatus(operationId),
                     isError: false, toolName: "genexus_lifecycle");
