@@ -12,6 +12,7 @@ namespace GxMcp.Gateway.Tests
     /// without spawning the Worker. These protect the handshake from silent
     /// shape regressions that unit tests on individual methods would miss.
     /// </summary>
+    [Collection("Gateway route state")]
     public class McpHandshakeContractTests
     {
         private static JObject Dispatch(string method, string id = "1", JObject? parameters = null)
@@ -100,6 +101,85 @@ namespace GxMcp.Gateway.Tests
             Assert.Equal("object", lifecycle["outputSchema"]?["type"]?.ToString());
             Assert.True(lifecycle["outputSchema"]?["additionalProperties"]?.Value<bool>() == true);
             Assert.Equal("string", lifecycle["outputSchema"]?["properties"]?["status"]?["type"]?.ToString());
+        }
+
+        [Theory]
+        [InlineData("{Status:'Succeeded',Errors:[]}", null)]
+        [InlineData("{Status:'Succeeded',Errors:[],error:null}", null)]
+        [InlineData("{Status:'Succeeded',Errors:[],Error:null}", null)]
+        [InlineData("{Status:'Running',Errors:[],error:'Diagnostic'}", "Diagnostic")]
+        [InlineData("{Status:'Running',Errors:[],Error:'Diagnostic'}", "Diagnostic")]
+        public void LifecycleCompactResult_InLeanMode_ConformsToPublishedErrorType(string raw, string? expectedError)
+        {
+            var previous = Environment.GetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT");
+            Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", "1");
+            Program.InvalidateEnvProbeCache();
+            try
+            {
+                var tools = (JArray)Dispatch("tools/list")["tools"]!;
+                var lifecycle = Assert.Single(tools, tool => tool["name"]?.ToString() == "genexus_lifecycle");
+                Assert.Equal("string", lifecycle["outputSchema"]?["properties"]?["error"]?["type"]?.ToString());
+
+                var compact = LifecycleResponseShaper.Compact(raw, compact: true);
+                var response = Program.BuildToolTextResponse(new JValue("1"), JObject.Parse(compact),
+                    isError: false, toolName: "genexus_lifecycle");
+                var result = (JObject)response["result"]!;
+                var structured = Assert.IsType<JObject>(result["structuredContent"]);
+                Assert.Equal(structured.ToString(Newtonsoft.Json.Formatting.None), result["content"]![0]!["text"]!.ToString());
+                if (expectedError == null)
+                    Assert.Null(structured.Property("error"));
+                else
+                {
+                    Assert.Equal(JTokenType.String, structured["error"]!.Type);
+                    Assert.Equal(expectedError, structured["error"]!.Value<string>());
+                }
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", previous);
+                Program.InvalidateEnvProbeCache();
+            }
+        }
+
+        [Theory]
+        [InlineData("Running", null)]
+        [InlineData("Completed", null)]
+        [InlineData("Cancelled", "")]
+        [InlineData("Cancelled", "   ")]
+        [InlineData("Cancelled", "Cancelled by client")]
+        public void LifecycleOperationStatus_InLeanMode_OmitsEmptyErrorsAndPreservesDiagnostics(string state, string? error)
+        {
+            var previous = Environment.GetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT");
+            Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", "1");
+            Program.InvalidateEnvProbeCache();
+            try
+            {
+                var tracker = new OperationTracker(TimeSpan.FromMinutes(5));
+                var operationId = tracker.StartOperation("status-request", "genexus_lifecycle", null, "status-correlation");
+                if (state == "Completed")
+                    tracker.CompleteFromWorker("status-request", JObject.Parse("{result:{status:'Success'}}"));
+                else if (state == "Cancelled")
+                    tracker.MarkCancelled(operationId, error);
+
+                var response = Program.BuildToolTextResponse(new JValue("1"), tracker.BuildOperationStatus(operationId),
+                    isError: false, toolName: "genexus_lifecycle");
+                var result = (JObject)response["result"]!;
+                var structured = Assert.IsType<JObject>(result["structuredContent"]);
+                Assert.Equal(state, structured["status"]?.ToString());
+                Assert.Equal(structured.ToString(Newtonsoft.Json.Formatting.None), result["content"]![0]!["text"]!.ToString());
+                if (string.IsNullOrWhiteSpace(error))
+                    Assert.Null(structured.Property("error"));
+                else
+                {
+                    Assert.Equal(JTokenType.String, structured["error"]!.Type);
+                    Assert.Equal(error, structured["error"]!.Value<string>());
+                }
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("GXMCP_NO_STRUCTURED_CONTENT", previous);
+                Program.InvalidateEnvProbeCache();
+            }
         }
 
         [Fact]

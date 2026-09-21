@@ -70,7 +70,6 @@ namespace GxMcp.Gateway
                 ["reorgRequired"] = obj["reorgRequired"] ?? obj["ReorgRequired"],
                 ["msBuildExitCode"] = obj["msBuildExitCode"] ?? obj["MsBuildExitCode"],
                 ["fullLogPath"] = obj["fullLogPath"] ?? obj["FullLogPath"],
-                ["error"] = obj["error"] ?? obj["Error"],
                 ["hint"] = obj["hint"] ?? obj["Hint"],
                 ["errorCount"] = errCount,
                 ["warningCount"] = warnCount,
@@ -80,6 +79,11 @@ namespace GxMcp.Gateway
                 ["truncated"] = errCount > ErrorCap,
                 ["compact"] = true
             };
+
+            // The published lifecycle schema allows an optional string, not null.
+            var error = obj["error"] ?? obj["Error"];
+            if (error != null && error.Type != JTokenType.Null)
+                compactObj["error"] = error;
 
             if (obj["Environment"] != null)
                 compactObj["Environment"] = obj["Environment"];
