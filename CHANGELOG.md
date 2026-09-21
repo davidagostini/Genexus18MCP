@@ -4,6 +4,8 @@
 
 ### Internal
 
+- CLI test invocations now default to a disposable home for all client and launcher configuration; direct patch fixtures restore their environment overrides after each test. Prevents init/uninstall from rewriting or removing the operator's registrations ([#255](https://github.com/lennix1337/Genexus18MCP/issues/255)).
+
 - Wait for the MTA executor's active-slot cleanup in the burst concurrency test. Callback completion precedes the executor's `finally` block, so an immediate zero-count assertion could fail after all work completed.
 
 ### Fixed

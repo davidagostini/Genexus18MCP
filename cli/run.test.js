@@ -110,11 +110,16 @@ test.after(() => {
     if (firstError) throw firstError;
 });
 
+// init/uninstall must never patch the operator's clients or ~/.genexus-mcp.
+// Explicit fixture homes override this suite sandbox without changing the parent env.
+const cliHome = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-cli-home-'));
+test.after(() => removeTempPath(cliHome, { recursive: true, force: true }));
+
 function runCli(args, opts = {}) {
     const spawnOptions = {
         encoding: 'utf8',
         cwd: opts.cwd || process.cwd(),
-        env: { ...process.env, ...(opts.env || {}) }
+        env: { ...process.env, ...sandboxHomeEnv(cliHome), ...(opts.env || {}) }
     };
     return spawnSync(process.execPath, [cliPath, ...args], spawnOptions);
 }
@@ -1699,6 +1704,8 @@ function sandboxHomeEnv(root) {
 }
 
 test('clients list returns structured status with summary', () => {
+    const parentHome = sandboxHomeEnv('unused');
+    for (const key of Object.keys(parentHome)) parentHome[key] = process.env[key];
     const result = runCli(['clients', '--format', 'json']);
     assert.equal(result.status, 0);
     const parsed = JSON.parse(result.stdout);
@@ -1711,6 +1718,10 @@ test('clients list returns structured status with summary', () => {
     assert.ok(row, 'antigravity should be listed');
     assert.equal(typeof row.installed, 'boolean');
     assert.equal(typeof row.registered, 'boolean');
+    for (const client of parsed.ok.clients) {
+        assert.ok(client.configPath.startsWith(cliHome + path.sep), client.configPath);
+    }
+    for (const [key, value] of Object.entries(parentHome)) assert.equal(process.env[key], value);
 });
 
 test('clients list reports OpenCode Desktop with shared opencode config', () => {
@@ -2902,11 +2913,17 @@ function fsFailureProxy(realFs, failure) {
     });
 }
 
-function patchFailureFixture(prefix) {
+function patchFailureFixture(prefix, t) {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
     const env = sandboxHomeEnv(tempRoot);
-    process.env.XDG_CONFIG_HOME = env.XDG_CONFIG_HOME;
-    process.env.APPDATA = env.APPDATA;
+    const previous = { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, APPDATA: process.env.APPDATA };
+    t.after(() => {
+        for (const [key, value] of Object.entries(previous)) {
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+        }
+    });
+    Object.assign(process.env, { XDG_CONFIG_HOME: env.XDG_CONFIG_HOME, APPDATA: env.APPDATA });
     const cfgPath = path.join(tempRoot, 'config.json');
     fs.writeFileSync(cfgPath, JSON.stringify({ Environment: { KBPath: tempRoot } }));
     const openCodeCfg = path.join(env.XDG_CONFIG_HOME, 'opencode', 'opencode.json');
@@ -2918,8 +2935,8 @@ function patchFailureFixture(prefix) {
     return { tempRoot, env, cfgPath, openCodeCfg, vscodeCfg };
 }
 
-test('patchClientConfig reports backup failure without claiming that client patched', () => {
-    const fixture = patchFailureFixture('genexus-mcp-partial-backup-');
+test('patchClientConfig reports backup failure without claiming that client patched', (t) => {
+    const fixture = patchFailureFixture('genexus-mcp-partial-backup-', t);
     try {
         const result = patchClientConfig(fixture.cfgPath, {
             ids: ['opencode', 'vscode'], onlyExisting: false,
@@ -2932,8 +2949,8 @@ test('patchClientConfig reports backup failure without claiming that client patc
     } finally { removeTempPath(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
-test('patchClientConfig preserves earlier success when a later client write fails', () => {
-    const fixture = patchFailureFixture('genexus-mcp-partial-write-');
+test('patchClientConfig preserves earlier success when a later client write fails', (t) => {
+    const fixture = patchFailureFixture('genexus-mcp-partial-write-', t);
     try {
         const result = patchClientConfig(fixture.cfgPath, {
             ids: ['opencode', 'vscode'], onlyExisting: false,
@@ -2946,8 +2963,8 @@ test('patchClientConfig preserves earlier success when a later client write fail
     } finally { removeTempPath(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
-test('patchClientConfig reports post-write read-back failure as partial state', () => {
-    const fixture = patchFailureFixture('genexus-mcp-partial-readback-');
+test('patchClientConfig reports post-write read-back failure as partial state', (t) => {
+    const fixture = patchFailureFixture('genexus-mcp-partial-readback-', t);
     try {
         const result = patchClientConfig(fixture.cfgPath, {
             ids: ['opencode', 'vscode'], onlyExisting: false,
@@ -2960,8 +2977,8 @@ test('patchClientConfig reports post-write read-back failure as partial state', 
     } finally { removeTempPath(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
-test('patchClientConfig keeps a stale same-second backup and writes a distinct backup', () => {
-    const fixture = patchFailureFixture('genexus-mcp-stale-backup-');
+test('patchClientConfig keeps a stale same-second backup and writes a distinct backup', (t) => {
+    const fixture = patchFailureFixture('genexus-mcp-stale-backup-', t);
     try {
         const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
         const stale = `${fixture.openCodeCfg}.${stamp}.bak`;
