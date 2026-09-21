@@ -12,6 +12,24 @@ namespace GxMcp.Gateway.Tests
     // helper that powers the route; covered here in isolation.
     public class LifecycleResultTests
     {
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void EditResult_PreservesSaveEvidenceEvenWhenComparisonFails(bool matches)
+        {
+            var registry = new BackgroundJobRegistry(retentionSeconds: 60);
+            var job = registry.Start("sess", "edit/Source", 30);
+            var stored = JObject.Parse("{sdkSaveCompleted:true,saved:true,persistedStateKnown:true,versionToken:'35',postSaveVerification:{representation:'genexus_read'},implicitLifecycleActions:[]}");
+            stored["status"] = matches ? "ok" : "error";
+            stored["code"] = matches ? "WriteApplied" : "WriteNotPersisted";
+            stored["persisted"] = matches;
+            stored["postSaveVerification"]!["matches"] = matches;
+            registry.Complete(job.Id, success: matches, summary: "Source verification", result: stored);
+            var (envelope, isError) = McpRouter.BuildJobResultEnvelope(registry.Get(job.Id)!);
+            Assert.Equal(!matches, isError);
+            Assert.True(JToken.DeepEquals(stored, envelope["result"]));
+        }
+
         [Fact]
         public void Running_ReturnsPendingEnvelope_WithoutIsError()
         {

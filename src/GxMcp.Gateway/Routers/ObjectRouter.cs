@@ -414,6 +414,9 @@ namespace GxMcp.Gateway.Routers
                             rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? false,
                             baseVersion = args?["baseVersion"]?.ToString(),
                             expectedVersion = args?["expectedVersion"]?.ToString(),
+                            verifyMode = args?["verifyMode"]?.ToString(),
+                            requireObjectSave = args?["requireObjectSave"]?.ToObject<bool?>() ?? false,
+                            return_post_state = returnPostState,
                             autoDeclareVariables = args?["autoDeclareVariables"]?.ToObject<bool?>() ?? args?["autoInjectVariables"]?.ToObject<bool?>() ?? false
                         };
                     }

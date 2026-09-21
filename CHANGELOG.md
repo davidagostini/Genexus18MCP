@@ -30,6 +30,8 @@
 
 ### Fixed
 
+- Full Source save verification ([#265](https://github.com/lennix1337/Genexus18MCP/issues/265)) now preserves complete public-read text (including original line endings and trailing newline), forwards `verifyMode` and `requireObjectSave`, and reports physical SDK save separately from post-save comparison. Exact differences carry bounded expected/read lines and typed reasons; unknown reads and concurrent rollback state fail closed without automatic write retries or lifecycle actions.
+
 - Source search uses Events as the primary source of WebPanels and Transactions, including cold reads, promotion and hit labels. Explicit and mixed scopes no longer discard candidates based on a different indexed part. Persisted sources without matching part provenance are discarded on hydration before rebuilding token postings; object and graph snapshots remain usable. The first search after upgrade and scans of explicit parts may take longer; existing timeout/cursor limits still apply ([#262](https://github.com/lennix1337/Genexus18MCP/issues/262)).
 
 - `workerHealth.sharingMode` now reports canonical `isolated`/`shared-host`, consistent with `worker.sharingMode`; `diagnostics.mode` retains its separate attachment vocabulary. This corrects a value without renaming fields ([#257](https://github.com/lennix1337/Genexus18MCP/issues/257)).

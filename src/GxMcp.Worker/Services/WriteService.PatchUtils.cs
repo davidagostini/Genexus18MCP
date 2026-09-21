@@ -177,7 +177,7 @@ namespace GxMcp.Worker.Services
         /// Failures to re-read are swallowed — the original envelope is still augmented with
         /// an empty hash/snippet so downstream parsers always find the keys.
         /// </summary>
-        private string WrapWithPersistedState(string responseJson, string target, string partName, string sdkPath = null, string priorSource = null, string requestedContent = null, string typeFilter = null)
+        private string WrapWithPersistedState(string responseJson, string target, string partName, string sdkPath = null, string priorSource = null, string requestedContent = null, string typeFilter = null, string verifyMode = null, bool requireObjectSave = false)
         {
             JObject parsed = null;
             try { parsed = JObject.Parse(responseJson); }
@@ -204,7 +204,7 @@ namespace GxMcp.Worker.Services
             string finalSource = "";
             string finalVersionToken = null;
             bool verificationReadTruncated = false;
-            string verificationReadFailure = null;
+            string verificationReadFailure = string.IsNullOrWhiteSpace(target) || _objectService == null ? "readerUnavailable" : null;
             try
             {
                 if (!string.IsNullOrWhiteSpace(target) && _objectService != null)
@@ -282,90 +282,10 @@ namespace GxMcp.Worker.Services
                 parsed["mutationDetected"] = false;
             }
 
-            // #59: every textual mutation exposes the requested/persisted comparison,
-            // including SDK normalization, and a successful full write may not claim
-            // success unless the re-read state satisfies the request.
             if (requestedContent != null)
-            {
-                var verification = EvaluatePersistedVerification(
-                    requestedContent,
-                    finalSource,
-                    verificationReadTruncated,
-                    verificationReadFailure);
-                parsed["mutation"] = new JObject
-                {
-                    ["before"] = DescribeContent(priorSource),
-                    ["requested"] = DescribeContent(requestedContent),
-                    ["persisted"] = verificationReadReliable ? DescribeContent(finalSource) : null,
-                    ["diff"] = new JObject
-                    {
-                        ["matches"] = verification.Matches,
-                        ["reason"] = verification.Reason,
-                        ["firstDifferentLine"] = verificationReadReliable
-                            ? (JToken)FirstDiffLine(requestedContent, finalSource)
-                            : JValue.CreateNull()
-                    },
-                    ["verification"] = verification.State,
-                    ["saved"] = verification.IsIndeterminate
-                        ? JValue.CreateNull()
-                        : (JToken)verification.Matches
-                };
-                if (!isDryRun)
-                    parsed["persisted"] = !verification.IsIndeterminate && verification.Matches;
-
-                string responseStatus = parsed["status"]?.ToString();
-                bool successful = string.Equals(responseStatus, "ok", StringComparison.OrdinalIgnoreCase)
-                               || string.Equals(responseStatus, "success", StringComparison.OrdinalIgnoreCase);
-                string responseCode = parsed["code"]?.ToString();
-                bool applied = string.Equals(responseCode, "WriteApplied", StringComparison.OrdinalIgnoreCase)
-                            || string.Equals(responseCode, "WriteNoChange", StringComparison.OrdinalIgnoreCase);
-                if (successful && applied && verification.IsIndeterminate)
-                {
-                    bool saveAttempted = !string.Equals(responseCode, "WriteNoChange", StringComparison.OrdinalIgnoreCase);
-                    return Models.McpResponse.Err(
-                        code: "WriteVerificationUnavailable",
-                        message: saveAttempted
-                            ? (verification.Reason == "truncation"
-                                ? "The SDK save completed, but the post-save source read was truncated and persistence could not be confirmed."
-                                : "The SDK save completed, but the post-save source read could not be confirmed.")
-                            : "The operation did not report a new save, and the post-save source read could not confirm the persisted state.",
-                        hint: "Do not retry blindly. Re-read the complete part or recover from the pre-write snapshot before attempting another edit.",
-                        target: target,
-                        extra: new JObject
-                        {
-                            ["part"] = partName,
-                            ["saved"] = false,
-                            ["saveAttempted"] = saveAttempted,
-                            ["verified"] = false,
-                            ["persisted"] = false,
-                            ["postSaveVerification"] = parsed["postSaveVerification"]?.DeepClone(),
-                            ["verification"] = verification.State,
-                            ["implicitLifecycleActions"] = new JArray()
-                        });
-                }
-                else if (successful && applied && !verification.Matches)
-                {
-                    JObject mutation = (JObject)parsed["mutation"].DeepClone();
-                    return Models.McpResponse.Err(
-                        code: "WriteNotPersisted",
-                        message: "The SDK save completed, but the persisted part does not match the requested content.",
-                        hint: "Inspect mutation.diff.reason: normalization, truncation, and a real content mismatch are reported separately. Retry only from a complete persisted read.",
-                        target: target,
-                        extra: new JObject
-                        {
-                            ["part"] = partName,
-                             ["mutation"] = mutation,
-                             ["persistedHash"] = parsed["persistedHash"]?.DeepClone(),
-                             ["persistedSnippet"] = parsed["persistedSnippet"]?.DeepClone(),
-                             ["source"] = finalSource,
-                             ["postSaveVerification"] = parsed["postSaveVerification"]?.DeepClone(),
-                             ["partialPersistenceDetected"] = priorSource != null
-                                 && !string.Equals(priorSource, finalSource, StringComparison.Ordinal),
-                             ["persisted"] = false,
-                             ["implicitLifecycleActions"] = new JArray()
-                         });
-                }
-            }
+                parsed = ApplyTextVerificationReceipt(parsed, target, partName, priorSource,
+                    requestedContent, finalSource, finalVersionToken, verificationReadTruncated,
+                    verificationReadFailure, verifyMode, isDryRun, requireObjectSave);
 
             // issue #31.2: when the write left the persisted content byte-identical to the
             // prior content, this was a no-op — surface WriteNoChange instead of WriteApplied
@@ -388,7 +308,7 @@ namespace GxMcp.Worker.Services
                     // false-alarm); absence of the flag means "verify via persistedSnippet".
                     bool? requestedApplied = null;
                     if (requestedContent != null)
-                        requestedApplied = WhitespaceInsensitiveEquals(finalSource, requestedContent);
+                        requestedApplied = EvaluatePersistedVerification(requestedContent, finalSource, verificationReadTruncated, verificationReadFailure, verifyMode, partName).Matches;
 
                     if (requestedApplied == true)
                     {
@@ -403,6 +323,137 @@ namespace GxMcp.Worker.Services
             }
 
             return parsed.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        // Pure receipt construction keeps the physical save result independent of
+        // comparison and lets synchronous and asynchronous callers share evidence.
+        internal static JObject ApplyTextVerificationReceipt(JObject response, string target,
+            string part, string before, string requested, string actual, string versionToken,
+            bool truncated, string readFailure, string verifyMode, bool dryRun = false, bool requireObjectSave = false)
+        {
+            string code = response["code"]?.ToString();
+            bool successful = string.Equals(response["status"]?.ToString(), "ok", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(response["status"]?.ToString(), "success", StringComparison.OrdinalIgnoreCase);
+            bool writeApplied = string.Equals(code, "WriteApplied", StringComparison.OrdinalIgnoreCase);
+            bool noChange = string.Equals(code, "WriteNoChange", StringComparison.OrdinalIgnoreCase);
+            bool applied = successful && (writeApplied || noChange);
+            bool? saved = dryRun ? false : response["sdkSaveCompleted"]?.Value<bool?>()
+                ?? response["result"]?["sdkSaveCompleted"]?.Value<bool?>()
+                ?? response["saved"]?.Value<bool?>() ?? (successful && writeApplied ? (bool?)true : successful && noChange ? (bool?)false : null);
+            bool? objectSaved = response["objectSaved"]?.Value<bool?>()
+                ?? response["result"]?["objectSaved"]?.Value<bool?>()
+                ?? (successful && noChange ? (bool?)false : null);
+            if (response["metadataStampPersisted"] == null && response["result"]?["metadataStampPersisted"] != null)
+                response["metadataStampPersisted"] = response["result"]["metadataStampPersisted"].DeepClone();
+            var verification = EvaluatePersistedVerification(requested, actual, truncated, readFailure, verifyMode, part);
+            bool known = !verification.IsIndeterminate;
+            var diff = BuildPersistenceDiff(requested, actual, verification, known);
+            response["sdkSaveCompleted"] = saved.HasValue ? (JToken)saved.Value : JValue.CreateNull();
+            response["saved"] = response["sdkSaveCompleted"].DeepClone();
+            // Errors can occur after EnsureSave/Commit was attempted. Do not turn
+            // absent evidence into an assertion that no SDK save ran.
+            if (dryRun || successful && noChange) response["saveAttempted"] = false;
+            else if (successful && writeApplied) response["saveAttempted"] = true;
+            response["part"] = part;
+            if (response["target"] == null) response["target"] = target;
+            if (requireObjectSave)
+            {
+                response["requireObjectSave"] = true;
+                response["objectSaved"] = objectSaved.HasValue ? (JToken)objectSaved.Value : JValue.CreateNull();
+                response["partPersisted"] = !dryRun && known && verification.Matches;
+                response["saveContract"] = "transactional-object-save";
+            }
+            response["persistedStateKnown"] = known;
+            response["verified"] = !dryRun && known && verification.Matches;
+            response["persisted"] = !dryRun && known && verification.Matches;
+            response["versionToken"] = known ? versionToken : null;
+            response["implicitLifecycleActions"] = new JArray();
+            response[dryRun ? "currentState" : "postSaveVerification"] = new JObject
+            {
+                ["reReadConfirmed"] = known,
+                ["matches"] = known && verification.Matches,
+                ["representation"] = "genexus_read",
+                ["readOptions"] = new JObject { ["offset"] = 0, ["limit"] = 0 },
+                ["reason"] = verification.Reason,
+                ["versionToken"] = known ? versionToken : null,
+                ["mode"] = verifyMode ?? "legacy",
+                ["diff"] = diff.DeepClone()
+            };
+            response["mutation"] = new JObject
+            {
+                ["before"] = DescribeContent(before), ["requested"] = DescribeContent(requested),
+                ["persisted"] = known ? DescribeContent(actual) : null,
+                ["diff"] = diff, ["verification"] = dryRun ? "dryRun" : verification.State,
+                ["saved"] = response["sdkSaveCompleted"].DeepClone()
+            };
+            if (!dryRun && applied && !verification.Matches)
+            {
+                response["status"] = "error";
+                response["code"] = known ? "WriteNotPersisted" : "WriteVerificationUnavailable";
+                response["error"] = new JObject
+                {
+                    ["code"] = response["code"].DeepClone(),
+                    ["message"] = known
+                        ? "The persisted public-read text differs from the request; inspect the diff. The SDK save result is reported separately."
+                        : "The post-save state could not be read reliably. The SDK save result is reported separately.",
+                    ["hint"] = "Do not retry automatically. Read the complete current state and its versionToken before deciding on another edit."
+                };
+                response["partialPersistenceDetected"] = known && before != null && !string.Equals(before, actual, StringComparison.Ordinal);
+            }
+            if (!dryRun && successful && writeApplied && requireObjectSave && objectSaved != true)
+            {
+                response["status"] = "error";
+                response["code"] = "ObjectSaveIncomplete";
+                response["error"] = new JObject
+                {
+                    ["code"] = "ObjectSaveIncomplete",
+                    ["message"] = "The required transactional object-save evidence was not returned. Inspect the independent read evidence before any recovery edit.",
+                    ["hint"] = "Do not retry automatically."
+                };
+            }
+            return response;
+        }
+
+        private static JObject BuildPersistenceDiff(string expected, string actual, PersistedVerificationResult verification, bool known)
+        {
+            int line = 0;
+            if (known && !string.Equals(expected, actual, StringComparison.Ordinal))
+            {
+                string left = expected ?? "", right = actual ?? "";
+                int index = 0;
+                while (index < left.Length && index < right.Length && left[index] == right[index]) index++;
+                line = 1;
+                for (int i = 0; i < index; i++)
+                    if (left[i] == '\n' || (left[i] == '\r' && (i + 1 >= left.Length || left[i + 1] != '\n'))) line++;
+            }
+            string[] expectedLines = (expected ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            string[] actualLines = (actual ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            // Bounded previews; hashes and the public read provide complete evidence.
+            Func<string[], string> preview = lines => line > 0 && line <= lines.Length
+                ? lines[line - 1].Substring(0, Math.Min(lines[line - 1].Length, 240)) : null;
+            Func<string, string> ending = text =>
+            {
+                if (!known || line == 0 || text == null) return null;
+                int currentLine = 1;
+                for (int i = 0; i < text.Length; i++)
+                {
+                    if (text[i] != '\r' && text[i] != '\n') continue;
+                    bool crlf = text[i] == '\r' && i + 1 < text.Length && text[i + 1] == '\n';
+                    if (currentLine++ == line) return crlf ? "CRLF" : text[i] == '\r' ? "CR" : "LF";
+                    if (crlf) i++;
+                }
+                return currentLine == line ? "none" : null;
+            };
+            return new JObject
+            {
+                ["matches"] = verification.Matches, ["reason"] = verification.Reason,
+                ["firstDifferentLine"] = known && line > 0 ? (JToken)line : JValue.CreateNull(),
+                ["expectedLine"] = known ? preview(expectedLines) : null,
+                ["readLine"] = known ? preview(actualLines) : null,
+                ["expectedLineEnding"] = ending(expected),
+                ["readLineEnding"] = ending(actual),
+                ["linePreviewLimit"] = 240
+            };
         }
 
         private string RollbackFullWriteFailure(
@@ -422,7 +473,11 @@ namespace GxMcp.Worker.Services
                 return responseJson;
 
             if (IsPostSaveVerificationIndeterminate(response.ToString(Newtonsoft.Json.Formatting.None)))
-                return responseJson;
+            {
+                if (string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase))
+                    MarkSourceRollbackUnavailable(response);
+                return response.ToString(Newtonsoft.Json.Formatting.None);
+            }
 
             string current = response["source"]?.ToString();
             if (current != null && string.Equals(current, priorSource, StringComparison.Ordinal))
@@ -435,6 +490,15 @@ namespace GxMcp.Worker.Services
                     ["reReadConfirmed"] = true
                 };
                 response["persisted"] = false;
+                return response.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            if (string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase))
+            {
+                // A preflight token check followed by another SDK transaction is not
+                // an atomic conditional restore. Fail closed rather than overwrite an
+                // IDE/other-Worker edit that arrives between those two operations.
+                MarkSourceRollbackUnavailable(response);
                 return response.ToString(Newtonsoft.Json.Formatting.None);
             }
 
@@ -504,6 +568,16 @@ namespace GxMcp.Worker.Services
             return response.ToString(Newtonsoft.Json.Formatting.None);
         }
 
+        internal static void MarkSourceRollbackUnavailable(JObject response)
+        {
+            response["rollback"] = new JObject
+            {
+                ["requested"] = true, ["rolledBack"] = false, ["attempted"] = false,
+                ["reason"] = "AtomicRollbackUnavailable",
+                ["message"] = "Source restore was not attempted: the SDK path does not establish an atomic version-conditional restore. Re-read the current content and version before an explicit recovery edit."
+            };
+        }
+
         internal static bool IsPostSaveVerificationIndeterminate(string responseJson)
         {
             try
@@ -536,7 +610,7 @@ namespace GxMcp.Worker.Services
             string requested,
             string persisted,
             bool readTruncated,
-            string readFailure)
+            string readFailure, string verifyMode = null, string partName = "Source")
         {
             if (readTruncated)
             {
@@ -559,6 +633,18 @@ namespace GxMcp.Worker.Services
             if (string.Equals(requested, persisted, StringComparison.Ordinal))
             {
                 return new PersistedVerificationResult { State = "verified", Reason = "none", Matches = true };
+            }
+            if (verifyMode != null)
+            {
+                bool exact = string.Equals(verifyMode, "exact", StringComparison.OrdinalIgnoreCase);
+                bool matches = !exact && (TextPersistenceVerifier.Evaluate(requested, persisted, verifyMode, partName).Matches
+                    || WhitespaceInsensitiveEquals(persisted, requested)
+                    || XmlEquivalentWhenApplicable(persisted, requested));
+                string reason = string.Equals((requested ?? "").Replace("\r\n", "\n").Replace('\r', '\n'),
+                    (persisted ?? "").Replace("\r\n", "\n").Replace('\r', '\n'), StringComparison.Ordinal)
+                    ? "lineEndings" : ModuleQualificationEquals(persisted, requested) ? "moduleQualification"
+                    : matches ? "normalization" : "contentMismatch";
+                return new PersistedVerificationResult { State = matches ? "verified" : "mismatch", Reason = reason, Matches = matches };
             }
             if (WhitespaceInsensitiveEquals(persisted, requested)
                 || XmlEquivalentWhenApplicable(persisted, requested))

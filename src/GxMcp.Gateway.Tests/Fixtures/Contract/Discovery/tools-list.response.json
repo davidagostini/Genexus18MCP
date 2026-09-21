@@ -1730,7 +1730,7 @@
           },
           "requireObjectSave": {
             "default": false,
-            "description": "Events patch complete-save requirement. dryRun remains available; real writes are blocked before persistence with ObjectSaveIsolationUnverified until SDK/pattern save-event isolation is established. No override. baseVersion remains required for a real write.",
+            "description": "Full Source requires transactional object save. Events patch: dryRun available; real writes blocked by ObjectSaveIsolationUnverified until SDK/pattern save-event isolation is established. No override; baseVersion required.",
             "type": "boolean"
           },
           "return_post_state": {
@@ -1738,7 +1738,7 @@
             "type": "boolean"
           },
           "rollbackOnFailure": {
-            "description": "Explicit rollback only: restore a valid pre-write snapshot when post-save verification or validationMode=specify fails. No rollback occurs when false or omitted.",
+            "description": "Explicit rollback only. Full Source verification failure reports AtomicRollbackUnavailable without a restore write until atomic conditional restore is supported. Other paths require a valid snapshot. No rollback when false or omitted.",
             "type": "boolean"
           },
           "scope": {
@@ -1798,7 +1798,7 @@
           },
           "verifyMode": {
             "default": "normalized",
-            "description": "Post-save text comparison for patch mode. Source/Rules default to normalized (EOL, encoding marker, trailing whitespace and repeated blank lines); exact preserves logical text but treats CRLF/LF as the same SDK Source rendering; semantic also tolerates SDK casing/spacing format changes. Comment-only Replace writes require baseVersion and return CommentOnlyWriteNotPersisted on a divergent forced re-read. The part is always re-read after Save.",
+            "description": "Post-save text comparison. Full exact compares public-read text verbatim; patch exact retains logical CRLF/LF equivalence. normalized ignores EOL, BOM, trailing whitespace and blank lines; semantic also tolerates casing/spacing. Fresh reread always required. sdkSaveCompleted/saved report physical save; persistedStateKnown and postSaveVerification report read evidence. Mismatch never retries automatically.",
             "enum": [
               "semantic",
               "normalized",

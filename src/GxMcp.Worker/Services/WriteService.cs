@@ -725,7 +725,9 @@ namespace GxMcp.Worker.Services
                     strictVerify,
                     facadeArgs.RollbackOnFailure,
                     facadeArgs.ForceWrite,
-                    facadeArgs.BaseVersion);
+                    facadeArgs.BaseVersion,
+                    facadeArgs.VerifyMode,
+                    facadeArgs.RequireObjectSave);
             }
 
             // Friction 2026-05-22: KBs default to WIN1252 (codepage 1252) on
@@ -931,11 +933,15 @@ namespace GxMcp.Worker.Services
         {
             if (facadeArgs == null || !facadeArgs.RequireObjectSave) return null;
 
+            // Full Source writes always require the transactional object save.
+            if (string.Equals(facadeArgs.Mode, "full", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(facadeArgs.PartName, "Source", StringComparison.OrdinalIgnoreCase)) return null;
+
             if (!string.Equals(facadeArgs.Mode, "patch", StringComparison.OrdinalIgnoreCase))
             {
                 return McpResponse.Err(
                     code: "RequireObjectSaveUnsupportedMode",
-                    message: "requireObjectSave is supported only for mode=patch with part=Events.",
+                    message: "requireObjectSave supports full Source or patch Events.",
                     hint: "Use mode=patch, part=Events, and pass the current versionToken as baseVersion.",
                     target: target);
             }
@@ -944,7 +950,7 @@ namespace GxMcp.Worker.Services
             {
                 return McpResponse.Err(
                     code: "RequireObjectSaveUnsupportedPart",
-                    message: "requireObjectSave is supported only for part=Events in patch mode.",
+                    message: "requireObjectSave supports full Source or patch Events.",
                     hint: "Use part=Events or omit requireObjectSave for another source part.",
                     target: target);
             }
@@ -1105,9 +1111,15 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false, bool forceWrite = false, string baseVersion = null)
+        public string WriteObject(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool rollbackOnFailure = false, bool forceWrite = false, string baseVersion = null, string verifyMode = null, bool requireObjectSave = false)
         {
             partName = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+            if (requireObjectSave) preferFastSourceSave = false;
+            if (verifyMode != null)
+            {
+                try { verifyMode = TextPersistenceVerifier.ResolveMode(verifyMode, partName); }
+                catch (ArgumentException ex) { return McpResponse.Err(code: "InvalidVerifyMode", message: ex.Message, target: target); }
+            }
 
             // Friction 2026-05-22 fix: hold the per-target lock around the
             // ENTIRE write pipeline (snapshot + internal write + wrap). This is
@@ -1187,7 +1199,7 @@ namespace GxMcp.Worker.Services
             string raw;
             try
             {
-                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64, strictVerify, forceWrite);
+                raw = WriteObjectInternal(target, partName, code, typeFilter, autoValidate, preferFastSourceSave, autoInjectVariables, dryRun, explicitBase64, strictVerify, forceWrite, exactSource: string.Equals(verifyMode, "exact", StringComparison.OrdinalIgnoreCase));
             }
             finally
             {
@@ -1205,7 +1217,7 @@ namespace GxMcp.Worker.Services
             // (success, no-change, dry-run, rollback, or error).
             // Default sdkPath = typed-sdk; deeper writers (LayoutService raw-XML) tag their own
             // sdkPath first and WrapWithPersistedState is idempotent so it preserves that.
-            string wrapped = WrapWithPersistedState(raw, target, string.IsNullOrWhiteSpace(partName) ? "Source" : partName, GxMcp.Worker.Helpers.WriteResultMeta.TypedSdk, snapshot?.PriorContent, code, typeFilter);
+            string wrapped = WrapWithPersistedState(raw, target, string.IsNullOrWhiteSpace(partName) ? "Source" : partName, GxMcp.Worker.Helpers.WriteResultMeta.TypedSdk, snapshot?.PriorContent, code, typeFilter, verifyMode, requireObjectSave);
 
             // Issue #24 — never report WriteApplied when a non-empty source write
             // landed as an empty part on disk. Runs against the persistedHash the
@@ -1407,7 +1419,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool forceWrite = false)
+        private string WriteObjectInternal(string target, string partName, string code, string typeFilter = null, bool autoValidate = true, bool preferFastSourceSave = false, bool autoInjectVariables = true, bool dryRun = false, bool explicitBase64 = false, bool strictVerify = true, bool forceWrite = false, bool exactSource = false)
         {
             try
             {
@@ -1791,7 +1803,7 @@ namespace GxMcp.Worker.Services
                 // lock the caller into WriteNoChange forever. Re-attempt the save instead.
                 if (part is global::Artech.Architecture.Common.Objects.ISource existingSourcePart &&
                     !IsEmptyPersistPending(target, partName) &&
-                    WritePolicy.IsUnchangedSourceWrite(existingSourcePart.Source, decodedCode))
+                    WritePolicy.IsUnchangedSourceWrite(existingSourcePart.Source, decodedCode, exactSource))
                 {
                     Logger.Info("[DEBUG-SAVE] Content is identical. Skipping validation and Save.");
                     return Models.McpResponse.Ok(
@@ -2144,6 +2156,8 @@ namespace GxMcp.Worker.Services
                                             ["suggested_recipe"] = "extract_to_procedure"
                                         }
                                     },
+                                    ["sdkSaveCompleted"] = true,
+                                    ["objectSaved"] = true,
                                     ["metadataStampPersisted"] = metadataStampPersisted
                                 };
                                 return Models.McpResponse.Ok(
@@ -2161,6 +2175,9 @@ namespace GxMcp.Worker.Services
                     // Build success result — include retryStrategy and warnings when validation was bypassed
                     var writeResult = new JObject
                     {
+                        // This point is reached only after EnsureSave and Commit returned.
+                        ["sdkSaveCompleted"] = true,
+                        ["objectSaved"] = true,
                         ["metadataStampPersisted"] = metadataStampPersisted
                     };
                     var writeWarnings = new JArray();

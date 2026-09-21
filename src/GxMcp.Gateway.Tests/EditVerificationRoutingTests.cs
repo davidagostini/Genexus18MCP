@@ -7,6 +7,24 @@ namespace GxMcp.Gateway.Tests
     public class EditVerificationRoutingTests
     {
         [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void FullSource_ForwardsExactVerificationAndSaveRequirement(bool dryRun)
+        {
+            var args = JObject.Parse("{name:'Sample',part:'Source',mode:'full',content:'wms.Log.Call()',verifyMode:'exact',requireObjectSave:true,expectedVersion:'35',return_post_state:false}");
+            args["dryRun"] = dryRun;
+            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args));
+            Assert.Equal("Write", routed["module"]);
+            Assert.Equal("exact", routed["verifyMode"]);
+            Assert.True(routed["requireObjectSave"].Value<bool>());
+            Assert.Equal("35", routed["expectedVersion"]);
+            Assert.False(routed["return_post_state"].Value<bool>());
+            Assert.Equal(dryRun, routed["dryRun"].Value<bool>());
+            Assert.False(routed["rollbackOnFailure"].Value<bool>());
+            Assert.Null(routed["validationMode"].Value<string>());
+        }
+
+        [Theory]
         [InlineData(true, true, "strict")]
         [InlineData(true, false, "strict")]
         [InlineData(true, false, "only")]
