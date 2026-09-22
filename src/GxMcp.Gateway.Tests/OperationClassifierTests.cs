@@ -403,6 +403,31 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void IoImportPartRespectsPreviewBoundary()
+        {
+            Assert.True(OperationClassifier.IsReadOnly("genexus_io", new JObject
+            {
+                ["action"] = "import_part",
+                ["dryRun"] = true
+            }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_io", new JObject
+            {
+                ["action"] = "import_part",
+                ["dryRun"] = false
+            }));
+            Assert.False(OperationClassifier.IsMutationCandidate("genexus_io", new JObject
+            {
+                ["action"] = "import_part",
+                ["dryRun"] = true
+            }));
+            Assert.True(OperationClassifier.IsMutationCandidate("genexus_io", new JObject
+            {
+                ["action"] = "import_part",
+                ["dryRun"] = false
+            }));
+        }
+
+        [Fact]
         public void DocumentedDryRunActions_AreReadOnlyOnlyWhenPreviewing()
         {
             Assert.True(OperationClassifier.IsReadOnly("genexus_properties", new JObject { ["action"] = "move", ["dryRun"] = true }));

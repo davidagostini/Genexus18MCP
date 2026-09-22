@@ -1812,7 +1812,7 @@ namespace GxMcp.Worker.Services
                     args?["includeBase64"]?.ToObject<bool?>() ?? false,
                     args?["overwrite"]?.ToObject<bool?>() ?? false);
             }
-            if (action == "ImportText") return _objectService.ImportObjectFromText(target, args?["inputPath"]?.ToString() ?? args?["path"]?.ToString(), args?["part"]?.ToString(), args?["type"]?.ToString());
+            if (action == "ImportText") return _objectService.ImportObjectFromText(target, args?["inputPath"]?.ToString() ?? args?["path"]?.ToString(), args?["part"]?.ToString(), args?["type"]?.ToString(), args?["dryRun"]?.ToObject<bool?>() ?? false, args?["forceSave"]?.ToObject<bool?>() ?? false);
             if (action.StartsWith("TextMirror", StringComparison.OrdinalIgnoreCase))
             {
                 string mirrorAction = action.Substring("TextMirror".Length).ToLowerInvariant();

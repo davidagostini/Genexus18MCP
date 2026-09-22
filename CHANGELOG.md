@@ -14,6 +14,8 @@
 
 - Corrected the `AGENTS.md` Gateway paragraph to cite `GatewayMode: "stdio-isolated"` instead of `Server.TransportMode`, which strict v2 configs reject at parse time; legacy non-strict fallback behavior is unchanged. ([#272](https://github.com/lennix1337/Genexus18MCP/issues/272))
 
+- `genexus_io` `import_part` now forwards `dryRun` (and `forceSave`) from the gateway router to the worker dispatch and honors the read-only preview: `dryRun=true` returns a `WriteDryRun` validation without saving, and the preview is classified read-only so it no longer invalidates the semantic cache. Previously the flag was dropped at both hops and the part was written with `WriteApplied`. ([#280](https://github.com/lennix1337/Genexus18MCP/issues/280))
+
 ## v3.7.2 - 2026-09-22
 
 

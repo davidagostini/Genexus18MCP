@@ -248,6 +248,7 @@ namespace GxMcp.Gateway
             "genexus_module:install",
             "genexus_module:install_builtin",
             "genexus_module:update",
+            "genexus_io:import_part",
             "genexus_db:records_insert",
             "genexus_db:records_update",
             "genexus_transfer:import",
