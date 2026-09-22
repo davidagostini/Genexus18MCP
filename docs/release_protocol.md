@@ -31,6 +31,12 @@ requires `publish.zip` on the initial published event. The Worker needs the
 local primary SDK from `config/gx-versions.json`, so the release artifact must
 built on Windows with that supported GeneXus installation.
 
+Before changing release metadata, `release.ps1` checks the live `origin/main`
+head and requires local main to match it. It also permits retrying the same
+version when the only local commit is `release: vX.Y.Z` directly on the current
+remote head, and resumes an existing remote tag from that tag's pinned source
+commit.
+
 At release time, all open issues labeled `fixed-pending-release` are collected
 automatically into `release-issues.txt`, included in the changelog, and closed
 after publication. Marking an issue for that release is a separate operation

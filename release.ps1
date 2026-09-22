@@ -531,6 +531,21 @@ function Test-StrictSemVer([string]$Value) {
     return $Value -match '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
 }
 
+function Test-ReleaseBaseAlignment {
+    param(
+        [string]$LocalHead,
+        [string]$RemoteMainHead,
+        [string]$LocalParent,
+        [string]$LocalSubject,
+        [string]$Tag
+    )
+
+    if ($LocalHead -ceq $RemoteMainHead) { return $true }
+    return -not [string]::IsNullOrWhiteSpace($LocalParent) -and
+        $LocalParent -ceq $RemoteMainHead -and
+        $LocalSubject -ceq "release: $Tag"
+}
+
 Step "Resolving version"
 $pkgPath = Join-Path $root 'package.json'
 if (-not (Test-Path $pkgPath)) { Fail "package.json not found at $pkgPath" }
@@ -554,6 +569,65 @@ $branch = (git rev-parse --abbrev-ref HEAD 2>$null).Trim()
 if ($branch -ne 'main') {
     if ($DryRun) { Warn "[DRY-RUN] current branch is '$branch'; a real release requires main." }
     else { Fail "Releases must be cut from the main branch (current: '$branch')." }
+}
+
+Step "Checking release base freshness"
+$remoteTag = @(git ls-remote --tags origin "refs/tags/$tag" 2>$null)
+$remoteTagExitCode = $LASTEXITCODE
+if ($remoteTagExitCode -ne 0) {
+    Fail "Could not check remote tag $tag before preparing the release."
+}
+
+if ($branch -eq 'main' -and -not $remoteTag) {
+    $remoteMainOutput = @(git ls-remote --heads origin 'refs/heads/main' 2>$null)
+    $remoteMainExitCode = $LASTEXITCODE
+    if ($remoteMainExitCode -ne 0 -or $remoteMainOutput.Count -ne 1) {
+        Fail "Could not read the current origin/main head before preparing the release."
+    }
+    $remoteMainHead = (($remoteMainOutput[0].ToString().Trim()) -split '\s+')[0]
+    if ($remoteMainHead -notmatch '^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$') {
+        Fail "origin/main returned an invalid commit id before preparing the release."
+    }
+
+    $localHead = (& git rev-parse HEAD 2>$null).Trim()
+    $localHeadExitCode = $LASTEXITCODE
+    if ($localHeadExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($localHead)) {
+        Fail "Could not read local HEAD before preparing the release."
+    }
+
+    $localParent = $null
+    $localSubject = $null
+    $parentExitCode = 0
+    $subjectExitCode = 0
+    if ($localHead -cne $remoteMainHead) {
+        $localParent = (& git rev-parse 'HEAD^' 2>$null).Trim()
+        $parentExitCode = $LASTEXITCODE
+        $localSubject = (& git log -1 --format=%s 2>$null).Trim()
+        $subjectExitCode = $LASTEXITCODE
+    }
+
+    if ($localHead -cne $remoteMainHead -and ($parentExitCode -ne 0 -or $subjectExitCode -ne 0)) {
+        Fail "Could not verify the pending release commit against origin/main."
+    }
+    $baseAlignment = @{
+        LocalHead = $localHead
+        RemoteMainHead = $remoteMainHead
+        LocalParent = $localParent
+        LocalSubject = $localSubject
+        Tag = $tag
+    }
+    if (-not (Test-ReleaseBaseAlignment @baseAlignment)) {
+        Fail "Local main is stale or diverged from origin/main (local=$localHead, remote=$remoteMainHead). Fetch and fast-forward main before preparing a new release."
+    }
+    if ($localHead -ceq $remoteMainHead) {
+        Ok "Local main matches the current origin/main head."
+    } else {
+        Ok "Pending release commit is directly based on the current origin/main head; resuming is safe."
+    }
+} elseif ($remoteTag) {
+    Ok "Remote tag $tag exists; the release will resume from its pinned source commit."
+} elseif ($DryRun) {
+    Warn "[DRY-RUN] origin/main freshness check skipped because the current branch is not main."
 }
 
 Step "Snapshotting release issues"
@@ -632,7 +706,6 @@ Ok "Tree state acceptable."
 # the release-creation step against the existing tagged commit.
 $resumeRelease = $false
 $releaseExists = $false
-$remoteTag = git ls-remote --tags origin "refs/tags/$tag" 2>$null
 if ($remoteTag) {
     $assetNames = @(gh release view $tag --json assets --jq '.assets[].name' 2>$null)
     if ($LASTEXITCODE -eq 0) { $releaseExists = $true }
