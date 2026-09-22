@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Fresh verification reads now evict retained SDK object instances after invalidation before resolving through the public read route. This addresses `FreshReadUnavailable` in DesignSystem Tokens/Styles full and patch previews without relaxing GUID/reference checks, destination pins, concurrency tokens or exact-source verification. An opt-in read-only live regression checks both previews leave source and version tokens unchanged.
+
 ## v3.8.0 - 2026-09-22
 
 
