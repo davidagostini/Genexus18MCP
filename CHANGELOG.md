@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v3.8.0 - 2026-09-22
+
+
+### Tracked issues
+
+- [#260](https://github.com/lennix1337/Genexus18MCP/issues/260) — Support K2BTools patterns, not only WorkWithPlus: generic PatternInstance read, edit and apply
+- [#272](https://github.com/lennix1337/Genexus18MCP/issues/272) — [Docs] AGENTS.md cita TransportMode no modo isolado; schema v2 exige GatewayMode e rejeita Server.TransportMode
+- [#274](https://github.com/lennix1337/Genexus18MCP/issues/274) — fix(module): contextualize null SDK install failure and verify dependency installation
+- [#276](https://github.com/lennix1337/Genexus18MCP/issues/276) — PostgreSQL: records_query sugere dataStoreAlias, mas aliases são restritos a SQL Server
+- [#280](https://github.com/lennix1337/Genexus18MCP/issues/280) — import_part ignores dryRun:true and performs a real write
+- [#281](https://github.com/lennix1337/Genexus18MCP/issues/281) — genexus_variable silently flattens attribute-based variables to primitives, and cannot restore them
+
+
 ### Added
 
 - `genexus_variable` now supports attribute-based variables: `basedOnAttribute` (or `typeName`/`basedOn` as `Attribute:<name>`) binds the live KB Attribute by native SDK identity, preserving `VarBasedOn`/`DataTypeString` and picture/semantics. Untyped `add` inherits a same-named attribute with its binding. Reads surface the binding (`genexus_read part=Variables` emits `Attribute:<name>`; `genexus_inspect include=["variables"]` exposes `basedOn`/`basedOnAttribute`/`basedOnDomain`). `object_atomic` `variables[]` accepts `basedOnAttribute` too. Tool-schema budget 31800 → 32000 for the new parameter (measured ~31874). ([#281](https://github.com/lennix1337/Genexus18MCP/issues/281))
