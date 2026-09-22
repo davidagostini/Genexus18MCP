@@ -16,6 +16,10 @@
 
 - `genexus_io` `import_part` now forwards `dryRun` (and `forceSave`) from the gateway router to the worker dispatch and honors the read-only preview: `dryRun=true` returns a `WriteDryRun` validation without saving, and the preview is classified read-only so it no longer invalidates the semantic cache. Previously the flag was dropped at both hops and the part was written with `WriteApplied`. ([#280](https://github.com/lennix1337/Genexus18MCP/issues/280))
 
+### Internal
+
+- Removed the 12 unreachable legacy `Convert*Umbrella`/`Convert*ToolCall` duplicates from `OperationsRouter` (~970 lines); the typed domain routers (`IoRouter`, `CreateRouter`, …) claim that traffic first, and the leftover copies silently dropped forwarded fields (the `import_part` `dryRun` production-write class). `PreviewForwardingTests` now routes every `DryRunCapableActions` entry and fails when a preview flag does not reach the worker envelope. Replaced a raw NUL byte inside a `WriteService` string literal with the `\x00` escape (runtime-identical; the control byte made file readers classify the source as binary). Added `scripts/mcp-probe.ps1` for single-tool live probes against a scratch gateway, with pointers in the live-validation playbook.
+
 ## v3.7.2 - 2026-09-22
 
 

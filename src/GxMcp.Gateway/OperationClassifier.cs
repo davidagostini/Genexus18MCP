@@ -270,6 +270,8 @@ namespace GxMcp.Gateway
 
         internal static IReadOnlyCollection<string> ActionTools => ActionContracts.Keys;
 
+        internal static IReadOnlyCollection<string> PreviewCapableActions => DryRunCapableActions;
+
         internal static string BuildHelpContract(string toolName)
         {
             if (!ActionContracts.TryGetValue(toolName, out var contract)) return string.Empty;
