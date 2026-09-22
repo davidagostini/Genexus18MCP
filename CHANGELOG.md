@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fresh verification reads now evict retained SDK object instances after invalidation before resolving through the public read route. This addresses `FreshReadUnavailable` in DesignSystem Tokens/Styles full and patch previews without relaxing GUID/reference checks, destination pins, concurrency tokens or exact-source verification. An opt-in read-only live regression checks both previews leave source and version tokens unchanged.
+- Native identity-based builds now consume the SDK's equivalent result-bearing `Build` overload with the same object keys and zero options instead of interpreting a non-throwing `void BuildWithTheseOnly` call as success. Missing result support is reported as `NativeBuildOutcomeUnknown`; native failure is reported as `NativeBuildFailed`, without automatic per-target retries. In-process builds no longer invent an MSBuild process exit code. Output-root verification uses the opened KB and the active environment's target model/property bag, and reports a typed error when unavailable. Detailed SDK compiler-output capture remains unavailable on this native route; the SDK result is not an itemized compiler log.
 
 ## v3.8.0 - 2026-09-22
 
