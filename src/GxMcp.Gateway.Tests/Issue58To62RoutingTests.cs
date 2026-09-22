@@ -14,9 +14,9 @@ namespace GxMcp.Gateway.Tests
                 ["name"] = "Customer", ["pattern"] = "WorkWithPlus", ["mode"] = "actions",
                 ["action"] = "add_user_action", ["containerName"] = "TableActions",
                 ["actionName"] = "BaixarConfiguracao", ["caption"] = "Baixar Configuração"
-            }));
-            Assert.Equal("Pattern", (string)routed["module"]);
-            Assert.Equal("ManageActions", (string)routed["action"]);
+            })!);
+            Assert.Equal("Pattern", routed["module"]?.ToString());
+            Assert.Equal("ManageActions", routed["action"]?.ToString());
         }
 
         [Fact]
@@ -27,10 +27,10 @@ namespace GxMcp.Gateway.Tests
                 ["action"] = "object_atomic", ["name"] = "P", ["objectType"] = "Procedure",
                 ["validate"] = true
             })!);
-            Assert.Equal("AtomicCreate", (string)routed["module"]);
-            Assert.Equal("P", (string)routed["params"]?["name"]);
-            Assert.Equal("Procedure", (string)routed["params"]?["type"]);
-            Assert.True((bool)routed["params"]?["validate"]);
+            Assert.Equal("AtomicCreate", routed["module"]?.ToString());
+            Assert.Equal("P", routed["params"]?["name"]?.ToString());
+            Assert.Equal("Procedure", routed["params"]?["type"]?.ToString());
+            Assert.True(routed["params"]?["validate"]?.Value<bool>() == true);
         }
 
         [Fact]
@@ -40,9 +40,9 @@ namespace GxMcp.Gateway.Tests
             {
                 ["name"] = "P", ["type"] = "Procedure", ["source"] = "msg('hi');"
             })!);
-            Assert.Equal("AtomicCreate", (string)routed["module"]);
-            Assert.Equal("P", (string)routed["params"]?["name"]);
-            Assert.Equal("msg('hi');", (string)routed["params"]?["source"]);
+            Assert.Equal("AtomicCreate", routed["module"]?.ToString());
+            Assert.Equal("P", routed["params"]?["name"]?.ToString());
+            Assert.Equal("msg('hi');", routed["params"]?["source"]?.ToString());
         }
 
         [Fact]
@@ -52,10 +52,10 @@ namespace GxMcp.Gateway.Tests
             {
                 ["name"] = "Customer", ["type"] = "Transaction"
             })!);
-            Assert.Equal("Object", (string)routed["module"]);
-            Assert.Equal("Create", (string)routed["action"]);
-            Assert.Equal("Customer", (string)routed["target"]);
-            Assert.Equal("Transaction", (string)routed["type"]);
+            Assert.Equal("Object", routed["module"]?.ToString());
+            Assert.Equal("Create", routed["action"]?.ToString());
+            Assert.Equal("Customer", routed["target"]?.ToString());
+            Assert.Equal("Transaction", routed["type"]?.ToString());
         }
 
         [Fact]
@@ -67,9 +67,9 @@ namespace GxMcp.Gateway.Tests
                 ["newTypeName"] = "Character(40)", ["dataType"] = "Numeric"
             })!);
 
-            Assert.Equal("ModifyVariable", (string)routed["action"]);
-            Assert.Equal("Character(40)", (string)routed["newTypeName"]);
-            Assert.Equal("Numeric", (string)routed["dataType"]);
+            Assert.Equal("ModifyVariable", routed["action"]?.ToString());
+            Assert.Equal("Character(40)", routed["newTypeName"]?.ToString());
+            Assert.Equal("Numeric", routed["dataType"]?.ToString());
         }
 
         [Fact]
@@ -77,8 +77,8 @@ namespace GxMcp.Gateway.Tests
         {
             var routed = JObject.FromObject(new OperationsRouter().ConvertToolCall("genexus_db", new JObject
             { ["action"] = "reorg_preview", ["deep"] = true })!);
-            Assert.Equal("ReorgImpact", (string)routed["module"]);
-            Assert.Equal("reorg_preview", (string)routed["params"]?["action"]);
+            Assert.Equal("ReorgImpact", routed["module"]?.ToString());
+            Assert.Equal("reorg_preview", routed["params"]?["action"]?.ToString());
         }
     }
 }

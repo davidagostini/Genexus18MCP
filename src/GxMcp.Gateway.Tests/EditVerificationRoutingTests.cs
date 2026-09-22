@@ -13,15 +13,15 @@ namespace GxMcp.Gateway.Tests
         {
             var args = JObject.Parse("{name:'Sample',part:'Source',mode:'full',content:'wms.Log.Call()',verifyMode:'exact',requireObjectSave:true,expectedVersion:'35',return_post_state:false}");
             args["dryRun"] = dryRun;
-            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args));
+            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args)!);
             Assert.Equal("Write", routed["module"]);
             Assert.Equal("exact", routed["verifyMode"]);
-            Assert.True(routed["requireObjectSave"].Value<bool>());
+            Assert.True(routed["requireObjectSave"]?.Value<bool>() == true);
             Assert.Equal("35", routed["expectedVersion"]);
-            Assert.False(routed["return_post_state"].Value<bool>());
-            Assert.Equal(dryRun, routed["dryRun"].Value<bool>());
-            Assert.False(routed["rollbackOnFailure"].Value<bool>());
-            Assert.Null(routed["validationMode"].Value<string>());
+            Assert.False(routed["return_post_state"]?.Value<bool>() == true);
+            Assert.Equal(dryRun, routed["dryRun"]?.Value<bool>() == true);
+            Assert.False(routed["rollbackOnFailure"]?.Value<bool>() == true);
+            Assert.Null(routed["validationMode"]?.Value<string>());
         }
 
         [Theory]
@@ -41,7 +41,7 @@ namespace GxMcp.Gateway.Tests
             };
             if (required.HasValue) args["requireObjectSave"] = required.Value;
 
-            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args));
+            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args)!);
 
             Assert.Equal("Patch", routed["module"]?.ToString());
             Assert.Equal(required ?? false, routed["requireObjectSave"]?.Value<bool>());
@@ -55,7 +55,7 @@ namespace GxMcp.Gateway.Tests
         public void LegacyPatch_ForwardsRequireObjectSave()
         {
             var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_patch",
-                JObject.Parse("{name:'SyntheticPanel',part:'Events',requireObjectSave:true,dryRun:true,baseVersion:'35'}")));
+                JObject.Parse("{name:'SyntheticPanel',part:'Events',requireObjectSave:true,dryRun:true,baseVersion:'35'}"))!);
             Assert.True(routed["requireObjectSave"]?.Value<bool>());
             Assert.True(routed["dryRun"]?.Value<bool>());
             Assert.Equal("35", routed["baseVersion"]?.ToString());
@@ -79,7 +79,7 @@ namespace GxMcp.Gateway.Tests
                 ["rollbackOnFailure"] = true
             };
 
-            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args));
+            var routed = JObject.FromObject(new ObjectRouter().ConvertToolCall("genexus_edit", args)!);
             Assert.Equal("normalized", routed["verifyMode"]?.ToString());
             Assert.Equal("version-token", routed["baseVersion"]?.ToString());
             Assert.True(routed["rollbackOnFailure"]?.Value<bool>());
