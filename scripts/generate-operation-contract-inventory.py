@@ -136,7 +136,7 @@ def build_inventory(tools_path: Path = TOOLS, classifier_path: Path = CLASSIFIER
                     "kind": kind,
                     "effects": effect_for(kind, tool),
                     "execution": "worker" if kind in {"readOnly", "mutating"} else "unknown",
-                    "retry": "safe" if kind == "readOnly" else ("operation_key" if kind == "mutating" else "never"),
+                    "retry": "reconcile_inventory" if tool == "genexus_module" and action in {"install", "install_builtin"} else ("safe" if kind == "readOnly" else ("operation_key" if kind == "mutating" else "never")),
                     "cache": "semantic" if kind == "readOnly" else "never",
                     "invalidation": [] if kind != "mutating" else ["kb", "dependents", "collections"],
                 })

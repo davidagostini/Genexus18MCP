@@ -3597,7 +3597,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "GeneXus Module Manager over the SDK's IModuleManagerService. action=list (read-only: installed Module KB objects) | install (opcFile=<path to .opc file>, or name[+version] to install a named module) | install_builtin (name=<built-in module>) | update (name+version) | package/publish/restore (module lifecycle) | add_modules_server/search_modules_in_servers (configured module servers).",
+      "description": "SDK Module Manager: list; install/install_builtin from local .opc or SDK built-in name. dryRun plans exact versions/dependencies/objects; no implicit lifecycle. Other actions: update/package/publish/restore and module servers. See tool help for safety limits.",
       "inputSchema": {
         "examples": [
           {
@@ -3610,7 +3610,7 @@
         ],
         "properties": {
           "action": {
-            "description": "Module Manager operation to inspect, install, or update a module.",
+            "description": "Module Manager action.",
             "enum": [
               "install",
               "install_builtin",
@@ -3629,6 +3629,10 @@
             "description": "Required for restore/publish/package when the operation changes KB or publishes externally.",
             "type": "boolean"
           },
+          "dryRun": {
+            "description": "install/install_builtin only: readonly dependency/object/version plan. Default false.",
+            "type": "boolean"
+          },
           "filter": {
             "description": "search_modules_in_servers: module name/version filter.",
             "type": "string"
@@ -3638,11 +3642,11 @@
             "type": "string"
           },
           "name": {
-            "description": "install (by name)/install_builtin/update: module name.",
+            "description": "Module name; installation by name resolves local SDK built-ins only.",
             "type": "string"
           },
           "opcFile": {
-            "description": "install: absolute path to a .opc module package file.",
+            "description": "install: local .opc package; optional name/version must match.",
             "type": "string"
           },
           "outputDirectory": {
@@ -3680,7 +3684,7 @@
             "type": "string"
           },
           "version": {
-            "description": "install (by name)/update: target module version.",
+            "description": "Exact target version; installation never upgrades an existing conflicting version.",
             "type": "string"
           }
         },

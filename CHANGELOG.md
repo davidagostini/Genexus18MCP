@@ -30,6 +30,8 @@
 
 ### Fixed
 
+- Local module installation now validates package metadata and SDK staging inputs before calling the native installer, addressing the uncontextualized null-argument failure reported in [#274](https://github.com/lennix1337/Genexus18MCP/issues/274). `install` and `install_builtin` support readonly dependency/object/version plans, conflict checks, idempotent inventory readback and truthful partial-persistence receipts without implicit lifecycle or unverified rollback. Timeout results prohibit automatic retry; live reproduction of the reported operational cause remains a separate validation. No discovery budget increase.
+
 - Full Source save verification ([#265](https://github.com/lennix1337/Genexus18MCP/issues/265)) now preserves complete public-read text (including original line endings and trailing newline), forwards `verifyMode` and `requireObjectSave`, and reports physical SDK save separately from post-save comparison. Exact differences carry bounded expected/read lines and typed reasons; unknown reads and concurrent rollback state fail closed without automatic write retries or lifecycle actions.
 
 - `genexus_create` now honors the existing action-inference path for object and atomic creation, accepts the documented `objectType` compatibility alias, and keeps atomic payloads consistent before dispatch. `genexus_variable` modify also accepts `newTypeName` and `dataType` aliases instead of dropping the requested replacement type ([#270](https://github.com/lennix1337/Genexus18MCP/issues/270)).
