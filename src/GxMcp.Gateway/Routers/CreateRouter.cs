@@ -18,6 +18,9 @@ namespace GxMcp.Gateway.Routers
 
         private object? ConvertCreateUmbrella(JObject? args)
         {
+            args = args == null ? new JObject() : (JObject)args.DeepClone();
+            if (args["type"] == null && args["objectType"] != null)
+                args["type"] = args["objectType"]!.DeepClone();
             string? action = args?["action"]?.ToString();
             string? name = args?["name"]?.ToString();
             string? type = args?["type"]?.ToString();

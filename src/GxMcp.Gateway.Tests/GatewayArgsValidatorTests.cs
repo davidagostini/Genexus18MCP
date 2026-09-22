@@ -53,6 +53,12 @@ namespace GxMcp.Gateway.Tests
 
             Assert.True(result.Ok);
             Assert.Empty(result.Violations);
+            var inferredCreate = GatewayArgsValidator.Validate("genexus_create", new JObject
+            {
+                ["name"] = "P",
+                ["objectType"] = "Procedure"
+            });
+            Assert.True(inferredCreate.Ok);
         }
 
         // ── 2. Fail: missing required field ──────────────────────────────────

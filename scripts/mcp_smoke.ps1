@@ -7,6 +7,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$TransportRetryCount = 3
+$TransportRetryDelayMs = 250
 
 function Invoke-Mcp {
     param(
@@ -36,7 +38,33 @@ function Invoke-Mcp {
     }
 
     $body = $bodyObj | ConvertTo-Json -Depth 20 -Compress
-    $resp = Invoke-WebRequest -Uri $BaseUrl -Method Post -Headers $headers -Body $body -UseBasicParsing
+    $resp = $null
+    for ($attempt = 1; $attempt -le $TransportRetryCount; $attempt++) {
+        try {
+            $resp = Invoke-WebRequest -Uri $BaseUrl -Method Post -Headers $headers -Body $body -UseBasicParsing
+            break
+        } catch {
+            $statusCode = $null
+            try {
+                if ($null -ne $_.Exception.Response) {
+                    $statusCode = [int]$_.Exception.Response.StatusCode
+                }
+            } catch { }
+
+            # Retry only a transport failure after the listener was already found.
+            # HTTP responses, including 4xx/5xx contract failures, are not retried.
+            $hasHttpResponse = $null -ne $statusCode
+            if ($hasHttpResponse -or $attempt -eq $TransportRetryCount) {
+                throw
+            }
+
+            Write-Host "[SMOKE] transport retry $attempt/$TransportRetryCount after $($_.Exception.GetType().Name)"
+            Start-Sleep -Milliseconds ($TransportRetryDelayMs * $attempt)
+        }
+    }
+    if ($null -eq $resp) {
+        throw "[SMOKE] No HTTP response after $TransportRetryCount transport attempts."
+    }
     $ResponseHeaders.Value = $resp.Headers
     return ($resp.Content | ConvertFrom-Json)
 }

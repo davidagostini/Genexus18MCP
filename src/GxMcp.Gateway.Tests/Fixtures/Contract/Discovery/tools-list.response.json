@@ -675,45 +675,45 @@
       "name": "genexus_compare"
     },
     {
-      "name": "genexus_connection_recover",
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
       "description": "Probes every open worker and recovers unhealthy ones (force=true targets all). journal_status inspects recovery fences; journal_repair atomically merges valid candidates and verifies persistence. Repair defaults to dryRun=true, preserves pending reads and never touches Workers/KB. Do not combine journal actions with force.",
       "inputSchema": {
-        "type": "object",
-        "properties": {
-          "force": {
-            "type": "boolean",
-            "default": false,
-            "description": "Recover ALL workers, even responsive ones."
-          },
-          "action": {
-            "type": "string",
-            "enum": [
-              "recover",
-              "journal_status",
-              "journal_repair"
-            ],
-            "default": "recover",
-            "description": "Worker recovery, journal inspection or explicit repair."
-          },
-          "dryRun": {
-            "type": "boolean",
-            "description": "Preview journal_repair; explicitly false to persist reconciliation.",
-            "default": true
-          }
-        },
         "examples": [
           {},
           {
             "force": true
           }
-        ]
+        ],
+        "properties": {
+          "action": {
+            "default": "recover",
+            "description": "Worker recovery, journal inspection or explicit repair.",
+            "enum": [
+              "recover",
+              "journal_status",
+              "journal_repair"
+            ],
+            "type": "string"
+          },
+          "dryRun": {
+            "default": true,
+            "description": "Preview journal_repair; explicitly false to persist reconciliation.",
+            "type": "boolean"
+          },
+          "force": {
+            "default": false,
+            "description": "Recover ALL workers, even responsive ones.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
       },
-      "annotations": {
-        "readOnlyHint": false,
-        "destructiveHint": false,
-        "idempotentHint": true,
-        "openWorldHint": true
-      }
+      "name": "genexus_connection_recover"
     },
     {
       "annotations": {
@@ -854,6 +854,10 @@
             "description": "save_as.",
             "type": "string"
           },
+          "objectType": {
+            "description": "Legacy alias for type when creating an object.",
+            "type": "string"
+          },
           "overwrite": {
             "description": "save_as.",
             "type": "boolean"
@@ -960,9 +964,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "action"
-        ],
+        "required": [],
         "type": "object"
       },
       "name": "genexus_create"
@@ -4953,6 +4955,10 @@
             "description": "add/modify optional: declare the variable as a collection.",
             "type": "boolean"
           },
+          "dataType": {
+            "description": "modify alias for the replacement type; accepted alongside typeName.",
+            "type": "string"
+          },
           "decimals": {
             "description": "add/modify optional: overrides decimals parsed from typeName.",
             "type": "integer"
@@ -4983,6 +4989,10 @@
             "type": "string"
           },
           "name": {
+            "type": "string"
+          },
+          "newTypeName": {
+            "description": "modify alias for the replacement type; accepted alongside typeName.",
             "type": "string"
           },
           "objectName": {

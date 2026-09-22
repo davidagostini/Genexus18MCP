@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using Artech.Architecture.Common.Helpers;
 using Artech.Architecture.Common.Objects;
+using Artech.Architecture.Common.Services;
 using GxMcp.Worker.Models;
 using Newtonsoft.Json.Linq;
 
@@ -22,7 +23,8 @@ namespace GxMcp.Worker.Services
     /// active. freeze/branch/set_active/revert mutate the KB's version tree via
     /// the same code path the IDE's Version menu uses.
     /// changed_objects compares the active Design model with a frozen model snapshot
-    /// through the SDK's KBModelVersionObjects surface; it never queries internal tables.
+    /// through the SDK's version-model surfaces and IComparerService content checks;
+    /// it never queries internal tables.
     ///
     /// See docs/sdk-probe/INDEX.md (KBVersionHelper / KBVersion) for the
     /// reflected surface this was built against.
@@ -125,13 +127,14 @@ namespace GxMcp.Worker.Services
                 if (design == null || design.Objects == null)
                     return ChangedObjectsNotSupported();
 
-                IEnumerable<KBObject> frozenObjects = TryGetFrozenObjects(design, frozen);
-                if (frozenObjects == null)
+                FrozenObjectSnapshot frozenSnapshot = TryGetFrozenObjects(design, frozen);
+                if (frozenSnapshot?.Objects == null)
                     return ChangedObjectsNotSupported();
 
-                var baselineByIdentity = BuildObjectMap(frozenObjects, out int baselineMetadataExcluded);
+                var baselineByIdentity = BuildObjectMap(frozenSnapshot.Objects, out int baselineMetadataExcluded);
                 var changes = new List<JObject>();
                 int designMetadataExcluded = 0;
+                IComparerService comparer = null;
                 var seenDesign = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (KBObject current in design.Objects.GetAll() ?? Enumerable.Empty<KBObject>())
                 {
@@ -146,7 +149,9 @@ namespace GxMcp.Worker.Services
                     string changeType;
                     if (!baselineByIdentity.TryGetValue(identity, out var previous))
                         changeType = "NEW";
-                    else if (!string.Equals(ObjectRevision(previous), ObjectRevision(current), StringComparison.Ordinal))
+                    else if (!TryCompareContent(ref comparer, previous, current, out bool changed))
+                        return ChangedObjectsNotSupported();
+                    else if (changed)
                         changeType = "CHANGED";
                     else
                         continue;
@@ -168,7 +173,7 @@ namespace GxMcp.Worker.Services
                     ["fromVersion"] = frozen.Name,
                     ["fromVersionFrozen"] = true,
                     ["activeModel"] = "Design",
-                    ["changeDetection"] = "sdk:KBModelVersionObjects+KBObject.LastUpdate",
+                    ["changeDetection"] = "sdk:KBObject.LastUpdate(candidate)+IComparerService.AreEqualInContent",
                     ["items"] = new JArray(page),
                     ["offset"] = offset,
                     ["limit"] = limit,
@@ -177,7 +182,8 @@ namespace GxMcp.Worker.Services
                     ["hasMore"] = nextOffset < total,
                     ["nextOffset"] = nextOffset < total ? nextOffset : (JToken)null,
                     ["metadataExcluded"] = baselineMetadataExcluded + designMetadataExcluded,
-                    ["source"] = "sdk:KBModelVersionObjects"
+                    ["baselineSource"] = frozenSnapshot.Source,
+                    ["source"] = frozenSnapshot.Source
                 };
                 return McpResponse.Ok(code: "ChangedObjectsListed", result: result);
             }
@@ -356,13 +362,23 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        private static IEnumerable<KBObject> TryGetFrozenObjects(KBModel design, KBVersion version)
+        private sealed class FrozenObjectSnapshot
+        {
+            public IEnumerable<KBObject> Objects { get; set; }
+            public string Source { get; set; }
+        }
+
+        private static FrozenObjectSnapshot TryGetFrozenObjects(KBModel design, KBVersion version)
         {
             try
             {
                 KBModel versionModel = version?.Model;
                 if (versionModel?.Objects != null)
-                    return versionModel.Objects.GetAll();
+                    return new FrozenObjectSnapshot
+                    {
+                        Objects = versionModel.Objects.GetAll(),
+                        Source = "sdk:KBVersion.Model"
+                    };
             }
             catch (Exception ex)
             {
@@ -377,7 +393,11 @@ namespace GxMcp.Worker.Services
                 MethodInfo getAll = type?.GetMethod("GetAll", BindingFlags.Public | BindingFlags.Instance);
                 if (ctor == null || getAll == null) return null;
                 object view = ctor.Invoke(new object[] { design, version.LastUpdate });
-                return (getAll.Invoke(view, null) as IEnumerable)?.Cast<object>().OfType<KBObject>().ToArray();
+                return new FrozenObjectSnapshot
+                {
+                    Objects = (getAll.Invoke(view, null) as IEnumerable)?.Cast<object>().OfType<KBObject>().ToArray(),
+                    Source = "sdk:KBModelVersionObjects"
+                };
             }
             catch (Exception ex)
             {
@@ -439,10 +459,39 @@ namespace GxMcp.Worker.Services
             return null;
         }
 
-        private static string ObjectRevision(KBObject obj)
+        internal static bool IsContentCandidate(DateTime baselineLastUpdate, DateTime currentLastUpdate)
         {
-            try { return WriteService.ComputeVersionToken(obj) ?? string.Empty; }
-            catch { return string.Empty; }
+            // When either timestamp is unavailable, compare content rather than
+            // reintroducing the old token-only false-positive/false-negative split.
+            if (baselineLastUpdate == DateTime.MinValue || currentLastUpdate == DateTime.MinValue)
+                return true;
+            return currentLastUpdate > baselineLastUpdate;
+        }
+
+        private static bool TryCompareContent(
+            ref IComparerService comparer,
+            KBObject baseline,
+            KBObject current,
+            out bool changed)
+        {
+            changed = false;
+            if (!IsContentCandidate(SafeDate(() => baseline.LastUpdate), SafeDate(() => current.LastUpdate)))
+                return true;
+
+            comparer = comparer ?? GxMcp.Worker.Helpers.SdkServiceResolver.Resolve<IComparerService>();
+            if (comparer == null)
+                return false;
+
+            try
+            {
+                changed = !comparer.AreEqualInContent(baseline, current, CompareObjectOptions.Default);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                GxMcp.Worker.Helpers.Logger.Debug("[KB-VERSION-DELTA] Content comparison unavailable: " + ex.Message);
+                return false;
+            }
         }
 
         private static string ParentPath(KBObject obj)
@@ -469,7 +518,7 @@ namespace GxMcp.Worker.Services
             return McpResponse.Err(
                 code: "ChangedObjectsNotSupported",
                 message: "This GeneXus SDK worker cannot expose a read-only Design-versus-frozen object inventory.",
-                hint: "Use genexus_kb_version action=list to inspect versions; SQL/internal model tables are not part of the MCP contract.");
+                hint: "The inventory requires a frozen SDK model and IComparerService.AreEqualInContent; SQL/internal model tables are not part of the MCP contract.");
         }
 
         private static bool IsFrozen(KBVersion version)

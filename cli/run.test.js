@@ -30,7 +30,7 @@ const {
     switchActiveKb,
     patchClientConfig
 } = require('./lib/config');
-const { handleInit, resolveMcpSmokeTarget } = require('./commands/axi');
+const { handleInit, resolveMcpSmokeTarget, buildMcpSmokeCommand } = require('./commands/axi');
 
 const cliPath = path.join(__dirname, 'run.js');
 const testGxPath = fs.mkdtempSync(path.join(os.tmpdir(), 'genexus-mcp-gx-'));
@@ -1493,6 +1493,13 @@ test('doctor marks HTTP smoke not applicable for stdio-isolated runtime', () => 
     } finally {
         removeTempPath(tempRoot, { recursive: true, force: true });
     }
+});
+
+test('doctor MCP smoke uses the PowerShell 7 host', () => {
+    const command = buildMcpSmokeCommand(path.join('repo', 'scripts', 'mcp_smoke.ps1'), 'http://127.0.0.1:5000/mcp');
+    assert.equal(command.shell, 'pwsh');
+    assert.deepEqual(command.args.slice(0, 3), ['-NoProfile', '-ExecutionPolicy', 'Bypass']);
+    assert.ok(command.args.some((arg) => arg.endsWith('mcp_smoke.ps1')));
 });
 
 test('doctor reports a KB and SDK major mismatch', () => {

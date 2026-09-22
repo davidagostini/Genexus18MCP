@@ -88,6 +88,8 @@ namespace GxMcp.Gateway.Routers
                         target = args?["name"]?.ToString(),
                         varName = args?["varName"]?.ToString(),
                         typeName = args?["typeName"]?.ToString(),
+                        newTypeName = args?["newTypeName"]?.ToString(),
+                        dataType = args?["dataType"]?.ToString(),
                         basedOn = args?["basedOn"]?.ToString(),
                         objectType = args?["objectType"]?.ToString(),
                         objectName = args?["objectName"]?.ToString(),
@@ -477,6 +479,9 @@ namespace GxMcp.Gateway.Routers
         // Creation umbrella dispatcher. Replaces _create_object/_create_popup/_sd_panel/_save_as/_forge/_apply_template.
         private static object? ConvertCreateUmbrella(JObject? args)
         {
+            args = args == null ? new JObject() : (JObject)args.DeepClone();
+            if (args["type"] == null && args["objectType"] != null)
+                args["type"] = args["objectType"]!.DeepClone();
             string? action = args?["action"]?.ToString();
             string? name = args?["name"]?.ToString();
             string? type = args?["type"]?.ToString();

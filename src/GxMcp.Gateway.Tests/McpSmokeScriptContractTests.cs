@@ -28,6 +28,7 @@ namespace GxMcp.Gateway.Tests
         private static bool IsWindows =>
             OperatingSystem.IsWindows();
 
+
         private static string FindRepoRoot()
         {
             // Walk up from the test assembly location until we find .git or CHANGELOG.md.
@@ -114,11 +115,17 @@ namespace GxMcp.Gateway.Tests
                     // it for diagnostics if startup fails.
                     proc.OutputDataReceived += (_, e) =>
                     {
-                        if (e.Data != null) gatewayOutput.AppendLine(e.Data);
+                        if (e.Data != null)
+                        {
+                            lock (gatewayOutput) gatewayOutput.AppendLine(e.Data);
+                        }
                     };
                     proc.ErrorDataReceived += (_, e) =>
                     {
-                        if (e.Data != null) gatewayError.AppendLine(e.Data);
+                        if (e.Data != null)
+                        {
+                            lock (gatewayError) gatewayError.AppendLine(e.Data);
+                        }
                     };
                     bool started;
                     try
@@ -151,7 +158,7 @@ namespace GxMcp.Gateway.Tests
                     // or loosens the script below the gateway's requirements — this fails.
                     var psi = new ProcessStartInfo
                     {
-                        FileName = "powershell",
+                        FileName = McpSmokeDiagnostics.PowerShellExecutable,
                         Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -BaseUrl \"http://127.0.0.1:{port}/mcp\"",
                         UseShellExecute = false,
                         CreateNoWindow = true,
@@ -172,7 +179,10 @@ namespace GxMcp.Gateway.Tests
                     Assert.True(smokeExited && smoke.ExitCode == 0,
                         "mcp_smoke.ps1 FAILED against a healthy gateway — first-party diagnostic " +
                         "script has drifted from the gateway's protocol contract.\n" +
-                        "--- stdout ---\n" + stdout + "\n--- stderr ---\n" + stderr);
+                        $"smokeExited={smokeExited}, smokeExitCode={(smokeExited ? smoke.ExitCode.ToString() : "unknown")}\n" +
+                        "--- smoke host ---\n" + McpSmokeDiagnostics.GetPowerShellDiagnostics() + "\n" +
+                        "--- stdout ---\n" + stdout + "\n--- stderr ---\n" + stderr + "\n" +
+                        McpSmokeDiagnostics.BuildGatewayDiagnostics(proc, gatewayOutput, gatewayError));
                     Assert.Contains("[SMOKE] PASS", stdout);
                     return;
                 }
@@ -195,6 +205,7 @@ namespace GxMcp.Gateway.Tests
                 "Gateway did not start listening after " + maxStartupAttempts + " attempts.\n" +
                 string.Join("\n", startupFailures));
         }
+
 
         private static int GetFreePort()
         {

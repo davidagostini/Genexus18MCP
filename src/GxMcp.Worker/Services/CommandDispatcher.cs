@@ -1948,7 +1948,9 @@ namespace GxMcp.Worker.Services
                 var modResp = _writeService.ModifyVariable(
                     target,
                     args?["varName"]?.ToString(),
-                    args?["typeName"]?.ToString(),
+                    args?["newTypeName"]?.ToString()
+                        ?? args?["typeName"]?.ToString()
+                        ?? args?["dataType"]?.ToString(),
                     args?["basedOn"]?.ToString(),
                     varDryRun,
                     args?["length"]?.ToObject<int?>(),

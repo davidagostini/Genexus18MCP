@@ -454,6 +454,13 @@ function resolveMcpSmokeTarget(cwd) {
     return { applicable: true, status: null, detail: null, baseUrl: `http://${host}:${port}/mcp` };
 }
 
+function buildMcpSmokeCommand(scriptPath, baseUrl) {
+    return {
+        shell: 'pwsh',
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-BaseUrl', baseUrl]
+    };
+}
+
 async function runMcpSmokeProbe(cwd) {
     const scriptPath = path.join(__dirname, '..', '..', 'scripts', 'mcp_smoke.ps1');
     if (!fs.existsSync(scriptPath)) {
@@ -465,10 +472,7 @@ async function runMcpSmokeProbe(cwd) {
         return { status: target.status, detail: target.detail };
     }
     const baseUrl = target.baseUrl;
-    const shell = process.platform === 'win32' ? 'powershell' : 'pwsh';
-    const args = process.platform === 'win32'
-        ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-BaseUrl', baseUrl]
-        : ['-NoProfile', '-File', scriptPath, '-BaseUrl', baseUrl];
+    const { shell, args } = buildMcpSmokeCommand(scriptPath, baseUrl);
 
     return await new Promise((resolve) => {
         let stdout = '';
@@ -3053,5 +3057,6 @@ module.exports = {
     usageEnvelope,
     operationalErrorEnvelope,
     resolveMcpSmokeTarget,
+    buildMcpSmokeCommand,
     commandHelpMap
 };

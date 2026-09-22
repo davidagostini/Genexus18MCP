@@ -175,7 +175,7 @@ namespace GxMcp.Gateway
                 "- `action` — `add`, `delete`, or `modify`\n" +
                 "- `name` — object that owns the variable\n" +
                 "- `varName` — variable name, including `&` when that is how the KB stores it\n" +
-                "- `typeName` — required for `add` and `modify`\n\n" +
+                "- `typeName` or `newTypeName` — replacement type for `add`/`modify` (`dataType` is also accepted as a legacy alias)\n\n" +
                 "## Optional\n" +
                 "- `basedOn` — domain name for compatible typed variables\n" +
                 "- `async: true` returns immediately with `operationId` / `job_id`; poll `genexus_lifecycle action=status|result target=op:<id>` for completion.\n\n" +
@@ -184,7 +184,7 @@ namespace GxMcp.Gateway
                 "- `modify` preserves the variable name and description while changing the type atomically.\n\n" +
                 "## Examples\n" +
                 "- `{ action: 'add', name: 'InvoiceProc', varName: '&Total', typeName: 'Numeric(10.2)' }`\n" +
-                "- `{ action: 'modify', name: 'InvoiceProc', varName: '&State', typeName: 'Character(20)', async: true }`\n" +
+                "- `{ action: 'modify', name: 'InvoiceProc', varName: '&State', newTypeName: 'Character(20)', async: true }`\n" +
                 "- `{ action: 'delete', name: 'InvoiceProc', varName: '&ScratchFlag' }`\n",
 
             ["genexus_read"] =
@@ -253,7 +253,7 @@ namespace GxMcp.Gateway
 
             ["genexus_create"] =
                 "# genexus_create\n\n" +
-                "Create a new empty GeneXus object in the active KB (`action: object`, the default). The tool covers every KBObject the IDE can create — both objects with a typed wrapper (Transaction, Procedure, WebPanel, SDT, DataProvider, DataSelector, Domain, Attribute, Table, Index, ExternalObject, Theme, Image, Menu, Menubar, Stencil, UserControl, WorkPanel, Report, API, URLRewrite, MiniApp, SuperApp, DesignSystem, ColorPalette, OfflineDatabase, DataView, Group, Language) and Guid-only types (SDPanel, Dashboard, Query, QueryDashboard, WorkflowDiagram, ConversationalFlows, TestSuite, ThemeClass, ThemeColor, ThemeTransformation, DesignSystemClass, WorkWithDevices, WorkWithWeb, WikiPageKBObject, TranslationMessage, DataStoreCategory, GeneratorCategory, DeploymentUnitCategory).\n\n" +
+                "Create a new empty GeneXus object in the active KB (`action: object`, the default). The action may be omitted when the payload contains `name` + `type`/`objectType`; source/rules/variables/parms infer `object_atomic`. The tool covers every KBObject the IDE can create — both objects with a typed wrapper (Transaction, Procedure, WebPanel, SDT, DataProvider, DataSelector, Domain, Attribute, Table, Index, ExternalObject, Theme, Image, Menu, Menubar, Stencil, UserControl, WorkPanel, Report, API, URLRewrite, MiniApp, SuperApp, DesignSystem, ColorPalette, OfflineDatabase, DataView, Group, Language) and Guid-only types (SDPanel, Dashboard, Query, QueryDashboard, WorkflowDiagram, ConversationalFlows, TestSuite, ThemeClass, ThemeColor, ThemeTransformation, DesignSystemClass, WorkWithDevices, WorkWithWeb, WikiPageKBObject, TranslationMessage, DataStoreCategory, GeneratorCategory, DeploymentUnitCategory).\n\n" +
                 "Aliases accepted: `StructuredDataType`→SDT, `BusinessProcessDiagram`/`BPD`→WorkflowDiagram, `PanelForSD`→SDPanel.\n\n" +
                 "## Defaults that get seeded\n" +
                 "- `Transaction` — gets a default `<Name>Id : Numeric(4) [Key]` attribute so the SDK accepts the empty save; pass `firstItem`/`firstItemType` to choose the initial key.\n" +
@@ -407,7 +407,7 @@ namespace GxMcp.Gateway
                 "Manage KB model versions and development branches via the SDK's KBVersionHelper. `changed_objects` is a read-only Design-versus-frozen inventory and never uses SQL/internal tables.\n\n" +
                 "## Actions\n" +
                 "- `list` — enumerate all versions and branches in the KB version tree.\n" +
-                "- `changed_objects` — inventory NEW/CHANGED named objects in the active Design model against a frozen `fromVersion`; omit `fromVersion` to use the latest frozen version. Results are stable, paginated with `offset`/`limit`, and include GUID/entity-key identity when available. This is not the same as `genexus_list_objects since=`; it is the XPZ/Parte N inventory use case. If the installed SDK cannot expose the read-only model snapshot, the action returns stable `ChangedObjectsNotSupported` rather than falling back to SQL.\n" +
+                "- `changed_objects` — inventory NEW/CHANGED named objects in the active Design model against a frozen `fromVersion`; omit `fromVersion` to use the latest frozen version. Results are stable, paginated with `offset`/`limit`, include GUID/entity-key identity when available, and select candidates by `KBObject.LastUpdate` before confirming content with `IComparerService.AreEqualInContent` (the SDK Compare/IDE Compare family). The response exposes `baselineSource` and `changeDetection`; it does not reuse the optimistic write token or claim that `genexus_compare` compares Design against frozen. This is not the same as `genexus_list_objects since=`; it is the XPZ/Parte N inventory use case. If the installed SDK cannot expose the frozen model or content comparer, the action returns stable `ChangedObjectsNotSupported` rather than falling back to SQL.\n" +
                 "- `freeze` — freeze current version into an immutable baseline (`name`, `description`, `parentVersion`).\n" +
                 "- `branch` — create a new parallel branch from a parent version (`name`, `includeEnvironments`).\n" +
                 "- `set_active` — switch the active development version/branch (`targetVersion`, `autoUpdate`).\n" +
