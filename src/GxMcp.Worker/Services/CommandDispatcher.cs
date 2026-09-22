@@ -1918,7 +1918,8 @@ namespace GxMcp.Worker.Services
                     args?["length"]?.ToObject<int?>(),
                     args?["decimals"]?.ToObject<int?>(),
                     args?["collection"]?.ToObject<bool?>(),
-                    args?["basedOn"]?.ToString());
+                    args?["basedOn"]?.ToString(),
+                    args?["basedOnAttribute"]?.ToString());
                 return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(addResp, target, args, "Variables");
             }
             if (action == "DeleteVariable")
@@ -1955,7 +1956,8 @@ namespace GxMcp.Worker.Services
                     varDryRun,
                     args?["length"]?.ToObject<int?>(),
                     args?["decimals"]?.ToObject<int?>(),
-                    args?["collection"]?.ToObject<bool?>());
+                    args?["collection"]?.ToObject<bool?>(),
+                    args?["basedOnAttribute"]?.ToString());
                 return _saveSpecifyOrchestrator.MaybeValidateAfterWrite(modResp, target, args, "Variables");
             }
             if (action == "ValidatePayload")

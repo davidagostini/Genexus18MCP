@@ -91,6 +91,7 @@ namespace GxMcp.Gateway.Routers
                         newTypeName = args?["newTypeName"]?.ToString(),
                         dataType = args?["dataType"]?.ToString(),
                         basedOn = args?["basedOn"]?.ToString(),
+                        basedOnAttribute = args?["basedOnAttribute"]?.ToString(),
                         objectType = args?["objectType"]?.ToString(),
                         objectName = args?["objectName"]?.ToString(),
                         objectModule = args?["module"]?.ToString(),

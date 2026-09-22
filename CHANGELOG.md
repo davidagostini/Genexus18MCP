@@ -4,9 +4,17 @@
 
 ### Added
 
+- `genexus_variable` now supports attribute-based variables: `basedOnAttribute` (or `typeName`/`basedOn` as `Attribute:<name>`) binds the live KB Attribute by native SDK identity, preserving `VarBasedOn`/`DataTypeString` and picture/semantics. Untyped `add` inherits a same-named attribute with its binding. Reads surface the binding (`genexus_read part=Variables` emits `Attribute:<name>`; `genexus_inspect include=["variables"]` exposes `basedOn`/`basedOnAttribute`/`basedOnDomain`). `object_atomic` `variables[]` accepts `basedOnAttribute` too. Tool-schema budget 31800 → 32000 for the new parameter (measured ~31874). ([#281](https://github.com/lennix1337/Genexus18MCP/issues/281))
+
 - `genexus_module` install/install_builtin/update now accept `dryRun=true` for a read-only preview reporting package identity, dependencies with installed status, and affected modules without calling the SDK install; previews never contact module servers or save. Successful installs verify persistence with an independent KB readback and report `verified`/`rereadConfirmed`, so a repeated install of the same verified package is a safe no-op at the KB level. Tool-schema budget 31700 → 31800 for the new preview parameter (measured ~31735). ([#274](https://github.com/lennix1337/Genexus18MCP/issues/274))
 
 ### Fixed
+
+- `genexus_variable modify` now refuses to silently flatten an attribute-based variable (`Attribute:X`, picture `999…` vs `ZZZ…`) into a primitive/Domain/SDT with `AttributeBindingWouldBeLost` instead of replacing the binding; pass `basedOnAttribute` to preserve or retarget it. Attribute writes verify persistence with an independent KB readback (`VariableTypeNotPersisted` on divergence) and roll back on failure, mirroring the Domain path. ([#281](https://github.com/lennix1337/Genexus18MCP/issues/281))
+
+- `genexus_variable` Domain binding is now conflict-free and homonym-safe: binding a Domain clears any stale `AttributeBasedOn` instead of persisting two conflicting bindings, rollback restores the live `DomainBasedOn` reference in addition to `DomainKey` (a key-only restore could itself flatten the read surface), and the post-save check compares the `DomainKey` entity identity when both keys are available so a homonymous Domain from another Module cannot pass as the requested one. ([#281](https://github.com/lennix1337/Genexus18MCP/issues/281))
+
+- `genexus_variable` SDT/Business Component bindings now fail closed end to end: the binders clear stale Domain/Attribute bindings (only after the native reference resolves, so a resolution failure leaves an existing variable untouched), `BindVariableToSdt` reports construction failures instead of logging and continuing half-bound, and every add/batch/modify verifies the persisted GUID + kind with an independent KB readback (`VariableTypeNotPersisted` on divergence, with rollback on modify). ([#281](https://github.com/lennix1337/Genexus18MCP/issues/281))
 
 - `genexus_module` install failures now report the SDK stage, exception chain, and independently observed KB state (module presence/count) with actionable recovery instead of only the raw SDK message; missing or invalid `.opc` packages fail before any SDK call and no rollback is claimed. ([#274](https://github.com/lennix1337/Genexus18MCP/issues/274))
 

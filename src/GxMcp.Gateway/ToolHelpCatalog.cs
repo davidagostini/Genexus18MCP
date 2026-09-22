@@ -177,11 +177,15 @@ namespace GxMcp.Gateway
                 "- `varName` — variable name, including `&` when that is how the KB stores it\n" +
                 "- `typeName` or `newTypeName` — replacement type for `add`/`modify` (`dataType` is also accepted as a legacy alias)\n\n" +
                 "## Optional\n" +
-                "- `basedOn` — domain name for compatible typed variables\n" +
+                "- `basedOn` — domain name for compatible typed variables (`Attribute:<name>` also binds an attribute)\n" +
+                "- `basedOnAttribute` — attribute name (or `Attribute:<name>`) binding the variable by native SDK identity, preserving picture/semantics (e.g. `9999999999` vs `ZZZZZZZZZ9`)\n" +
+                "- `typeName: 'Attribute:<name>'` — same attribute binding via the type slot; `variables[]` items accept `basedOn`/`basedOnAttribute` too\n" +
                 "- `async: true` returns immediately with `operationId` / `job_id`; poll `genexus_lifecycle action=status|result target=op:<id>` for completion.\n\n" +
                 "## Notes\n" +
                 "- GAM / WWP+ framework-managed variables are protected and return a refusal instead of mutating them.\n" +
-                "- `modify` preserves the variable name and description while changing the type atomically.\n\n" +
+                "- `modify` preserves the variable name and description while changing the type atomically.\n" +
+                "- `modify` refuses to silently drop an `Attribute:` binding (`AttributeBindingWouldBeLost`); pass `basedOnAttribute` to preserve or retarget it.\n" +
+                "- Untyped `add` inherits a same-named attribute *with its binding*; reads (`genexus_read part=Variables`, `genexus_inspect include=[\"variables\"]`) surface `basedOn`/`basedOnAttribute`.\n\n" +
                 "## Examples\n" +
                 "- `{ action: 'add', name: 'InvoiceProc', varName: '&Total', typeName: 'Numeric(10.2)' }`\n" +
                 "- `{ action: 'modify', name: 'InvoiceProc', varName: '&State', newTypeName: 'Character(20)', async: true }`\n" +

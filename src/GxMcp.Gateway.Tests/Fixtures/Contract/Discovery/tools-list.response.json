@@ -940,6 +940,9 @@
                 "basedOn": {
                   "type": "string"
                 },
+                "basedOnAttribute": {
+                  "type": "string"
+                },
                 "collection": {
                   "type": "boolean"
                 },
@@ -4897,7 +4900,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Variables CRUD. add accepts varName or variables[] batch; modify changes type atomically. basedOn binds a Domain by native SDK identity. objectType=BusinessComponent with objectName+module binds a modular BC by EntityKey/GUID and verifies it after save. length/decimals override size; collection=true declares a collection; untyped add inherits a same-named attribute. dryRun validates and previews without mutation; async returns an operationId.",
+      "description": "Variables CRUD. add accepts varName or variables[] batch; modify changes type atomically. basedOn binds a Domain; basedOnAttribute (or typeName Attribute:<name>) binds an Attribute by native SDK identity preserving picture/semantics. objectType=BusinessComponent with objectName+module binds a modular BC by EntityKey/GUID and verifies it after save. length/decimals override size; collection=true declares a collection; untyped add inherits a same-named attribute with its binding. modify refuses to silently drop an Attribute binding (AttributeBindingWouldBeLost); reads surface basedOn. dryRun validates and previews without mutation; async returns an operationId.",
       "inputSchema": {
         "examples": [
           {
@@ -4952,7 +4955,11 @@
             "type": "boolean"
           },
           "basedOn": {
-            "description": "modify optional: Domain.",
+            "description": "Domain name, or Attribute:<name> for an attribute binding (prefer basedOnAttribute).",
+            "type": "string"
+          },
+          "basedOnAttribute": {
+            "description": "Attribute name (or Attribute:<name>) to bind; preserves picture/semantics.",
             "type": "string"
           },
           "collection": {
@@ -5016,7 +5023,7 @@
             "type": "boolean"
           },
           "typeName": {
-            "description": "Primitive (Character/Numeric/VarChar/Date/...), SDT/BC/Domain name, or WebSession. VarChar keeps VARCHAR semantics.",
+            "description": "Primitive (Character/Numeric/VarChar/Date/...), SDT/BC/Domain name, Attribute:<name>, or WebSession. VarChar keeps VARCHAR semantics.",
             "type": "string"
           },
           "validationMode": {
@@ -5031,11 +5038,15 @@
             "type": "string"
           },
           "variables": {
-            "description": "Batch add only: one object per variable — {varName, typeName?, length?, decimals?, collection?}. Added before a single save.",
+            "description": "Batch add only: one object per variable — {varName, typeName?, basedOn?, basedOnAttribute?, length?, decimals?, collection?}. Added before a single save.",
             "items": {
               "properties": {
                 "basedOn": {
                   "description": "Domain name; native SDK reference.",
+                  "type": "string"
+                },
+                "basedOnAttribute": {
+                  "description": "Attribute name (or Attribute:<name>); preserves picture/semantics.",
                   "type": "string"
                 },
                 "collection": {

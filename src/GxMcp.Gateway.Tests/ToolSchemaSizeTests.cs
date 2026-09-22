@@ -207,7 +207,12 @@ namespace GxMcp.Gateway.Tests
             //   2026-09-22 (issue #274 module install preview): 31700 → 31800 for
             //   the genexus_module dryRun preview param on install/install_builtin/update
             //   plus discoverability copy in the tool description. Measured ~31735 tokens.
-            Assert.True(approxTokens < 31800, $"tool_definitions.json is ~{approxTokens} tokens; budget 31800.");
+            //   2026-09-22 (issue #281 attribute-based variables): 31800 → 32000 for
+            //   the genexus_variable basedOnAttribute param (top-level + variables[]
+            //   items), Attribute:<name> typeName/basedOn forms, the matching
+            //   object_atomic variables[] field, and read/write discoverability
+            //   copy. Measured ~31874 tokens.
+            Assert.True(approxTokens < 32000, $"tool_definitions.json is ~{approxTokens} tokens; budget 32000.");
         }
     }
 }
