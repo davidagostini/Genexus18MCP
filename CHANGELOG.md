@@ -26,6 +26,11 @@
 
 ### Internal
 
+- Post-merge issue marking is now explicit in the required workflow: after pushing a fix without a release, mark each issue via `scripts/release-issues.ps1 -Action MarkFixedPendingRelease` (the release closes labeled issues on publish) instead of posting comments.
+- `scripts/validate-tool-contracts.py` now enforces the one-tool-per-line layout of `tool_definitions.json`, so a whole-file reformat fails the gate instead of burying the real schema change in diff noise.
+
+### Internal
+
 - Removed the 12 unreachable legacy `Convert*Umbrella`/`Convert*ToolCall` duplicates from `OperationsRouter` (~970 lines); the typed domain routers (`IoRouter`, `CreateRouter`, …) claim that traffic first, and the leftover copies silently dropped forwarded fields (the `import_part` `dryRun` production-write class). `PreviewForwardingTests` now routes every `DryRunCapableActions` entry and fails when a preview flag does not reach the worker envelope. Replaced a raw NUL byte inside a `WriteService` string literal with the `\x00` escape (runtime-identical; the control byte made file readers classify the source as binary). Added `scripts/mcp-probe.ps1` for single-tool live probes against a scratch gateway, with pointers in the live-validation playbook.
 
 ## v3.7.2 - 2026-09-22

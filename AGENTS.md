@@ -221,6 +221,10 @@ legacy `supportedMajor` field remains the catalog-primary compatibility alias.
   scope, logic, edge cases, compatibility, security, tests, and docs.
 - Do not commit, push, merge, release, deploy, or close an issue unless the
   user explicitly asks. Issue closure requires a released fix and release link.
+- After pushing a merged fix that is not yet released, mark each fixed issue
+  with `pwsh -NoProfile -File scripts/release-issues.ps1 -Action MarkFixedPendingRelease -Issue <N>`;
+  the release entrypoint closes labeled issues on publish. Do not post issue
+  comments unless the user asks.
 
 ## MCP update and harness synchronization
 

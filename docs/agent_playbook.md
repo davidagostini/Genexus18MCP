@@ -141,8 +141,9 @@ fixture contract live in [`live-kb-test-harness.md`](live-kb-test-harness.md).
 - Git Bash passes `taskkill` switches as `//PID` and `//F`.
 - There is no `head`/`tail` on Windows shells; use `Select-Object -First/-Last`
   instead of piping through Unix names.
-- Multiline `python3 -c` scripts come back empty without an error — always put
-  local Python in a script file (e.g. `scratchpad/`) instead of `-c`.
+- `python3 -c` scripts come back empty without an error — multiline or with
+  nested quoting alike — always put local Python in a script file (e.g.
+  `scratchpad/`) instead of `-c`.
 - `fc` resolves to `Format-Custom` in PowerShell; call `fc.exe` for byte compares.
 - Long-lived children can keep the shell pipe open after a successful spawn;
   treat the timeout as expected and verify the process/port separately.
