@@ -55,6 +55,48 @@ namespace GxMcp.Worker.Tests
             Assert.True(JToken.DeepEquals(original, args));
         }
 
+        // Issue #260: an existing object without a WorkWithPlus instance is not "not found";
+        // the error names the other pattern instances it has and routes to genexus_read.
+        [Fact]
+        public void WwpInstanceNotFound_ListsOtherPatternInstances()
+        {
+            var registry = new PatternRegistry(new[]
+            {
+                PatternRegistry.ParseManifest(
+                    "<Pattern Id=\"589d4b49-e3f9-4d49-aaf4-fad023028eb1\" Name=\"K2BEntityServices\">" +
+                    "<Definition><InstanceName>K2BEntityServices{0}</InstanceName>" +
+                    "<ParentObjects><ParentObject Type=\"Transaction\" /></ParentObjects></Definition></Pattern>", "es.Pattern")
+            });
+            var detected = PatternAnalysisService.MatchPatternInstances(new[]
+            {
+                new PatternInstanceCandidate("K2BEntityServicesCustomer", "K2BEntityServices", new Guid("589d4b49-e3f9-4d49-aaf4-fad023028eb1")),
+                new PatternInstanceCandidate("CustomerHelper", "Procedure", Guid.Empty)
+            }, registry);
+
+            var env = JObject.Parse(WwpActionService.BuildWwpInstanceNotFound("Customer", "Customer", "Transaction", detected));
+
+            Assert.Equal("WWPInstanceNotFound", env["error"]?["code"]?.ToString());
+            Assert.Equal("Customer", env["objectName"]?.ToString());
+            Assert.Equal("Transaction", env["objectType"]?.ToString());
+            var patterns = (JArray)env["detectedPatterns"]!;
+            Assert.Single(patterns);
+            Assert.Equal("K2BEntityServicesCustomer", patterns[0]["name"]?.ToString());
+            Assert.Equal("K2BEntityServices", patterns[0]["pattern"]?.ToString());
+            Assert.Contains("genexus_read", env["error"]?["hint"]?.ToString());
+            var next = env["error"]?["nextSteps"]?[0];
+            Assert.Equal("genexus_read", next?["tool"]?.ToString());
+            Assert.Equal("K2BEntityServicesCustomer", next?["args"]?["name"]?.ToString());
+        }
+
+        [Fact]
+        public void WwpInstanceNotFound_NoPatternInstances_KeepsCodeWithEmptyList()
+        {
+            var env = JObject.Parse(WwpActionService.BuildWwpInstanceNotFound("Invoice", "Invoice", "Transaction", null));
+
+            Assert.Equal("WWPInstanceNotFound", env["error"]?["code"]?.ToString());
+            Assert.Empty((JArray)env["detectedPatterns"]!);
+        }
+
         [Fact]
         public void MissingEnvelopeAndNameKeepIdentityOnlyResolutionAvailable()
         {
@@ -486,6 +528,34 @@ namespace GxMcp.Worker.Tests
                 dir = dir.Parent;
             }
             throw new FileNotFoundException("Could not locate " + fileName + " starting from " + AppDomain.CurrentDomain.BaseDirectory);
+        }
+        [Fact]
+        public void WwpInstanceNotFound_ParentOfWwpInstance_PointsToTheInstanceInsteadOfEditingIt()
+        {
+            var registry = new PatternRegistry(new PatternManifest[0]);
+            var detected = new[]
+            {
+                new PatternInstanceMatch(new PatternInstanceCandidate("WorkWithPlusCustomer", "WorkWithPlus", Guid.Empty),
+                    registry.FindById(PatternRegistry.WorkWithPlusPatternId))
+            };
+
+            var env = JObject.Parse(WwpActionService.BuildWwpInstanceNotFound("Customer", "Customer", "Transaction", detected));
+
+            Assert.Equal("WWPInstanceNotFound", env["error"]?["code"]?.ToString());
+            Assert.Contains("WorkWithPlusCustomer", env["error"]?["message"]?.ToString());
+            var next = env["error"]?["nextSteps"]?[0];
+            Assert.Equal("genexus_wwp", next?["tool"]?.ToString());
+            Assert.Equal("WorkWithPlusCustomer", next?["args"]?["name"]?.ToString());
+        }
+        [Fact]
+        public void Run_UntypedLookupOnlyExplainsTheError_NeverReachesMutation_ViaConvention()
+        {
+            // Issue #260 review: an untyped homonym must never be edited by genexus_wwp.
+            string source = File.ReadAllText(Path.Combine(TestFixtures.FindRepoRoot(),
+                "src", "GxMcp.Worker", "Services", "WwpActionService.cs"));
+
+            Assert.Contains("return BuildWwpInstanceNotFound(target, existing);", source);
+            Assert.DoesNotContain("requestedObject = _objects.FindObject(\n                        target,\n                        guid:", source.Replace("\r\n", "\n"));
         }
     }
 }

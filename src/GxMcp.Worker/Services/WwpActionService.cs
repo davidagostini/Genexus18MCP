@@ -31,6 +31,61 @@ namespace GxMcp.Worker.Services
         internal static string ResolveTarget(string target, JObject args) =>
             !string.IsNullOrWhiteSpace(target) ? target : (string)args?["name"];
 
+        private string BuildWwpInstanceNotFound(string target, KBObject requestedObject)
+        {
+            IReadOnlyList<PatternInstanceMatch> detected = new PatternInstanceMatch[0];
+            try { detected = _patterns.FindPatternInstances(requestedObject); }
+            catch { /* best-effort: the error stays actionable without the list */ }
+            return BuildWwpInstanceNotFound(target, requestedObject?.Name, requestedObject?.TypeDescriptor?.Name, detected);
+        }
+
+        /// <summary>
+        /// WWPInstanceNotFound for an existing object without an editable WorkWithPlus
+        /// instance. Lists the pattern instances it does have: genexus_wwp only edits
+        /// WorkWithPlus, other patterns go through genexus_read / genexus_edit.
+        /// </summary>
+        internal static string BuildWwpInstanceNotFound(string target, string objectName, string objectType, IReadOnlyList<PatternInstanceMatch> detected)
+        {
+            detected = detected ?? new PatternInstanceMatch[0];
+            var others = detected.Where(m => !m.Pattern.IsWorkWithPlus).ToList();
+            var detectedJson = new JArray(detected.Select(m => new JObject
+            {
+                ["name"] = m.Candidate.Name,
+                ["pattern"] = m.Pattern.Name
+            }));
+
+            var wwp = detected.FirstOrDefault(m => m.Pattern.IsWorkWithPlus);
+            string message = wwp != null
+                ? "'" + objectName + "' is not a WorkWithPlus instance; name its WorkWithPlus instance '" + wwp.Candidate.Name + "'."
+                : others.Count > 0
+                ? "'" + objectName + "' has no editable WorkWithPlus PatternInstance; it has " +
+                  string.Join(", ", others.Select(m => m.Pattern.Name + " instance '" + m.Candidate.Name + "'")) + "."
+                : "No editable WorkWithPlus PatternInstance was resolved for this object.";
+            JArray nextSteps = wwp != null
+                ? new JArray(McpResponse.NextStep("genexus_wwp",
+                    new JObject { ["action"] = "list", ["name"] = wwp.Candidate.Name },
+                    "genexus_wwp edits the WorkWithPlus instance itself."))
+                : others.Count > 0
+                ? new JArray(McpResponse.NextStep("genexus_read",
+                    new JObject { ["name"] = others[0].Candidate.Name, ["part"] = "PatternInstance" },
+                    "Read the " + others[0].Pattern.Name + " instance; genexus_edit part=PatternInstance edits it."))
+                : new JArray(McpResponse.NextStep("genexus_apply_pattern",
+                    new JObject { ["name"] = objectName ?? target, ["pattern"] = "WorkWithPlus", ["mode"] = "diagnose" },
+                    "Check whether WorkWithPlus can be applied to this object."));
+
+            return McpResponse.Err(code: "WWPInstanceNotFound",
+                message: message,
+                hint: "genexus_wwp only handles WorkWithPlus instances. Instances of other patterns are read and edited with genexus_read / genexus_edit part=PatternInstance.",
+                nextSteps: nextSteps,
+                target: target,
+                extra: new JObject
+                {
+                    ["objectName"] = objectName,
+                    ["objectType"] = objectType,
+                    ["detectedPatterns"] = detectedJson
+                });
+        }
+
         public string Run(string target, JObject args)
         {
             target = ResolveTarget(target, args);
@@ -58,15 +113,27 @@ namespace GxMcp.Worker.Services
                         requestedObject = null;
                 }
                 if (requestedObject == null)
+                {
+                    // The typed lookup only sees WorkWithPlus instances. An existing object of
+                    // another type (a parent, or an instance of another pattern) is looked up
+                    // untyped ONLY to explain why it cannot be edited here (issue #260); it never
+                    // reaches the mutation path, so an untyped homonym is still never edited.
+                    var existing = _objects.FindObject(
+                        target,
+                        guid: (string)args?["guid"],
+                        entityKey: (string)args?["entityKey"]);
+                    if (existing != null)
+                        return BuildWwpInstanceNotFound(target, existing);
+                }
+                if (requestedObject == null)
                     return McpResponse.Err(code: "ObjectNotFound", message: "Object not found.", target: target,
                         nextSteps: new JArray(McpResponse.NextStep("genexus_search",
                             new JObject { ["query"] = target }, "Find the WorkWithPlus parent or instance by name.")));
 
-                string xml = _patterns.ReadPatternPartXml(requestedObject, "PatternInstance",
+                string xml = _patterns.ReadPatternPartXml(requestedObject, "PatternInstance", PatternRegistry.WorkWithPlusPatternId,
                     out KBObject instance, out _);
                 if (instance == null || string.IsNullOrWhiteSpace(xml))
-                    return McpResponse.Err(code: "WWPInstanceNotFound",
-                        message: "No editable WorkWithPlus PatternInstance was resolved for this object.", target: target);
+                    return BuildWwpInstanceNotFound(target, requestedObject);
                 string versionToken = WriteService.ComputeContentVersionToken(instance, xml);
                 string expectedVersion = args?["baseVersion"]?.ToString()
                     ?? args?["expectedVersion"]?.ToString()
@@ -79,7 +146,7 @@ namespace GxMcp.Worker.Services
                             ["expectedVersion"] = expectedVersion,
                             ["currentVersion"] = versionToken
                         });
-                _patterns.BuildPatternPartEnvelope(requestedObject, "PatternInstance", xml,
+                _patterns.BuildPatternPartEnvelope(requestedObject, "PatternInstance", xml, PatternRegistry.WorkWithPlusPatternId,
                     out _, out KBObjectPart instancePart);
 
                 string operation = NormalizeOperation(args?["action"]?.ToString());
@@ -150,7 +217,7 @@ namespace GxMcp.Worker.Services
                 }
 
                 KBObject refreshedTarget = _objects.FindObject(target) ?? requestedObject;
-                string persistedXml = _patterns.ReadPatternPartXml(refreshedTarget, "PatternInstance", out KBObject persistedInstance, out _);
+                string persistedXml = _patterns.ReadPatternPartXml(refreshedTarget, "PatternInstance", PatternRegistry.WorkWithPlusPatternId, out KBObject persistedInstance, out _);
                 JObject persisted = string.IsNullOrWhiteSpace(persistedXml)
                     ? new JObject()
                     : Project(XDocument.Parse(persistedXml, LoadOptions.PreserveWhitespace));
@@ -225,7 +292,7 @@ namespace GxMcp.Worker.Services
                 if (!IsSuccess(write)) return result;
 
                 KBObject refreshedTarget = _objects.FindObject(target) ?? fallbackTarget;
-                string persistedXml = _patterns.ReadPatternPartXml(refreshedTarget, "PatternInstance", out _, out _);
+                string persistedXml = _patterns.ReadPatternPartXml(refreshedTarget, "PatternInstance", PatternRegistry.WorkWithPlusPatternId, out _, out _);
                 JObject persisted = string.IsNullOrWhiteSpace(persistedXml)
                     ? new JObject()
                     : Project(XDocument.Parse(persistedXml, LoadOptions.PreserveWhitespace));

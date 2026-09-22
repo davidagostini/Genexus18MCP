@@ -264,6 +264,10 @@
             "pattern": "WorkWithPlus"
           },
           {
+            "name": "Customer",
+            "reapply": true
+          },
+          {
             "mode": "diagnose",
             "name": "Customer",
             "pattern": "WorkWithPlus"
@@ -366,7 +370,7 @@
             "type": "string"
           },
           "pattern": {
-            "description": "Pattern key ('WorkWithPlus') or GUID.",
+            "description": "Installed pattern name or GUID. Required for apply/diagnose; omit with reapply=true to infer from the existing instance.",
             "type": "string"
           },
           "position": {
@@ -411,8 +415,7 @@
           }
         },
         "required": [
-          "name",
-          "pattern"
+          "name"
         ],
         "type": "object"
       },

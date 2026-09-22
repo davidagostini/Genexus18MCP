@@ -264,6 +264,15 @@ namespace GxMcp.Worker.Services
                 if (!TryReadCompleteSource(currentResponse, out JObject readJson, out originalSource, out string readError))
                 {
                     string readCode = TryExtractErrorCode(currentResponse);
+                    var readFailureExtra = new JObject
+                    {
+                        ["readCode"] = readCode,
+                        ["readCompleted"] = false,
+                        ["readError"] = readError
+                    };
+                    // Issue #260: a parent with several pattern instances names them.
+                    var readCandidates = TryExtractErrorField(currentResponse, "candidates");
+                    if (readCandidates != null) readFailureExtra["candidates"] = readCandidates;
                     return Models.McpResponse.Err(
                         // Keep the patch API's stable top-level failure contract while
                         // retaining the more specific read diagnosis for callers that
@@ -276,12 +285,7 @@ namespace GxMcp.Worker.Services
                             args: new JObject { ["name"] = target, ["part"] = partName },
                             why: "Verify the part is accessible and not truncated before patching.")),
                         target: target,
-                        extra: new JObject
-                        {
-                            ["readCode"] = readCode,
-                            ["readCompleted"] = false,
-                            ["readError"] = readError
-                        });
+                        extra: readFailureExtra);
                 }
 
                 snapshotVersion = readJson["versionToken"]?.ToString();
@@ -1598,9 +1602,19 @@ namespace GxMcp.Worker.Services
                 // PatternAnalysisService so patch-mode can read & rewrite pattern XML.
                 if (_patternAnalysisService != null && PatternAnalysisService.IsPatternPart(resolvedPart))
                 {
-                    string patternXml = _patternAnalysisService.ReadPatternPartXmlFresh(obj, resolvedPart, out _, out var resolvedPatternPartName);
+                    string patternXml = _patternAnalysisService.ReadPatternPartXmlFresh(obj, resolvedPart, null, out _, out var resolvedPatternPartName, out JObject patternDiagnostic);
                     if (patternXml == null)
                     {
+                        // Several pattern instances on the target: surface the candidates like
+                        // genexus_read and full-mode genexus_edit do (issue #260).
+                        if (patternDiagnostic?["code"] != null)
+                            return Models.McpResponse.Err(
+                                code: patternDiagnostic["code"].ToString(),
+                                message: patternDiagnostic["message"]?.ToString() ?? "The pattern instance to patch is ambiguous.",
+                                hint: "Name the pattern instance to patch; each candidate is a separate instance.",
+                                target: target,
+                                errorExtra: patternDiagnostic);
+
                         var freshDiagnostic = _objectService.GetLastResolutionDiagnostic();
                         if (string.Equals(freshDiagnostic?["code"]?.ToString(), "FreshReadUnavailable", StringComparison.OrdinalIgnoreCase))
                         {
@@ -1850,6 +1864,19 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 error = ex.Message;
+                return null;
+            }
+        }
+
+        private static JToken TryExtractErrorField(string response, string field)
+        {
+            try
+            {
+                var json = JObject.Parse(response);
+                return json[field] ?? json["error"]?[field];
+            }
+            catch
+            {
                 return null;
             }
         }
