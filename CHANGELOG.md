@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v3.7.2 - 2026-09-22
+
+
+### Tracked issues
+
+- [#265](https://github.com/lennix1337/Genexus18MCP/issues/265) — Full Source save verification can contradict an exact public reread and misreport saved=false
+- [#266](https://github.com/lennix1337/Genexus18MCP/issues/266) — [Perf] Large KBs fully re-index in most new sessions: slot flushes drop the delta sidecar and interrupted rebuilds restart from zero
+- [#270](https://github.com/lennix1337/Genexus18MCP/issues/270) — genexus_create action=object_atomic rejects a valid payload with "Required field 'action' is missing"
+- [#271](https://github.com/lennix1337/Genexus18MCP/issues/271) — [Bug] McpSmokeScript_Succeeds_AgainstLiveGateway: falha possivelmente intermitente no lote paralelo do release-preflight (Windows)
+- [#273](https://github.com/lennix1337/Genexus18MCP/issues/273) — [Bug] changed_objects: CHANGED pós-freeze por token de concorrência, não por conteúdo (vs IDE Compare)
+
+
 ### Added
 
 - `genexus_compare` now returns bounded, per-part unified text diffs for divergent
