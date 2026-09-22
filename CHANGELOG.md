@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- `genexus_module` install/install_builtin/update now accept `dryRun=true` for a read-only preview reporting package identity, dependencies with installed status, and affected modules without calling the SDK install; previews never contact module servers or save. Successful installs verify persistence with an independent KB readback and report `verified`/`rereadConfirmed`, so a repeated install of the same verified package is a safe no-op at the KB level. Tool-schema budget 31700 → 31800 for the new preview parameter (measured ~31735). ([#274](https://github.com/lennix1337/Genexus18MCP/issues/274))
+
+### Fixed
+
+- `genexus_module` install failures now report the SDK stage, exception chain, and independently observed KB state (module presence/count) with actionable recovery instead of only the raw SDK message; missing or invalid `.opc` packages fail before any SDK call and no rollback is claimed. ([#274](https://github.com/lennix1337/Genexus18MCP/issues/274))
+
+- `records_query` no longer suggests a `dataStoreAlias` when the recognized datastore is PostgreSQL, Oracle, or MySQL: the `DataStoreConnectionUnavailable` hint now states that read-only profile aliases support SQL Server only, and the docs declare the limitation explicitly. SQL Server behavior is unchanged. ([#276](https://github.com/lennix1337/Genexus18MCP/issues/276))
+
+- Corrected the `AGENTS.md` Gateway paragraph to cite `GatewayMode: "stdio-isolated"` instead of `Server.TransportMode`, which strict v2 configs reject at parse time; legacy non-strict fallback behavior is unchanged. ([#272](https://github.com/lennix1337/Genexus18MCP/issues/272))
+
 ## v3.7.2 - 2026-09-22
 
 

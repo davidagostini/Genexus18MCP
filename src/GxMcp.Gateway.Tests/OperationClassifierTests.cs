@@ -379,6 +379,29 @@ namespace GxMcp.Gateway.Tests
             Assert.False(OperationClassifier.IsReadOnly("genexus_versioning", new JObject { ["action"] = "undo" }));
         }
 
+        [Theory]
+        [InlineData("install")]
+        [InlineData("install_builtin")]
+        [InlineData("update")]
+        public void ModuleInstallActionsRespectPreviewBoundary(string action)
+        {
+            Assert.True(OperationClassifier.IsReadOnly("genexus_module", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = true
+            }));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_module", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = false
+            }));
+            Assert.False(OperationClassifier.IsMutationCandidate("genexus_module", new JObject
+            {
+                ["action"] = action,
+                ["dryRun"] = true
+            }));
+        }
+
         [Fact]
         public void DocumentedDryRunActions_AreReadOnlyOnlyWhenPreviewing()
         {

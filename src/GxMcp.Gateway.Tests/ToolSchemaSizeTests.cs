@@ -204,7 +204,10 @@ namespace GxMcp.Gateway.Tests
             //   add_user_action operation, container/event contract, and rollback option.
             //   Measured ~31229 tokens.
             // 31500 -> 31700 for explicit journal status/repair actions and preview contract.
-            Assert.True(approxTokens < 31700, $"tool_definitions.json is ~{approxTokens} tokens; budget 31700.");
+            //   2026-09-22 (issue #274 module install preview): 31700 → 31800 for
+            //   the genexus_module dryRun preview param on install/install_builtin/update
+            //   plus discoverability copy in the tool description. Measured ~31735 tokens.
+            Assert.True(approxTokens < 31800, $"tool_definitions.json is ~{approxTokens} tokens; budget 31800.");
         }
     }
 }

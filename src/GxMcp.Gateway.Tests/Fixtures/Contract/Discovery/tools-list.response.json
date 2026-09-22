@@ -3597,7 +3597,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "GeneXus Module Manager over the SDK's IModuleManagerService. action=list (read-only: installed Module KB objects) | install (opcFile=<path to .opc file>, or name[+version] to install a named module) | install_builtin (name=<built-in module>) | update (name+version) | package/publish/restore (module lifecycle) | add_modules_server/search_modules_in_servers (configured module servers).",
+      "description": "GeneXus Module Manager over the SDK's IModuleManagerService. action=list (read-only: installed Module KB objects) | install (opcFile=<path to .opc file>, or name[+version] to install a named module) | install_builtin (name=<built-in module>) | update (name+version) | package/publish/restore (module lifecycle) | add_modules_server/search_modules_in_servers (configured module servers). install/install_builtin/update accept dryRun=true for a read-only preview (package identity, dependencies, affected modules) without calling the SDK install.",
       "inputSchema": {
         "examples": [
           {
@@ -3627,6 +3627,10 @@
           },
           "confirm": {
             "description": "Required for restore/publish/package when the operation changes KB or publishes externally.",
+            "type": "boolean"
+          },
+          "dryRun": {
+            "description": "install/install_builtin/update: when true, returns a read-only preview (package identity, dependencies, affected modules) without calling the SDK install.",
             "type": "boolean"
           },
           "filter": {

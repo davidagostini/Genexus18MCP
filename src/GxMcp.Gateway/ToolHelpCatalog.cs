@@ -564,8 +564,8 @@ namespace GxMcp.Gateway
                 "Inspect and manage modules through the GeneXus Module Manager.\n\n" +
                 "## Actions\n" +
                 "- `list` — read installed Module objects from the SDK, deduplicated by GUID/EntityKey and returned with `parent`, `path`, `qualifiedName`, and description so homonymous namespaces remain distinguishable.\n" +
-                "- `install` / `install_builtin` — add a module to the KB.\n" +
-                "- `update` / `restore` — update or restore an installed module through the SDK.\n" +
+                "- `install` / `install_builtin` — add a module to the KB. Both accept `dryRun=true` for a read-only preview (package identity, dependencies, affected modules) without calling the SDK install; a verified repeat install is a safe no-op at the KB level.\n" +
+                "- `update` / `restore` — update or restore an installed module through the SDK. `update` also accepts `dryRun=true` for a read-only preview.\n" +
                 "- `list_modules_servers` — list configured module-server metadata without contacting remote catalogs; pass one returned name to `search_modules_in_servers` to bound network work.\n" +
                 "- `package` — create an `.opc` package from a Module and its selected environments (`confirm=true`).\n" +
                 "- `publish` — publish a package or installed Module to a configured module server (`server`, `confirm=true`).\n" +
