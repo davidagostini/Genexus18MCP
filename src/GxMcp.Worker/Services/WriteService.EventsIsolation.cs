@@ -76,6 +76,28 @@ namespace GxMcp.Worker.Services
             SummarizeService.InvalidateCache();
         }
 
+        internal static void InvalidatePatternMutationCaches(IndexCacheService index, params string[] targets)
+        {
+            InvalidateIsolatedEventsReadCaches();
+            var aliases = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string target in targets ?? Array.Empty<string>())
+                if (!string.IsNullOrWhiteSpace(target)) aliases.Add(target);
+            // Freshness stamps must survive failures in the optional index cache.
+            foreach (string alias in aliases) StampPerTargetWrite(alias);
+            var loaded = index?.TryGetLoadedIndex();
+            if (loaded?.Objects != null)
+                foreach (var entry in loaded.Objects.Values)
+                {
+                    string qualified = string.IsNullOrEmpty(entry.Module) ? entry.Name : entry.Module + "." + entry.Name;
+                    if (!aliases.Contains(entry.Guid ?? "") && !aliases.Contains(entry.Name ?? "")
+                        && !aliases.Contains(qualified ?? "") && !aliases.Contains(entry.Path ?? "")) continue;
+                    // Keep identity/discovery available; invalidate only cached source evidence.
+                    foreach (string alias in new[] { entry.Guid, entry.Name, qualified, entry.Path })
+                        if (!string.IsNullOrWhiteSpace(alias)) StampPerTargetWrite(alias);
+                    index.InvalidateSourceForSearch(entry);
+                }
+        }
+
         // Mirrors WriteObject's outcome-based dirty tracking: refusal, verified
         // rollback and a verified content no-op stay clean; uncertain persistence
         // remains dirty. This path returns a canonical envelope, not WriteApplied.

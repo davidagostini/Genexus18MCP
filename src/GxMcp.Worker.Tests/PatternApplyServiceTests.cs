@@ -82,6 +82,55 @@ namespace GxMcp.Worker.Tests
             }
         }
 
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(false, true)]
+        [InlineData(true, false)]
+        public void ApplyFinalization_InvalidatesPublicSourceAndTokenCachesOnlyAfterAttempt(bool unavailable, bool fail)
+        {
+            var flags = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic;
+            var set = typeof(ObjectService).GetMethod("SetReadCache", flags);
+            var get = typeof(ObjectService).GetMethod("TryGetReadCache", flags);
+            string prefix = Guid.NewGuid().ToString("N");
+            foreach (string part in new[] { "patterninstance", "webform", "events" })
+                set.Invoke(null, new object[] { prefix + "|" + part + "|raw", "old source and token" });
+            var engine = new FakeEngine
+            {
+                DefinitionToReturn = unavailable ? null : new object(),
+                ApplyImpl = _ => fail ? throw new InvalidOperationException("partial native save") : new PatternApplyResult()
+            };
+            MakeService(engine, null).ApplyPatternToObject(null, WWP, "WorkWithPlus", null, false, ObjName);
+            foreach (string part in new[] { "patterninstance", "webform", "events" })
+                Assert.Equal(unavailable, (bool)get.Invoke(null, new object[] { prefix + "|" + part + "|raw", null }));
+        }
+
+        public sealed class NativeFamilyFixture
+        {
+            public System.Collections.Generic.List<NativeChildFixture> GeneratedObjects { get; set; }
+        }
+        public sealed class NativeChildFixture { public string Name { get; set; } }
+
+        [Fact]
+        public void NativeFamilyDiscoveryUsesOwnedChildrenWithConfigurableNames()
+        {
+            var instance = new NativeFamilyFixture
+            {
+                GeneratedObjects = new List<NativeChildFixture>
+                {
+                    new NativeChildFixture { Name = "CustomerWW" },
+                    new NativeChildFixture { Name = "CustomerExport" },
+                    new NativeChildFixture { Name = "UnconventionalChild" },
+                    new NativeChildFixture { Name = null },
+                    new NativeChildFixture { Name = "customerww" }
+                }
+            };
+            Assert.Equal(new[] { "CustomerWW", "CustomerExport", "UnconventionalChild" },
+                PatternApplyService.ReadNativeGeneratedObjectNames(instance));
+            Assert.Empty(PatternApplyService.ReadNativeGeneratedObjectNames(new NativeFamilyFixture
+                { GeneratedObjects = new List<NativeChildFixture>() }));
+            Assert.Empty(PatternApplyService.ReadNativeGeneratedObjectNames(null));
+        }
+
         // Builds a service whose object resolver returns the supplied KBObject (or null).
         // We pass null for the KBObject in tests; the fake engine never dereferences it
         // and PatternApplyService.ApplyPatternToObject tolerates null via objectNameForResponse.
@@ -540,8 +589,9 @@ namespace GxMcp.Worker.Tests
             string json = svc.ApplyPatternToObject(null, WWP, "WorkWithPlus", null, reapply: false, objectNameForResponse: ObjName);
             var obj = JObject.Parse(json);
 
-            Assert.Equal("ok", obj["status"]?.ToString());
-            Assert.False(obj["result"]?["wasFirstApply"]?.ToObject<bool>());
+            Assert.Equal("error", obj["status"]?.ToString());
+            Assert.Equal("PatternProjectionFailed", obj["error"]?["code"]?.ToString());
+            Assert.False(obj["wasFirstApply"]?.ToObject<bool>());
             Assert.Equal(0, engine.ApplyCalls);
             Assert.Equal(0, engine.ReapplyCalls);
         }
@@ -556,8 +606,9 @@ namespace GxMcp.Worker.Tests
             string json = svc.ApplyPatternToObject(null, WWP, "WorkWithPlus", null, reapply: true, objectNameForResponse: ObjName);
             var obj = JObject.Parse(json);
 
-            Assert.Equal("ok", obj["status"]?.ToString());
-            Assert.False(obj["result"]?["wasFirstApply"]?.ToObject<bool>());
+            Assert.Equal("error", obj["status"]?.ToString());
+            Assert.Equal("PatternProjectionFailed", obj["error"]?["code"]?.ToString());
+            Assert.False(obj["wasFirstApply"]?.ToObject<bool>());
             Assert.Equal(0, engine.ReapplyCalls);
         }
 
@@ -590,6 +641,48 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal("error", obj["status"]?.ToString());
             Assert.Contains("boom", obj["error"]?["message"]?.ToString() ?? "");
+        }
+
+        [Theory]
+        [InlineData("View")]
+        [InlineData("TransactionTabs")]
+        [InlineData("")]
+        public void ExplicitTemplate_WithoutSupportedParent_RejectsBeforeEngine(string template)
+        {
+            var engine = new FakeEngine();
+            var svc = MakeService(engine, null);
+            var response = JObject.Parse(svc.ApplyPatternToObject(null, WWP, "WorkWithPlus",
+                new JObject { ["template"] = template }, false, ObjName));
+            Assert.Equal("error", response["status"]?.ToString());
+            Assert.Equal("PatternTemplateUnsupported", response["error"]?["code"]?.ToString());
+            Assert.Equal(0, engine.ApplyCalls);
+            Assert.Equal(0, engine.ReapplyCalls);
+        }
+
+        [Theory]
+        [InlineData("<instance><WPRoot Template='View'/></instance>", "View", true)]
+        [InlineData("<?xml version='1.0' encoding='utf-8'?><instance><WPRoot Template='View'/></instance>", "View", true)]
+        [InlineData("<?xml version='1.0'?><instance><WPRoot Template='Empty'/></instance>", "View", false)]
+        [InlineData("<instance><WPRoot Template='Empty'/></instance>", "View", false)]
+        [InlineData("<instance><WPRoot Template='Empty'/></instance>", "TransactionTabs", false)]
+        [InlineData("<instance><WPRoot/></instance>", "View", false)]
+        [InlineData("<instance><WPRoot Template='View'/><WPRoot Template='Empty'/></instance>", "View", false)]
+        [InlineData("<broken", "View", false)]
+        [InlineData(null, "View", false)]
+        public void ExplicitTemplate_RequiresPersistedRootIdentity(string xml, string requested, bool expected)
+        {
+            Assert.Equal(expected, PatternApplyService.ExplicitTemplateMatches(xml, requested));
+        }
+
+        [Fact]
+        public void ExplicitTemplate_PostAttachVerificationUsesFreshSdkReader()
+        {
+            string source = System.IO.File.ReadAllText(System.IO.Path.Combine(TestFixtures.FindRepoRoot(),
+                "src", "GxMcp.Worker", "Services", "PatternApplyService.cs"));
+            // Structural safety gate complements the value tests: using a cached
+            // reader can make those tests pass while live post-save verification lies.
+            Assert.Contains("Analysis.ReadPatternPartXmlFresh(obj, \"PatternInstance\", WorkWithPlusPatternId", source);
+            Assert.DoesNotContain("Analysis.ReadPatternPartXml(obj, \"PatternInstance\", WorkWithPlusPatternId", source);
         }
 
         // Live integration smokes. Opt-in via GXMCP_TEST_KB=<path-to-kb> and

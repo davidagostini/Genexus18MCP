@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- Pattern generated-family discovery now uses native instance ownership, supporting template-configured child names and invalidating known child caches after reapply.
+
 ### Fixed
 
 - **SDT variable persistence:** native serialized SDT references are resolved by their entity identity instead of being mistaken for missing GUIDs. Invalid variable batches are rejected before any declaration is attached.
 - **Pattern write receipts:** unsupported properties are checked against the installed native schema where it is available. Verification errors distinguish a committed partial change from an unchanged or unknown state, retain snapshot evidence, and require rereading before recovery.
+- **Explicit WorkWithPlus templates:** missing templates are rejected instead of silently substituting another template. Existing-instance template changes fail before writing; fresh applications verify the selected template.
+- **WorkWithPlus Transaction reapplication:** the existing-instance path now calls the native pattern engine that updates generated children, supplies non-null apply settings and respects its failure result. Receipts distinguish native completion from independent verification of the generated family.
 
 ### Internal
 

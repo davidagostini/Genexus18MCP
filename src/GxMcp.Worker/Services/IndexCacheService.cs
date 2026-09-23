@@ -2562,6 +2562,20 @@ namespace GxMcp.Worker.Services
         // complete-source marker when the SDK confirmed that this object has no source part.
         private const int PersistedFullSourceMaxChars = 2 * 1024 * 1024;
         private const long PersistedFullSourceBudgetChars = 8L * 1024 * 1024;
+        internal void InvalidateSourceForSearch(SearchIndex.IndexEntry entry)
+        {
+            var index = TryGetLoadedIndex();
+            if (entry == null || index == null) return;
+            lock (entry)
+            {
+                RemoveSourceTokens(index.SourceTokenIndex, entry);
+                entry.FullSource = null;
+                entry.FullSourcePart = null;
+            }
+            MarkSourceDirtyForKey(GetEntryStorageKeyStatic(entry));
+            if (_initialized) ScheduleThrottledFlush();
+        }
+
         internal bool PromoteSourceForSearch(SearchIndex.IndexEntry entry, string source)
         {
             if (entry == null || source == null || source.Length > PersistedFullSourceMaxChars) return false;

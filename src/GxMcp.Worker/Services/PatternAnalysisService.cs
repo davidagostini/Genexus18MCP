@@ -468,7 +468,8 @@ namespace GxMcp.Worker.Services
             var registry = Registry;
             var requested = ToCandidate(obj);
             var selection = SelectPatternInstance(requested, null, patternId, registry);
-            if (selection.Status == PatternInstanceSelectionStatus.Selected) return obj;
+            if (selection.Status == PatternInstanceSelectionStatus.Selected)
+                return fresh ? _objectService?.FindObjectFresh(obj.Name, obj.TypeDescriptor?.Name) : obj;
             if (selection.Status == PatternInstanceSelectionStatus.Mismatch)
             {
                 diagnostic = selection.ToDiagnostic(obj.Name);

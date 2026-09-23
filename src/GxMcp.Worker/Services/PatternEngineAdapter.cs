@@ -18,6 +18,7 @@ namespace GxMcp.Worker.Services
     {
         public IList<string> GeneratedObjects { get; set; } = new List<string>();
         public IList<string> Errors { get; set; } = new List<string>();
+        public bool? NativeApplySucceeded { get; set; }
     }
 
     /// <summary>
@@ -207,73 +208,42 @@ namespace GxMcp.Worker.Services
 
         public void InvokeReapply(object patternInstanceObj, JObject settings)
         {
-            EnsureProbed();
-            if (_applyPatternReapply == null) throw new InvalidOperationException("Reapply overload not bound");
-            // ApplySettings is needed by the SDK (passing null causes NRE inside).
-            // Materialise an empty instance via parameterless ctor and project caller
-            // settings on top if provided.
-            object applySettings = null;
-            if (_applySettingsType != null)
-            {
-                try
-                {
-                    var ctor = _applySettingsType.GetConstructor(Type.EmptyTypes);
-                    applySettings = ctor != null
-                        ? ctor.Invoke(null)
-                        : Activator.CreateInstance(_applySettingsType, nonPublic: true);
-                    if (settings != null && settings.Count > 0)
-                    {
-                        ProjectJObjectOntoInstance(settings, applySettings, new List<string>(), 0);
-                    }
-                }
-                catch (Exception ex) { Logger.Debug("InvokeReapply: ApplySettings build skipped: " + ex.Message); }
-            }
-            try
-            {
-                _applyPatternReapply.Invoke(null, new[] { patternInstanceObj, applySettings });
-            }
-            catch (TargetInvocationException tie) { throw tie.InnerException ?? tie; }
+            ReapplyPattern(patternInstanceObj, settings);
         }
 
         public PatternApplyResult ReapplyPattern(object patternInstance, JObject settings)
         {
             if (!EnsureProbed() || _applyPatternReapply == null)
                 throw new InvalidOperationException("PatternEngine.ApplyPattern(PatternInstance, ApplySettings) not found");
+            // Deliberately do not trigger the generic missing-overload fallback for
+            // an unknown return contract: the void parent overload and an existing
+            // instance do not prove child regeneration on an unverified SDK major.
+            if (_applyPatternReapply.ReturnType != typeof(bool))
+                throw new NotSupportedException("Native pattern apply return contract is unsupported; no apply was attempted.");
 
-            // ApplySettings is a pattern-internal type. We materialise it by reflection
-            // (parameterless ctor) and best-effort-project the caller's JObject onto its
-            // writable instance properties. Null/empty settings → pass null, which the
-            // SDK treats as "use defaults" (preserving the historical behaviour).
-            object applySettings = null;
+            // The native overload dereferences settings; null does not mean defaults.
             var unmapped = new List<string>();
-            if (settings != null && settings.Count > 0)
-            {
-                applySettings = TryBuildApplySettings(settings, unmapped);
-                if (applySettings == null)
-                {
-                    Logger.Warn("ReapplyPattern: failed to materialise ApplySettings; falling back to defaults. Unmapped keys: " + string.Join(", ", unmapped));
-                }
-                else if (unmapped.Count > 0)
-                {
-                    Logger.Info("ReapplyPattern: ApplySettings projected with " + unmapped.Count + " unmapped key(s): " + string.Join(", ", unmapped));
-                }
-            }
-
+            object applySettings = TryBuildApplySettings(settings, unmapped);
+            if (applySettings == null)
+                throw new InvalidOperationException("Could not construct native pattern apply settings; no apply was attempted.");
+            if (unmapped.Count > 0)
+                throw new ArgumentException("Unsupported pattern apply settings: " + string.Join(", ", unmapped));
             try
             {
-                _applyPatternReapply.Invoke(null, new[] { patternInstance, applySettings });
+                object outcome = _applyPatternReapply.Invoke(null, new[] { patternInstance, applySettings });
+                if (!(outcome is bool succeeded) || !succeeded)
+                    throw new InvalidOperationException("Native pattern apply did not report success. It may have partially saved objects; re-read before retrying.");
             }
             catch (TargetInvocationException tie)
             {
                 throw tie.InnerException ?? tie;
             }
-
-            return new PatternApplyResult();
+            return new PatternApplyResult { NativeApplySucceeded = true };
         }
 
         // Builds an ApplySettings instance and walks the JObject onto its writable
-        // properties (case-insensitive). Best-effort: any miss is collected in
-        // `unmapped` rather than thrown, so a partial projection still beats null.
+        // properties (case-insensitive). Collect unsupported keys so callers can
+        // reject them before invoking the native engine.
         internal object TryBuildApplySettings(JObject settings, IList<string> unmapped)
         {
             if (_applySettingsType == null) return null;

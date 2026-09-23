@@ -656,10 +656,44 @@ namespace GxMcp.Worker.Services
 
         internal string ApplyPatternToObject(KBObject obj, Guid patternId, string patternKey, JObject settings, bool reapply, string objectNameForResponse = null, object knownInstance = null)
         {
+            bool mutationAttempted = false;
+            var mutationTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { objectNameForResponse };
+            TrackPatternMutationTarget(mutationTargets, obj);
+            TrackPatternMutationTarget(mutationTargets, knownInstance as KBObject);
+            try
+            {
+                return ApplyPatternToObjectCore(obj, patternId, patternKey, settings, reapply,
+                    objectNameForResponse, knownInstance, ref mutationAttempted, mutationTargets);
+            }
+            finally
+            {
+                // Native apply/projection can persist even when it reports failure.
+                // Drop managed source/token payloads after all native work has finished.
+                if (mutationAttempted)
+                {
+                    IndexCacheService index = null;
+                    try { index = _objectService?.GetKbService()?.GetIndexCache(); }
+                    catch (Exception ex) { Logger.Error("Pattern cache index lookup failed: " + ex); }
+                    try { WriteService.InvalidatePatternMutationCaches(index, mutationTargets.ToArray()); }
+                    catch (Exception ex) { Logger.Error("Pattern cache invalidation failed; native receipt preserved: " + ex); }
+                }
+            }
+        }
+
+        private static void TrackPatternMutationTarget(HashSet<string> targets, KBObject obj)
+        {
+            if (obj == null) return;
+            targets.Add(obj.Name);
+            targets.Add(obj.Guid.ToString());
+        }
+
+        private string ApplyPatternToObjectCore(KBObject obj, Guid patternId, string patternKey, JObject settings,
+            bool reapply, string objectNameForResponse, object knownInstance, ref bool mutationAttempted, HashSet<string> mutationTargets)
+        {
             // Route by pattern identity, not by the key spelling: every WorkWithPlus key
             // (name, alias, GUID) takes the WorkWithPlus route below.
             if (patternId != WorkWithPlusPatternId)
-                return ApplyGenericPatternToObject(obj, ManifestFor(patternId), patternKey, settings, reapply, objectNameForResponse, knownInstance);
+                return ApplyGenericPatternToObject(obj, ManifestFor(patternId), patternKey, settings, reapply, objectNameForResponse, knownInstance, ref mutationAttempted, mutationTargets);
 
             var phaseTimer = System.Diagnostics.Stopwatch.StartNew();
             var phases = new System.Collections.Generic.List<string>();
@@ -697,9 +731,38 @@ namespace GxMcp.Worker.Services
                 return PatternUnavailable(patternKey, "WorkWithPlus pattern not loaded — check license / package install");
             }
 
+            string requestedTemplate = settings?["template"]?.ToString();
+            string explicitTemplate = null;
+            if (settings?["template"] != null)
+            {
+                if (string.IsNullOrWhiteSpace(requestedTemplate)
+                    || !IsWwpDirectAttachParentType(obj?.TypeDescriptor?.Name))
+                    return McpResponse.Err(code: "PatternTemplateUnsupported",
+                        message: "An explicit template requires a supported direct-attach parent and a non-empty template name; no changes were applied.",
+                        target: objectNameForResponse ?? obj?.Name);
+                explicitTemplate = ResolveAvailableWwpTemplate(requestedTemplate);
+                if (string.IsNullOrEmpty(explicitTemplate))
+                    return McpResponse.Err(code: "PatternTemplateNotFound",
+                        message: "The requested WorkWithPlus for Web Template could not be resolved; no changes were applied.",
+                        hint: "Choose an exact template name from the KB. The requested template is never replaced by Empty.",
+                        target: objectNameForResponse ?? obj?.Name);
+            }
+
             // Detect existing instance to decide between first-apply and re-apply.
             object existingInstance = _engine.GetPatternInstance(obj, patternId);
+            TrackPatternMutationTarget(mutationTargets, existingInstance as KBObject);
+            try { foreach (string name in ReadNativeGeneratedObjectNames(existingInstance)) mutationTargets.Add(name); }
+            catch (Exception ex) { Logger.Error("Pre-apply native family cache discovery unavailable: " + ex); }
 
+            if (explicitTemplate != null && (existingInstance != null
+                || _objectService?.FindObject("WorkWithPlus" + obj.Name) != null))
+                return McpResponse.Err(code: "PatternTemplateChangeUnsupported",
+                    message: "Changing the template of an existing WorkWithPlus instance is not supported by this route; no changes were applied.",
+                    hint: "Use typed genexus_wwp authoring actions to modify the existing instance, or apply the template to a fresh object.",
+                    target: objectNameForResponse ?? obj?.Name);
+
+            bool projectionSucceeded = false;
+            string projectionFailure = null;
             // Stale-metadata guard: GetPatternInstance can return non-null even after
             // the user deleted the generated host (WorkWithPlus<Name>) in a prior
             // session — the SDK keeps the PatternInstance metadata on the parent.
@@ -723,30 +786,58 @@ namespace GxMcp.Worker.Services
             }
 
             bool wasFirstApply = existingInstance == null;
+            bool nativeChildrenApplied = false;
+            bool nativeChildrenApplyAttempted = false;
 
             PatternApplyResult result;
             try
             {
-                // The SDK's `PatternEngine.ApplyPattern(PatternInstance, ApplySettings)`
-                // overload may not be present on every GeneXus install (observed missing on
-                // 18.0.7.179127). When that happens, fall back to the void overload — the
-                // SDK detects the existing instance and re-applies. Wrap each reapply call
-                // so the fallback is transparent to callers.
+                mutationAttempted = true;
+                // A missing/full-apply failure must not be disguised as a successful
+                // parent-only projection on Transactions that own generated children.
                 if (existingInstance != null)
                 {
-                    // Existing host detected. The engine's reapply overload throws NRE
-                    // on this install (needs services we can't provide). Skip it and
-                    // project via UpdateParentObject below — that's the only generator
-                    // step that matters anyway.
-                    result = new PatternApplyResult();
+                    // Parent projection cannot regenerate a Transaction's generated children.
+                    // Use the native full apply overload; never substitute the void first-apply
+                    // overload or a parent-only projection when it reports failure.
+                    if (string.Equals(obj?.TypeDescriptor?.Name, "Transaction", StringComparison.OrdinalIgnoreCase))
+                    {
+                        nativeChildrenApplyAttempted = true;
+                        result = _engine.ReapplyPattern(existingInstance, settings);
+                        nativeChildrenApplied = result?.NativeApplySucceeded == true;
+                        if (!nativeChildrenApplied)
+                            throw new InvalidOperationException("Native pattern child generation was not confirmed; inspect the saved objects before retrying.");
+                        projectionSucceeded = true; // The native engine includes the parent save.
+                    }
+                    else
+                        result = new PatternApplyResult();
                     wasFirstApply = false;
-                    Logger.Info("ApplyPattern: existing host detected — skipping engine reapply (NRE-prone), will project via UpdateParentObject.");
                 }
                 else
                 {
-                    result = _engine.ApplyPattern(obj, patternDefinition, settings);
+                    if (explicitTemplate != null)
+                    {
+                        if (!TryPackageInterfaceAttach(obj, explicitTemplate, out var explicitHost,
+                            out var usedTemplate, out var attachError, out var attachCode, out _))
+                            return McpResponse.Err(code: attachCode ?? "PatternTemplateApplyFailed",
+                                message: attachError ?? "Native template application failed.",
+                                hint: "Inspect the parent and PatternInstance before retrying; the native call may have persisted changes.",
+                                target: objectNameForResponse ?? obj?.Name);
+                        // Verification must discard SDK caches after native attach. The ordinary
+                        // reader can still expose the in-memory template even if the save dropped it.
+                        string persistedXml = Analysis.ReadPatternPartXmlFresh(obj, "PatternInstance", WorkWithPlusPatternId, out _, out _, out _);
+                        if (!ExplicitTemplateMatches(persistedXml, explicitTemplate))
+                            return McpResponse.Err(code: "PatternTemplateNotPersisted",
+                                message: "Native application completed, but the requested template was not confirmed by PatternInstance re-read.",
+                                hint: "Inspect the saved instance before retrying. No fallback template is considered success.",
+                                target: objectNameForResponse ?? obj?.Name);
+                        result = new PatternApplyResult { GeneratedObjects = new List<string> { explicitHost } };
+                    }
+                    else
+                        result = _engine.ApplyPattern(obj, patternDefinition, settings);
                     wasFirstApply = true;
                 }
+                foreach (string name in result?.GeneratedObjects ?? new List<string>()) mutationTargets.Add(name);
                 Phase("engineApply");
             }
             catch (Exception ex)
@@ -754,14 +845,21 @@ namespace GxMcp.Worker.Services
                 string errName = objectNameForResponse ?? obj?.Name ?? "";
                 Logger.Error("PatternEngine apply failed for '" + errName + "': " + ex);
                 var errExtra = new JObject { ["patternKey"] = patternKey };
+                if (nativeChildrenApplyAttempted)
+                {
+                    errExtra["saveAttempted"] = true;
+                    errExtra["saved"] = null;
+                    errExtra["persistedStateKnown"] = false;
+                    errExtra["generatedChildrenVerified"] = false;
+                }
                 return McpResponse.Err(
                     code: "PatternEngineApplyFailed",
                     message: ex.Message,
                     hint: "Verify the pattern package is installed and the KB is open.",
                     nextSteps: new JArray(McpResponse.NextStep(
-                        tool: "genexus_apply_pattern",
-                        args: new JObject { ["name"] = errName, ["pattern"] = patternKey },
-                        why: "Retry after verifying the pattern package and KB state.")),
+                        tool: "genexus_read",
+                        args: new JObject { ["name"] = errName, ["part"] = "PatternInstance", ["limit"] = 0 },
+                        why: "Read the current instance and generated objects before retrying; an engine failure can follow partial persistence.")),
                     target: errName,
                     extra: errExtra);
             }
@@ -773,7 +871,7 @@ namespace GxMcp.Worker.Services
             // projected onto the parent's WebForm. We re-resolve the host KBObject
             // from disk first because the cached `existingInstance` may carry stale
             // PatternInstance state from before genexus_edit landed.
-            if (existingInstance != null && _objectService != null)
+            if (existingInstance != null && _objectService != null && !nativeChildrenApplied)
             {
                 KBObject reappliedHost = null;
                 // Friction 2026-05-25 — projection step (`UpdateParentObject`)
@@ -788,16 +886,16 @@ namespace GxMcp.Worker.Services
                     var freshHost = _objectService.FindObject("WorkWithPlus" + obj.Name);
                     if (freshHost != null)
                     {
-                        TryInvokeBuildProcessUpdateParent(obj, freshHost);
+                        projectionSucceeded = TryInvokeBuildProcessUpdateParent(obj, freshHost);
                         reappliedHost = freshHost;
                     }
                     else if (existingInstance is KBObject existingHostObj)
                     {
-                        TryInvokeBuildProcessUpdateParent(obj, existingHostObj);
+                        projectionSucceeded = TryInvokeBuildProcessUpdateParent(obj, existingHostObj);
                         reappliedHost = existingHostObj;
                     }
                 }
-                catch (Exception ex) { Logger.Info("Reapply UpdateParentObject best-effort: " + ex.Message); }
+                catch (Exception ex) { projectionFailure = ex.Message; Logger.Info("Reapply UpdateParentObject failed: " + ex.Message); }
                 projectionSw.Stop();
                 projectionElapsedMs = projectionSw.ElapsedMilliseconds;
                 if (projectionSw.ElapsedMilliseconds > 30000)
@@ -826,18 +924,16 @@ namespace GxMcp.Worker.Services
                 }
             }
 
-            // Compute the real generated-objects list. The adapter's GeneratedObjects
-            // collection is normally empty (void overload returns no names), so we look
-            // up the canonical WWP family by name pattern instead. Cheap: O(family_size)
-            // FindObject lookups, vs O(model_size) for a pre/post diff. Also avoids the
-            // race where the SDK registers new objects asynchronously after Invoke returns.
-            var generated = LookupWwpFamilyByConvention(obj);
+            // The native ownership relation handles configurable templates/naming.
+            // An existing name alone is not evidence of membership in this family.
+            var generated = LookupWwpGeneratedFamily(obj);
+            foreach (string name in generated) mutationTargets.Add(name);
             Phase("lookupFamily");
             if (result?.GeneratedObjects != null)
             {
                 foreach (var name in result.GeneratedObjects)
                 {
-                    if (!string.IsNullOrEmpty(name) && !generated.Contains(name))
+                    if (!string.IsNullOrEmpty(name) && !generated.Contains(name, StringComparer.OrdinalIgnoreCase))
                         generated.Add(name);
                 }
             }
@@ -928,6 +1024,16 @@ namespace GxMcp.Worker.Services
                 ["generatedObjects"] = new JArray(generated),
                 ["errors"] = new JArray(result?.Errors ?? Enumerable.Empty<string>())
             };
+            if (explicitTemplate != null) patternResult["template"] = explicitTemplate;
+            if (existingInstance != null)
+            {
+                patternResult["parentProjectionConfirmed"] = projectionSucceeded;
+                patternResult["generatedChildrenVerified"] = false;
+                patternResult["nativeApplySucceeded"] = nativeChildrenApplied;
+                patternResult["projectionScope"] = nativeChildrenApplied ? "parent-and-generated-children" : "parent-only";
+                if (!projectionSucceeded)
+                    patternResult["projectionFailure"] = projectionFailure ?? "The native projection did not complete successfully.";
+            }
             JArray patternWarnings = null;
             if (patternValidationIssues != null)
             {
@@ -959,7 +1065,7 @@ namespace GxMcp.Worker.Services
             // agent decide to close the IDE tab / retry without re-reading logs.
             // Threshold matches the warn-log at the projection site.
             string projectionTimedOutCode = null;
-            if (reapply && projectionElapsedMs > 30000)
+            if (existingInstance != null && projectionElapsedMs > 30000)
             {
                 patternResult["slowReapply"] = true;
                 patternResult["projectionMs"] = projectionElapsedMs;
@@ -1132,10 +1238,19 @@ namespace GxMcp.Worker.Services
             string internalStatus = response["_opStatus"]?.ToString() ?? "Success";
             string canonicalCode = projectionTimedOutCode ?? (isNoOp
                 ? (patternResult["failureCode"]?.ToString() ?? "PatternNoOp")
-                : "PatternApplied");
+                : existingInstance != null ? "PatternParentProjected" : "PatternApplied");
 
             string canonicalJson;
-            if (isNoOp)
+            if (projectionTimedOutCode != null || (existingInstance != null && !projectionSucceeded))
+            {
+                canonicalJson = McpResponse.Err(code: projectionTimedOutCode ?? "PatternProjectionFailed",
+                    message: projectionTimedOutCode != null
+                        ? "Pattern projection exceeded the configured time budget; completion must be verified by re-reading the saved objects."
+                        : "The native WorkWithPlus projection did not complete successfully.",
+                    hint: "Re-read PatternInstance and WebForm before retrying. An existing pattern host alone does not confirm projection.",
+                    target: targetName, extra: patternResult);
+            }
+            else if (isNoOp)
             {
                 // NoOp: engine completed but nothing was generated — emit as error so the
                 // agent gets actionable nextSteps rather than a misleading ok.
@@ -1151,6 +1266,17 @@ namespace GxMcp.Worker.Services
                             : "Retry with an explicit template name from patternResult.availableTemplates.")),
                     target: targetName,
                     extra: patternResult);
+            }
+            else if (existingInstance != null && string.Equals(parentTypeName, "Transaction", StringComparison.OrdinalIgnoreCase))
+            {
+                canonicalJson = McpResponse.Partial(target: targetName, code: nativeChildrenApplied ? "PatternAppliedVerificationPending" : "PatternParentProjected", result: patternResult,
+                    warnings: new JArray(new JObject
+                    {
+                        ["code"] = "PatternChildrenNotVerified",
+                        ["message"] = nativeChildrenApplied
+                            ? "The native pattern engine reported successful generation. Independently re-read the generated children to verify their requested content."
+                            : "Only the parent projection completed. Generated child objects were not regenerated or verified by this route."
+                    }));
             }
             else if (string.Equals(internalStatus, "PartialFailure", StringComparison.OrdinalIgnoreCase))
             {
@@ -1184,7 +1310,7 @@ namespace GxMcp.Worker.Services
         /// package attach. First apply calls the engine and then requires the instance to
         /// exist; an existing instance is regenerated through the engine's reapply overload.
         /// </summary>
-        private string ApplyGenericPatternToObject(KBObject obj, PatternManifest pattern, string patternKey, JObject settings, bool reapply, string objectNameForResponse, object knownInstance)
+        private string ApplyGenericPatternToObject(KBObject obj, PatternManifest pattern, string patternKey, JObject settings, bool reapply, string objectNameForResponse, object knownInstance, ref bool mutationAttempted, HashSet<string> mutationTargets)
         {
             string targetName = objectNameForResponse ?? obj?.Name ?? "";
             string key = string.IsNullOrWhiteSpace(patternKey) ? pattern.Name : patternKey;
@@ -1201,6 +1327,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex) { Logger.Debug("ApplyPattern: GetPatternInstance(" + pattern.Name + ") failed (best-effort): " + ex.Message); }
             if (existingInstance == null) existingInstance = knownInstance;
+            TrackPatternMutationTarget(mutationTargets, existingInstance as KBObject);
 
             var route = existingInstance != null ? PatternRoute.Reapply : PatternRoute.FirstApply;
             string routeReject = TryBuildRouteUnsupportedRejection(targetName, pattern, route);
@@ -1210,6 +1337,7 @@ namespace GxMcp.Worker.Services
             bool wasFirstApply;
             try
             {
+                mutationAttempted = true;
                 if (existingInstance != null)
                 {
                     result = TryReapplyWithFallback(existingInstance, obj, patternDefinition, settings, out wasFirstApply);
@@ -1261,6 +1389,7 @@ namespace GxMcp.Worker.Services
                 if (!string.IsNullOrEmpty(name) && !generated.Contains(name, StringComparer.OrdinalIgnoreCase)) generated.Add(name);
             }
 
+            foreach (string name in generated) mutationTargets.Add(name);
             // Keep the search index in sync with the instance and any reported objects.
             if (_objectService != null && generated.Count > 0)
             {
@@ -1461,11 +1590,11 @@ namespace GxMcp.Worker.Services
         // then any template, then fall back to "Empty".
         private string ResolveAvailableWwpTemplate(string preferred)
         {
-            if (_objectService == null) return preferred ?? "Empty";
+            if (_objectService == null) return string.IsNullOrWhiteSpace(preferred) ? "Empty" : null;
             try
             {
                 var kb = _objectService.GetKbService()?.GetKB();
-                if (kb == null) return preferred ?? "Empty";
+                if (kb == null) return string.IsNullOrWhiteSpace(preferred) ? "Empty" : null;
 
                 // Caller hint: if a real Template object exists with the requested name, use it.
                 if (!string.IsNullOrWhiteSpace(preferred))
@@ -1473,6 +1602,7 @@ namespace GxMcp.Worker.Services
                     var hit = _objectService.FindObject(preferred);
                     if (hit != null && string.Equals(hit.TypeDescriptor?.Name, "WorkWithPlus for Web Template", StringComparison.OrdinalIgnoreCase))
                         return hit.Name;
+                    return null;
                 }
 
                 string firstNonPopover = null;
@@ -1493,8 +1623,21 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 Logger.Debug("ResolveAvailableWwpTemplate failed: " + ex.Message);
-                return preferred ?? "Empty";
+                return string.IsNullOrWhiteSpace(preferred) ? "Empty" : null;
             }
+        }
+
+        internal static bool ExplicitTemplateMatches(string persistedXml, string requestedTemplate)
+        {
+            if (string.IsNullOrWhiteSpace(persistedXml) || string.IsNullOrWhiteSpace(requestedTemplate)) return false;
+            try
+            {
+                var roots = XDocument.Parse(persistedXml).Descendants()
+                    .Where(e => string.Equals(e.Name.LocalName, "WPRoot", StringComparison.OrdinalIgnoreCase)).ToList();
+                return roots.Count == 1 && string.Equals((string)roots[0].Attribute("Template"),
+                    requestedTemplate, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (System.Xml.XmlException) { return false; }
         }
 
         // Ensures the engine adapter has run its reflection probe. The probe is lazy
@@ -1988,11 +2131,18 @@ namespace GxMcp.Worker.Services
                 // is already saved, this just materializes the projection.
                 try
                 {
-                    TryInvokeBuildProcessUpdateParent(parent, hostObj);
+                    if (!TryInvokeBuildProcessUpdateParent(parent, hostObj))
+                    {
+                        errorCode = "PatternProjectionFailed";
+                        errorMessage = "The pattern host was saved, but native projection did not complete successfully.";
+                        return false;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Logger.Info("Package-interface attach: UpdateParentObject best-effort failed: " + ex.Message);
+                    errorCode = "PatternProjectionFailed";
+                    errorMessage = "The pattern host was saved, but native projection failed: " + ex.Message;
+                    return false;
                 }
 
                 // A generated WorkWithPlus<Parent> object is not sufficient proof:
@@ -2032,9 +2182,9 @@ namespace GxMcp.Worker.Services
         // F17 / F18: delegates to the shared helper. Kept as a thin wrapper so the
         // apply_pattern → projection flow keeps its log context. The actual reflection
         // lives in WwpProjectionHelper so WriteService can call it too.
-        internal void TryInvokeBuildProcessUpdateParent(KBObject parent, KBObject host)
+        internal bool TryInvokeBuildProcessUpdateParent(KBObject parent, KBObject host)
         {
-            WwpProjectionHelper.TryProjectHostOntoParent(parent, host);
+            return WwpProjectionHelper.TryProjectHostOntoParent(parent, host);
         }
 
         // Legacy implementation kept for reference; superseded by the call above.
@@ -2562,46 +2712,36 @@ namespace GxMcp.Worker.Services
             return arr;
         }
 
-        // Probes the KB for the canonical WorkWithPlus family generated by a first-apply
-        // on a Transaction: the host (`WorkWithPlus<X>`) plus the WW/View/Export* siblings.
-        // We don't iterate the whole model — that's slow on large KBs (38k+ objects) and
-        // races against async SDK persistence. Targeted FindObject lookups by name are
-        // O(family_size) regardless of KB size.
-        //
-        // Naming reference (GeneXus 18 WWP default): `WorkWithPlus<X>` host, `WW<X>`
-        // selection panel, `View<X>` detail, `ExportWW<X>`/`ExportReportWW<X>` exports,
-        // `Prompt<X>` prompt. WebPanel targets don't generate siblings — they get the
-        // host attached directly.
-        private List<string> LookupWwpFamilyByConvention(KBObject parent)
+        internal static List<string> ReadNativeGeneratedObjectNames(object instance)
         {
-            var found = new List<string>();
-            if (parent == null || _objectService == null) return found;
-            string baseName = parent.Name;
-            if (string.IsNullOrEmpty(baseName)) return found;
-
-            string[] candidates = new[]
+            var names = new List<string>();
+            if (instance == null) return names;
+            // GX18 PatternInstance.GeneratedObjects enumerates Model.Objects.GetChildren
+            // and filters DefaultProvider.IsObjectInstance(child, this). Reflect only
+            // that public contract; never infer membership from a naming convention.
+            var property = instance.GetType().GetProperty("GeneratedObjects", BindingFlags.Public | BindingFlags.Instance);
+            if (!(property?.GetValue(instance) is System.Collections.IEnumerable children)) return names;
+            foreach (object child in children)
             {
-                "WorkWithPlus" + baseName,
-                "WW" + baseName,
-                "View" + baseName,
-                "ExportWW" + baseName,
-                "ExportReportWW" + baseName,
-                "Prompt" + baseName
-            };
-
-            foreach (var name in candidates)
-            {
-                try
-                {
-                    var o = _objectService.FindObject(name);
-                    if (o != null && !string.IsNullOrEmpty(o.Name))
-                    {
-                        found.Add(o.Name);
-                    }
-                }
-                catch { /* lookup best-effort */ }
+                string name = child?.GetType().GetProperty("Name", BindingFlags.Public | BindingFlags.Instance)?.GetValue(child) as string;
+                if (!string.IsNullOrWhiteSpace(name) && !names.Contains(name, StringComparer.OrdinalIgnoreCase)) names.Add(name);
             }
-            return found;
+            return names;
+        }
+
+        private List<string> LookupWwpGeneratedFamily(KBObject parent)
+        {
+            var names = new List<string>();
+            if (parent == null) return names;
+            try
+            {
+                object instance = _engine.GetPatternInstance(parent, WorkWithPlusPatternId);
+                names.AddRange(ReadNativeGeneratedObjectNames(instance));
+                if (instance is KBObject host && !string.IsNullOrWhiteSpace(host.Name)
+                    && !names.Contains(host.Name, StringComparer.OrdinalIgnoreCase)) names.Insert(0, host.Name);
+            }
+            catch (Exception ex) { Logger.Error("Native generated-family discovery unavailable: " + ex); }
+            return names;
         }
 
         private PatternApplyResult TryReapplyWithFallback(
