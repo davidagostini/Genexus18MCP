@@ -242,7 +242,7 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("code: plan.ErrorCode", writeSrc);
             Assert.Contains("code: \"PatternPartNotFound\"", writeSrc);
             Assert.Contains("code: \"PatternVerificationMismatch\"", writeSrc);
-            Assert.Contains("code: \"PatternSaveFailed\"", writeSrc);
+            Assert.Contains("code: committed ? \"PatternVerificationUnavailable\" : \"PatternSaveFailed\"", writeSrc);
         }
 
         [Fact]

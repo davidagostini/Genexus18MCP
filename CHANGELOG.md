@@ -1,11 +1,19 @@
 # Changelog
 
 ## Unreleased
+### Added
+
+- `genexus_wwp action=add_layout` adds declared variables, nested tables and user actions to a table through native pattern commands, with preview, expected version and persistence verification.
+
 
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - `genexus_layout action=add_report_control` (and `move_report_control`) no longer report `ReportControlWriteVerificationFailed` for controls the SDK persisted exactly as requested: geometry is now verified against the `Left`/`Top` projection of the SDK read-back instead of `X`/`Y`, and `font`/`fontName`/`fontSize` against the read-back `FontName`/`FontSize`.
 
@@ -38,6 +46,10 @@
 ### Internal
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - A resolução de variáveis baseadas em SDT agora usa a identidade nativa serializada pelo GeneXus, sem confundir referências inválidas com objetos de mesmo nome; lotes com itens inválidos falham sem persistir parcialmente as variáveis anteriores.
 - Os recibos de gravação de padrões validam propriedades no esquema nativo disponível e distinguem persistência confirmada, parcial ou desconhecida. Quando a verificação falha após o commit, a resposta orienta a reler o estado antes de qualquer recuperação.
@@ -105,6 +117,10 @@
 - A build now warns (`[stale-callee]`, in `warnings`, never in `errorCount`) when a callee outside the build has a generated `.cs` older than the callee's last edit. A callee with no generated file stays with `[generate-gap]`. https://github.com/lennix1337/Genexus18MCP/issues/411
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - `genexus_create action=save_as` of a report Procedure copies the `Layout` part natively and keeps its controls. The textual path either aborted with `SaveAsPartFailed` or, for new controls, dropped them without an error; the copy is now accepted only when its layout projection equals the source's, otherwise the part fails with `LayoutCloneNotFaithful`. The clone write also passes the source `typeFilter`. https://github.com/lennix1337/Genexus18MCP/issues/406
 - Report Layout writes (`genexus_edit`/`import_part part=Layout`, `genexus_layout set_property`) now persist a print block's `Height`; bind a control to a new `&variable` or an attribute (the SDK reference is resolved to the Variable/Attribute instead of `(none)`); and no longer duplicate or delete bound controls on re-import, because a control bound to a reference is named after it and is now matched by that reference. The `add_report_control` overlap message now names an unnamed unbound control instead of `''`. https://github.com/lennix1337/Genexus18MCP/issues/361
@@ -156,6 +172,10 @@
 - The Worker's SDK admission budget now bounds the memory it was asked to bound, and no single client can monopolise it. `StaScheduler.EstimateBytes` charged only the `id`/`method`/`action` strings - a few dozen bytes - while the queued item also retained `RawLine`, the whole command text including any edit or import payload. A queued 10 MiB edit was therefore charged about a hundred bytes, `MaxQueuedBytes` (32 MiB) could not be reached before `MaxQueuedCommands` (512) did, and 512 accepted large commands retained hundreds of megabytes inside a 32-bit Worker: the count budget was the only thing that ever stopped a burst, and the byte budget was decorative. The charge now covers the raw line, the header strings and a fixed per-item overhead, and each item stores its charge at admission so dequeue, timeout and cancellation all refund exactly what was charged. Admission additionally carries per-client caps (half of each global budget), because a global-only budget is a denial-of-service primitive: one client flooding P2 work used to exhaust every slot and have every *other* client's interactive read refused with `WorkerQueueSaturated`, and per-client fairness at dequeue time could not help because the work was never admitted. The per-client caps deliberately apply to background and normal work only, which is the reserved headroom the issue asks for: interactive (P0) reads stay bounded by the global budgets alone, so a client's own background flood cannot lock that same client out of its own reads. A per-client refusal is reported as `client_command_cap` / `client_bytes_exhausted` rather than as a saturated queue ([#369](https://github.com/lennix1337/Genexus18MCP/issues/369)).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Release preflight no longer aborts after its long phases when a non-phase value reaches the summary: `Add-PreflightPhaseResult` rejects a result without `name`/`status`, ignores foreign elements when merging, and the phase completion returns only the phase object. [#412](https://github.com/lennix1337/Genexus18MCP/issues/412)
 
@@ -260,6 +280,10 @@
 - The tool-schema budgets move 33500 → 34000 tokens and 82000 → 82500 bytes for the `all` profile, for the two features above: `genexus_read.ifUnchangedSince` and `genexus_query`'s `kbs`/`cursors`/`maxConcurrency`/`maxTotalResults`/`perKbTimeoutMs` land at ~33890 tokens / 82032 bytes. Both descriptions were trimmed while being written. The part that would not compress is the coverage wording, because an agent fanning out across KBs has to be told which KBs were actually searched: "KbBeta timed out" and "KbBeta has no match" call for completely different next moves and cost the same two words to render.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The wedged-shutdown reap is broker-gated like its two siblings, and the false nullability on `Classify`'s third parameter is gone. The entry below deliberately deferred adding `mayRecycle` to the wedged branch; that deferral is now overturned, because the reason it was safe is exactly what the null-dereference fix removed. Issue #335's rule is that a shared Gateway may act only once the broker reports an election, and `mayRecycle` carries that. The idle and heap reaps have carried it since #335. The wedged branch did not, and only by accident: the log line interpolated `pid={_process.Id}`, a shared Gateway owns no child `Process` so `_process` is null, the throw happened inside the interpolated string, and the loop's own `catch (Exception)` swallowed it before the `StopProcess(WorkerStopReason.Wedged)` on the next line could run - so the gate was never load-bearing for as long as the crash stood in front of it. Removing the crash made the branch reachable with two Gateways attached to one Worker, each free to decide to kill it, which is the two-watchers-one-Worker reap #335 exists to prevent. **What changes in `shared-host` mode**: a wedged Worker is reaped only by the Gateway the broker elected. A Gateway that observes the same wedge without an election logs `worker_wedged_observed` and stops there; it re-reads `recycleElected` on the next pass and reaps if the broker elects it in the meantime, because `SupervisionCanRecycle` is evaluated per pass against live supervision state with nothing latched and nothing lost. The token is deliberately not `worker_wedged_shutdown`, which is the string an operator greps for to establish that a reap happened - reusing it would let a second watcher's line stand in as the elected Gateway's confirmation, and two Gateways watching one wedge would leave that grep ambiguous rather than wrong. The branch also gained an `else`: before the gate, the `continue` above made the "still emitting output" line unreachable once the silence ceiling was crossed, and a non-elected Gateway falling through to it would have reported a Worker silent past the ceiling as progressing. Both the gate and the log split are covered by source-shape guards in the Gateway suite, labelled as source-shape because the decision and its effect are separated by a live Worker process, a running pipe, two Gateway processes on one broker and 15-second timer passes; five mutations were run against them (gate deleted, gate emptied with the reap left outside it, `else` flattened, the non-elected line renamed to `worker_wedged_shutdown`, and the idle sibling's gate dropped) and each turned the guard red. **Not verified end to end:** the live gate this repo requires for Worker supervision changes - two Gateways attached to one shared broker with a deliberately wedged Worker - cannot be run here, so this is review and source-shape coverage only. The change is an improvement on what shipped, not a new behaviour: in `shared-host` a wedged Worker was previously never reaped at all, because the null dereference aborted the call before `StopProcess` and the loop's own catch swallowed the throw. Isolated mode is unaffected - it owns a child `Process`, so `_process` was never null there and only the log token changed (`pid=` to `id=`, matching the two siblings).
 - `WorkerLivenessClassifier.Classify`'s `sdkProbe` parameter was annotated non-nullable while the body null-checks it in its first branch, the XML doc said "or null when the probe did not return at all", the only production caller declares `JObject sdkProbe = null` and assigns `null` again in a `catch`, and a test pins `null` as a legitimate input. The annotation was false, and that cost more than the diagnostics it produced: a non-nullable parameter switches off nullable flow analysis across the boundary, so a null arriving from a call site added later is invisible at the parameter instead of being flagged at the assignment that introduces it. It is `JObject?` now, with `JObject? sdkProbe` at the caller and `JObject?[]` for the probe table in the exhaustive-verdict test. Behaviour is unchanged - the null check was always there and always ran. Measured on this branch, exactly six warning locations disappear and none is added: `CS8600` at `Program.GatewayTools.cs:736`, `:739` and `:747`, `CS8604` at `:749`, and `CS8625` at `WorkerLivenessClassifierTests.cs:127` and `:201`, taking the Release baseline from 280 to 274.
@@ -348,16 +372,28 @@
 - The child-process launch settings are written once instead of four times. `BlameService`, `GithubService`, `PrDescriptionService` and `TimeTravelService` each built their own `ProcessStartInfo` with the same capture configuration, and every setting in it was added because leaving it out broke something: `UseShellExecute = false` keeps the argument string off `cmd.exe`, where the quoting `Argv` got right would be undone before `git` saw it; redirecting and closing stdin stops a child blocking on the Gateway's MCP stdio pipe; draining both streams through async handlers avoids a deadlock once one pipe buffer fills; and the second `WaitForExit()` is what flushes them. They are now `ProcessLauncher`, with the timeout branch - the one a normal run never takes and therefore the one a copy silently loses - covered for the first time by a test that confirms the child is killed rather than merely abandoned. Each caller keeps its own executable, arguments, environment, encoding choice and outcome mapping, because those genuinely differ: `TimeTravelService` returns -1 with a message where `PrDescriptionService` throws, and `BlameService` has always read git's output in the console codepage. Those differences are now asserted.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The command-line quoting primitive now has a home of its own and, for the first time, tests. `ArgvQuote` lived inside `GithubService` and was called from five services - `BlameService`, `CrossBrowserService`, `GeneratedDiffService`, `TimeTravelService` and `GithubService` itself - because a general primitive had no home and sat in whichever service needed it first. It is now `Argv.Quote` in `Helpers/Argv.cs`, alongside `Argv.Join`, which replaces four copies of the same space-join-quoted-arguments loop. The move is byte-identical in behaviour and the emitted bytes are pinned by a test so it can be reviewed as a relocation.
 
 - Writing those tests found a defect they were not written to find, and it is the most serious thing recorded in this changelog. Checked against `CommandLineToArgvW` - the parser the CRT inside `git` and `gh` actually runs - the quoting does not round-trip: `a b\` comes back as `a b\\`, and an argument containing a double quote is split, so `a\"b` arrives as two arguments and `a b\"c d` as three. A caller-supplied commit message or branch name containing a `"` therefore becomes extra `git` arguments. This is pre-existing, present identically in all five callers, and **not fixed here**: choosing a correct encoding changes what command lines the server builds and needs its own verification, which is not part of relocating the primitive. The behaviour is pinned by `ArgvQuotingTests` so it is recorded rather than assumed, and the defect is the top item on the pending list.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Credential redaction is defined once per assembly instead of five times, which also closes a masking gap the duplication had already opened. `LogValue` existed in `KbImportHelper`, `MacroSuggestionService` and `Program.Http` (Gateway) and in `PreviewService` (Worker); `SharedWorkerHost.RedactDiagnostic` was a fifth. Four were byte-identical. The fifth was not: it had already added `connectionstring` to the key list, so on the other four paths a `connectionstring=hunter2` value - and a connection string's `Server=`/`db.internal` target - reached the log unmasked. The Gateway and Worker now each hold one `LogRedaction` helper, the two pattern literals are compared by a test so the copies cannot drift apart again, and dropping `connectionstring` turns six of the new tests red. The masking marker is `<redacted>` throughout, which is what every existing assertion expected; nothing asserted on `SharedWorkerHost`'s `[REDACTED]`.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The mirror-root containment guard is defined once instead of twice, and is now tested at all. `TryGetRootFile` and its `DeleteFile` companion existed byte-identical in `SdkTextTreeService.Support` and `TextMirrorService.Reconciliation`; they are now `MirrorRootFile.TryResolve`/`TryDelete`, reached from eight call sites across both services. Both services orphan-clean a text mirror and then delete the files a manifest names, so the guard decides what may be deleted - duplicated, it is a traversal hole waiting on whichever copy somebody edits next. It had no tests whatsoever, so nothing would have caught that. The new coverage includes the cases the old pair never exercised: an absolute path (`Path.Combine` discards the root entirely when the second argument is rooted), four shapes of `..` traversal, a `..` that resolves back *inside* the root and must still be accepted, a root that is a string prefix of a sibling directory, and a malformed root that must not throw.
 
@@ -416,6 +452,10 @@
 - `scripts/find-unreachable.ps1` was not the only thing that turned out to be wrong about reachability, and the guard for it was wrong twice before it was right. The first version scanned all of `src/` for callers, which included the test project - and the guard named the six expected-unreachable members in its own allowlist, so every one of them counted as referenced and the assertion passed for the wrong reason. Restricting the scan to production sources fixed that. The second version then had its own coverage check satisfied by the six references its own file made to `SelectDependencySource` and `TryGetExportDependencies`, so deleting `SdkMemberCompatibilityTests.cs` - the file that actually tests them - left the guard green. The check now excludes its own file and requires real coverage elsewhere. Both traps are the same one: a guard that mentions a name can satisfy a test that counts mentions of it. All four guards are mutation-checked - re-adding a deleted method, dropping `install_builtin` from the routing line, deleting the real coverage, and restoring a production caller each turn the suite red on a clean compile.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - `scripts/find-unreachable.ps1` was reporting a clean tree while six unreachable members existed, for two independent reasons, and both are fixed. The first is that it counted identifier references across all of `src`, tests included, while reading declarations only from the production projects. A private method was therefore reported only if *nothing at all* named it, so any test that merely mentioned it silenced it completely. That is not hypothetical: the reachability guard above names the six unwired members in its allowlist, and with that one file present the script reported `0` unreachable members. The silence was indistinguishable from a clean tree - the failure mode the tool exists to prevent. The second is that its count maps were plain PowerShell hashtables, which are case-insensitive, and this repository has `PatternAnalysisService.FindWWPInstance` alongside `SaveAsService.FindWwpInstance`: different methods, different classes, differing only in case. Being last-writer-wins, the four references to the second were credited to the first, so the first was reported live. C# identifiers are case-sensitive, so the maps are now `Ordinal` and the tool agrees with the language. The counts are now two maps - production and test - and the report is two buckets, because "unreachable" is two findings with opposite answers: `DEAD`, no production caller and nothing names it, is a deletion candidate; `UNWIRED`, no production caller but a test names it, is an advertised capability whose wiring never landed, or an internal kept alive only by its own tests, and deleting one deletes its coverage. Collapsing them is what turned six reported gaps into six suggested deletions, which is worse than reporting nothing. The self-test grew from 8 declaration-parser cases to 15, adding the classifier itself - a test that only proves the parser cannot catch a classifier that says "dead" about anything a test mentions. All three changes are mutation-checked: restoring case-insensitive maps, collapsing the two buckets, and blanking the test corpus each turn the self-test red or flip the report to `dead=6 unwired=0`. With the tool fixed and the C# test agreeing, the Worker and Gateway have **no dead private members left**; the six unwired ones remain, and are unchanged.
 
@@ -426,6 +466,10 @@
 - The fields that were unpinned are now pinned, and the coverage gap is why the duplication survived. The existing tests asserted `resultType == "complete"` and `ttlMs > 0` for the playbook resources and nothing at all about `cacheScope`, the actual lifetime, the MIME type, or the URI the envelope echoes back. `McpResourceEnvelopeTests` drives `McpRouter.Handle` and asserts the emitted envelope for each resource - the two exact-match documents plus one discovered from each prefix-matched family, so the set cannot go stale against a key that no longer exists. It pins health as the only private, short-lived resource in both directions, because "health is the exception" only means something if nothing else drifted into private. The literals are counted with comments stripped: the constant's own documentation quotes `3600000` to explain where it came from, and counting prose reports a definition that is not there.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - `resources/read` echoes the request URI back in `contents[].uri` for four resources and a canonical lowercase literal for three, and the difference is observable. `UnscopeResourceUri` preserves the caller's casing, so a client asking for `GENEXUS://KB/TOOL-HELP/x` gets that exact string back, while the same client asking for `GENEXUS://KB/AGENT-PLAYBOOK` gets `genexus://kb/agent-playbook`. Health, agent-playbook and llm-playbook match on a case-insensitive comparison and then hand a literal to the envelope; the skill, Nexa-reference, gotcha and tool-help families match on a prefix and hand the request. **Not changed here**: normalising either side alters what four resources echo, which is wire output, and choosing which is correct is a call about client expectations rather than a simplification. It is now pinned from both directions so it cannot drift silently, and the helper's documentation records that the inconsistency is deliberate preservation rather than an oversight.
 
@@ -440,12 +484,20 @@
 - One of those rules is pinned structurally, and the reason is worth recording rather than hiding. `InvalidateIndexStateForKb` is distinguished from the shared helper only when `ResolveKbAliasForIndexRefresh` returns something, which needs `_currentKb` or a worker pool holding exactly one open KB - process-level state belonging to the live fixtures that are permanently unavailable here. Adding the fallback to that method changed **nothing** across all 130 index-filtered tests, which is exactly why it needed an assertion rather than a behavioural test: without one, the narrowing is a single refactor away from disappearing silently. The test says so in place, and strips comments before checking, because the method documents the exclusion in place and the explanation necessarily names the thing being excluded. Four mutations are checked, each turning the suite red on a clean compile: writing the snapshot back to the global while reading it from the per-KB map, dropping the deep copy, turning a merge update into an overwrite, and adding the fallback back.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The stale-result refresh for a lifecycle job is one rule, not two, and the two copies sat in the two places it matters most. `action=result` and `action=status` each independently reconciled the job against the worker and then re-read its stored result, with the same eighteen lines each and only the explanatory comment differing. A drift between them means one action reports a stale result while the other refreshes - which is the failure Issue #27 item 1 describes, and which no single-action test would notice, because each action still looks right on its own. It is now `RefreshLifecycleResultFromWorkerAsync`, and the conditions are named in one place because they are the substance of the rule rather than incidental detail: the reconciliation is unconditional, since a wedged background poller is what leaves a finished build stuck at `running`; the stored result is only re-read when it already carries `newWarnings`, which is what marks it as a warning-bearing snapshot that can be stale rather than a still-forming one; and only once the job is neither `running` nor `queued`, because a live job has nothing final to refresh from. The write stays inside the job's own `SyncRoot` because the poller writes the same field - an unsynchronised write there would be a torn read rather than a visible failure.
 
 - The rule had no coverage at all, and what protects it now says so rather than implying more. The existing lifecycle tests cover `BuildJobResultEnvelope` and the `newWarnings` shaping, not the refresh; and the refresh cannot be exercised without a worker to reconcile against, which places it behind the process-level fixtures that are permanently unavailable in this repository. So `LifecycleResultRefreshRuleTests` pins the clause set structurally - each condition, the order of the reconciliation relative to the check that depends on it, the lock, and the fact that both actions go through the shared rule while neither re-implements it inline. Five mutations are checked and each turns it red: dropping the `queued` guard, dropping the `newWarnings` requirement, writing the result without the lock, moving the reconciliation after the check it feeds, and removing the refresh from `action=status`. The test states the limitation in place, because a structural guard that reads as behavioural coverage is worse than no guard.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - `projection=standard` is now the minimal projection plus more, by construction rather than by comment. `genexus_properties` documents the two projections as a widening pair, and the code said so with a marker comment: `StandardProjectionPropertyNames` spelled the minimal nineteen names out a second time under a `// Minimal set` line marking where the copy ended. Nothing enforced the containment. Adding a name to `MinimalProjectionPropertyNames` and not to the standard list would leave a property that `projection=minimal` returns and `projection=standard` does not, so a caller asking for more detail would get less - and the symptom would be a field missing from one shape of the same object, not an error. The standard set is now built from the minimal one, so the relationship holds by construction.
 
@@ -454,6 +506,10 @@
 - `PropertyProjectionSetTests` pins the invariant, the published name lists, and the comparer. The containment is the important one. The names are pinned in **both** directions, because a projection is published output: a name leaving the standard list, or the minimal set changing at all, is a wire change and now has to be written down in the test rather than deleted from a literal. The comparer is pinned behaviourally rather than by reading the declaration, because it is what makes the duplicate SDK spellings work - both sets list `Picture` and `ATT_PICTURE`, and the standard set adds `IsNullable` and `ALLOWNULL`, because GeneXus exposes the same property under different capitalisations on different objects. A case-sensitive set would silently stop returning one of each pair: a property that vanishes from a projection with no error and no other symptom. Four mutations are checked: rebuilding the standard set independently, making the copied set case-sensitive, removing a standard-metadata name, and filtering the standard projection by the minimal set.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The WebForm save diagnostics name their binding flags instead of rewriting them, and its three exact-signature SDK probes go through the shared resolver. A probe that omits `FlattenHierarchy` reports an SDK capability as unavailable - the SDK moves helper members between a type and its base class between GeneXus majors, and the hierarchy flag is the only thing that finds the base-class form. `SdkMemberProbe` exists to make that impossible to get wrong by accident, and the diagnostics were spelling the same four-flag expression out at six call sites instead of naming it: six chances to drop one. They now use a new `SdkMemberProbe.InstanceAnyVisibility`, which is deliberately *not* `StaticOrInstanceAnyVisibility` - it excludes `Static`, because these probes invoke a member on a part instance, and `GetMethods` returning a same-named static overload first would let a probe report success for a call that did not do what the caller meant.
 
@@ -472,6 +528,10 @@
 - `ReadFullObjectSharedPartTests` pins the rule rather than the shape, because the shape was never the risk. The helper is private and the method needs a live SDK object, so the decision is asserted at the call sites: `Structure` is metadata for all three types that read it, no other part is, and the `SDEEvents` fallback appears once. Four mutations are checked: making a `Structure` part append to the combined source, dropping the blank-part guard so empty parts are stored, appending metadata parts too, and removing a field from the unavailable-parts diagnostic.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The Gateway's two "has this operation finished?" questions are no longer the same three literals written out three times. `OperationTracker` had an `IsTerminalOperationStatus` helper used by the three status-poll paths, and each of the two cancellation paths hand-rolled the identical three comparisons. The two are not the same question, and that is the part worth recording. A record can only ever hold `Completed`, `Failed` or `Cancelled` as terminal states - those are what the tracker assigns, and nothing assigns them back. The polled helper additionally recognises `NotFound`, which is the envelope the tracker emits for an id it does not know rather than a state a record holds, and `Stalled`, which **no path in the class can produce**: the only stalled producer in the Gateway writes that into a worker payload, and the background-job registry has its own lowercase job status read elsewhere. Had the cancellation paths simply called the polled helper, a not-found-shaped status would have made a cancel request report "already terminal" for a still-live operation. They cannot get that status today, so this is not a live bug - but it is exactly the kind of distinction that erodes, and it is now `IsTerminalRecordState`, named for what it answers.
 
@@ -480,6 +540,10 @@
 - `OperationTrackerTerminalStatusTests` drives the real tracker through its public surface for the behavioural half: a new operation is `Running`, cancelling reaches `Cancelled` and is idempotent, a cancel *requested* is recorded without acting, and a `Failed` or `Completed` operation is terminal for both cancellation paths. The split predicate itself is pinned at the source, because the behavioural tests cannot reach a status this tracker never produces. Three mutations are checked, each turning it red: one cancellation path stops consulting the predicate, the record-level predicate loses a term, and a term is misspelled so a failure looks live.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The lifecycle result and warning payloads compute their page window once. They are the same envelope around a different collection - one keyed `items`, one keyed `warnings` - and each was computing the window itself: the same clamps, the same `skip`/`has_more` arithmetic, the same bounds-checked loop, and the same `_meta.pagination` block. That arithmetic decides which page a client sees and whether `has_more` tells it to ask again, so two copies is two chances for the two payloads to disagree about the page they are showing. Clamping, slicing and the meta block are now `ClampPage`, `PageOf` and `PaginationMeta`. The two payloads keep their own collection key, which is part of what each caller reads, and a test asserts they differ in exactly that.
 
@@ -488,18 +552,30 @@
 - `BatchServicePaginationTests` holds the window contract by driving both builders through the same inputs and comparing what they report, across the boundaries rather than the middle: page 0 and negative pages, page sizes of 0 and negative, an oversized page size, a page past the end, a null list and an exactly-full final page. `has_more` is checked against whether more items actually exist rather than against a literal, so the field cannot claim there is another page when there is not. The source-level half pins the bounds themselves, and that split is deliberate: raising the page-size cap from 200 to 500 **passed every behavioural case**, because none of them requests a page large enough to tell the two apart. The cases cover the clamping *behaviour*; the source assertion covers the *number*, and says why. Four mutations are checked: `has_more` without the page offset, the skip losing its page term, the cap changing, and the empty-list duration literal returning.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The two readers of an object text document agree on what a document is. One reads the source, one reads the named parts, and each was doing the whole split itself: the emptiness check, the newline normalisation, the header split, the two-part validation, the brace search and the balance check. **The three refusal messages were duplicated with them**, which is the part that matters: a client parsing malformed text could be told "Object header must contain type and name." by the source reader and something else by the parts reader for the same document, and nothing in a parse failure tells a caller which reader rejected it. The split is now `TrySplitObjectDocument`, returning the body raw so each reader keeps its own interpretation of it - the source reader strips a leading `#Source`, the parts reader walks the body's own sections.
 
 - `ObjectTextDocumentSplitTests` asserts the agreement directly: the same document is accepted by both or refused by both, and refused with the *same sentence* rather than merely failing twice, across empty and whitespace-only text, headers that do not split, and four kinds of unbalanced body. Newline normalisation is checked as shared behaviour - a CRLF document must round-trip through both readers, because if it were left to each, one would accept a Windows-authored file and the other would reject it. Three format consequences are now pinned that were previously implicit: a name containing spaces is kept whole, because the header splits on the first separator with a limit of two, and the source reader's output deliberately carries the `#End` marker and later sections because it is less structured than the parts reader. Those are recorded rather than asserted away - the point of the tests is that the two readers differ, not that they agree. Four mutations are checked: weakening the brace balance check, dropping the newline normalisation, removing the header split's limit, and having the parts reader reword one refusal.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - `genexus_refactor` gives the same advice when a code block is not found, whichever refactor refused. Three call sites built the `CodeBlockNotFound` envelope - extract-procedure before and after the write, and extract-subroutine - and the duplication mattered less than the drift. They shared the code, the message, the recovery step and the target, and **the hint said different things**: "ensure the code matches the source verbatim" against "ensure whitespace and formatting match verbatim", with the subroutine version adding "in any source part of the target object". A caller reading a refusal to decide what to fix therefore got different advice from the same failure depending on which refactor it called, and *neither* version described the condition actually checked - the caller passes a block and the refactor searches every source part, so "any source part" is the accurate statement of all three. That is the wording kept, and it is now the only one. The `SourceObjectNotFound` refusal, which two extractions and a third refactor each wrote out, is the same treatment.
 
 - The other `ObjectNotFound` envelopes in that file are left alone, and the boundary is asserted rather than left to judgement. They are about a *target* rather than a source: they tell the caller to disambiguate by type and route to `genexus_list_objects` for different reasons. Folding them into the source-object refusal would tell a caller who already named the source explicitly to go looking for a different object. `RefactorRefusalEnvelopeTests` pins both halves - the shared wording, its call-site count, and the three distinct target-object hints that must stay distinct. Three mutations are checked: the hint reverting to the narrower drifted wording, a call site re-inlining the envelope, and the source-object recovery step being reworded.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - A print-block mutation's read-back states the two-attribute match once. After a rename, add or delete commits, the Gateway re-reads the report XML to decide whether the change actually reached disk, and it looked for a `PrintBlock` element whose `Name` **or** `ControlName` matched - a two-clause predicate written out at five sites. Both attributes are needed because GeneXus exposes a print block's name under one or the other depending on the major, so a site checking only one would report a completed mutation as unverified: the exact failure the read-back exists to catch, caused by the check itself. Five copies is five chances for the fifth to be the wrong one, and the symptom is a mutation that claims it failed when it succeeded. It is now `FindPrintBlockByName` and its negative `ContainsPrintBlock`.
 
@@ -508,6 +584,10 @@
 - `PrintBlockReadBackTests` checks the match rule against real XML rather than source text: both attribute spellings, both present together, three case variations, a non-matching block, and a report with no print blocks at all - which is the delete path's success case, so the predicate has to be safe on an empty document rather than throwing. Three mutations are checked, each turning it red on a clean compile: the finder dropping the `ControlName` spelling, the repair building an envelope, and delete attempting the repair.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - A route rename states the offset-ordered rewrite once. Renaming a route rewrites the method name and the path into the same copy of the API's source block, and the order the two replacements happen in is the whole content of the operation: the recorded offsets are positions in the original text, so replacing the later one first shifts the earlier one's position and the second replacement lands in the wrong place. That is not a compile error and not a thrown exception - it is a written file with something wrong in the middle of it. The rewrite was written out twice, in `CloneApiRoute` and `CloneApiRouteTo`, and the two copies differed only in where the new names came from. `CloneApiRoute` now computes the names and delegates.
 
@@ -516,6 +596,10 @@
 - `ApiRouteSourceRewriteTests` derives its fixtures from `ParseApiRoutes` on real API source instead of building them by hand, so a change to the parser's recorded offsets is what it would notice. It asserts that those offsets address the two spans in the original text, that parsed routes always put the path span first - which is what makes one side of the branch the live one - and the exact rewritten text for both sides of the branch, since apply either order to both shapes and one exact string no longer holds. Three mutations are checked, each turning it red on a clean compile: always replacing the method span first, `CloneApiRoute` re-spelling the rewrite instead of delegating, and the second conflict check reporting the stale token.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The dispatcher's unknown-action refusal is one envelope. Every tool that takes an action ends on the same refusal for an action it does not serve - the same `UnknownAction` code, the same two sentences with the tool's name dropped in, and the same next step. Five handlers carried that written out in full. It is shared because this is the one shape that ends every failed discovery attempt: a caller that guessed an action is told, in a fixed form, that nothing was written and where to look instead, and an agent reads it programmatically. Two handlers disagreeing about that means one of them is the odd one out, and which one is not obvious to whoever reads the transcript afterwards. A sixth handler now inherits the shape instead of deciding again whether to spell it right.
 
@@ -526,6 +610,10 @@
   One of those four is caught only structurally, and the test says so. Caching the array in a field leaves every behavioural assertion green, because the helper returns serialised JSON and each caller re-parses its own copy - so a shared instance is invisible from the output. The content half is behavioural and the instance half is a source check, and both are needed: content alone would pass for a single shared instance, and the absence of a field would pass for two hand-written copies that happen to match.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The stale-WWP-`PatternInstance` refusal is one envelope. Six operations refuse this way - five under the per-target lock in the `WwpActionService` partials, plus the router path - and each wrote the whole envelope out. What made the copies worth removing is the `extra`, not the code: its two fields are the entire retry contract, because a caller re-runs with `expectedVersion` and compares against `currentVersion`. Six hand-written copies of a contract read programmatically is six chances for one to drop a field or rename it, and the result is a caller who can do nothing but re-read the whole pattern. The per-operation message stays an argument, because naming the attribute, table, tab, form action or component is what tells an operator which stage refused.
 
@@ -538,6 +626,10 @@
   One detail worth stating because it cost time to find: the version fields land at the **envelope's top level**, not inside `error`. `Err` merges its `extra:` argument into the envelope rather than into the error object, so a caller reading the retry contract from the obvious place gets `null` and no explanation. The tests assert that location explicitly, and that `error.extra` stays absent.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - "Which KB is this call about" is one rule. Five services accept a `kbPathOverride` and then need a KB path: four copied the same four-line private `ResolveKbPath`, and `genexus_screenshot` publish inlined the same logic in a slightly different shape. It is now `EffectiveKbPath.Resolve`, which states the three clauses once - an explicitly named path is used verbatim and wins over session state; otherwise the answer is whichever KB is open, and no KB at all is `null` rather than an error; and it never throws. That last clause is why the duplication mattered: callers use the result to decide whether to refuse, so a resolution failure surfacing as an exception would replace a clear `NoKbOpen` envelope with a stack trace in a place that has no handler for one.
 
@@ -548,6 +640,10 @@
 - `EffectiveKbPathTests` calls the production helper rather than restating the precedence rule, because a test that reimplemented it would pass with a wrong rule in production. It also asserts no caller reaches `GetKbPath` directly any more, since the point of the shared rule is that the precedence and the no-throw promise are the same everywhere. Five mutations are checked, each turning it red on a clean compile: the override losing precedence, the no-throw promise dropped, one service growing its own copy, one reaching `GetKbPath` directly, and the inner `GetKbPath` stopping swallowing.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The WWP snapshot gate states its five terms once. A WorkWithPlus mutation may only proceed when it captured everything it needs to prove what it changed - the object's own native bytes, its resolved parent, that parent's WebForm text, and before-snapshots of both the PatternInstance and the WebForm. Five terms is enough that dropping one is easy and invisible: the term disappears, every test still passes because nothing exercised a missing snapshot, and the next real failure is a mutation applied without the state needed to roll it back. The check was written out identically at all five operation sites; it is now `WwpSnapshotsIncomplete`, and `WwpSnapshotGateTests` checks all five terms individually - which a source-level check cannot do, since it cannot tell a dropped term from a renamed one.
 
@@ -558,6 +654,10 @@
   The bundle is dereferenced rather than null-guarded, deliberately: `CaptureSnapshots` always constructs one, and a throw inside it happens at the call site before the gate. Adding `?.` would imply a case that cannot occur and would quietly convert a crash into a refusal saying the snapshots were unavailable, which is a different diagnosis. Pinned by a test.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **The source-comment stripper used by the source-shape guards could delete code, so some of those guards were weaker than they looked.** Each of thirteen Worker test classes carried its own copy of a helper that removed block comments with `/\*.*?\*/` under `Singleline`, and four Gateway test classes carried the same one. That assumes every `/*` opens a comment, which breaks on a file containing `/*` inside a string literal: the match then runs to the next `*/` *anywhere in the file*. Measured on `ObjectService.cs`, it returned 199,096 characters for a 298,344-character file - a third of it, including a call site added minutes earlier.
 
@@ -574,6 +674,10 @@
   Five mutations are checked, each turning it red on a clean compile: the step naming the wrong tool, the wrong action, extra args overwriting the action, a site reverting to its own step, and the helper growing an envelope.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - The source-shape test helpers are defined once. `Count` was a private copy in 24 test classes, `MethodBody` in 14 and `Normalise` in 3, across both test projects. They are now `SourceAssert`, linked into both. A copied helper is a helper that can drift, and drift is invisible in both directions at once: a stricter copy fails tests that should pass, and a looser one passes tests that should fail - the second being the one that hides a real divergence.
 
@@ -616,6 +720,10 @@
 - Six duplication candidates were measured and declined, with the reasons recorded so they are not re-proposed. The `catch (Exception ex) { error = ex.Message; return false; }` tail appears 7 times in 6 files, and those are the tails of `Try`-shaped methods in unrelated types with no common base - sharing a one-line catch would be worse than the repetition. `catch { return null; }` appears about 200 times in about 90 files, not the handful first estimated; it is not a shared decision at all but the idiomatic spelling of "best-effort lookup, absent means null", and consolidating it would be actively harmful. `TryPrepareLegacyExport` and `TryPrepareNativeExport` share about 20 lines and then diverge completely, and the part they share is precisely the part that must differ, since one names `.gxtext` files and a manifest and the other a `src`/`ref` tree. The twelve-line `using` block repeated by the three `ObjectTextService` partials could be removed with `global using`, which would make the namespace dependencies of every file in the assembly implicit and ambiguous - trading visible dependencies for hidden ones across the whole project. The six helpers earlier proposed for inlining all have 4- to 12-line bodies rather than the 3 assumed, and each either has five or more call sites or earns its name at its single one.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - A shared Worker is supervised at all. Issue #335: `StartShared(...)` returned before the health task was installed at the end of the isolated startup path, so a shared Worker had **no** supervision - no vitals, no idle reaping, no heap-pressure recycling, no stall detection. It was precisely the Worker the isolation and heap-pressure settings exist for. The health loop is now installed on both startup paths, and the loop can run without a local `Process`: in shared mode the Gateway owns no child process, so liveness is asked of the broker and the child's figures arrive from it. The heartbeat acknowledgement used to be discarded, which is the whole reason there were no vitals - the only party able to answer was being ignored. The broker now reports the child's PID, working set, private and managed heap, queue depths, SDK operation, elapsed time and last-progress time, plus its own supervision generation, on that existing acknowledgement. Extending `heartbeat_ack` rather than adding a frame type keeps this off the protocol-migration path the issue warns about: an older Gateway ignores the new fields and an older broker simply sends none. **Recovery belongs to the broker**, because it owns the child. A Gateway may act only once the broker reports an election, and the broker clears that flag when the new child starts - which is what makes exactly one attachment act per sweep instead of every Gateway watching the Worker deciding to kill it. With no report at all, no recovery decision is taken, because deciding on no evidence is the failure this path exists to remove. **Progressing work is never a recovery target**, whoever owns the child: recycling a progressing build destroys the operation, not just the Worker. Queued work and an unproven lane block recovery too - a busy lane with no observed progress is `busy-unproven` rather than `busy-stalled`, because one sample cannot tell a healthy short call from a deadlocked one. The stall window matches the one `genexus_connection_recover` already uses, so the two paths cannot disagree about the same lane at the same instant. The child-exit and TTL coverage is preserved, and the ownership reconcile stays on the isolated path only, since ownership is this process's own lease rather than a broker-owned child's. Fixes [#335](https://github.com/lennix1337/Genexus18MCP/issues/335).
 
@@ -640,6 +748,10 @@
   Not run, and recorded as unavailable: no live native measurement. The matrix's measured figures require disposable synthetic KBs, and none is configured on this machine; `C:\KBs` holds real KBs the issue forbids discovering or mutating automatically. The deterministic lane and the matrix logic are fully verified; the native p50/p95 numbers are not, and this entry claims no speedup. Fixes [#358](https://github.com/lennix1337/Genexus18MCP/issues/358).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - A WorkWithPlus apply now reports the objects it actually generated, because it was looking for them under the wrong naming convention. Issue #359: applying WorkWithPlus to `TPacCls` answered `PatternApplied` with `generatedObjects: ["WorkWithPlusTPacCls"]` and nothing else, and the four siblings read back as `ObjectNotFound`. The family lookup probed a hand-written **prefix** list - `WW<Trn>`, `View<Trn>`, `ExportWW<Trn>` - and WorkWithPlus generates a **suffix** family: `<Trn>WW`, `<Trn>WWDS`, `<Trn>WWExport`, `<Trn>WWGetFilterData`, which the issue itself records (`TbandadWW`, `tpaidadww`, `tferdadww`, ...). Every family probe missed. Two consequences, and the second is why it survived a reapply and a targeted build: the generated objects were **not reported**, and - because the same lookup drives the search-index registration right below it - they were **not added to the index** either, so they stayed invisible until something else reindexed the KB. The apply had worked all along; the report and the index were wrong. Both conventions are still probed, because a KB generated by an older release holds prefix-named objects, and the suffix candidates are ordered longest-first because `WWGetFilterData` and `WWExport` both begin with `WW` - strip `WW` first and the base comes back as `TbandadGetFilterData`, which is a lookup for a host that does not exist. The same wrong assumption made the `EditingWebFormUnderPattern` shadow warning never fire on a real generated object: it stripped a prefix that a suffix-named object does not have, so the one class of object where warning the author that the IDE will overwrite their edits mattered most was silently exempt. Related to [#349](https://github.com/lennix1337/Genexus18MCP/issues/349).
 
@@ -675,6 +787,10 @@
 - [#330](https://github.com/lennix1337/Genexus18MCP/issues/330) — [Bug] genexus_apply_pattern (WorkWithPlus) returns PatternNoOp on any WebPanel; mode=diagnose said all checks passed
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - `genexus_apply_pattern pattern=WorkWithPlus` on a `WebPanel`/`WebComponent`/`SDPanel` no longer collapses every failure into one unservable sentence, and `mode=diagnose` no longer contradicts it. On a non-Transaction target the engine's `ApplyPattern` is a silent no-op — dead end #1 in `docs/sdk-probe/wwp-projection-discovery.md` — so the `PatternInstancePackageInterface` pipeline is the only route that can work, and every one of its stages can fail for a different reason. Diagnose ran none of them and still answered `All pre-apply checks passed. The pattern should apply cleanly.`, so a target that could never apply was advertised as ready; the apply then reported `Engine ApplyPattern void overload no-op'd on this target, and the WWP package's CreatePatternInstanceWithTemplate fallback also failed: ValidateAndSave returned false`, which names neither the template, the package, nor the projection. A new `WwpAttachPreflight` resolves every member the attach invokes — the helpers type, the `CreatePatternInstanceWithTemplate` overload for the specific parent type, `SetPatternApplyOnSave`, `ValidateAndSave`, and the `WorkWithPattern` → `GetBuildProcess` → `UpdateParentObject` projection chain — and both the attach and `mode=diagnose` run it, so they cannot disagree. Diagnose reports each blocking stage as a `critical` finding carrying `stage`, `detail` and the rejected resolution candidates, and the `ok` finding is suppressed whenever one exists. The apply returns a stable `failureStage` (`wwpAssembly`, `packageInterface`, `createOverload`, `template`, `projection`, `hostConflict`, `validateAndSave`, `attachVerification`, `environment`) plus a machine-readable `failureCode`, an `attachPreflight` payload, and a hint and next-steps keyed to that stage — `Update the WorkWithPlus pattern package` for an absent API, `genexus_delete_object` for a host conflict, `genexus_list_objects typeFilter="WorkWithPlus for Web Template"` for a missing template — instead of one blanket "try a different template" that cannot help in five of those cases. Related to [#330](https://github.com/lennix1337/Genexus18MCP/issues/330).
 
@@ -693,6 +809,10 @@
 - The process-smoke binding failure now says what to do. `Process smoke binaries could not be bound to the current publish artifacts.` was one sentence for three different causes, and named neither the files compared nor the fix, so the operator had to infer both. The message now lists each compared path with its actual state - missing publish artifact, missing source build output, or a SHA-256 pair that does not match - states the probable cause for that specific state, and names the remedy (`.\build.ps1`). The dominant real-world case gets its own explanation: `publish\` built before a commit, where the SDK's revision stamp makes the rebuilt `src\` binary differ byte-for-byte. Related to [#329](https://github.com/lennix1337/Genexus18MCP/issues/329).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - A snapshot restore could report success while writing nothing. `WwpActionService`'s restore check was `Equals(Sha256(restored), Sha256(before))` and its `Sha256` returned null for a null input, so when neither side produced readable content the comparison evaluated null-equals-null, was true, and the response carried `patternRestoredExactly: true` and `exact: true` for a snapshot that was never restored. The comparison now rejects a missing side outright: a restore check that cannot see a difference must not certify one. Two sibling copies of the same hash, in `TextPersistenceVerifier` and `EventsSaveIsolation`, hashed null as the empty string instead, so the same KB produced different hashes for a missing value depending on which path recorded it.
 
@@ -739,6 +859,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - A long `genexus_versioning` read could outlast the client's window and leave the caller with no documented way to reach the result the Gateway had already stored ([#325](https://github.com/lennix1337/Genexus18MCP/issues/325)). A read-only `history_get` was measured in the field at 352 s of wall clock, of which 345 s was SDK time, while the caller gave up at 60 s. Every signal needed to recover pointed the wrong way: the operationId existed only in the reply that never arrived, so the only way to obtain it was to read gateway telemetry; and the record itself, once the worker finally answered, read as a contradiction - `timedOut: true` beside `status: Completed` and a populated `workerPayload` - which looks like a failure rather than a result waiting to be read. The mutation tools already answered this shape of problem with an accept-then-poll envelope; the version-store reads had no equivalent, which is the actual gap. `history_get`, `history_list`, `diff`, `diff_generated` and `blame` now accept `async: true` and return `{ operationId, job_id, pollTarget: 'op:<id>', status: 'running' }` BEFORE the SDK call starts, running the read detached and storing its envelope, so the result stays fetchable through `genexus_lifecycle action=status/result` (and cancellable through `action=cancel`) no matter when the original turn ends. The KB-mutating actions (`history_save`, `history_restore`, `undo`, `time_travel`) are deliberately excluded: they keep the mutation path, whose recovery fences assume a write may already have persisted. Separately, the three signals a caller conflated are now published as three fields on every timed-out operation - `timedOut` (the wait expired), `status` (the worker's own outcome) and the new `resultAvailable` (a payload is stored to read) - with a hint that names the retrieval call, so a terminal record carrying a result reads as a result instead of a contradiction. Untimed operations are unchanged: no `resultAvailable`, no hint.
 
@@ -762,6 +886,10 @@
 - SDK member probes now go through a single `Compatibility.SdkMemberProbe` boundary instead of hand-written `BindingFlags` at ~24 call sites. The load-bearing part is `FlattenHierarchy`, whose effect is **not** uniform and which is therefore easy to get wrong by assumption: measured on .NET Framework 4.8, an *instance* member declared on a base class is already found without it because instance lookup walks the hierarchy anyway, while a *static* member on a base class is found **only** with it. A static helper that a major hoists up its hierarchy would previously have been reported as a missing capability — a silent, fail-closed capability loss. `DeclaredOnly` sites are deliberately untouched, since that flag means the opposite of what a compatibility probe wants, and `AmbiguousMatchException` is now caught and reported as *absent* so a doubly-declared member degrades the capability instead of binding a base class arbitrarily.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - `genexus_worker_reload mode=hard` failed on **every** call, and un-cleanly. `CopyWorkerBinaries` required both `GxMcp.Worker.exe` and `GxMcp.Worker.dll`, but the Worker is a net48 project with `OutputType=Exe` — the exe *is* the assembly, and no `GxMcp.Worker.dll` is produced in `bin\Debug`, `bin\Release`, `publish\worker` or the staged runtime. The guard came from a change that converted an earlier best-effort skip into a hard failure and named a file that cannot exist. Failing loudly was the right call; naming an impossible file made the tool unusable. The required set is now `GxMcp.Worker.exe` plus `GxMcp.Worker.exe.config` (binding redirects and SDK probing — a swapped worker will not resolve the GeneXus SDK without it), with `.pdb` and `.dll` copied when present. A structural test now derives the expectation from the csproj's `OutputType` and validates the *real* `publish\worker` and `bin\Debug` directories, which is precisely what the old guard rejected.
 - The same reload also left the KB with **no worker at all** whenever the copy failed. The swap runs inside `DrainAndReplaceAsync`'s post-drain hook, so the old worker had already been stopped, its exit confirmed and `entry.Worker` cleared before the throw. Two independent causes are fixed. (a) An unusable `sourceDir` is now validated **before** the drain and answered with a structured `WorkerSwapSourceInvalid` error, so a typo'd path no longer costs a live worker. (b) A `sourceDir` equal to the running worker's own directory is a no-op instead of a copy: it previously copied `GxMcp.Worker.exe` onto itself, which throws a sharing violation while the outgoing worker still holds the exe — observed live as `The process cannot access the file ... GxMcp.Worker.exe because it is being used by another process`, failing the reload *after* the drain. The pool's `finally` already recovered the entry correctly (no wedge), which is why this presented as "reload doesn't work" rather than as a crash.
@@ -805,6 +933,10 @@
 - Expanded the published tool contract for the typed WWP grid, lifecycle continuation, semantic WebForm safety, report-control, K2B/structural variable, and pagination work. The all-profile schema budget is now 33,500 tokens / 82,000 bytes (measured ~33,055 tokens / 81,233 bytes); generated discovery, capabilities, and operation-contract artifacts are regenerated from the source-of-truth schemas. ([#268](https://github.com/lennix1337/Genexus18MCP/issues/268), [#306](https://github.com/lennix1337/Genexus18MCP/issues/306), [#308](https://github.com/lennix1337/Genexus18MCP/issues/308), [#309](https://github.com/lennix1337/Genexus18MCP/issues/309), [#310](https://github.com/lennix1337/Genexus18MCP/issues/310), [#313](https://github.com/lennix1337/Genexus18MCP/issues/313), [#314](https://github.com/lennix1337/Genexus18MCP/issues/314), [#315](https://github.com/lennix1337/Genexus18MCP/issues/315), [#316](https://github.com/lennix1337/Genexus18MCP/issues/316))
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - `genexus_module` no longer calls GeneXus 18-only `IModuleManagerService` members directly. `GetBuiltinModuleVersion` (GeneXus 18 only) and `GetSettings` (GeneXus 17+) are now resolved by guarded reflection, so the Worker compiles against every supported major. The built-in route reports `ModuleBuiltinCheckUnsupported` or `ModuleBuiltinVersionUnsupported` when the installed SDK cannot verify the registration or the exact version, and a missing module cache directory still refuses the install with `ModuleCacheUnavailable` rather than skipping the cache-identity check this flow promises. Caught by the pre-release live matrix, where GeneXus 17 failed to compile; a primary-SDK-only build and test run cannot see it.
 - `scripts/test-live-matrix.ps1` now honours its documented default. An omitted `-Majors` binds to `$null`, and `@($null).Count` is 1 rather than 0, so the "select every catalog major" branch was never taken and the run died with a parameter-binding error before reporting a single major. Blank entries are treated as omitted, an unresolvable selection is refused explicitly, and `Write-MatrixSummary` accepts an empty result set so a build that fails before any major runs can still be reported instead of crashing the failure path itself. The existing test passed `@()`, which is not what an omitted flag produces.
@@ -891,6 +1023,10 @@
 - New neutral CLI configurations default to the `standard` tool profile. `tools/list` now uses compact schemas with full descriptions and examples available from tool-help resources; profile budgets and actionable `ToolNotInProfile` errors make the remaining profiles discoverable. ([#296](https://github.com/lennix1337/Genexus18MCP/issues/296))
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Shared-host child stdin now writes UTF-8 frames without a BOM, preserving non-ASCII tool arguments across the broker hop. Isolated mode is unchanged; users of affected shared-host releases should verify accented writes. ([#285](https://github.com/lennix1337/Genexus18MCP/issues/285))
 - JSON ingress now preserves ISO-8601 argument strings as strings through Gateway validation and Worker dispatch, without normalizing their original offset or fractional seconds. ([#286](https://github.com/lennix1337/Genexus18MCP/issues/286))
@@ -933,6 +1069,10 @@
 - **Pattern tools work with any installed GeneXus pattern, not only WorkWithPlus.** The pattern registry is discovered from the installation's `Packages\Patterns\*\*.Pattern` manifests (Id, Name, InstanceName, ParentObjects, Version), keeping `WorkWithPlus` and its `WWP` alias. `genexus_read` returns the full `PatternInstance` XML of any pattern instance (for example K2BTools `K2BEntityServices<Trn>`), and `genexus_edit part=PatternInstance` edits it with the existing version token, snapshot, rollback and post-save re-read guarantees. For patterns other than WorkWithPlus the edit saves the instance only and reports `generatedObjectsRegenerated: false`; the generated objects are regenerated by applying the pattern in the GeneXus IDE. A parent with several pattern instances returns `PatternInstanceAmbiguous` with `candidates` instead of guessing ([#260](https://github.com/lennix1337/Genexus18MCP/issues/260)).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **`genexus_apply_pattern` no longer falls back to WorkWithPlus for other patterns.** Pattern names resolve through the installed registry (`pattern=K2BEntityServices` works; an unknown key lists `availablePatterns`). `reapply=true` takes the pattern from the existing instance or validates the supplied one (`PatternMismatch`, `PatternInstanceAmbiguous`) and never runs the WorkWithPlus projection for another pattern. First apply of other patterns generates the instance and its objects; their headless reapply does not regenerate objects (verified with K2BTools on GeneXus 17), so it returns `PatternRouteUnsupported` instead of a false `PatternApplied`. `mode=diagnose` checks the manifest's parent types and reports a critical `routeUnsupported` finding instead of "should apply cleanly" when a route is not available, and non-WorkWithPlus responses carry no WorkWithPlus text. `genexus_wwp` on an existing object without a WorkWithPlus instance returns `WWPInstanceNotFound` with `detectedPatterns` (or a pointer to its WorkWithPlus instance) instead of `ObjectNotFound`, and still never edits an untyped homonym. A pattern instance owned by a homonymous object (for example a DataView named like a Transaction) is no longer reported as the queried object's instance. WorkWithPlus behaviour changes that follow from resolving patterns by id: reapply on a `WorkWithPlus<X>` target runs on its parent `X`; the stale-host recovery and type gate also apply to the `WWP` alias and the WorkWithPlus GUID; reading a pattern instance without `part` returns `PatternInstance`; and `reapply=true` with a pattern that has no instance yet runs the gated first-apply path (a WebPanel without `settings.template` is rejected there as in a plain apply) ([#260](https://github.com/lennix1337/Genexus18MCP/issues/260)).
 
@@ -1001,6 +1141,10 @@
 - Wait for the MTA executor's active-slot cleanup in the burst concurrency test. Callback completion precedes the executor's `finally` block, so an immediate zero-count assertion could fail after all work completed.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Full Source save verification ([#265](https://github.com/lennix1337/Genexus18MCP/issues/265)) now preserves complete public-read text (including original line endings and trailing newline), forwards `verifyMode` and `requireObjectSave`, and reports physical SDK save separately from post-save comparison. Exact differences carry bounded expected/read lines and typed reasons; unknown reads and concurrent rollback state fail closed without automatic write retries or lifecycle actions.
 
@@ -1050,6 +1194,10 @@
 - [#244](https://github.com/lennix1337/Genexus18MCP/issues/244) — `genexus_edit mode=patch` pode apagar uma Source inteira e responder sucesso com verificação não confirmada
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - [#249](https://github.com/lennix1337/Genexus18MCP/issues/249) **Recognize GeneXus PostgreSQL datastores reported with `dbmsCode=15`.** The shared resolver now keeps datastore inventory, `records_query`, and execution-plan diagnostics aligned when the SDK leaves the textual provider empty, while still failing clearly when connection metadata is unavailable. See [`docs/issues/249-postgresql-dbms-code-15.md`](docs/issues/249-postgresql-dbms-code-15.md).
 
@@ -1093,6 +1241,10 @@
 - [#241](https://github.com/lennix1337/Genexus18MCP/issues/241) **`genexus_kb_version action=changed_objects` now exposes a read-only Design-versus-frozen inventory.** It resolves a frozen `fromVersion` (or the latest frozen version), returns stable paginated `NEW`/`CHANGED` entries with GUID/entity-key identity and no SQL fallback, and returns `ChangedObjectsNotSupported` when the installed SDK cannot provide the model snapshot.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **The `genexus_wwp` tool schema is no longer self-referential, so providers that reject recursive JSON schemas can list tools again.** The `wwpControl` `$defs`/$ref cycle (tab/`add_tab` `children` items pointing back at their own definition) was refused upstream with `invalid_request_error: Recursive JSON schemas are not currently supported`, failing every tools/list of the session; the control shape is now inlined into `children.items` at a bounded depth (nested table children accept generic objects), with a `ToolSchemaShapeTests.NoSchemaContainsRecursiveRefs` regression test covering input and output schemas.
 - [#242](https://github.com/lennix1337/Genexus18MCP/issues/242) **The `doctor` client configuration check now identifies the effective Gateway path and source.** Checkout runs using `GENEXUS_MCP_GATEWAY_EXE` no longer report a misleading npm-package target, including when warning about a client path mismatch.
@@ -1145,6 +1297,10 @@
 - **Legacy compatibility diagnostics and discovery are more explicit.** Classic installations can be discovered through `gx.exe`/`gxdl32.dll` and Artech paths, Gateway diagnostics expose `supportLevel` plus the legacy catalog, and the built-in fallback catalog includes GeneXus 8. Live validation still requires an installed legacy GeneXus environment.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Form-level WorkWithPlus action targeting now fails closed.** Empty container
   selectors fall back to `TableActions`, `name`/`controlName` matches reject
@@ -1229,6 +1385,10 @@
 - **Release preflight now verifies the changelog issue ledger.** Every issue selected for closure must have its canonical `/issues/<number>` URL in `## Unreleased`; grouped fixes must list each issue explicitly, and missing references fail before the release snapshot is written.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **The integration preflight accepts a clean worktree.** Its changed-path validation now permits an empty path collection, so `-ValidateOnly` and clean-check invocations fail only on actual validation errors.
 
@@ -1306,6 +1466,10 @@
 - **The index freshness gate is now observable, awaitable and self-healing ([#209](https://github.com/lennix1337/Genexus18MCP/issues/209)).** The fail-closed direction is unchanged (index-dependent reads still require `freshness=current`), but the failure is no longer a dead end: a failed warm-start delta now marks the index failed (`Cold`/`stale`, distinct from the previous indefinite `refreshing`) and re-dispatches the delta with bounded backoff (5s/15s/60s, up to 3 attempts, dropped if a full rebuild supersedes it, abandoned if the KB closed), and the `DeltaStarted`/`IndexNotReady` hints now name the wait (`action=status wait=30 freshness=current`) instead of promising the warm cache is usable. The `IndexNotReady` envelope also carries `retryAfterMs` (the worker's ETA when it has one), reports the real `indexStatus` instead of a blanket `Refreshing` so it agrees with `whoami`'s index block for the same state, and adds the manual recovery (`action=index force=true`) to its hint when the status is Cold/unknown — a stalled index reaches `freshness=current` by nobody's effort, so naming only the wait would send the caller into a loop that can only time out.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **`genexus-mcp --version`, `-v` and `version` print the package version instead of exiting 0 with no output ([#207](https://github.com/lennix1337/Genexus18MCP/issues/207)).** All three aliases fell through to the gateway stdio passthrough, which never answers that token, so install checks and CI scripts read an empty string *with a success exit code*. They are now command tokens (the parse continues, so `--format json` is honored), print the bare version for the default formats, return the `axi-cli/1` envelope with `ok.version` for `--format json`, are documented by `genexus-mcp version --help`, and skip the background update check. An unreadable `package.json` fails loudly (`version_unavailable`, exit 1) instead of printing nothing. `version` is now a reserved command token, so those three spellings no longer reach the launcher passthrough and no longer run `applyLauncherConfigOrExit` (a version query no longer creates or rewrites config directories) — every other unrecognized argument keeps the unchanged passthrough path. The command table is now a single source shared with `cli/run.js` — the second hand-synced copy is what let the aliases drift out of both the parser and the error-routing decision.
 - **A failed index flush no longer stamps the meta sidecar ([#208](https://github.com/lennix1337/Genexus18MCP/issues/208)).** `FlushNow()` documents that its return value must be honored ("never lies"): it returns `false` on timeout, and stamping the sidecar anyway persisted a high-water-mark the on-disk body did not contain, which made the next warm start's delta skip the objects of that refresh until they were edited again. `IndexCacheService.FlushAndStampSidecar` now writes the sidecar only for a certified flush and otherwise keeps the previous one (and its older hwm), so the next warm start re-delivers the delta — the same degradation used when a worker dies mid-enrichment. All four call sites (lite-complete, final-enrich, delta-refresh, delta-resume-enrich) go through it, and `WriteMetaSidecar` now reports whether it wrote.
@@ -1334,6 +1498,10 @@
 - Add the typed WorkWithPlus `set_table_type` operation. It resolves an existing table through the native PatternInstance tree, changes only `type`, preserves children/bindings/events/metadata, and verifies the PatternInstance reread plus parent projection with exact rollback on divergence.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Describe the `read_blob` output controls (`outputPath`, `includeBase64`, and `overwrite`) so the schema validator accepts the published tool contract.
 - Keep `compile_check` preview and execution aligned on target resolution and caller controls, including Transaction `_bc` companions, EntityKey-safe `Type:Name`/GUID execution, fail-closed caller evidence, async environment forwarding, and compact polling metadata ([#202](https://github.com/lennix1337/Genexus18MCP/issues/202)).
@@ -1362,6 +1530,10 @@
 - Add `genexus_io action=read_blob` for bounded Base64 or atomic file export of a File's real `WikiBlob` bytes, including byte count and SHA-256 verification.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Re-arm and scope index bootstrap/freshness state across KB open, close, reload, and worker respawn; normalize SDK timestamps to UTC and remove stale GUID mappings during delete/recreate deltas.
 - Route worker reload to the resolved or explicitly named KB, allow an unambiguous single open KB without a session selection, and keep Gateway index mirrors isolated by KB alias.
@@ -1375,6 +1547,10 @@
 - [#193](https://github.com/lennix1337/Genexus18MCP/issues/193) — [Bug] Desde a 3.2.2 o worker não abre KB do GeneXus 17: sdk-compatibility.json só aceita o major 18
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **PowerShell Automation Fail-Fast**: Remove `[Parameter(Mandatory = $true)]` in `scripts/pr-preflight.ps1`, `scripts/build-release-candidate.ps1`, and `scripts/live-build-all.ps1`, replacing interactive stdin blocking with immediate validation and clear usage error exits, preventing headless CI/agent processes from hanging indefinitely.
 - **GeneXus SDK compatibility and startup diagnostics**: Allow the packaged Worker to start with every GeneXus major declared in `config/gx-versions.json`, including GeneXus 17, while keeping missing required SDK assemblies and undeclared majors as hard failures; expose deterministic refusals through `genexus_whoami`/`genexus_doctor` and stop unsupported-major respawn loops ([#193](https://github.com/lennix1337/Genexus18MCP/issues/193)).
@@ -1450,6 +1626,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Distinguish a session-selected KB alias from its live ownership lease: preserve `KB_LEASE_EXPIRED` through stateful recovery, report `leaseState`/`leaseActive` in `whoami`, `genexus_kb list/open/select`, and direct expired sessions to create a fresh context with explicit `select` ([#192](https://github.com/lennix1337/Genexus18MCP/issues/192)).
 - Classify registered MCP launchers locally by command semantics, so `node.exe` without an entrypoint is reported as invalid with an actionable reason while existing Gateway and `npx genexus-mcp` launchers remain valid; preserve registration, command/args, stale flag, and exit-code compatibility ([#190](https://github.com/lennix1337/Genexus18MCP/issues/190)).
@@ -1472,6 +1652,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Keep the published MCP contract aligned with the Analyze, Search, and Object routers: expose `genexus_analyze`'s mode-dependent `fix`, `waitTimeoutMs`, and `top`, `genexus_query.exactMatch`, `genexus_edit` `mode=ops` `module`, the existing `genexus_inspect.verbose` router option, and the intentional `deep_context` Analyze alias; refresh discovery coverage ([#186](https://github.com/lennix1337/Genexus18MCP/issues/186)).
 - Drive worker-crash retry safety from `OperationClassifier`, so mutating Analyze linter fixes and the default SDK surface probe are never replayed, while read-only modes retain the existing single retry ([#186](https://github.com/lennix1337/Genexus18MCP/issues/186)).
@@ -1490,6 +1674,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Keep Worker dirty tracking and per-target write timestamps independent for uncertain `WriteNotPersisted` outcomes, including partial persistence, rollback failure, and empty-persist guards; record confirmed batch variable removals ([#184](https://github.com/lennix1337/Genexus18MCP/issues/184), [#185](https://github.com/lennix1337/Genexus18MCP/issues/185)).
 - Classify `genexus_analyze mode=linter fix=true` as mutating, accept legacy `GX008` snippets when resolving variables to remove, and invalidate semantic-cache entries without changing read-only linter analysis ([#185](https://github.com/lennix1337/Genexus18MCP/issues/185)).
@@ -1506,6 +1694,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Capture installer client-registration stdout and stderr separately, parse only the JSON envelope, and fail closed when it is missing or invalid instead of committing a staged config after an ambiguous registration.
 - Make primitive Attribute type application all-or-nothing: restore previously written Type, Length, and Decimals when a later SDK setter fails, preventing parser paths from persisting partial mutations.
@@ -1532,6 +1724,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Preserve UTF-8 issue titles when generating release snapshots and release notes.
 - Verify every `genexus_properties` batch write from a fresh SDK object, reject silently skipped placement/typed-only properties, and return `UnsupportedOperation` when the GeneXus SDK preserves an existing Attribute `Type` instead of changing it.
@@ -1553,6 +1749,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Keep the operational release issue list out of the release commit while
   preserving its immutable JSON snapshot.
@@ -1571,6 +1771,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Require exact WebPanel replacement identity and structural post-save projection matches, preventing similarly suffixed objects or unrelated controls from being reported as confirmed.
 - Hardened WWP WebPanel replacement identity and post-save projection verification ([#173](https://github.com/lennix1337/Genexus18MCP/pull/173); contributed by [@davidagostini](https://github.com/davidagostini)).
@@ -1609,6 +1813,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Serialize Worker lifecycle replacement, preserve concurrent healthy replacements, and keep PatternVirtual structural writes on the SDK path while restricting raw PatternInstance edits to safe property changes.
 - Treat standalone WWP template objects as model-wide records without claiming ownership from a name-only Settings match.
@@ -1647,6 +1855,10 @@
 - Added an explicit `release.ps1 -CloseIssues` option that links the published release before closing completed GitHub issues and verifies the final state.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Fixed live fixture timestamp validation to parse invariant UTC timestamps and tolerate serialization precision without accepting materially future verification times.
 - Restored required schema examples for the gateway-only filesystem and worker-pool tools so the contract validator accepts the complete discovery surface.
@@ -1666,6 +1878,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Forwarded `requireObjectSave` through the Gateway's `genexus_edit` patch route so the Events complete-object-save contract reaches the Worker ([#147](https://github.com/lennix1337/Genexus18MCP/pull/147); contributed by [@davidagostini](https://github.com/davidagostini)).
 
@@ -1700,6 +1916,10 @@
 - Added the SDK/KB compatibility result to `genexus-mcp doctor`, including fail-closed unsupported-major diagnostics, and wired the live matrix into release preflight and the self-hosted smoke workflow.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Made catalog consumers tolerate optional registry metadata for future SDK majors and kept generated Windows install paths readable in the supported-version document.
 
@@ -1725,6 +1945,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Fixed Worker object writes from advancing the model-level Team Development commit baseline, so earlier local changes remain pending while IDE refreshes continue through `LastObjectsVersionDate` ([#145](https://github.com/lennix1337/Genexus18MCP/pull/145); contributed by @elianferreira).
 
@@ -1732,6 +1956,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Fixed a `KeyNotFoundException` in `SummarizeService` (`genexus_analyze mode=summary`) when inspecting procedures with missing parts or unresolved references by adding safe source extraction (`GetSourceSafe`) and defensive object dependency resolution with early-exit on 10 items.
 
@@ -1751,6 +1979,10 @@
 
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - Stateful routing for worker reload, connection recovery, lifecycle handles, edit-and-build, SDK probes, KB documentation, and recipe crystallization now requires the session-owned KB lease and stable `KB_CONTEXT_REQUIRED`/`KB_NOT_OWNED` envelopes; stateless recipe reads remain free of worker fallback.
 - Scoped mutation recovery fences, snapshots, jobs, crash ledgers, worker logs, and worker-owned paths by `StateScopeId`, KB identity, and generation; worker-supplied persistence paths are ignored and `GX_KB_PATH` rebinds are rejected.
 
@@ -1861,6 +2093,10 @@
 - `genexus_properties` `action=get` single property queries now return `{ propertyName, value, values: { [name]: value }, property, properties: [property], versionToken }` instead of dumping 100+ properties, dramatically cutting context token consumption ([#144](https://github.com/lennix1337/Genexus18MCP/issues/144)).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - KB startup-default persistence now stages config updates in a unique sibling
   temporary file, flushes before atomic replacement, and verifies the persisted
@@ -1898,6 +2134,10 @@
   `GXMCP_REQUIRE_LIVE_BUILD_ALL=1` makes that live gate mandatory.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - Multi-target asynchronous mutation recovery now records deterministic per-target/part fences on watchdog, timeout, and cancellation paths, and confirms them independently on successful read-back so partial reads cannot unblock the remaining targets.
 
@@ -2127,6 +2367,10 @@
   `structuredContent`; text content remains available for legacy clients.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Live gate alias consistency.** `test-live.ps1` now passes the same isolated
   fixture alias to the HTTP benchmark that it writes into `GX_CONFIG_PATH`,
@@ -2296,6 +2540,10 @@
 - **Typed Transaction integration quality gates (PR #133).** Kept record reads bounded to the requested projection plus one truncation sentinel, preserved the serializable write verification sequence, and made action/help/inventory parity machine-checkable.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Release warning baseline and reduction (Issue #138).** Removed the reported xUnit1012 and benchmark CS8618 diagnostics, scoped the Worker.Tests MSB3277 suppression, and documented a reproducible 216-location nullable-warning baseline for future Release builds.
 - **Action contract parity and conservative classification (Issue #139).** Added descriptions to all 31 umbrella `action` properties and replaced permissive fallback logic with explicit read-only/mutating sets; omitted and unknown actions are now non-read-only, with every supported `dryRun` preview exception covered by the same contract tests.
@@ -2328,6 +2576,10 @@
 - **Documented MCP update and harness synchronization in `AGENTS.md` (Issue #130).** Added preflight checks, decision matrix, operational side-effects/safety boundaries, checkout-scoped process management rules, and portable `<repoRoot>` placeholders to `AGENTS.md`.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **`dryRun` propagation in `genexus_lifecycle action="index"` (Issue #131).** Fixed `SystemRouter.ConvertToolCall` to forward `dryRun` to the worker for the `index` action so indexing plans can be previewed without executing full rescan.
 - **Semantic cache invalidation for `genexus_structure action="remove_attribute"` (Issue #131).** Registered `remove_attribute` in `Program.ToolPayload.cs` under `genexus_structure`, preventing stale cached read responses after attribute removal.
@@ -2355,6 +2607,10 @@
 - **IDE concurrency detection and warning in `genexus_edit` and `BulkWrite` (Issue #128).** Added `IdeConcurrencyDetector` to detect when `GeneXus.exe` is running and whether the target KB and/or target object is open in an IDE tab/window using Win32 window and child-window inspection. Surfaces structured warnings `GotchaIdeObjectOpenInEditor` and `GotchaIdeActiveOnKb` with resolvable tool-help documentation URIs (`genexus://kb/tool-help/gotchas/ide-object-open-in-editor` and `genexus://kb/tool-help/gotchas/ide-active-on-kb`). Added optional `concurrencyPolicy` argument (`"warn"` [default] or `"fail_if_open"`) to `genexus_edit` schema and `BulkWrite` facade args to abort write operations with an `IdeObjectOpen` error when the target object is open in the IDE. Reported and architected by Antonio Jose Rodrigues Silva (@antoniojosedev).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Synchronous object flushing, entity revision date stamping, and IDE message pump nudging in `WriteService` (Issue #128).** Eliminated race conditions caused by the 2-second debounce timer (`_flushTimer`) and removed non-functional reflection (`model.GetType().GetMethod("Commit")`), replacing with synchronous `FlushSync()`. Stamped entity and model revision dates (`SaveModelEntityDate(301)`, `SaveModelEntityDate(300)`, `SaveVersionIndependentDate(310)`, `KBModel.LastCommitDate`, `KBModel.LastObjectsVersionDate`) upon write/commit so external tooling and IDE detect saved modifications. Dispatched non-intrusive `WM_NULL` to running GeneXus IDE windows after successful writes to trigger `Application.Idle` and prompt the IDE's built-in external modification detection (`Messages.ObjectModified`). Reported and architected by Antonio Jose Rodrigues Silva (@antoniojosedev).
 
@@ -2363,6 +2619,10 @@
 ## v2.54.0 - 2026-09-03
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Primary environment generator selection and Design model exclusion in `genexus_kb(action="list_environments")` (Issue #127).** Fixed generator resolution in `KbService.ResolveModelGenerator` to query `kbModel.GetAs<GxModel>()?.Generator` (with web/default fallbacks) instead of enumerating `GeneratorsPart.Generators` without priority, ensuring the primary/web generator (e.g. `Default (.NET Framework)`) is returned instead of mobile or secondary generators (`Android (Android)`). Fixed `EnumerateEnvironmentModels` and `GetActiveEnvironment` to exclude the conceptual "Design" model and handled `AmbiguousMatchException` in `TryGetMember` when inspecting inheritance-shadowed properties like `KBModel.Type`.
 
@@ -2433,12 +2693,20 @@
 - **Target environment parameter in build lifecycle (`genexus_lifecycle`, Issue #125).** Added optional `environment` parameter to `genexus_lifecycle` for `build`, `specify`, `rebuild`, and `compile_check` actions. Directs the build to target the specified environment without requiring human IDE intervention to switch active environment beforehand.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Headless active environment switching (`genexus_kb action=set_environment`, Issue #125).** Fixed `set_environment` failing with `DispatcherException` / `TargetInvocationException` in background workers. The operation now performs direct SDK model activation (`DesignModel.Environment.TargetModel`, `User.SetTargetModel`, and `User.Save`) under `_kbLock`, bypassing the MSBuild task's UI Dispatcher subscriptions (`CommonServices.Output`) with exception-safe fallback.
 
 ## v2.49.2 - 2026-08-31
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Antigravity stdio bootstrap diagnostics (Issue #123).** `init` and `clients add --clients antigravity` now use the packaged gateway executable directly when available, avoiding the repeated npx bootstrap chain; stale package-cache paths are surfaced by `genexus-mcp clients`. The stdio wrapper also tees gateway stderr into `%LOCALAPPDATA%\GenexusMCP\logs\last-stdio-error.txt` on spawn failures and non-zero exits, so clients that hide child stderr leave an actionable timestamp, exit code, and bounded error tail.
 
@@ -2450,6 +2718,10 @@
 ## v2.49.1 - 2026-08-31
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **Report layout rectangle `BackColor`/`ForeColor` persistence and corruption fix (Issue #122).**
   - **Robust Color Token Parsing (`ColorHelper`):** Resolved an issue where custom/unnamed rectangle colors serializing via .NET `Color.ToString()` (e.g. `Color [A=255, R=144, G=238, B=144]`) failed regex parsing in `ReportLayoutHelper.ReadLayout`, causing raw string descriptors to leak into the editable XML and convert to solid black (`#000000` / integer 0) on subsequent writes or dynamic property assignments. Added exhaustive color token parsing supporting .NET format, GeneXus RGB tokens (`R; G; B|`), comma RGB (`R, G, B`), CSS `rgb(...)`/`rgba(...)`, hex (`#RGB`, `#RGBA`, `#RRGGBB`, `#AARRGGBB`), and named colors.
   - **Untouched Control Preservation (`baselineXml`):** Fixed `WebFormXmlHelper.ApplyEditableXml` and `WriteService.VisualWrite` to propagate `baselineXml` to `ReportLayoutHelper.WriteLayout`. Untouched controls across separate print blocks are no longer treated as modified, preventing untouched rectangles in other print blocks from turning black when editing a different print block or text control.
@@ -2465,6 +2737,10 @@
 - **`--force` override flag.** Added `--force` flag to explicitly overwrite existing foreign or custom MCP server configurations when replacing an entry is desired.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **Third-party / HTTP MCP collision protection (Issue #121).** Client auto-registration now distinguishes our own local stdio / npx launcher entries from external/official HTTP/SSE/remote MCP server definitions. Attempting to overwrite an existing third-party entry without `--force` is rejected with `MCP_SERVER_COLLISION` and diagnostic guidance instead of silently clobbering the foreign server.
   Thanks to [@antoniojosedev](https://github.com/antoniojosedev) for reporting and investigating the collision with the official GeneXus MCP server — see Issue [#121](https://github.com/lennix1337/Genexus18MCP/issues/121).
 
@@ -2494,11 +2770,19 @@
 ## v2.46.2 - 2026-08-26
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **Text writes now reject literal line-break escape sequences before persistence.** A shared preflight guard covers full edits, patches, atomic authoring, batch writes, and the legacy scaffold path, returning `LiteralLineBreaksDetected` with the affected field and sequence instead of allowing a whole GeneXus part to become one `//` comment. The discovery schema budget was raised from 21,900 to 22,200 tokens to document the contract.
 
 ## v2.46.1 - 2026-08-26
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **`save_as` no longer leaves a partial WebPanel when a part cannot be cloned (issue #118).** Explicitly empty or unsupported parts remain non-fatal skips, but a real part-write failure now stops the clone, removes the incomplete target automatically, and reports whether cleanup succeeded. (PR [#120](https://github.com/lennix1337/Genexus18MCP/pull/120)).
 - **`save_as` on Design System objects (DSO) now clones both Tokens and Styles parts (issue #119).** `PartAccessor.GetDisplayPartName` now maps `DesignSystemTokensPartGuid` to `"Tokens"` and `DesignSystemStylesPartGuid` to `"Styles"` so both source parts are discovered and copied instead of colliding on `"Source"`.
 - **`save_as` on DataSelector objects preserves structure, conditions, and parameters (issue #116).** DataSelector structure parts cannot be round-tripped as plain source text; `ObjectService.CloneDataSelectorStructurePart` now copies parameters, conditions, orders, and defined-by attributes natively via the SDK object model with XML deserialization fallback.
@@ -2508,6 +2792,10 @@
 ## v2.46.0 - 2026-08-24
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **Report Layout writes accepted again via `genexus_edit` / visual write paths.** The input validator rejected the `<Report>` root that `genexus_layout` itself emits for Procedure Report layouts, making every round-trip edit fail with "Visual writes currently require a valid GxMultiForm, BODY, HTML, Layout, or ReportPart XML document". `Report` is now an accepted root.
 
 ### Added
@@ -2526,6 +2814,10 @@
 - **Leaner per-request response path in the gateway.** Gateway-built tool responses no longer deep-clone the whole payload tree just to attach KB metadata; lifecycle status compaction works directly on the in-memory JSON instead of serializing and re-parsing it (up to three full passes saved per poll); and the per-call feature-flag environment probes (`GXMCP_TERSE`, `GXMCP_NO_STRUCTURED_CONTENT`, `GXMCP_LEGACY_TOOL_ALIASES`) are cached behind a short TTL instead of hitting Win32 environment lookups multiple times per request.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **npm package missing `scripts/verify-install.js` on publish (issue #114).** The `postinstall` script introduced in v2.44.1 to verify worker/gateway binary presence failed on fresh `npm install -g` / `npx` invocations because `scripts/verify-install.js` was not declared in `package.json`'s `files` array and was omitted from the published npm tarballs. Added `scripts/verify-install.js` to `package.json` `files` and added a contract test ensuring all declared bin and postinstall script files are packaged.
 
 ### Added
@@ -2534,6 +2826,10 @@
 ## v2.45.1 - 2026-08-22
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **`genexus-mcp doctor --mcp-smoke` no longer fails on a healthy server.** The smoke check omitted the `Accept: application/json, text/event-stream` header that the gateway requires on every POST, so it always got a 406 back and reported a false failure — masking real connection problems. Users hitting "connection closed" can now trust the smoke check to tell a healthy gateway from a dead one.
 - **The smoke check no longer fails when no KB is open.** Tool calls in the smoke run now accept a well-formed structured error (e.g. `KB_AMBIGUOUS` with no default KB) as proof the channel works — only transport-level failures (no reply, non-JSON, HTTP errors) fail the check. A new contract test (`McpSmokeScriptContractTests`) launches a real gateway in-process and runs the unmodified smoke script against it, so any future drift between first-party diagnostic scripts and the gateway's protocol requirements fails CI instead of shipping.
 
@@ -2556,6 +2852,10 @@
 ## v2.44.1 - 2026-08-21
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **A background build can no longer be killed by the worker's idle watchdog (issue #113).** While a build runs, the worker emits a `build_active` heartbeat every 20 seconds; the Gateway now treats a recent heartbeat as activity and refuses to idle-reap or heap-recycle the worker mid-build, no matter how short `Server.WorkerIdleTimeoutMinutes` is configured.
 - **A build whose worker dies mid-run now fails immediately instead of hanging for 30 minutes (issue #113).** The Gateway's background status poller used to loop until its hard cap when the worker process exited, leaving `wait_until_done` callers waiting until the MCP transport itself timed out. Three consecutive failed status polls now complete the job as failed with a "worker exited mid-build" message and a re-run hint.
@@ -2573,6 +2873,10 @@
 - **MCP Resource Subscriptions (`resources/subscribe` & `resources/unsubscribe`).** Fully integrates MCP resource subscription protocol and capabilities, enabling clients to receive real-time push events (`notifications/resources/updated`) when KB resources, objects, or health indicators update.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Index cache no longer risks losing the most recent index mutation across a concurrent flush.** MarkDirty/MarkDirtyForKey now mark the affected shard(s) dirty before bumping the flush generation, closing a race where an in-flight flush could record a generation as confirmed on disk without serializing that mutation - leaving it permanently absent from the warm-start snapshot.
@@ -2625,6 +2929,10 @@
 - Thanks to [@davidagostini](https://github.com/davidagostini) for native typed .NET generator references — see [PR #111](https://github.com/lennix1337/Genexus18MCP/pull/111).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_edit mode=full` now keeps dry-runs non-persistent and recovers deterministically from blocked SDK calls.** Preview requests never enter the asynchronous mutation path or call `Save`; background edits use one operation ID across accepted/status/result/cancel and Worker busy telemetry; cancellation terminalizes the operation and recycles only its blocked Worker. Timed-out or cancelled writes require a successful read-back before another write to the same object. Full writes preserve `baseVersion`/`expectedVersion`, honor `rollbackOnFailure`, and return the independently re-read Source, version token, persistence state, and empty implicit lifecycle list.
@@ -2639,6 +2947,10 @@
 ## v2.41.11 - 2026-08-19
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **User Control degradation detection no longer fires on healthy builds.** The post-build
@@ -2662,6 +2974,10 @@
 - Thanks to [@davidagostini](https://github.com/davidagostini) for the native atomic Data View authoring — see [PR #104](https://github.com/lennix1337/Genexus18MCP/pull/104).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Data View mutations now fail closed at the safety boundary.** `genexus_data_view action=delete` requires `confirm=true` outside dry-run, create/update report commit and verification independently, updates validate the Transaction/Data View pair, and successful deletes remove both native identities from the search index and semantic cache.
@@ -2692,6 +3008,10 @@
 ## v2.41.9 - 2026-08-18
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_structure action=move_attribute` now preserves authored Transaction logic across SDK saves and worker restarts.** Rules and Events snapshots select the source-bearing native part when GeneXus exposes duplicate lazy entries, restore through the normal Source writer, and verify the persisted result after commit. Fixes [#99](https://github.com/lennix1337/Genexus18MCP/issues/99).
@@ -2701,6 +3021,10 @@
 ## v2.41.8 - 2026-08-17
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Visual layout batch parity and rollback in `genexus_layout action=set_properties`.** Batch layout property writes now synchronize `Caption` and `CaptionExpression` consistently across controls and automatically roll back the layout to the pre-call baseline if readback or post-save verification fails.
@@ -2713,6 +3037,10 @@
 ## v2.41.7 - 2026-08-17
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_edit` on `part=Events` and `part=Conditions` now defaults to normalized verification and tolerates harmless formatting/EOL differences.** `TextPersistenceVerifier` now classifies `Events` and `Conditions` alongside `Source` and `Rules` as code/text parts, canonicalizes line endings, and resolves default verification mode to `normalized`. `NormalizedCodeEquals` tolerates blank lines inserted or removed by GeneXus SDK rendering, eliminating false `WriteNotPersisted` errors on successful Event edits. Fixes [#100](https://github.com/lennix1337/Genexus18MCP/issues/100).
@@ -2739,6 +3067,10 @@
 ## v2.41.5 - 2026-08-16
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_edit mode=patch` no longer reverts a successfully verified Source when `verifyRollback=true`.** Rollback is now restricted to post-save divergence with `rollbackOnFailure=true`; persistence verification performs a fresh, complete SDK read and reports requested, saved, and independently re-read content separately. Source version tokens include the persisted content fingerprint, so rapid sequential saves cannot reuse a stale timestamp token. Thanks to [@davidagostini](https://github.com/davidagostini) — see PR [#98](https://github.com/lennix1337/Genexus18MCP/pull/98).
@@ -2765,6 +3097,10 @@
 - **Multi-target batched build via `BuildWithTheseOnly` on `includeCallees=none`.** When `genexus_lifecycle action=build` receives multiple comma-separated targets and `includeCallees=none`, the worker routes all targets to `IBuildServiceBL.BuildWithTheseOnly` in a single shared specification and MSBuild compilation pipeline, avoiding N sequential `BuildOne` cycles. Fixes [#96](https://github.com/lennix1337/Genexus18MCP/issues/96).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Lifecycle router forwards `dryRun` and `deploy` parameters.** `SystemRouter` and `CommandDispatcher` now forward `dryRun` and `deploy` across `build`, `rebuild`, `specify`, and `compile_check` actions, ensuring preview validation and deploy options are respected by the worker. Fixes [#96](https://github.com/lennix1337/Genexus18MCP/issues/96).
@@ -2785,6 +3121,10 @@
 - **Deepened mutation and patch subsystem inside `WriteService`.** Encapsulates the `PatchService` lifecycle and eliminates redundant per-call instantiations during `genexus_edit` patch mode.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_properties action=move` now preserves and verifies the complete object.** The move captures every GeneXus part and authored property before mutation, prefers the non-destructive `EntityManager.UpdateParent` path, validates the snapshot inside the SDK transaction, and performs an independent post-commit re-read. `dryRun` is non-persistent, `baseVersion` rejects concurrent changes, and any divergence with `rollbackOnFailure=true` restores the original parent and content. Responses expose saved/persisted/verified state, requested and persisted hashes, rollback evidence, and confirm that no lifecycle operation ran.
@@ -2816,6 +3156,10 @@
 - **The text-patch pipeline now separates matching from orchestration and persistence evidence.** `PatchTextEditor` owns pure Replace/InsertAfter matching, while `PatchPersistenceReceipt` owns the stable saved/verified/hash/rollback response fields. The public `genexus_edit` contract and GeneXus SDK save path are unchanged.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_edit mode=patch operation=Replace` now reports success only after a durable Source/Rules save.** Text patches use the same explicit part-save and transaction path as full edits, so GeneXus 18 U16 can no longer advance the object version and leave the replacement only in the live SDK instance. Empty replacements are supported, and the response separates `saved` from `verified`, includes requested/re-read hashes and old-context evidence, and reports rollback verification when requested.
@@ -2836,6 +3180,10 @@
 - **`genexus_structure action=move_attribute` reorders an existing Transaction attribute without recreating it.** Place an attribute `before` or `after` another attribute in the same level, or at a zero-based `position`; root, named, and nested `levelPath` levels are supported. Dry runs show only the affected positions, `baseVersion` rejects stale edits, and effective writes snapshot every Transaction part, re-read after save, verify native identities/properties and relative order, and restore the complete snapshot if GeneXus normalizes the move or changes anything else. The operation never specifies, generates, builds, reorganizes, or reapplies a Pattern.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_structure action=create_index` no longer persists during `dryRun=true`.** The Worker now keeps validation/projection separate from SDK mutation, verifies the persisted index snapshot and composite `versionToken` after every preview, and returns `DryRunMutationDetected` with rollback details if any state changes. Effective writes support `baseVersion` optimistic concurrency, preserve the requested attribute order, re-read and verify the exact index, and restore the prior snapshot on save/verification failure when `rollbackOnFailure=true`. The action does not implicitly Specify, Generate, Build, Rebuild, compile, reorganize, execute, or test.
@@ -2867,6 +3215,10 @@
 ## v2.40.1 - 2026-08-11
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - `genexus_lifecycle action=rebuild` now scopes comma-separated target lists through
@@ -2876,6 +3228,10 @@
 ## v2.40.0 - 2026-08-10
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - `genexus_search_source` and the `genexus_read` log-grep path no longer hang the
@@ -2932,6 +3288,10 @@
   not marked read-only unless `-AllowWrite` is passed explicitly.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - `genexus_apply_pattern` now selects the WorkWithPlus
@@ -3018,6 +3378,10 @@ overload-resolution fix and the out-of-band MCP recovery client — see PRs
 ## v2.39.3 — 2026-08-09
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - Post-write verification now performs a fresh, explicit full-part read instead of
@@ -3037,6 +3401,10 @@ overload-resolution fix and the out-of-band MCP recovery client — see PRs
 ## v2.39.2 — 2026-08-07
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - Fixed Report layout writes so `genexus_layout action=set_property` preserves untouched controls, RGB colors, alignment, and geometry ([#72](https://github.com/lennix1337/Genexus18MCP/issues/72)).
@@ -3046,6 +3414,10 @@ overload-resolution fix and the out-of-band MCP recovery client — see PRs
 This release fixes `object_atomic` rollback on Procedure source casing normalization, async `genexus_edit` failures on XML `PatternInstance` default attributes, and `genexus_layout set_property` degradation on Report layouts.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_create action=object_atomic` no longer rolls back valid objects on SDK Source casing/indentation normalization.** (Issue #70) `WhitespaceInsensitiveEquals` now performs case-insensitive comparison (`OrdinalIgnoreCase`), preventing Procedure `Source` keyword case-normalization (`for each` -> `For Each`, `parm` -> `Parm`, `if` -> `If`) from triggering false-positive `WriteNotPersisted` errors that previously rolled back and deleted freshly-created objects.
@@ -3057,6 +3429,10 @@ This release fixes `object_atomic` rollback on Procedure source casing normaliza
 This release fixes `dryRun` precheck error handling for pattern/visual parts, clarifies `dryRun` verification scope, updates agent instructions regarding SDK folder/module placement capabilities, and enforces strict release-linked issue closure.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`dryRun` precheck failures no longer return `ok` status when reading current pattern/visual parts fail, and `dryRun` responses now detail verification scope.** (Issue #67) When `ReadPatternPartXml` or `ReadVisualPartXml` threw an exception during precheck, the `dryRun` catch block previously returned `code: "WriteDryRun"` inside an `ok` envelope, masking the read failure. Catch blocks now return `PatternReadFailed` / `VisualReadFailed` error envelopes. Successful `dryRun` responses now explicitly include `verified` scope (`["xmlParse", "childrenOrderedList", "diffVsCurrent"]`), `savePathExercised: false`, and a warning on WorkWithPlus `PatternInstance` parts noting that pattern saves can still be rejected by the WWP validator on save.
@@ -3090,6 +3466,10 @@ The release improves safe GeneXus authoring, persistence verification, inline sp
 - **No Security permissions are created implicitly.** Every response carries a `securityNote` stating that no GAM permissions were created or modified — provisioning access for a new action is an explicit, separate step.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`validationMode="specify"` — save and spec-check in a single call.** `genexus_edit`, `genexus_variable`, `genexus_properties` (set), `genexus_structure` (structure writes) and `genexus_create` (object) accept `validationMode="specify"`: right after the write persists, the worker runs the fast Specify+Generate pass and returns the result in the same response — a `_meta.specification` block with structured diagnostics (`[{code, object, member, message}]`) when clean, or a `SpecificationFailed` error listing exactly which `spc*`/`gen*` diagnostics the edited object would trip on build. No more write-then-poll-specify round trips to learn an edit is spec-invalid.
@@ -3139,6 +3519,10 @@ The release improves safe GeneXus authoring, persistence verification, inline sp
 - **`genexus_structure action=update_group` — populate SubType Group members through the MCP.** A Group created with `genexus_create type=Group` used to come out as an empty shell: `set_attribute subtypeOf` correctly set each attribute's SuperType, but nothing attached those subtype attributes to the Group itself, so the Group's member list stayed empty and `genexus_analyze` / FK inference saw none of the subtype relationships. `update_group` now accepts `{ members: [{ name, subtypeOf }], remove?: [names] }` — each member registers the subtype attribute in the Group and asserts its SuperType link in one call, exactly like the IDE's Group editor — and `genexus_structure action=get_visual` on a Group reads the members back as `children: [{ name, subtypeOf }]` for a write-verify-read round trip.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`Nullable=Yes` on a Transaction attribute now actually persists.** `genexus_structure action=update_visual` with `nullable:"Yes"` crashed with a runtime binder error (`Cannot implicitly convert type 'int' to 'Artech.Genexus.Common.Parts.TableAttribute.IsNullableValue'`), and the JSON-boolean form (`nullable:true`) silently no-oped — either way the DDL kept generating `NOT NULL`. The value is now written as the SDK's typed `IsNullableValue`, the boolean forms are accepted, and the generated table DDL follows the value (verified end-to-end: the column loses `NOT NULL` with `Yes`, regains it with `No`).
@@ -3151,6 +3535,10 @@ The release improves safe GeneXus authoring, persistence verification, inline sp
 Patch release: fixed router action dispatch for `genexus_analyze mode=linter` and ensured `FindObject` falls back to SDK lookup when search index misses newly created objects.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_analyze mode=linter` router action.** Previously routed to `action = "Analyze"` instead of `action = "linter"`, which fell through `AnalyzeService` without reaching `LinterService.Lint`. `AnalyzeRouter.cs` now emits `action = "linter"`.
@@ -3165,6 +3553,10 @@ Full-fidelity SDT structure & lifecycle rebuild target scoping: cloning and auth
 - **Author an SDT's structure with `genexus_structure action=update_visual`.** Previously `update_visual` only accepted Transactions (an SDT returned `NotATransaction`) and `genexus_create type=SDT` could seed just one flat member, so a collection SDT with an item level and Domain-typed members could only be built in the GeneXus IDE. `update_visual` on an SDT now takes a structured payload — `{ isCollection, collectionItemName, children:[…] }` — where each child is a primitive member (`type` + `length`/`decimals`), a Domain-based member (`basedOnDomain:"<Domain>"`), an SDT reference (`type:"<OtherSdt>"`, optionally `isCollection:true`), or a nested level (`isLevel:true` with its own `children`). Members absent from the payload are removed, matching the Transaction path (#52).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Cloning a collection SDT via `genexus_create action=save_as` no longer flattens it.** The clone was rebuilt from the SDT's flat textual structure, which encodes neither the root collection flag, the collection item name, nor Domain/SDT-typed members — so a collection SDT was cloned as a flat, non-collection SDT with every Domain member collapsed to its base type. The SDT structure is now copied at the model level, so the clone preserves the collection flag and item name, each member's type/length/decimals, per-member collection flags, nested levels, Domain links (`basedOnDomain`), and SDT references (#51).
@@ -3183,6 +3575,10 @@ Full-fidelity SDT structure & lifecycle rebuild target scoping: cloning and auth
 - **`genexus_create` now honors a `folder` / `module` destination instead of rejecting it.** Passing `folder=<name>` or `module=<name>` creates the object in Root Module and then moves it into the target container (verified), reporting the outcome under `placement`. This replaces the previous `FolderPlacementUnsupported` rejection — the earlier "the SDK cannot place objects" conclusion was wrong (it came from decompiling a metadata-only reference assembly whose members are all empty stubs; the real move persists at runtime via the SDK). `list`/`inspect` reflect the new location immediately.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Typing a variable as an SDT *item* now works — `&Message : Messages.Message` no longer collapses to the collection.** Declaring a variable as a single element of a collection SDT (the dotted `SDT.Item` form, e.g. GeneXusCommon's `Messages.Message`) persisted as the whole `Messages` collection instead, so `&Messages.Add(&Message)` was impossible and callers fell back to ad-hoc `VarChar` collections. `genexus_variable action=add` and `action=modify` now resolve the dotted item form through the SDK's own type-picker resolver — the same path the GeneXus IDE uses — so the variable is typed as the item. Verified end-to-end: `&Message.Id` / `.Type` / `.Description` member access and `&Messages.Add(&Message)` compile. Plain SDT, Business Component, and Domain types are unaffected.
@@ -3197,6 +3593,10 @@ Full-fidelity SDT structure & lifecycle rebuild target scoping: cloning and auth
 Correctness fixes for reading and writing SDT / Data Provider objects, plus an explicit failure for folder/module placement.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Reading a collection SDT no longer flattens it.** `genexus_inspect` and `genexus_structure action=get_visual` reported a top-level collection SDT as `isCollection: false` with a flat field list, because the collection flag lives on the structure's root level, not on the SDT object. Both now report `isCollection: true` and the collection item name (e.g. `"DASDTCursosAlunoItem"`), and `get_visual` now also carries each field's length/decimals — matching what the IDE and `genexus_read part=Structure` show.
@@ -3217,6 +3617,10 @@ Correctness fixes for reading and writing SDT / Data Provider objects, plus an e
 Hardening and correctness fixes for the **Nexus IDE VS Code extension**. (The `genexus-mcp` server is unchanged from v2.33.0 — this is a lockstep version bump whose substance is the extension.)
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Webviews no longer execute markup smuggled through Knowledge Base content.** The Structure, Index, and History views built their HTML by concatenating KB-derived values (object / attribute / index names, descriptions, formulas, revision authors and comments) without escaping, under a policy that allowed inline handlers — so a crafted name or comment could run script inside the view and reach the extension host. Every KB-derived value is now HTML-escaped before display (matching the Properties view, which already constructed its DOM safely).
@@ -3239,6 +3643,10 @@ The **Nexus IDE VS Code extension** is brought up to the MCP server's quality ba
 - **The Nexus IDE extension now ships as a `.vsix` attached to each GitHub Release.** `release.ps1` versions the extension in lockstep with the server, builds it, and attaches `nexus-ide-<version>.vsix` next to `publish.zip`. (Marketplace `vsce publish` stays a manual step — it needs a token this repo doesn't store.)
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Rename now actually updates the editor.** Renaming a variable/attribute ran server-side but the editor showed nothing (it returned an empty edit); it now refreshes the affected open documents (skipping ones with unsaved changes). Also fixed variable renames being mis-routed to the attribute-rename operation.
@@ -3263,6 +3671,10 @@ Agent-ergonomics round: louder argument validation, richer list metadata, conten
 - **List responses now carry `empty`, `returned`, and `totalByType` for far more tools.** These signals — which let an agent tell "0 results" from a silent failure and paginate without guessing — previously only appeared on `genexus_query` / `genexus_list_objects`. They now also attach to tools whose collection uses another key or is nested one level down (e.g. `genexus_api` endpoints, `genexus_versioning` history, gxserver pending/ignored/conflicts).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A second build started in the split-second after the first no longer slips past the "build already running" guard.** The guard read an in-flight set that a build only joined on a background thread, so two builds fired back-to-back could both be admitted and race the generated output. Builds now register synchronously before the background work is scheduled.
@@ -3291,6 +3703,10 @@ Agent-ergonomics round: louder argument validation, richer list metadata, conten
 Variable-retype reporting honesty (issue #46 follow-up).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_variable action=modify` now reports the type it actually persisted.** Retyping a variable to a built-in GeneXus data type (e.g. `Properties`), an SDT, a Business Component, or a Domain reported `persistedType: "DomainReference"` — an internal placeholder, not a real type — even though the variable was correctly persisted. It now reports the real type name (`"Properties"`, the SDT/BC/Domain name). Declaring `Properties` (and every other built-in data type) already worked as of v2.31.0; this only corrects the confusing success message.
@@ -3313,6 +3729,10 @@ GeneXus Server "Ignored Objects" visibility, plus full variable-type authoring (
 - **`genexus_gxserver action=pending` now flags which objects will actually commit.** The pending changelist mixed committable objects with ignored ones and labelled them all "pending". Each object now carries `ignoredForCommit` (true = the object sits in the IDE's "Ignored Objects" tab and a full commit skips it), and the response adds `committableCount` / `ignoredCount`.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **You can now declare a variable of a built-in GeneXus data type — `HttpClient`, `HttpRequest`, `HttpResponse`, `WebSession`, `MailMessage`, `ExcelDocument`, and the rest — through the MCP.** Previously `genexus_variable add typeName=HttpClient` failed with `UnknownType`, `modify` silently persisted a dangling reference, and the `genexus_edit part=Variables` DSL silently coerced the variable to `NUMERIC(4)` — so any object that calls out over HTTP (`&http.Host`, `&http.Execute(…)`) could not be authored without opening the GeneXus IDE by hand. All three paths (`add`, `modify`, and the `mode=full` Variables DSL) now resolve the type through GeneXus's own type registry, exactly as the IDE's variable Type picker does, and the variable round-trips (reads back by name) and passes specification with member access resolved. Only `WebSession` was previously special-cased; every built-in GeneXus data type — and user-defined KB External Objects — is now recognized generically.
@@ -3332,6 +3752,10 @@ GeneXus Server "Ignored Objects" visibility, plus full variable-type authoring (
 Data-loss and reliability fixes (issues #43 and #44).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **The MCP connection no longer drops during/after a build.** A background build kept emitting progress (`Build phase: OpeningKB`, …) tagged with a token whose operation had already finished — so the client (Cursor especially) saw a "progress notification for an unknown token", flagged the transport as errored, and closed the connection (looking like "the server crashed" when it was still running). The gateway now relays a progress notification only while its operation is still active and silently drops stale/unknown ones, so async builds and background indexing can't tear down the session. Live build progress is unaffected — follow it with `genexus_lifecycle action=status target=op:<id>`.
@@ -3374,6 +3798,10 @@ Build-reliability pass (issue #42). A GeneXus build could report `Succeeded` wit
 Bug-fix pass — five agent-friction fixes across dry-run, DB drift, targeted build, worker concurrency, and preview. No new features.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_edit` dry-run no longer promises a Transaction attribute removal the SDK will reject.** Removing a key attribute from a transaction always fails at save, but a `dryRun` / `validate=only` run reported the edit applied (`opsApplied:1`) because it only projected the change against the Structure text in memory. Dry-run now flags removals the SDK will refuse up front (`capabilityRisks`, `willLikelyFail`), and every dry-run carries a `dryRunCaveat` making clear the preview is a projection, not a guarantee the persist will succeed.
@@ -3391,6 +3819,10 @@ Bug-fix pass — five agent-friction fixes across dry-run, DB drift, targeted bu
 Two more performance + bug-fix passes (no new features). Fixes span the analysis/edit hot paths, destructive-action safety, background-job and cache memory hygiene, and several latent concurrency and parsing bugs.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_gam action=define_api|deploy` now require `confirm=true`.** These call the GeneXus GAM Define API / security-table deploy and can create or alter tables in the KB's datastore; they previously executed on the first call with no confirmation. They now fail fast asking for `confirm=true`, matching every other destructive SDK action.
@@ -3420,6 +3852,10 @@ Two more performance + bug-fix passes (no new features). Fixes span the analysis
 Performance and bug-fix pass (audit 2.29.x). No new features — targeted fixes in the recently added SDK-endpoint tools and in long-running gateway internals.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Long-running gateways no longer accumulate stray background tasks.** Each time a worker was retired for being idle, recycled for memory, or killed for hanging, its writer and health-check loops kept running for the life of the gateway against a token that was never cancelled — a slow, unbounded task/timer leak. Every worker-teardown path now cancels cleanly.
@@ -3443,6 +3879,10 @@ Performance and bug-fix pass (audit 2.29.x). No new features — targeted fixes 
 Security and reliability hardening for the recently added SDK-endpoint tools.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Lingering MSBuild processes are now actually reaped on every build exit.** The v2.29.0 "guaranteed reap" cleanup inspected the build's process handle *after* it had already been released, so the safety net silently did nothing (and logged a spurious cleanup warning on affected builds). Cleanup now tracks the MSBuild process by PID — with a start-time guard against PID reuse — so a hung child process can't linger after the build finishes, fails, or throws.
@@ -3468,6 +3908,10 @@ Reliability & authoring batch — build/deploy status honesty, long-op resilienc
 - **`genexus_lifecycle mode=compile_check callers=false` / `callerCap=N` — scope the check.** A base transaction (a business component called everywhere) has a huge transitive caller closure; expanding it pulled in fan-in orchestrators like the KB-wide DeveloperMenu and could drag dozens of DLLs over 20–30 min. `callers=false` runs a target-only check; `callerCap` (default 40) bounds the closure and flags truncation.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`compile_check` no longer re-expands the whole KB.** It now builds exactly the target plus its (capped) callers with `includeCallees=none`, instead of also walking every caller's dependency graph — which re-dragged the DeveloperMenu the check is meant to skip and left `CompileCheck:false` on the run.
@@ -3541,6 +3985,10 @@ See `docs/sdk_uncovered_endpoints_2026-07-20.md` + `docs/sdk_endpoints_roadmap.m
 - **`genexus_authoring` — a new tool for authoring members of object types the structure DSL doesn't cover.** `add_external_method` / `add_external_property` add a method (with parameters) or a property to an **External Object** (`payload={"name":"apiKey","type":"Character"}`); `add_menu_option` adds an option to a **Menu** that calls a KB object (`payload={"description":"Customers","target":"CustomerWW"}` — a target object is required). Auto-assigns the next menu option code when you don't pass one.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Editing a Transaction's `Rules` with an invalid rule now tells you what's wrong instead of a bare "Erro" (issue #39).** Writing `Rules` that contained `Unique(Attribute);` failed with `Part save failed: Erro` and no detail, which looked like the whole `Rules` part was broken. It wasn't — valid `Rules` writes (`Default`, `Error`, `NoAccept`, assignments, conditional rules, proc calls) always worked and still do. The one bad rule was `Unique`, which GeneXus does not recognize (the SDK reports `src0295: unknown rule 'Unique'`). `genexus_edit part=Rules` now returns an actionable `hint` for this: enforce uniqueness with `genexus_structure action=create_index` instead. The `Unique` clause only ever existed for queries and was removed after GeneXus 18 Upgrade 9.
@@ -3567,6 +4015,10 @@ See `docs/sdk_uncovered_endpoints_2026-07-20.md` + `docs/sdk_endpoints_roadmap.m
 Fixes the build-hang reported against v2.25.1, where `genexus_lifecycle action=build` — most visibly a build with no target ("build all") — would generate the KB, then sit at `Running` for many minutes with no phase progress and never reach a terminal state until cancelled by hand.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A build that fails no longer secretly re-runs the whole thing.** When the in-process GeneXus build ran end-to-end and reported failure (for "build all", on real compile errors), the MCP was discarding that result and silently restarting the entire build as an external MSBuild process — re-opening the KB and recompiling from scratch. That second full pass is what looked like an indefinite hang. The MCP now surfaces the failure from the first pass and terminalizes immediately (`Failed`). The external build is used only when the in-process build could not start at all (SDK unavailable, unsupported action such as reorg), never to retry a build that already ran.
@@ -3582,6 +4034,10 @@ Fixes the build-hang reported against v2.25.1, where `genexus_lifecycle action=b
 Fixes the gateway lock-up reported in issue #38, where opening a path that isn't a Knowledge Base root (a GeneXus environment/model subfolder, with no `.gxw` / `knowledgebase.connection`) put the worker into an endless background auto-open loop and eventually left every tool call returning `Master error: NotFound` (404) until the server was restarted by hand.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Opening a non-KB path now fails fast with a clear error instead of wedging the gateway.** `genexus_kb action=open` validates that the path is a real KB root (a folder with a `.gxw` / `knowledgebase.connection`, or the `.gxw`/`.gx` file itself) before a worker is spawned for it, and returns `KbInvalidPath` when it isn't. Previously the bad path was handed to a fresh worker whose open failed but kept retrying, so the whole gateway drifted into an unrecoverable state.
@@ -3598,6 +4054,10 @@ Fixes the gateway lock-up reported in issue #38, where opening a path that isn't
 Addresses the deploy/database-apply gaps reported in issue #37: reorg couldn't run, builds and F5 previews could hang forever, and a DBA-managed "no reorg" database was invisible to an agent driving GeneXus headlessly.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Builds and previews can no longer hang indefinitely.** A build (or `buildFirst` preview) that wedges in a late deploy/reorg step used to sit at `Running` with no terminal state, forcing you to cancel by hand. Each build task now has a wall-clock cap: on expiry it is force-failed with a clear reason and any spawned MSBuild process tree is killed. Default 900s (2400s for a full rebuild); override with `GXMCP_BUILD_TIMEOUT_SEC`.
@@ -3610,6 +4070,10 @@ Addresses the deploy/database-apply gaps reported in issue #37: reorg couldn't r
 - **`genexus_inspect projection` levels are now live.** `projection=minimal` returns just name/type/lastUpdate/availableParts for a cheap orient; `standard` (default) is the new lean shape; `verbose` restores full detail. Previously the parameter was advertised but ignored.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Enumerated ("combobox") Domains now render their options.** `genexus_create` for a Character/VarChar Domain stored `enumValues` raw (`A`), but GeneXus needs quoted literals (`"A"`) — a raw value produced an empty combobox in the IDE. Character-family enum values are now auto-quoted (pass the bare value; already-quoted input is left alone); numeric/date domains are unchanged.
@@ -3631,6 +4095,10 @@ Addresses the deploy/database-apply gaps reported in issue #37: reorg couldn't r
 Closes the gaps reported in issue #36 from an end-to-end WorkWithPlus feature build: schema edits that silently no-op'd, misleading success signals, and an unnamed-container layout skip. The theme is honesty — a write that didn't take effect now fails or warns instead of reporting success.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Structure edits are authoritative — no more silent additive-only merges.** `genexus_edit part=Structure` with `mode:full` now replaces the whole attribute list, including keys: sending a different key line no longer leaves you with a composite double key. Removals run after additions, so replacing a key works (the new key exists before the old one is dropped). When the SDK genuinely refuses to drop an attribute (e.g. a key still referenced by a foreign key, relation, or index), the write is aborted with a `StructureAttributeNotRemoved` error explaining why — instead of quietly keeping the attribute and reporting success.
@@ -3664,6 +4132,10 @@ Fixes issue #33 — SDT-typed collections and `WebSession` variables can now be 
 - **SDT structure members can reference another SDT (typed collections).** Writing a Structure member such as `Items : SDT_Foo Collection` now persists as a reference to `SDT_Foo` (a `GX_SDT` member carrying the SDT type), matching what the IDE produces — instead of silently degrading to `VARCHAR(40) Collection` and losing the type link. Reading the structure back shows the SDT name (`Items : SDT_Foo Collection`), so it round-trips unchanged. This unblocks List / wrapper SDTs whose items are themselves SDTs.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A native GeneXus SDK fault no longer silently kills the worker mid-edit.** Some complex edits (large WebComponents, certain Structure writes) made the SDK raise a corrupted-state fault (`AccessViolation`) that the runtime turned into an immediate process exit — the client saw the MCP disconnect with no answer, and the in-flight call was lost (issue #35, and the homonym Transaction/Table Structure crash). The worker now catches that fault, returns a structured `WorkerNativeCrashRecovered` error for the call, and restarts cleanly so the gateway brings up a fresh worker — so a bad call fails with a message and a retry works, instead of dropping the connection. (A `StackOverflow` remains unrecoverable by design; it stays a hard restart.)
@@ -3680,6 +4152,10 @@ Fixes issue #33 — SDT-typed collections and `WebSession` variables can now be 
 Fixes issue #34 — the blocker plus the three secondary problems reported alongside it.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_edit` can now add and modify attributes on a base Transaction.** Every base Transaction shares its name with an auto-generated Table, and while `type` was honored on read and on `dryRun`, the actual write ignored it and re-resolved by name — hitting both objects and failing with `Ambiguous object name`. `type` is now carried all the way into the write, so `genexus_edit part=Structure` (mode `patch` and `ops`) persists against the Transaction you named. This also unblocks JSON-Patch writes and any other same-named object pair (e.g. a WebPanel behind a Transaction).
@@ -3701,6 +4177,10 @@ Fixes issue #34 — the blocker plus the three secondary problems reported along
 - **`genexus_memory action=consolidate`** — "dreaming": merges redundant or overlapping facts within a scope (same object, matching or near-duplicate wording) and compacts the memory file down to the survivors. `dryRun=true` (default recommended first call) previews the proposed merges without writing; `dryRun=false` applies them. `genexus_whoami` suggests this once a KB accumulates 30+ memories, instead of a plain recall.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_refactor action=RenameObject` can now rename any object, and tells same-named objects apart.** Renaming a WebPanel, Transaction, or Procedure previously failed with "Attribute not found" — the action only ever renamed attributes — and when two objects shared a name (for example a WebPanel and the same-named `Table` generated behind a Transaction) there was no way to indicate which one you meant. RenameObject now resolves the object by name, disambiguated by `type` (and honoring a GUID or `Type:Name` target), renames it, and patches every call-site that referenced it. Pass `type=WebPanel` (or `Transaction`, `Procedure`, …) when a name is shared. `genexus_rename_across_kb` gets the same type-aware resolution; renaming attributes is unchanged.
@@ -3718,6 +4198,10 @@ Fixes issue #34 — the blocker plus the three secondary problems reported along
 Worker-stability pass: the worker stops dying for reasons that have nothing to do with your KB, and when it does die you can finally see why.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A second editor/agent no longer kills your live worker.** When more than one client connected at once, a second gateway ran as a proxy to the first. A routine, id-less MCP notification — which the main gateway correctly answers with an empty acknowledgement — was misread as "the main gateway is dead," triggering a takeover whose port-recovery step then force-killed the real gateway *and its GeneXus worker*, mid-edit or mid-build. The proxy now treats an empty acknowledgement to a notification as success, re-verifies the main gateway is actually gone before taking over, and never force-kills a process holding the port unless it is itself one of ours. The one request that did trigger a (now genuinely warranted) takeover is replayed by the new master instead of being dropped. This removes a whole class of "the worker just died / I had to reconnect" interruptions that were never about your KB.
@@ -3761,6 +4245,10 @@ Agentic-DX fixes from a real session authoring a SOAP-exposed Procedure (issue #
   everything. Omitting `targets` keeps the previous whole-changelist behavior.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`VarChar` now persists as `VARCHAR`, not `CHARACTER`.** A variable requested as
@@ -3813,6 +4301,10 @@ search/list on large KBs, the new `Server.WedgedCommandTimeoutMinutes` knob, and
 `warm_spares` now reporting its real outcome.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Incremental indexing of large sibling groups is no longer quadratic.** Adding an
@@ -3944,6 +4436,10 @@ argument on `genexus_kb_import`.
   network. The default loopback (`127.0.0.1`) bind with no token is unchanged.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_kb_import` rejects path-traversal in `name`/`type`.** These arguments flow
@@ -4005,6 +4501,10 @@ argument on `genexus_kb_import`.
 ## v2.16.1 — 2026-07-10
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Reading a Smart Device Panel (`SDPanel`) no longer reports real content as empty.** An SDPanel's parts are WorkWithDevices projections, and the tool was looking them up with the Web panel's part identifiers, which never matched — so `part=Source` landed on the panel's (usually empty) rules part, and the layout/variables/conditions came back as a blank `<Properties />` that read like an empty object. Now: `part=Source` (and `Events`) returns the panel's **event code**; `SDEvents` and `SDRules` are listed in `availableParts` and readable by name; and reading `SDLayout` / `SDVariables` / `SDConditions` returns a clear note (`projected: true`) explaining the content is projected from the pattern and authored in the GeneXus IDE — a blank there does not mean the panel is empty.
@@ -4018,6 +4518,10 @@ argument on `genexus_kb_import`.
 Follow-up on two v2.15 authoring sessions (issues #30 and #31): SDT element sizing, per-object validation, batch reads, no-op detection, and folder moves now behave.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **SDT element Length/Decimals are now settable.** Writing an SDT structure element as `Codigo : Numeric(9)` used to drop the size — the element stayed at the `Numeric(4)` default, which serializes as `xsd:short` and silently truncates any value over 32767. Two causes: the structure write only fired for `part=Structure` while `genexus_read` reports the part as `SDTStructure` (so the write was a silent no-op), and the parser never applied the length even when it ran. Both are fixed — `part=SDTStructure` now writes, and `Numeric(9)` / `Numeric(9.0)` / `Numeric(9,0)` all set length and decimals. Reads round-trip the size (`Codigo : NUMERIC(9)`).
@@ -4054,6 +4558,10 @@ Second pass on the long-session report (issue #28): the remaining authoring and 
 - **`genexus_create` can create API objects.** `action=object type=API` scaffolds a GeneXus API object, so grouped-route REST services can be created through the MCP instead of only in the IDE.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **No more phantom placeholder KB.** The shipped fallback config carries a placeholder `KBPath` (`C:\KBs\YourKB` — an empty scaffold). It was being auto-migrated into a `yourkb` default that opened alongside your real KB, so every call failed with `Multiple KBs open (yourkb,…); 'kb' parameter is required`. A `KBPath` that isn't a real KB (missing, or no `.gxw` / `KnowledgeBase.Connection`) is no longer migrated — the only open KB is the one you actually open, so no `kb` argument is needed.
@@ -4069,6 +4577,10 @@ Second pass on the long-session report (issue #28): the remaining authoring and 
 Stability and authoring fixes from a long real-world session on a ~1200-object KB (issue #28): edits no longer stall behind a "not ready" index after a reconnect, declaring variables and SDTs takes fewer round-trips, and a failed build finally tells you whether it's your code or the environment.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Edits no longer blocked by `IndexNotReady` when the index is actually loaded.** After a reconnect the worker's index loads from its warm cache (log shows `Index loaded. Objects: 1191`), yet the first `genexus_edit` could still be rejected with `IndexNotReady` / `indexStatus: Cold` — and the only way to warm it risked a long blocking call. The index state is now hydrated from the loaded cache the moment it's queried, so the first status/edit after a reconnect reflects the objects already in memory instead of reporting `Cold`.
@@ -4090,6 +4602,10 @@ Stability and authoring fixes from a long real-world session on a ~1200-object K
 Index-status honesty + a "wait until ready" convenience, from a measured pass over the index lifecycle (issue #27 item 3). The re-walk/flapping that item reported is already handled by the persistent warm cache (v2.12/2.13) — reopening a large KB loads it instantly and a build no longer drops the index; these are the remaining rough edges around it.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Index status no longer reports 0 objects when it's actually ready.** When the index loads from the warm/delta cache (the normal path on reopen), `genexus_lifecycle action=status` reported `total: 0`, `processed: 0`, `objectsWalked: 0` and a blank status even though the index was fully `Ready` with thousands of objects — the "processed: 0 the whole session, impossible to tell progress" confusion. Status now reports the real object count and state in that case.
@@ -4104,6 +4620,10 @@ Index-status honesty + a "wait until ready" convenience, from a measured pass ov
 Reliability + search-ergonomics pass from a long large-KB session (issue #27): a background build now always resolves to a real result, source search can be scoped to a single object and resumed, and a failed patch tells you enough to fix it in one retry.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **A background build always resolves to a terminal result.** After `genexus_lifecycle action=build`, polling `action=status` / `action=result` could report `running` / `Pending` forever even though the build had already finished — the background progress tracker could wedge (a recycled worker, a stalled pipe) and nothing ever flipped the job to its final state. Every status/result poll now re-checks the worker's real build state and settles the job to `succeeded` / `failed` on the spot. If the worker was recycled and its build outcome is genuinely unrecoverable, the job resolves with a clear "tracking lost — re-run to confirm" instead of hanging.
@@ -4133,6 +4653,10 @@ Reliability + search-ergonomics pass from a long large-KB session (issue #27): a
 Follow-up to the v2.13.0 Design System work: editing a Design System now actually saves, and a worker that shut down for inactivity comes back on the next call instead of erroring.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Editing a Design System's styles no longer silently no-ops.** Writing a Design System's `Source` with only a `styles { … }` block — or a combined `tokens { … } styles { … }` source in which only the styles changed — returned `WriteNoChange` and never persisted, so the object looked untouched in the IDE. The styles now save correctly. A write where neither the tokens nor the styles block changed still returns `WriteNoChange`, as expected.
@@ -4148,6 +4672,10 @@ Follow-up to the v2.13.0 Design System work: editing a Design System now actuall
 Worker-reliability, KB-lifecycle, and DX pass on large KBs (issue #26): the worker comes back on its own, an opened KB stays put, `genexus_search_source` can no longer take the worker down, and Design System objects write their tokens and styles to the right place.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_search_source` no longer crashes the worker.** Source search was running on a background thread while reaching into the GeneXus SDK, which is single-thread-bound — every call killed the worker and cost a recovery cycle. It now runs on the SDK thread, so searching source is safe and repeatable, even on a large KB and while the index is still building.
@@ -4169,6 +4697,10 @@ Worker-reliability, KB-lifecycle, and DX pass on large KBs (issue #26): the work
 Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong answers, make index progress observable, keep reads whole, and survive worker crashes without a manual reconnect.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_search_source` no longer returns an empty "not found" for tokens that exist.** A search for text that lived in an object's body — but not in its name — was silently dropped for every Procedure, Data Provider, Web Panel, and Transaction, because a pre-filter treated the (never-populated) indexed snippet as proof of absence. The pre-filter now only skips an object when the index genuinely holds its body text; otherwise the full source is read. A zero result is now trustworthy.
@@ -4203,6 +4735,10 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 - **Search inside WebForm layouts.** `genexus_search_source` now accepts `scope=["webForm"]` (or `["layout"]`), scanning the WebPanel/Transaction visual XML with the same line-numbered context as a source scan — find a control name, caption, theme class, or binding across the KB. Previously the only way to match WebForm content was `fields=["webForm"]`, which returned the whole XML blob with no line context, and a layout-only term was filtered out before its part was ever read.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Edit and save errors now show the real diagnostic instead of `{"message":"{"}`.** When the GeneXus SDK rejected an edit — invalid source syntax, a save that didn't persist, and similar — the error reaching the client collapsed to a literal `{"message":"{"}`, with the actual `src####` line/column diagnostic, error code, and fix hint all dropped. `genexus_edit mode=patch` and `genexus_io action=export_part` returned the same opaque string. The error now carries the SDK's real message, code, and hint, so a failed write is actionable in one read instead of a dead end. (Fixes the `{"message":"{"}` reports in issue #24.)
@@ -4228,6 +4764,10 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 - **Restore hint on verification failures.** When a visual or pattern write commits but post-write verification finds a mismatch, the error now includes the pre-write snapshot reference and a ready-made `genexus_history action=restore discard=true` next step, so the agent can undo the write in one call.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_worker_reload` no longer leaves the session with a dead pipe.** Reload is now orchestrated by the gateway: tool calls that arrive during the swap wait in a queue instead of being routed to the exiting worker, and the reload response returns only after the replacement worker is SDK-ready (`swappedAndReady: true`). The old "reconnect the MCP client after reload" workaround is no longer needed.
@@ -4271,6 +4811,10 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 ## v2.9.1 — 2026-06-09
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **The MCP server no longer shows "parou de responder" / "stopped responding" while idle.** The host's periodic keepalive `ping` was processed in the same single-file queue as tool calls, so a long-running request (a cold start, an index build, an edit reapply, or a background index refresh) blocked the gateway from answering the ping until it finished — and the IDE declared the server unresponsive even when you weren't actively using it. Pings and other lightweight protocol messages are now answered immediately regardless of what heavier work is in flight.
@@ -4285,6 +4829,10 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 - **Index-build timing diagnostics** in the worker log: a single-line cold-start breakdown (service-manager warmup vs SDK init vs KB open), a time-to-usable marker, a catalogue-pass split of property-read vs snapshot-flush time with per-object-type counts, an enrichment sub-step split, and per-flush serialize/compress/write durations — so a slow start can be attributed from one log read.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Index builds no longer thrash the disk.** While enriching a Knowledge Base the server was re-serializing and rewriting the entire index after nearly every object — hundreds of full rewrites on a large KB, each one slower as the index grew, competing with the build for CPU. These writes are now throttled, with a single final write when the build completes, removing the bulk of the redundant work.
@@ -4326,6 +4874,10 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 - **Antigravity's unified config location is supported.** When `~/.gemini/config/mcp_config.json` already exists (the newer shared Antigravity location), the entry is written there; otherwise the IDE-specific `~/.gemini/antigravity/mcp_config.json` path is used.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **The init wizard now detects installed AI agents that haven't created an MCP config yet.** Agents were marked "not detected" whenever their MCP config file was absent — but Antigravity doesn't create `mcp_config.json` until you add a server, so a freshly installed Antigravity always showed as not detected and was skipped. Detection now keys off the agent's own install footprint (e.g. `…\Programs\Antigravity`, `~\.antigravity`), so the wizard offers to register it and creates the config for you. When an agent really isn't found, the prompt now shows where it looked.
@@ -4349,6 +4901,10 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 - **Worker startup diagnostics in `worker_debug.log`.** On open, the worker now logs the active environment's data store (`[KB-OPEN-DATASTORE]` — type / server / schema, read from metadata only, no connection) plus a single `[COLD-START] totalMs=…` line covering Service-Manager warmup + SDK init + KB open. A slow or hung startup — e.g. one blocked reaching an unreachable database server during open — can now be diagnosed from the log alone instead of by guesswork.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`read`, `query`, `list_objects`, and object creation no longer get stuck on `IndexNotReady` / `totalObjects: 0` after a KB finishes indexing.** The v2.8.0 canonical-envelope migration wrapped the worker's index-state reply one level deeper (`result.result`), but the gateway's internal refresh still read the old top level — so it saw `status: "ok"` and `totalObjects: 0` and fast-failed every SDK-bound tool, even while `genexus_lifecycle action=status` correctly reported the index as ready with all objects. The gateway now reads the nested payload. Backward-compatible with the pre-2.8.0 reply shape.
@@ -4370,6 +4926,10 @@ Stability + agent-ergonomics pass on large KBs (issue #25): stop silent wrong an
 ## v2.8.1 — 2026-05-28
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`mcp.serverVersion` in `whoami` no longer reports a stale 2.7.4 stamp.** The v2.8.0 publish landed with the Gateway csproj `InformationalVersion=2.7.4` because `release.ps1` only bumped version files when `-Version` was passed AND it differed from `package.json`. When `package.json` was edited by hand before invoking the script (as happened for v2.8.0), `$Version -eq $currentVersion` and the whole bump block was skipped — including the csproj sync. The published binary then carried the old version stamp even though the runtime code was the new v2.8.0 source. The script now also reads the csproj's current `InformationalVersion` and forces the bump pass when it's out of sync with `package.json`, regardless of whether `-Version` was passed.
@@ -4447,6 +5007,10 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 ## v2.7.4 — 2026-05-28
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_delete_object` retry after a client timeout is no longer reported as "Object not found".** When the worker's `obj.Delete()` finished after the MCP client gave up on the call (large objects can take longer than the gateway's pipe budget), the next `genexus_delete_object` for the same name reached an empty KB and surfaced the generic not-found envelope — leaving the agent unsure whether the deletion actually succeeded. The worker now records every successful delete for 5 minutes and matches retries against that record: a retry whose object is genuinely gone returns `status:"Success", confirmedAfterTimeout:true, deletedAtUtc:<iso>` with a note explaining the earlier call completed server-side. A typo or never-existed name still gets the not-found envelope.
@@ -4469,6 +5033,10 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 ## v2.7.3 — 2026-05-27
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Worker cold-start is ~40% faster, so the first tool call after a worker (re)starts stops timing out.** Booting a worker re-activated the GeneXus Service Manager twice: once via the build-task warm-up and again via the connector init, with the second attempt burning ~35 s before throwing "Service Manager já foi ativado" (already activated). Cold-start dropped from ~92 s to ~53 s on a large KB. On top of that, the gateway now waits for the worker's "SDK ready" signal **before** starting a tool's timeout clock, so worker start-up time is no longer billed against the operation's budget — a `genexus_delete_object`, `genexus_apply_pattern`, or `genexus_read` issued right after a (re)start completes inline instead of returning a spurious "still running" timeout, regardless of how long boot takes. Worker boot is also now instrumented: each init step's duration is logged, and an init failure logs the full inner-exception chain instead of a generic message.
@@ -4480,6 +5048,10 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 ## v2.7.2 — 2026-05-26
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Intermittent `Transport closed` / dropped connection when more than one gateway was running.** Each MCP client session starts a gateway; the first one binds the local port and becomes the "master", the rest attach to it as proxies. The master kept its instance lease alive by refreshing it every 60 seconds, but a lease was treated as stale after only 45 seconds — so for roughly 15 seconds of every minute a newly-launched gateway saw the live master as dead, tried to take over the port, failed to bind it, and killed the running master during port recovery. Clients (Codex, Cursor, …) experienced this as the connection dropping just as it started working, and restarting the client on every prompt was the only workaround. The active gateway now refreshes its lease every 15 seconds — well inside the staleness window — so a second gateway correctly attaches as a proxy instead of evicting the live one.
@@ -4505,6 +5077,10 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 - **`Indexing` envelope now reports real progress and ETA.** The cold-start `{status:"Indexing", code:"IndexNotReady"}` envelope (returned by `genexus_list_objects` and the gateway's pre-worker guard when the index isn't ready yet) previously hardcoded `"Index still building; retry in 2-5 seconds."` regardless of KB size. The message is now templated from the index phase (`"Building index from cold start"` / `"Walking KB (ultra-lite pass)"` / `"Rebuilding index"`) with `N% complete` and `~Ns remaining` appended when the worker has populated them. `etaMs` is also surfaced on the envelope so an agent can pace its retry instead of polling blindly. Agents on large KBs (10k+ objects) get a realistic wait estimate; small-KB callers see the same sub-second behavior as before.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **The IDE's "Apply this pattern on save" checkbox now stays checked after the MCP edits a WorkWithPlus pattern.** Editing a host's `PatternInstance` through `genexus_edit` used to silently clear the flag the GeneXus IDE renders as that checkbox, so the next time you opened the object the box was unchecked and the layout no longer regenerated on save. The MCP now re-asserts the flag after every successful pattern write; the response carries `applyOnSaveReenabled: true` so you can confirm it took.
@@ -4535,6 +5111,10 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 - `tool_definitions.json` schema budget lowered from ~13.2k → ~8.8k tokens (~33% reduction on every model turn).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Gemini / Vertex AI HTTP 400 on `tools/list`** caused by `genexus_run_object.args` declaring `type: "array"` with no `items` field — strict OpenAPI consumers (Vertex, some OpenAI Function-Calling configurations) reject the request before the tool is ever called. The schema now declares `items: {type: "string"}`. A new `ToolSchemaShapeTests` suite walks every umbrella + nested schema and asserts `array → items`, non-empty `enum`, `required[]` entries match `properties`, and unique tool names — so this class of bug fails CI instead of a chat session.
@@ -4566,6 +5146,10 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 ## v2.6.11 — 2026-05-26
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`apply_pattern reapply=true` no longer returns silent `status:"Success"` when the pattern's Events-by-WorkWithPlus generation will fail at the next IDE save.** Live repro: a fresh PatternInstance (created when `wasFirstApply` lands on a host that had been rebuilt) doesn't carry forward the previous host's controlName map, so any reference in the parent's Events code to a control the new instance doesn't expose (typically `GrpX.Visible = …` after a popup conversion) fails with `src0265: Invalid attribute 'GrpX'` + `src0216: 'Visible' invalid property` — but only visible to the user when they try `Ctrl+S` in the IDE, well after the MCP has already declared the reapply a success. The reapply now runs `SdkDiagnosticsHelper.GetDiagnostics(parent)` after the projection phase and surfaces `Error`-severity diagnostics (plus the WWP-projection-specific src0265 / src0216 codes) in the response. When issues are found the envelope flips to `status:"PartialFailure"` with `patternValidationIssues:[…]` and a hint telling the agent which Events references to fix before the user's next save.
@@ -4575,6 +5159,10 @@ Every worker tool now emits this shape (full spec in `docs/envelope.md`):
 Six fixes to surfaces that surfaced friction during the v2.6.9 popup-conversion session — every gap that turned a 10-min task into a 90-min one is now closed.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_create_popup` now works on WorkWithPlus KBs.** The flat `<Form type="layout"><table>` body emitted by prior versions was rejected by `WebLayoutHandler.LoadPanelElement` with `"Elemento não pode ser desserializado do nó XML porque sua marca (table) não corresponde ao nome do elemento (detail)"` on any KB with the WorkWithPlus dual-form convention — i.e. most GeneXus 18 KBs in the field. A new `WwpConventionProbe` samples existing layout-form WebPanels to detect the convention and harvest the theme class GUID prefix (e.g. `d4876646-98dd-419b-8c1c-896f83c48368`), and `PopupLayoutBuilder.BuildWwpLayoutXml` emits the proper `<Form type="layout"><detail><layout id="GUID"><table controlName tableType="Responsive" class="<prefix>-N">…</table></layout></detail></Form>` structure with class suffixes `-4` (data attribute), `-24` (textblock), `-46` (action), `-59` (errorviewer). Non-WWP KBs keep the flat-schema path.
@@ -4625,6 +5213,10 @@ Adds the REST/DB/GxServer/type/profiler/cross-platform tool surfaces, a self-ext
 - **Cold-start fast-fail for all SDK-bound tools.** First call to any worker-bound tool on a freshly-opened KB used to queue behind the initial BulkIndex on the single STA thread and eat the full 60 s gateway timeout before returning an opaque "Gateway timeout" error. The gateway now short-circuits to a structured `{status:"Indexing", code:"IndexNotReady", indexStatus, totalObjects, progress, hint}` envelope in <2 ms when the cached index state isn't yet "Ready". Covers `list_objects`, `query`, `read`, `inspect`, `analyze`, `explain`, `apply_pattern`, `search_source`, `inject_context`, `db_optimize`, `api`, `types`, `doctor`, `edit`, `edit_form`, `edit_and_build`, `save_as`, `create_object`, `create_popup`, `bulk_edit`, `navigation`, `kb_explorer`, `run_object`, `diff_generated`, `what_if`, `db_drift`, `orient`, `security`. Gateway-served tools (`whoami`, `recipe`, `lifecycle status`, `kb_diff`, `kb_import`, `sandbox`, `worker_pool`, `gxserver`, `profile`, `auto_test`, `learning`, `watch_event`, `execution_history`) bypass naturally and stay responsive. Worker-side ListService keeps a matching fast-fail for callers that skip the gateway short-circuit. Measured against `AcademicoHomolog1`: every SDK-bound tool returns `{status:"Indexing"}` in <2 ms during the ~60 s cold-start window instead of timing out; once the worker reaches "Ready", calls flow through normally (steady-state: list_objects p99 31 ms, query p99 77 ms, inspect p99 716 ms, others sub-130 ms).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Error envelope dual-key consolidation.** Hand-built error envelopes across 36 worker services historically emitted `{status:"Error", error:"..."}`; the 18 newly-promoted tools used `{status:"Error", message:"..."}`. The codebase carried both conventions in roughly equal split, and the in-flight `McpResponse.Error()` helper had been emitting BOTH keys defensively (doubling bytes on every error envelope). Now canonical key is `["message"]` (REST / JSON-Schema convention, what new tools already used). McpResponse helper migrated; the 95+ hand-built envelopes across worker services swept to match; 11 test assertions migrated; gateway-side `TrimErrorEnvelope` still reads `error["message"] ?? error["error"]` for back-compat with any unmigrated path. Net: one canonical key, less bandwidth, no LLM ambiguity.
@@ -4713,6 +5305,10 @@ Adds the REST/DB/GxServer/type/profiler/cross-platform tool surfaces, a self-ext
 - **`genexus_lifecycle action=cancel`** — cancel an in-progress build via its `job_id`. Previously the only way out of a wedged build was `worker_reload force=true` (which kills every tool surface in the session).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Build success was wrapped in `<e>error{…}</e>`.** `genexus_lifecycle build wait_until_done=true` returned `"Build succeeded: 0 warnings, 0 errors"` inside the MCP error envelope because the wait path compared `JobEntry.Status` against `"completed"` when the registry actually stamps `"succeeded"`. Clean success now classifies as `isError=false`; `partial_success=true` uses the `warning` envelope.
@@ -4889,6 +5485,10 @@ A 28-point friction sweep against `AcademicoHomolog1` on 2026-05-21 surfaced the
 - **Doctor checks for the new infra.** `genexus-mcp doctor` now reports `worker_single_instance_lock` (lists live workers + flags stale .lock files in TempPath) and `in_process_build_assembly_load` (confirms `Genexus.MsBuild.Tasks.dll` is reachable under `GX_PROGRAM_DIR` / the configured GeneXus path; warns when the build will fall back to the MSBuild.exe slow path).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`.gxw` version metadata now matches the format the GeneXus IDE writes.** `KbService.DetectGeneXusVersion` was reading `FileVersionInfo.ProductVersion` from `GeneXus.exe`, which on modern .NET includes the `InformationalVersion` suffix (`18.0.14.187794+<git-sha>`). When the IDE later reopened the KB it re-detected its own canonical string (`18.0.187794 U14`) and showed the "different GeneXus installation than last time" dialog every time, even though the install path was identical. The version is now built from the numeric `FileVersionInfo` parts as `{Major}.{Minor}.{Private} U{Build}`, matching the IDE byte-for-byte. The string-based `ProductVersion`/`FileVersion` path is kept as a fallback for installs where the numeric parts come back zeroed.
@@ -4937,6 +5537,10 @@ Two real-session bug hunts. First: `genexus_lifecycle action=build` failed on a 
 Second: `genexus_preview` failed with `O executável especificado não é um aplicativo válido para esta plataforma de SO` (`ERROR_BAD_EXE_FORMAT`) before chrome-devtools-axi was ever invoked. The npm shim installs as `chrome-devtools-axi.cmd` / `.ps1` / extensionless (Windows resolves the bash shim first via PATHEXT), and `Process.Start` with `UseShellExecute=false` only accepts true PE images. Plus once the CLI did launch, the cold-start of `chrome-devtools-axi`'s internal bridge (which `npx`-bootstraps `chrome-devtools-mcp@latest`) routinely hit the 30s per-call timeout. The headless preview path now works fully unattended on a stock Windows box.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_lifecycle action=build` rewritten to use the IDE's task pattern.** `BuildService.cs` no longer emits `<BuildOne ObjectName="…" ForceRebuild="true" />` — that task includes an IIS configuration-update sub-step that fails opaquely outside the GeneXus IDE process. Worker now emits `<SpecifyOneOnly ObjectNames="A;B;C" /><GenerateOnly />` for `action=Build` (with targets) and `<SpecifyAll /><GenerateOnly />` for `action=Sync`. `<OpenKnowledgeBase>` is also opened with `Output="IDE"` to match the IDE's load flags. Net effect: build runs 0 errors against a 38k-object KB where the old path produced 6 errors / 10 warnings every time.
@@ -4956,6 +5560,10 @@ Second: `genexus_preview` failed with `O executável especificado não é um apl
 Three passes: a usability sweep against KB `AcademicoHomolog1` that caught nine concrete friction points the LLM was hitting on first use; a UX pass focused on the "agent burns 3-8k tokens exploring before doing real work" failure mode on apply_pattern; and a corporate-Windows install hardening pass triggered by a real `2.3.4 -> 2.6.3` upgrade report where the user's MCP config kept silently pointing at an old gateway exe outside `node_modules`, the npm-installed copy was blocked by domain AppLocker from `%APPDATA%`, and every diagnostic surface ("Failed to connect", `npm update` ghost operation, generic launcher errors) compounded the dead end. Validated with happy-path apply on a disposable Transaction + WebPanel (11/11 assertions), focused UX probe (20/20), and the full CLI test suite (37/38, single pre-existing assertion unrelated).
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`analyze mode=explain` was a stub returning hardcoded `"Code analysis simulation"`** regardless of input — agents treated the fake response as real. Mode removed from the public schema (`tool_definitions.json`); legacy callers receive an explicit `NotImplemented` envelope pointing to valid modes.
@@ -5040,6 +5648,10 @@ Internal: new shared helpers in `cli/lib/config.js` — `isPathLikelyAppLockerBl
 Bug-fix pass uncovered by live-testing v2.6.2. Two gateway-side gaps prevented `lifecycle cancel` / `lifecycle status` from resolving when callers used the canonical `target=op:<jobId>` shape — exactly the call pattern documented in the tool help. Both close now.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`McpRouter.ResolveJobId` strips the `op:` prefix.** Callers pass `target=op:<jobId>` to lifecycle cancel/status; `ResolveJobId` returned the string verbatim, so `JobRegistry.Get("op:<id>")` always returned null, and cancel fell through to the OperationTracker path which doesn't track build/edit jobs — surface error: `"NotFound"` even when the job was registered and running. Now strips the prefix (case-insensitive, idempotent for non-prefixed inputs). 2 new unit tests in `LongPollTests`.
@@ -5061,6 +5673,10 @@ Observability + cancel reliability + pattern-parity harness. The three together 
 - **`PatternParityHarness` + `PatternApplyParityTests`.** Five-dimension diff (generated family, PatternInstance XML, WebForm XML, Variables, Rules) between MCP-driven `apply_pattern` output and IDE "Right-click → Apply Pattern" output. Each dimension reports PASS/FAIL independently with a focused detail message (first-divergence index for XML, set-diff for collections). XML normalization sorts attributes alphabetically before comparison so serializer nondeterminism doesn't false-fail the test. `ParityReport.ToMarkdown()` emits a human-readable report. Integration test gated by `[LiveKbFact(requiresWWP: true)]` plus `GXMCP_PARITY_MCP_NAME` / `GXMCP_PARITY_IDE_NAME` env vars; 9 unit tests cover the diff dimensions on JObject fixtures so the harness itself stays regression-protected even when the live KB run is skipped.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_lifecycle action=cancel target=op:<id>` actually cancels async builds/edits.** Previously the worker-side `WorkerCancellationRegistry.Cancel(jobId)` returned `NotFound` because the original async command was dispatched without a `cancelToken` — only search/impact/analyze opted-in per-handler. Now: (a) the gateway injects `cancelToken=jobId` into every async command it starts (`Build/Build`, `Build/RebuildAll`, async edit commands); (b) the worker's `CommandDispatcher.Dispatch` blanket-registers the token once at entry so every handler running under it inherits a single shared CTS; (c) `WorkerCancellationRegistry.Register` is now refcounted so inner handlers that also register the same token (search/impact still do) share the registration without their `Dispose` stripping the outer scope's registration first. Net effect: a single `lifecycle cancel target=op:<id>` resolves the right CTS regardless of which handler is currently in flight.
@@ -5118,6 +5734,10 @@ WorkWithPlus on a bare WebPanel now works end-to-end. Apply the pattern, get a h
 - **`genexus_whoami` reports update availability as structured data.** The response includes an `update` block with `currentVersion`, `latestVersion`, `updateAvailable`, `checkedAt`, `releaseUrl`, `command`, and `restartRequired`. AI agents can detect a pending upgrade in the same call where they read the KB context, then proactively offer the upgrade command — no longer have to rely on the stderr-style `notifications/message` the user might miss. The data comes from a 24h-cached GitHub release check the gateway runs in the background on `initialize`; reading it is zero-latency. Set `GENEXUS_MCP_NO_UPDATE_CHECK=1` to disable the background check (corporate networks that block the GitHub API). Documented as the "Self-update protocol (LLM-facing)" section in `AGENTS.md`.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_apply_pattern` no longer drops `pattern` and `settings`.** The gateway's `OperationsRouter` wrapped the original arguments under `@params` for `apply_pattern`, `apply_template`, `bulk_edit`, and `diff`, but the worker dispatcher read fields at the top level — so `args["pattern"]` was always null and the tool returned `"Pattern key is required."` even when the caller had passed one. The dispatcher now unwraps the nested params object once, preserving any outer routing fields as a fallback.
@@ -5203,6 +5823,10 @@ context.
   name instead of resolving theme GUIDs by hand.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`gxButton OnClickEvent` for custom events.** Raw-XML writes that emitted
@@ -5315,6 +5939,10 @@ Four new static checks for patterns that compile clean but render wrong:
 ## v2.5.0 — 2026-05-18
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`PatchService` reported `Failed` when the auto-reconciler legitimately rewrote
@@ -5379,6 +6007,10 @@ Four new static checks for patterns that compile clean but render wrong:
   Covered by 11 unit tests in `PatternChildOrderReconcilerTests`.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **Pattern (`PatternInstance` / `PatternVirtual`) writes silently no-op'd —
@@ -5439,6 +6071,10 @@ Four new static checks for patterns that compile clean but render wrong:
 ## v2.4.3 — 2026-05-18
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **KB reopen warning after MCP edits (`11.0.0.0` vs GeneXus 18)**:
@@ -5450,6 +6086,10 @@ Four new static checks for patterns that compile clean but render wrong:
 ## v2.4.2 — Unreleased
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 Systematic bug hunt following the v2.4.1 BC patches surfaced ten latent bugs sharing
@@ -5510,6 +6150,10 @@ the same fault patterns. All ten are fixed in this release; full worker test sui
 ## v2.4.1 — 2026-05-16
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **`genexus_properties` set could not toggle Business Component (and other typed bool/enum properties)**:
@@ -5549,6 +6193,10 @@ the same fault patterns. All ten are fixed in this release; full worker test sui
 ## v2.4.0 — Unreleased
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 
 - **Tool calls no longer hang when the worker pipe is unavailable.** When a worker's named pipe never became ready (30s wait timeout) or the command write to the worker failed, the MCP request was silently discarded and hung until the client-side timeout. The Gateway now returns an immediate JSON-RPC error (`code -32000`) naming the KB alias and failure reason, mirroring the existing crashed-worker error.
 - **DSL parsers dropped attribute types**: `TransactionDslParser` and `TableDslParser` previously
@@ -6192,6 +6840,10 @@ Spec: `docs/superpowers/specs/2026-05-13-mcp-perf-and-tool-stability-design.md`.
 Plan: `docs/superpowers/plans/2026-05-13-mcp-perf-and-tool-stability-v2.2.0.md`.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **Tools-disappear-mid-session bug** (`docs/issues/tools-disappear-mid-session.md`)
   — gateway-side `ResponseSizeGuard` caps per-tool payloads at ~220KB
   (≈55k tokens) before the harness-side truncation path can drop the
@@ -6273,6 +6925,10 @@ against `AcademicoHomolog1`. Pending live smoke verification before the next
 release tag.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **`whoami.mcp.serverVersion` reads from the assembly version, not a hardcoded
   const.** `McpRouter.ServerVersion` now resolves at runtime via
   `AssemblyInformationalVersionAttribute` (set from the csproj `<Version>`).
@@ -6359,6 +7015,10 @@ Closes the remaining open items in `docs/mcp-friction-report-2026-05-08.md`
 composition-pointer fix; this release wraps up the rest of the friction tail.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - **Bare `"Erro"` write failures now surface the real SDK diagnostic.** When
   `obj.Save()` threw `"Erro"` without populating `OutputMessages`,
   `genexus_edit mode=full` returned `{"error":"Erro","line":1}` while
@@ -6421,6 +7081,10 @@ Hardening release for MCP protocol compatibility, release verification, and cach
 - `scripts/test_all.ps1` now runs .NET tests with isolated output before the live MCP smoke.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - First successful write with `idempotencyKey` no longer reports `meta.idempotent=true`; only cache hits do.
 - `genexus_edit(dryRun=true)` now warns when impact analysis is unavailable so `brokenRefs` is not mistaken for complete.
 
@@ -6440,6 +7104,10 @@ Friction-fix release. Closes all 10 items from a real debug session report (`doc
 - **WebForm read** — `genexus_read part="webform"` reads the active WebForm tree.
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - `isTruncatedByWorker` and the "MCP defaulted to 200 lines" message now appear only when the read was actually truncated. Small files come back with `isTruncatedByWorker: false` explicitly. (#9)
 - Procedure / Transaction / WebPanel / DataProvider parameter types are resolved from the object's Variables part instead of returning `"Unknown"`. SDT-typed parameters surface their SDT name. (#6)
 - `usedby:Attribute` resolves consumers via the inverted `CalledBy` index instead of the lexical paths that never matched attributes. Legacy lexical paths preserved for `usedby:Table` / `usedby:Procedure`. (#3)
@@ -6471,6 +7139,10 @@ Friction-fix release. Closes all 10 items from a real debug session report (`doc
 ## v2.0.3 — 2026-05-09
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - CI: `GxMcp.Gateway.csproj` now copies `config.sample.json` (linked as `config.json`) instead of the gitignored `config.json`. v2.0.1 and v2.0.2 release workflows failed at the build step for this reason and never reached the npm publish stage; this release ships the SEO content (keywords, README) and the v2.0.1 worker hardening together.
 
 ## v2.0.2 — 2026-05-09
@@ -6482,6 +7154,10 @@ Friction-fix release. Closes all 10 items from a real debug session report (`doc
 ## v2.0.1 — 2026-05-08
 
 ### Fixed
+- A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
+
+- Recibos de gravação de padrões validam propriedades no esquema nativo e distinguem persistência confirmada, parcial ou desconhecida.
+
 - `WriteService` SDK transactions are now finalized in a `finally` block (Commit/Rollback/Dispose), preventing leaked transactions when commit-stage failures cascade into rollback-throws.
 - `KbWatcherService` no longer polls `DesignModel.Objects` mid-write. Writers acquire a shared gate (`AcquireWriteGate`) and the watcher skips its tick while a save is in flight — eliminates intermittent generic "Erro" messages caused by SDK collection races.
 - `PatchService` auto-rollback: when a fallback write reports success but verification mismatches, the original source is restored instead of leaving the file with the matched context deleted and the replacement missing (data loss).
