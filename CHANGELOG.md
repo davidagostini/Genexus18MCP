@@ -10,6 +10,8 @@
 
 - Shared-host broker now writes request frames to the Worker child as UTF-8 without a BOM, matching the child's stdin decoder and preserving accented tool arguments.
 
+- The integration preflight requires the tools/list golden only for discovery schema surfaces, not implementation-only router changes.
+
 ## v3.8.0 - 2026-09-22
 
 
