@@ -35,9 +35,12 @@
 
 - **Build evidence lists every generated file of the object, not just the freshest one.** `generateEvidence.filesWritten[]` (and `upToDate[]`) now carry a `files[]` array with every generated `.cs/.aspx/.js/.html` of the object, including the `a<name>` Main-object variant, plus `bin\<name>.dll` and `bin\a<name>.dll`, each with `lastWriteUtc` and `writtenDuringBuild` (last write at or after the build start). A Main procedure with Call protocol HTTP builds `<name>.cs` (stub), `a<name>.cs` (the real program) and `bin\a<name>.dll`, but the evidence used to name only the single freshest file. The `genexus_lifecycle` help now states that `generateEvidence` is an output of the terminal build result (there is no `generateEvidence` input parameter, and it is absent from the immediate queued/running reply).
 
-### Internal`r`n### Fixed
+### Internal
+
+### Fixed
 
 - A resolução de variáveis baseadas em SDT agora usa a identidade nativa serializada pelo GeneXus, sem confundir referências inválidas com objetos de mesmo nome; lotes com itens inválidos falham sem persistir parcialmente as variáveis anteriores.
+- Os recibos de gravação de padrões validam propriedades no esquema nativo disponível e distinguem persistência confirmada, parcial ou desconhecida. Quando a verificação falha após o commit, a resposta orienta a reler o estado antes de qualquer recuperação.
 
 ### Internal
 
