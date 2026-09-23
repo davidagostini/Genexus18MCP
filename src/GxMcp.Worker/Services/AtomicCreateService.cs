@@ -74,6 +74,16 @@ namespace GxMcp.Worker.Services
             public JArray Errors = new JArray();       // {field, errors:[...]}
         }
 
+        internal static JObject DescribeVariablePhase(int added, int existed, int failed, JArray outcomes)
+        {
+            return new JObject
+            {
+                ["status"] = failed == 0 ? "ok" : "error",
+                ["counts"] = new JObject { ["added"] = added, ["existed"] = existed, ["failed"] = failed },
+                ["outcomes"] = outcomes
+            };
+        }
+
         // Rule strings must be non-empty; a missing trailing ';' is a warning, not
         // an error (the IDE tolerates it), so it never blocks an otherwise valid plan.
         internal static void ValidateRules(ParsedSpec spec)
@@ -494,13 +504,8 @@ namespace GxMcp.Worker.Services
 
                     _writeService.PopulateVariablesInto(varPart, spec.Variables, out var outcomes, out int added, out int existed, out int failed, out var domainBound, out var addedNames);
 
-                    steps["variables"] = new JObject
-                    {
-                        ["status"] = failed == 0 ? "ok" : "partial",
-                        ["counts"] = new JObject { ["added"] = added, ["existed"] = existed, ["failed"] = failed },
-                        ["outcomes"] = outcomes
-                    };
-                    if (failed > 0 && added == 0 && existed == 0)
+                    steps["variables"] = DescribeVariablePhase(added, existed, failed, outcomes);
+                    if ((string)steps["variables"]["status"] == "error")
                     {
                         return CompensateAndFail(spec, exists, (JObject)steps["variables"], "variables", touchedParts);
                     }

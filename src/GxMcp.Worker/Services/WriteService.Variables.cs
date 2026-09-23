@@ -465,7 +465,8 @@ namespace GxMcp.Worker.Services
             GxMcp.Worker.Helpers.TypeResolution resolution, string resolvedTypeForSdk,
             int? resolvedLength, int? resolvedDecimals,
             int? length, int? decimals, bool? collection, int? dimensions, JArray dimensionSizes, string originalTypeName,
-            out ExpectedDomainBinding domainBinding, out ExpectedAttributeBinding attributeBinding, out ExpectedObjectBinding objectBinding, out string bindFailure)
+            out ExpectedDomainBinding domainBinding, out ExpectedAttributeBinding attributeBinding, out ExpectedObjectBinding objectBinding, out string bindFailure,
+            System.Collections.Generic.List<global::Artech.Genexus.Common.Variable> stagedVariables = null)
         {
             domainBinding = null;
             attributeBinding = null;
@@ -497,7 +498,8 @@ namespace GxMcp.Worker.Services
                 if (collection == true) { try { newVar.IsCollection = true; } catch { } }
                 if (dimensions.HasValue && !VariableDimensionSupport.TryApply(newVar, dimensions, dimensionSizes, out bindFailure))
                     return VarBuildResult.DimensionsNotPersistable;
-                varPart.Variables.Add(newVar);
+                if (stagedVariables == null) varPart.Variables.Add(newVar);
+                else stagedVariables.Add(newVar);
                 return VarBuildResult.Added;
             }
 
@@ -609,7 +611,8 @@ namespace GxMcp.Worker.Services
             if (collection == true) { try { newVar.IsCollection = true; } catch { /* not all types collectible */ } }
             if (dimensions.HasValue && !VariableDimensionSupport.TryApply(newVar, dimensions, dimensionSizes, out bindFailure))
                 return VarBuildResult.DimensionsNotPersistable;
-            varPart.Variables.Add(newVar);
+            if (stagedVariables == null) varPart.Variables.Add(newVar);
+            else stagedVariables.Add(newVar);
             return VarBuildResult.Added;
         }
 
@@ -617,7 +620,8 @@ namespace GxMcp.Worker.Services
         // item 11) or applies the naming heuristic. Explicit length/decimals/collection
         // args still override the result. Adds to varPart in memory (no save).
         private void AddInferredVariableInto(global::Artech.Genexus.Common.Parts.VariablesPart varPart,
-            string varName, int? length, int? decimals, bool? collection, int? dimensions, JArray dimensionSizes)
+            string varName, int? length, int? decimals, bool? collection, int? dimensions, JArray dimensionSizes,
+            System.Collections.Generic.List<global::Artech.Genexus.Common.Variable> stagedVariables = null)
         {
             var newVar = VariableInjector.CreateVariable(varPart, varName);
             try
@@ -629,7 +633,8 @@ namespace GxMcp.Worker.Services
             if (collection == true) { try { newVar.IsCollection = true; } catch { } }
             if (dimensions.HasValue && !VariableDimensionSupport.TryApply(newVar, dimensions, dimensionSizes, out var dimensionFailure))
                 throw new InvalidOperationException("Variable dimensions could not be applied: " + dimensionFailure);
-            varPart.Variables.Add(newVar);
+            if (stagedVariables == null) varPart.Variables.Add(newVar);
+            else stagedVariables.Add(newVar);
         }
 
         // issue #32 item 1 — batch add. Resolves the target once and adds every variable in
@@ -756,7 +761,13 @@ namespace GxMcp.Worker.Services
                 // Resolve the target object / VariablesPart once for the whole batch.
                 string scratch = "_";
                 var err = ResolveVariableTarget(target, ref scratch, out var obj, out var varPart, out _);
+                if (err != null) return err;
                 PopulateVariablesInto(varPart, variables, out var outcomes, out int added, out int existed, out int failed, out var domainBound, out var attributeBound, out var objectBound, out var addedNames);
+                if (failed > 0)
+                    return McpResponse.Err(code: "VariableBatchValidationFailed",
+                        message: "No variables were added because one or more batch items failed validation.", target: target,
+                        extra: new JObject { ["outcomes"] = outcomes, ["saved"] = false,
+                            ["counts"] = new JObject { ["added"] = 0, ["existed"] = existed, ["failed"] = failed } });
 
                 if (added > 0)
                 {
@@ -947,6 +958,10 @@ namespace GxMcp.Worker.Services
 
             if (varPart == null || variables == null || variables.Count == 0) return;
 
+            // Resolve/bind detached variables first. A bad item must not leave earlier
+            // items in the live part, where a later save could persist a partial batch.
+            var stagedVariables = new System.Collections.Generic.List<global::Artech.Genexus.Common.Variable>();
+
             foreach (var item in variables)
             {
                 var jo = item as JObject;
@@ -975,7 +990,8 @@ namespace GxMcp.Worker.Services
                 int? vDimensions = jo["dimensions"]?.ToObject<int?>();
                 JArray vDimensionSizes = jo["dimensionSizes"] as JArray;
 
-                if (varPart.Variables.Any(v => string.Equals(v.Name, vName, StringComparison.OrdinalIgnoreCase)))
+                if (varPart.Variables.Any(v => string.Equals(v.Name, vName, StringComparison.OrdinalIgnoreCase))
+                    || stagedVariables.Any(v => string.Equals(v.Name, vName, StringComparison.OrdinalIgnoreCase)))
                 {
                     existed++;
                     outcomes.Add(new JObject { ["name"] = vName, ["itemStatus"] = "Exists" });
@@ -1059,7 +1075,7 @@ namespace GxMcp.Worker.Services
                     if (!string.IsNullOrEmpty(vType) || !string.IsNullOrWhiteSpace(vBasedOn) || !string.IsNullOrWhiteSpace(vBasedOnAttribute))
                     {
                         var batchBuild = BuildResolvedVariableInto(varPart, vName, res, rSdk, rLen, rDec, vLen, vDec, vColl, vDimensions, vDimensionSizes, vBasedOnAttribute ?? vBasedOn ?? vType,
-                            out var domainBinding, out var attributeBinding, out var objectBinding, out var bindFailure);
+                            out var domainBinding, out var attributeBinding, out var objectBinding, out var bindFailure, stagedVariables);
                         if (batchBuild == VarBuildResult.DomainNotFound || batchBuild == VarBuildResult.AttributeNotFound)
                         {
                             failed++;
@@ -1116,7 +1132,7 @@ namespace GxMcp.Worker.Services
                     }
                     else
                     {
-                        AddInferredVariableInto(varPart, vName, vLen, vDec, vColl, vDimensions, vDimensionSizes);
+                        AddInferredVariableInto(varPart, vName, vLen, vDec, vColl, vDimensions, vDimensionSizes, stagedVariables);
                     }
                     added++;
                     addedNames.Add(vName);
@@ -1134,6 +1150,18 @@ namespace GxMcp.Worker.Services
                     outcomes.Add(new JObject { ["name"] = vName, ["status"] = "Failed", ["reason"] = exItem.Message });
                 }
             }
+            if (failed > 0)
+            {
+                foreach (var outcome in outcomes.OfType<JObject>().Where(o => (string)o["status"] == "Added"))
+                    outcome["status"] = "NotAdded";
+                added = 0;
+                addedNames.Clear();
+                domainBound.Clear();
+                attributeBound.Clear();
+                objectBound.Clear();
+                return;
+            }
+            foreach (var variable in stagedVariables) varPart.Variables.Add(variable);
         }
 
         public string AddVariable(string target, string varName, string typeName = null, bool dryRun = false,
