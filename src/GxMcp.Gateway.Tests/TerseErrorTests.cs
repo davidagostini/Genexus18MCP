@@ -6,6 +6,27 @@ namespace GxMcp.Gateway.Tests
 {
     public class TerseErrorTests
     {
+        [Theory]
+        [InlineData("partial", true)]
+        [InlineData("unknown", null)]
+        public void PatternReceiptRetainsPartialOrUnknownPersistence(string state, bool? persisted)
+        {
+            var input = new JObject
+            {
+                ["code"] = "PatternVerificationMismatch", ["message"] = "Read the saved state before retrying.",
+                ["saved"] = true, ["persisted"] = persisted.HasValue ? new JValue(persisted.Value) : JValue.CreateNull(),
+                ["persistenceState"] = state, ["persistedStateKnown"] = persisted.HasValue,
+                ["snapshot"] = "snapshot-id", ["partialPersistenceDetected"] = persisted == true,
+                ["rollback"] = new JObject { ["attempted"] = false, ["reason"] = "AtomicRollbackUnavailable" },
+                ["stateRestoredExactly"] = false, ["commitCompleted"] = true,
+                ["stack"] = "internal"
+            };
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            foreach (var property in input.Properties())
+                if (property.Name != "stack") Assert.True(JToken.DeepEquals(property.Value, trimmed[property.Name]), property.Name);
+            Assert.Null(trimmed["stack"]);
+        }
+
         [Fact]
         public void TrimErrorEnvelope_PreservesPhysicalSaveAndTypedDiff()
         {

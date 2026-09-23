@@ -195,6 +195,16 @@ namespace GxMcp.Worker.Services
 
             GxMcp.Worker.Helpers.WriteResultMeta.TagSdkPath(parsed, sdkPath);
 
+            // Pattern receipts distinguish partial committed changes from requested
+            // equality. The generic text receipt would overwrite persisted=false
+            // on a mismatch and erase that distinction.
+            if (PatternAnalysisService.IsPatternPart(partName)
+                && (parsed["persistenceState"] != null || parsed["result"]?["persistenceState"] != null))
+            {
+                PatternWriteReceipt.Promote(parsed, target, partName);
+                return parsed.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
             // Skip if the response is already decorated (e.g. nested call).
             if (parsed["persistedHash"] != null && parsed["persistedSnippet"] != null)
                 return parsed.ToString();
@@ -474,8 +484,16 @@ namespace GxMcp.Worker.Services
 
             if (IsPostSaveVerificationIndeterminate(response.ToString(Newtonsoft.Json.Formatting.None)))
             {
-                if (string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase))
+                if ((string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase) || PatternAnalysisService.IsPatternPart(partName)))
                     MarkSourceRollbackUnavailable(response);
+                return response.ToString(Newtonsoft.Json.Formatting.None);
+            }
+
+            // A matching PatternInstance XML does not prove that a committed
+            // projection left its parent untouched, nor that any rollback ran.
+            if (PatternAnalysisService.IsPatternPart(partName))
+            {
+                MarkSourceRollbackUnavailable(response);
                 return response.ToString(Newtonsoft.Json.Formatting.None);
             }
 
@@ -493,7 +511,7 @@ namespace GxMcp.Worker.Services
                 return response.ToString(Newtonsoft.Json.Formatting.None);
             }
 
-            if (string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase))
+            if ((string.Equals(partName, "Source", StringComparison.OrdinalIgnoreCase) || PatternAnalysisService.IsPatternPart(partName)))
             {
                 // A preflight token check followed by another SDK transaction is not
                 // an atomic conditional restore. Fail closed rather than overwrite an
@@ -574,7 +592,7 @@ namespace GxMcp.Worker.Services
             {
                 ["requested"] = true, ["rolledBack"] = false, ["attempted"] = false,
                 ["reason"] = "AtomicRollbackUnavailable",
-                ["message"] = "Source restore was not attempted: the SDK path does not establish an atomic version-conditional restore. Re-read the current content and version before an explicit recovery edit."
+                ["message"] = "Content restore was not attempted: the SDK path does not establish an atomic version-conditional restore. Re-read the current content and version before an explicit recovery edit."
             };
         }
 

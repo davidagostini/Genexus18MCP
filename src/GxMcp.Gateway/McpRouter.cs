@@ -1979,7 +1979,10 @@ namespace GxMcp.Gateway
                 "saveAttempted", "verificationUnavailable", "postSaveVerification",
                 "readCode", "readCompleted", "readError", "sdkSaveCompleted", "persistedStateKnown",
                 "implicitLifecycleActions", "mutation", "partialPersistenceDetected",
-                "requireObjectSave", "objectSaved", "partPersisted", "saveContract", "metadataStampPersisted"
+                "requireObjectSave", "objectSaved", "partPersisted", "saveContract", "metadataStampPersisted",
+                "persistenceState", "snapshot", "rollbackPerformed", "stateRestoredExactly",
+                "commitCompleted", "transactionFinalizationError", "rollbackError", "beforeHash",
+                "nativeApplySucceeded", "parentProjectionConfirmed", "generatedChildrenVerified", "projectionScope"
             };
             foreach (var k in diagnosticKeys)
             {

@@ -5,6 +5,7 @@
 ### Fixed
 
 - **SDT variable persistence:** native serialized SDT references are resolved by their entity identity instead of being mistaken for missing GUIDs. Invalid variable batches are rejected before any declaration is attached.
+- **Pattern write receipts:** unsupported properties are checked against the installed native schema where it is available. Verification errors distinguish a committed partial change from an unchanged or unknown state, retain snapshot evidence, and require rereading before recovery.
 
 ### Internal
 
