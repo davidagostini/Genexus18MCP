@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -7,6 +8,19 @@ namespace GxMcp.Worker.Tests
 {
     public sealed class SharedWorkerHostProtocolTests
     {
+        [Fact]
+        public void ChildStdinWriter_EncodesUtf8WithoutBomAndUsesLf()
+        {
+            using (var bytes = new MemoryStream())
+            using (var writer = SharedWorkerHostRuntime.CreateChildStdinWriter(bytes))
+            {
+                writer.WriteLine("ação");
+                writer.Flush();
+
+                Assert.Equal(new byte[] { 0x61, 0xC3, 0xA7, 0xC3, 0xA3, 0x6F, 0x0A }, bytes.ToArray());
+            }
+        }
+
         [Fact]
         public void AttachEnvelope_ParsesAndValidatesAgainstExactIdentity()
         {

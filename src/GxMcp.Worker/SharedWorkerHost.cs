@@ -128,6 +128,7 @@ namespace GxMcp.Worker
         private readonly object _childGate = new object();
         private readonly Queue<DateTime> _respawnHistory = new Queue<DateTime>();
         private Process _child;
+        private StreamWriter _childInput;
         private Thread _childWriter;
         private Thread _childReader;
         private Thread _childErrorReader;
@@ -201,6 +202,7 @@ namespace GxMcp.Worker
             var child = new Process { StartInfo = start, EnableRaisingEvents = true };
             if (!child.Start()) throw new InvalidOperationException("Could not start shared Worker child.");
             _child = child;
+            _childInput = CreateChildStdinWriter(child.StandardInput.BaseStream);
             _record = new SharedWorkerHostRegistryRecord
             {
                 Identity = new SharedWorkerHostIdentity
@@ -223,7 +225,8 @@ namespace GxMcp.Worker
             };
             WriteRecord();
 
-            _childWriter = new Thread(() => ChildWriterLoop(child)) { IsBackground = true, Name = "SharedWorkerChildWriter" };
+            StreamWriter childInput = _childInput;
+            _childWriter = new Thread(() => ChildWriterLoop(childInput)) { IsBackground = true, Name = "SharedWorkerChildWriter" };
             _childReader = new Thread(() => ChildReaderLoop(child)) { IsBackground = true, Name = "SharedWorkerChildReader" };
             _childErrorReader = new Thread(() => ChildErrorReaderLoop(child)) { IsBackground = true, Name = "SharedWorkerChildErrorReader" };
             _childWriter.Start();
@@ -395,6 +398,8 @@ namespace GxMcp.Worker
                 string failureDiagnostic = BuildChildFailureDiagnostic(_child);
                 _lastChildFailureDiagnostic = failureDiagnostic;
                 FailRoutesForRespawn();
+                try { _childInput?.Dispose(); } catch { }
+                _childInput = null;
                 try { _child?.Dispose(); } catch { }
                 _sdkReady = false;
                 _generation++;
@@ -464,7 +469,17 @@ namespace GxMcp.Worker
                 attachment.ClearChildQueue();
         }
 
-        private void ChildWriterLoop(Process child)
+        internal static StreamWriter CreateChildStdinWriter(Stream stdin)
+        {
+            if (stdin == null) throw new ArgumentNullException(nameof(stdin));
+            return new StreamWriter(stdin, new UTF8Encoding(false), 64 * 1024)
+            {
+                AutoFlush = false,
+                NewLine = "\n"
+            };
+        }
+
+        private void ChildWriterLoop(StreamWriter childInput)
         {
             try
             {
@@ -476,8 +491,8 @@ namespace GxMcp.Worker
                         if (!attachment.TryDequeueChild(out string line)) continue;
                         wrote = true;
                         if (_stop.IsCancellationRequested) break;
-                        child.StandardInput.WriteLine(line);
-                        child.StandardInput.Flush();
+                        childInput.WriteLine(line);
+                        childInput.Flush();
                     }
                     if (wrote) continue;
                     Thread.Sleep(5);
@@ -636,7 +651,7 @@ namespace GxMcp.Worker
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             _stop.Cancel();
             foreach (var attachment in _attachments.Values) attachment.Stop();
-            try { _child?.StandardInput.Close(); } catch { }
+            try { _childInput?.Dispose(); } catch { }
             try
             {
                 if (_child != null && !_child.HasExited)
