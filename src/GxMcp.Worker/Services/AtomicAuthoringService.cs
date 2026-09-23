@@ -81,7 +81,9 @@ namespace GxMcp.Worker.Services
                 if (args?["variables"] is JArray variables && variables.Count > 0)
                 {
                     var varPart = GxMcp.Worker.Structure.PartAccessor.GetVariablesPart(obj);
-                    if (varPart != null)
+                    if (varPart == null)
+                        throw new AtomicFailure("variables", "The object has no Variables part.", null);
+                    else
                     {
                         var normalizedVariables = new JArray();
                         foreach (JToken item in variables)
@@ -102,8 +104,8 @@ namespace GxMcp.Worker.Services
                                 variable["typeName"] = variable["basedOn"].DeepClone();
                             normalizedVariables.Add(variable);
                         }
-                        _write.PopulateVariablesInto(varPart, normalizedVariables, out var outcomes, out _, out _, out _, out _, out _);
-                        phases.Add(new JObject { ["phase"] = "variables", ["status"] = "ok", ["outcomes"] = outcomes });
+                        _write.PopulateVariablesInto(varPart, normalizedVariables, out var outcomes, out int added, out int existed, out int failed, out _, out _);
+                        RecordVariablePhase(phases, added, existed, failed, outcomes);
                     }
                 }
 
@@ -211,6 +213,14 @@ namespace GxMcp.Worker.Services
                         ["phases"] = phases
                     });
             }
+        }
+
+        internal static void RecordVariablePhase(JArray phases, int added, int existed, int failed, JArray outcomes)
+        {
+            var phase = AtomicCreateService.DescribeVariablePhase(added, existed, failed, outcomes);
+            phase["phase"] = "variables";
+            phases.Add(phase);
+            EnsureSuccess(phase, "variables");
         }
 
         private JArray Preflight(JObject args)

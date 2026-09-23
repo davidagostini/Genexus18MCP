@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **SDT variable persistence:** native serialized SDT references are resolved by their entity identity instead of being mistaken for missing GUIDs. Invalid variable batches are rejected before any declaration is attached.
+
 ### Internal
 
 - `release.ps1` now checks the live `origin/main` head before snapshotting issues or changing release metadata. It blocks stale or divergent local main branches while preserving retries for a pending release commit directly based on the current remote head.
