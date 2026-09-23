@@ -175,7 +175,7 @@ namespace GxMcp.Gateway
             // parses every line to route it (notifications vs responses + in-flight
             // bookkeeping); HandleWorkerResponse stashes the JObject here so the await
             // sites in SendWorkerCommandAsync don't re-parse the raw json — this was
-            // 3 full JObject.Parse per response, now 1. Large search/read responses are
+            // 3 full JObject constructions per response, now 1. Large search/read responses are
             // exactly the ones that make the extra parses expensive.
             public JObject? ParsedResponse { get; set; }
         }
@@ -917,7 +917,7 @@ namespace GxMcp.Gateway
                     {
                         try
                         {
-                            var req = JObject.Parse(replayLine);
+                            var req = GxMcp.Shared.JsonIngress.ParseObject(replayLine);
                             var resp = await ProcessMcpRequest(req);
                             if (resp != null && !IsJsonRpcNotification(req))
                                 await TryWriteStdout(resp);
@@ -969,7 +969,7 @@ namespace GxMcp.Gateway
                             JObject request;
                             try
                             {
-                                request = JObject.Parse(capturedLine);
+                                request = GxMcp.Shared.JsonIngress.ParseObject(capturedLine);
                             }
                             catch (Exception parseEx)
                             {
@@ -1092,7 +1092,7 @@ namespace GxMcp.Gateway
                     try
                     {
                         string body = line;
-                        var request = JObject.Parse(body);
+                        var request = GxMcp.Shared.JsonIngress.ParseObject(body);
                         string requestId = request["id"]?.ToString() ?? "unknown";
                         bool isInitialize = string.Equals(request["method"]?.ToString(), "initialize", StringComparison.Ordinal);
                         bool isModern = McpRouter.IsModernRequest(request);
@@ -1238,7 +1238,7 @@ namespace GxMcp.Gateway
                             {
                                 try
                                 {
-                                    var jsonError = JObject.Parse(remoteError ?? string.Empty);
+                                    var jsonError = GxMcp.Shared.JsonIngress.ParseObject(remoteError ?? string.Empty);
                                     if (jsonError["jsonrpc"] != null && jsonError["error"] != null)
                                     {
                                         await TryWriteStdout(jsonError.ToString(Formatting.None));
@@ -1312,7 +1312,7 @@ namespace GxMcp.Gateway
         {
             try
             {
-                var request = JObject.Parse(initializeLine ?? string.Empty);
+                var request = GxMcp.Shared.JsonIngress.ParseObject(initializeLine ?? string.Empty);
                 return McpRouter.NegotiateProtocolVersion(McpHttpProtocol.GetRequestProtocolVersion(request));
             }
             catch

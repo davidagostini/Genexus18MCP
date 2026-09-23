@@ -336,7 +336,7 @@ namespace GxMcp.Worker
             }
 
             JObject request;
-            try { request = JObject.Parse(line); }
+            try { request = GxMcp.Shared.JsonIngress.ParseObject(line); }
             catch { SendHostError(attachment, "malformed JSON-RPC frame"); return; }
             if (!string.Equals(request.Value<string>("jsonrpc"), "2.0", StringComparison.Ordinal))
             {
@@ -515,7 +515,7 @@ namespace GxMcp.Worker
                         break;
                     }
                     JObject frame;
-                    try { frame = JObject.Parse(line); }
+                    try { frame = GxMcp.Shared.JsonIngress.ParseObject(line); }
                     catch
                     {
                         // The normal Worker emits two plain-text handshake lines before

@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <None Include="$(GxMcpSdkManifest)" Link="sdk-compatibility.json" TargetPath="sdk-compatibility.json" CopyToOutputDirectory="Always" />
+    <Compile Include="..\Shared\JsonIngress.cs" Link="JsonIngress.cs" />
   </ItemGroup>
 
   <PropertyGroup Condition="Exists('$(GX_PATH)\GeneXus.SecurityScanner.Common.dll')">

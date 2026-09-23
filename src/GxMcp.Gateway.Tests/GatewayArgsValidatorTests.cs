@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -12,6 +13,24 @@ namespace GxMcp.Gateway.Tests
     /// </summary>
     public class GatewayArgsValidatorTests
     {
+        [Fact]
+        public void Validate_IsoTimestampFromRawJsonRemainsAnExactString()
+        {
+            const string timestamp = "2026-09-21T11:05:00.000-03:00";
+            var request = GxMcp.Shared.JsonIngress.ParseObject(
+                "{\"since\":\"" + timestamp + "\"}");
+
+            Assert.Equal(JTokenType.String, request["since"]!.Type);
+            Assert.Equal(timestamp, request.Value<string>("since"));
+
+            GatewayArgsValidator.PrimeCache("genexus_telemetry", MakeSchema(
+                props: new[] { ("since", "string", (string[]?)null) }));
+            Assert.True(GatewayArgsValidator.Validate("genexus_telemetry", request).Ok);
+
+            var forwarded = GxMcp.Shared.JsonIngress.ParseObject(request.ToString(Formatting.None));
+            Assert.Equal(timestamp, forwarded.Value<string>("since"));
+        }
+
         // ── Helper: build a minimal inputSchema ──────────────────────────────
 
         private static JObject MakeSchema(
