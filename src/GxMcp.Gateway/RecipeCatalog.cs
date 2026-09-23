@@ -386,13 +386,14 @@ namespace GxMcp.Gateway
                         ["steps"] = new JArray(
                             Step("genexus_read", new JObject { ["name"] = "WorkWithPlus<X>", ["part"] = "PatternInstance" },
                                  "Find a unique line near the edit site (e.g. an existing <standardAction name='Trn_Delete'> or attribute id)."),
-                            Step("genexus_edit", new JObject { ["name"] = "WorkWithPlus<X>", ["part"] = "PatternInstance", ["mode"] = "patch", ["context"] = "<anchor line>", ["operation"] = "Insert_After", ["content"] = "<new XML>", ["dryRun"] = true },
-                                 "ALWAYS dryRun first to see the projected diff."),
-                            Step("genexus_edit", new JObject { ["same as above without dryRun"] = true }, "Persist. Response includes childrenOrderedListReconciliation showing what the auto-reconciliation changed.")
+                            Step("genexus_wwp", new JObject { ["action"] = "add_layout", ["name"] = "WorkWithPlus<X>", ["tablePath"] = "TableMain > TableContent", ["expectedVersion"] = "<read versionToken>", ["children"] = new JArray(new JObject { ["type"] = "variable", ["name"] = "ExistingVariable" }), ["dryRun"] = true },
+                                 "For structural additions use native SDK authoring; declare variables first. Preview without saving."),
+                            Step("genexus_wwp", new JObject { ["same as above without dryRun"] = true }, "Persist with the same expectedVersion, then reread PatternInstance and the parent WebForm.")
                         ),
                         ["pitfalls"] = new JArray(
-                            "Do NOT touch `childrenOrderedList` attributes by hand — the MCP rebuilds them from your XML child order on every save.",
-                            "Avoid mode='full' unless you really intend a whole-tree rewrite; patch keeps surrounding state safe."
+                            "Do not edit baseline metadata (`default*` or `childrenOrderedList`).",
+                            "genexus_edit PatternInstance permits attribute-only edits; XML structural changes are rejected. Use genexus_wwp add_layout for variables, tables and actions.",
+                            "A verification error may follow a physical save. Inspect saved, persistenceState and rollback evidence; reread before retrying."
                         )
                     }),
 

@@ -4,6 +4,7 @@
 
 ### Added
 
+- **WorkWithPlus form authoring:** `genexus_wwp action=add_layout` inserts existing declared variables, nested tables and buttons into a named table using native pattern commands. It requires an optimistic version, previews without saving, and verifies the pattern, form bindings and preserved user state around a transactional save.
 - Pattern generated-family discovery now uses native instance ownership, supporting template-configured child names and invalidating known child caches after reapply.
 
 ### Fixed

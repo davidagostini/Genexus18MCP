@@ -663,6 +663,7 @@ namespace GxMcp.Gateway
                 "- `list` — read the current action groups and ordered actions.\n" +
                 "- `add_action`, `update_action`, `move_action`, and `remove_action` — change the WWP action model.\n" +
                 "- `add_user_action` — add a form-level UserAction directly under a named form container (usually `TableActions`). The event is derived deterministically as `Do<actionName>`; do not pass a Procedure.\n" +
+                "- `add_layout` — insert variables, tables and UserActions into an existing tablePath through the native SDK. Requires expectedVersion even for dryRun; variables must already be declared; their native domain/type bindings are preserved. No raw XML structural write.\n" +
                 "- `add_tab`, `move_tab`, and `remove_tab` — edit WebPanel tabs and typed nested controls.\n" +
                 "- `set_table_type` — change only an existing WWP table's native `type` (`Regular` or `Responsive`) by path, preserving child identity and metadata with reread/rollback guards.\n" +
                 "- `add_grid_attribute` — add one typed Attribute column without changing unrelated children.\n\n" +

@@ -5406,6 +5406,7 @@
               "move_action",
               "remove_action",
               "add_tab",
+              "add_layout",
               "move_tab",
               "remove_tab",
               "set_table_type",
@@ -5438,7 +5439,7 @@
             "type": "string"
           },
           "children": {
-            "description": "add_tab controls; flat children are wrapped in a responsive table. Nested table children accept the same control shape.",
+            "description": "add_tab: typed controls. add_layout: existing declared variable names, userAction or nested tables; tablePath and expectedVersion required; no variable retyping.",
             "items": {
               "additionalProperties": false,
               "properties": {
@@ -5482,6 +5483,13 @@
                   "type": "integer"
                 },
                 "name": {
+                  "type": "string"
+                },
+                "tableType": {
+                  "enum": [
+                    "Regular",
+                    "Responsive"
+                  ],
                   "type": "string"
                 },
                 "themeClass": {
@@ -5613,7 +5621,7 @@
             "type": "string"
           },
           "tablePath": {
-            "description": "set_table_type: existing table breadcrumb by names or indexed table segments; replace_web_component_with_user_action: full breadcrumb including the source node, for example TableHeader > TableUserRole > EmpresaSelector.",
+            "description": "add_layout/set_table_type: existing table breadcrumb; replacement: full breadcrumb including source node.",
             "type": "string"
           },
           "tableType": {

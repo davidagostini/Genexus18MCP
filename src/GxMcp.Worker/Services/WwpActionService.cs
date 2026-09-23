@@ -150,6 +150,8 @@ namespace GxMcp.Worker.Services
                     out _, out KBObjectPart instancePart);
 
                 string operation = NormalizeOperation(args?["action"]?.ToString());
+                if (operation == "add_layout")
+                    return RunLayoutOperation(target, instance, args);
                 if (IsFormUserActionOperation(operation))
                     return RunFormUserActionOperation(target, requestedObject, instance, instancePart, xml, args);
                 if (IsWebComponentReplacementOperation(operation))
@@ -263,7 +265,7 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                return McpResponse.Err(code: "WwpActionFailed", message: ex.Message, target: target);
+                return McpResponse.Err(code: (ex as WwpTabException)?.Code ?? "WwpActionFailed", message: ex.Message, target: target);
             }
         }
 
