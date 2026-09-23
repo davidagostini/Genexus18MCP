@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- `genexus_edit mode=patch` no longer reports an unexpected exception as a conclusive failure when the write outcome is unknown. The response now carries `writeStage`: a failure raised before any write call keeps the previous generic error and states `writeAttempted:false`/`saveAttempted:false`/`persisted:false`, while a failure raised once the SDK write call had been entered returns `PatchWriteOutcomeUnknown` with `persisted:null`, `persistedStateKnown:false`, `verificationUnavailable:true` and the `sdkSaveCompleted`/`saved` value the write call actually reported (never invented). No automatic retry, second save, or rollback is performed, the caller is told to re-read the complete part, and the terse error projection preserves this evidence. An unknown outcome also marks the target as written, so a later build cannot take the compile-only fast path over a possibly changed object and a concurrent patch on the same target still classifies its context as stale. Observed with an `OutOfMemoryException` on a large Styles part whose content was in fact persisted; the exact failing phase inside the SDK save remains unidentified, so the response reports the state as unknown rather than guessing it.
+
 ### Internal
 
 - `release.ps1` now checks the live `origin/main` head before snapshotting issues or changing release metadata. It blocks stale or divergent local main branches while preserving retries for a pending release commit directly based on the current remote head.

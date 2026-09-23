@@ -1979,7 +1979,12 @@ namespace GxMcp.Gateway
                 "saveAttempted", "verificationUnavailable", "postSaveVerification",
                 "readCode", "readCompleted", "readError", "sdkSaveCompleted", "persistedStateKnown",
                 "implicitLifecycleActions", "mutation", "partialPersistenceDetected",
-                "requireObjectSave", "objectSaved", "partPersisted", "saveContract", "metadataStampPersisted"
+                "requireObjectSave", "objectSaved", "partPersisted", "saveContract", "metadataStampPersisted",
+                // Unexpected-failure receipt: which write stage aborted, whether a write
+                // was entered at all, and the manual recovery instruction. Without these
+                // the caller cannot tell a provable no-write failure from an unknown
+                // post-write state and may retry over a possibly persisted edit.
+                "writeStage", "writeAttempted", "failureType", "retrySafe", "manualRecovery"
             };
             foreach (var k in diagnosticKeys)
             {

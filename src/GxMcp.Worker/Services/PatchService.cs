@@ -174,6 +174,14 @@ namespace GxMcp.Worker.Services
             // the read trigger the Stale verdict; a write that completed strictly
             // before patch entry is not concurrent with us.
             DateTime patchEnteredAtUtc = DateTime.UtcNow;
+            // The global catch below must never turn an unknown persistence state
+            // into a conclusive failure. Track how far the write intent got so the
+            // failure envelope can separate "no write was attempted" from "the SDK
+            // write ran and its outcome is unknown" (observed with an
+            // OutOfMemoryException on a large part, where the exact failing phase
+            // was not identifiable from the response alone).
+            var writeStage = PatchWriteStage.BeforeWrite;
+            bool? sdkSaveCompleted = null;
             try
             {
                 string resolvedVerifyMode;
@@ -806,9 +814,11 @@ namespace GxMcp.Worker.Services
                 if (requireObjectSave)
                 {
                     var requiredSaveWatch = Stopwatch.StartNew();
+                    writeStage = PatchWriteStage.DuringWrite;
                     string requiredSave = _writeService.WriteIsolatedEvents(target,
                         noContentChange ? originalSource : ToSdkLineEndings(updatedSource), typeFilter, baseVersion);
                     requiredSaveWatch.Stop();
+                    writeStage = PatchWriteStage.AfterWrite;
                     return AttachTimings(requiredSave, readMs, patchMs, requiredSaveWatch.ElapsedMilliseconds, sourceFromCache);
                 }
 
@@ -847,8 +857,10 @@ namespace GxMcp.Worker.Services
                 // obj.Save() can advance the object's version and leave the changed ISource
                 // only in the live SDK instance. The full path saves the part explicitly and
                 // commits the object transaction, matching mode=full persistence semantics.
+                writeStage = PatchWriteStage.DuringWrite;
                 string writeResult = _writeService.WriteObject(target, partName, finalCode, typeFilter, autoValidate: false, preferFastSourceSave: false, autoInjectVariables: autoInjectVariables, baseVersion: baseVersion);
                 writeStopwatch.Stop();
+                writeStage = PatchWriteStage.AfterWrite;
                 long writeMs = writeStopwatch.ElapsedMilliseconds;
                 JObject writePayload = ParseWriteResult(writeResult);
                 writePayload["implicitOperations"] = new JArray();
@@ -874,6 +886,12 @@ namespace GxMcp.Worker.Services
                 bool saveReported = (primaryWriteSuccess && !writeReportedNoChange)
                     || writeReportedVerificationMismatch
                     || writeReportedVerificationUnavailable;
+                // An explicit null from WriteService means "unknown"; do not upgrade it
+                // to the patch-level inference. Absent evidence falls back to it.
+                JToken reportedSdkSave = writePayload["sdkSaveCompleted"];
+                sdkSaveCompleted = reportedSdkSave == null
+                    ? saveReported
+                    : reportedSdkSave.Type == JTokenType.Null ? (bool?)null : reportedSdkSave.Value<bool>();
                 string confirmedPersistedSource = null;
                 bool isPatternPart = Services.PatternAnalysisService.IsPatternPart(partName);
 
@@ -1204,8 +1222,24 @@ namespace GxMcp.Worker.Services
             }
             catch (Exception ex)
             {
-                Logger.Error($"[PATCH] Error applying patch: {ex.Message}");
-                return BuildPatchResult("Error", partName, NormalizeOperation(operation), expectedCount, 0, ex.Message);
+                // Once a write call has been entered the target's persisted state is
+                // unknown, so it must be treated as written. Do this before building
+                // the envelope: a later build must not take the compile-only fast path
+                // over a possibly-changed object, a sibling patch must still be able to
+                // classify its NoMatch as Stale, and the cached source snapshot must be
+                // dropped. Mirrors the WriteVerificationUnavailable branch of
+                // WriteService.ShouldMarkTargetDirty.
+                if (PatchPersistenceReceipt.RequiresDirtyTargetMark(writeStage))
+                {
+                    // Best-effort: tracking must never mask the unknown-outcome envelope.
+                    try { WriteService.NotePerTargetWrite(target); }
+                    catch { /* dirty tracking is best-effort */ }
+                }
+                // Diagnostics only: stage + exception type, never part content.
+                Logger.Error($"[PATCH] Error applying patch (stage={writeStage}): {ex.GetType().Name}: {ex.Message}");
+                string failure = BuildPatchResult("Error", partName, NormalizeOperation(operation), expectedCount, 0, ex.Message);
+                return PatchPersistenceReceipt.AttachUnexpectedFailureOutcome(
+                    failure, writeStage, sdkSaveCompleted, target, partName, ex.GetType().Name);
             }
         }
 

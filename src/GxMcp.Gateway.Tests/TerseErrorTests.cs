@@ -89,6 +89,38 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void TrimErrorEnvelope_UnknownPatchOutcomeKeepsStageAndUnknownPersistence()
+        {
+            var input = JObject.Parse(@"
+            {
+                ""error"":{""code"":""PatchWriteOutcomeUnknown"",""message"":""outcome unknown""},
+                ""writeStage"":""post-write"",
+                ""writeAttempted"":true,
+                ""saveAttempted"":true,
+                ""failureType"":""OutOfMemoryException"",
+                ""sdkSaveCompleted"":true,
+                ""saved"":true,
+                ""persisted"":null,
+                ""persistedStateKnown"":false,
+                ""verificationUnavailable"":true,
+                ""retrySafe"":false,
+                ""manualRecovery"":""Do not retry and do not roll back automatically.""
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            Assert.Equal("post-write", trimmed["writeStage"]!.ToString());
+            Assert.True(trimmed["writeAttempted"]!.ToObject<bool>());
+            Assert.True(trimmed["sdkSaveCompleted"]!.ToObject<bool>());
+            // An unknown persisted state must survive as null, not collapse to false.
+            Assert.Equal(JTokenType.Null, trimmed["persisted"]!.Type);
+            Assert.False(trimmed["persistedStateKnown"]!.ToObject<bool>());
+            Assert.False(trimmed["retrySafe"]!.ToObject<bool>());
+            Assert.Equal("OutOfMemoryException", trimmed["failureType"]!.ToString());
+            Assert.Contains("Do not retry", trimmed["manualRecovery"]!.ToString());
+        }
+
+        [Fact]
         public void TrimErrorEnvelope_CommentOnlyFailure_PreservesTypedReceipt()
         {
             var input = JObject.Parse(@"{

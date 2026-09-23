@@ -4,11 +4,157 @@ using Newtonsoft.Json.Linq;
 namespace GxMcp.Worker.Services
 {
     /// <summary>
+    /// How far the write intent of a mode=patch call had progressed when an
+    /// unexpected exception aborted it. Only <see cref="BeforeWrite"/> proves
+    /// that nothing was persisted.
+    /// </summary>
+    internal enum PatchWriteStage
+    {
+        /// <summary>No write call was started, so no save can have happened.</summary>
+        BeforeWrite = 0,
+        /// <summary>A write call was entered and never returned; the persisted state is unknown.</summary>
+        DuringWrite = 1,
+        /// <summary>The write call returned and a later step threw; post-save verification is unknown.</summary>
+        AfterWrite = 2
+    }
+
+    /// <summary>
     /// Builds the stable persistence evidence returned by mode=patch. It does
     /// not read, save, cache, or roll back GeneXus objects.
     /// </summary>
     internal static class PatchPersistenceReceipt
     {
+        private const string UnknownOutcomeRecovery =
+            "Do not retry and do not roll back automatically. Read the complete part again and compare it with the requested content before any further edit.";
+
+        /// <summary>
+        /// True when an unexpected failure at this stage leaves the target's persisted
+        /// state unknown, so the target must be treated as written (dirty) even though
+        /// the call failed. Only <see cref="PatchWriteStage.BeforeWrite"/> proves the
+        /// target is untouched; assuming that for the other stages would let a later
+        /// build take the compile-only fast path over a possibly-changed object.
+        /// </summary>
+        internal static bool RequiresDirtyTargetMark(PatchWriteStage stage)
+            => stage != PatchWriteStage.BeforeWrite;
+
+        /// <summary>
+        /// Rewrites the envelope produced for an unexpected exception so it reports
+        /// what is actually known about persistence. A failure raised before any
+        /// write call keeps the generic error contract and states that no save was
+        /// attempted. Once a write call has been entered, neither this process nor a
+        /// retry can prove the persisted state, so the outcome is reported as unknown
+        /// (<c>persisted: null</c>, <c>persistedStateKnown: false</c>) and the caller
+        /// is told to re-read the part. This method never writes, retries, or rolls
+        /// anything back.
+        /// </summary>
+        internal static string AttachUnexpectedFailureOutcome(
+            string envelope,
+            PatchWriteStage stage,
+            bool? sdkSaveCompleted,
+            string target,
+            string partName,
+            string failureType)
+        {
+            JObject payload;
+            try { payload = JObject.Parse(envelope); }
+            catch { return envelope; }
+
+            payload["part"] = string.IsNullOrWhiteSpace(partName) ? "Source" : partName;
+            payload["writeStage"] = StageName(stage);
+            if (!string.IsNullOrWhiteSpace(failureType)) payload["failureType"] = failureType;
+            if (payload["target"] == null && !string.IsNullOrWhiteSpace(target)) payload["target"] = target;
+
+            if (stage == PatchWriteStage.BeforeWrite)
+            {
+                // The exception was raised before any write call, so "nothing was
+                // persisted" is an observation here rather than an assumption.
+                payload["writeAttempted"] = false;
+                payload["saveAttempted"] = false;
+                payload["sdkSaveCompleted"] = false;
+                payload["saved"] = false;
+                payload["persisted"] = false;
+                payload["persistedStateKnown"] = true;
+                payload["verified"] = false;
+                return payload.ToString();
+            }
+
+            bool afterWrite = stage == PatchWriteStage.AfterWrite;
+            payload["writeAttempted"] = true;
+            payload["saveAttempted"] = true;
+            // Only a write call that returned can report whether the SDK save ran.
+            payload["sdkSaveCompleted"] = afterWrite && sdkSaveCompleted.HasValue
+                ? (JToken)sdkSaveCompleted.Value
+                : JValue.CreateNull();
+            payload["saved"] = payload["sdkSaveCompleted"].DeepClone();
+            // `persisted: false` would be a claim this aborted run cannot support.
+            payload["persisted"] = JValue.CreateNull();
+            payload["persistedStateKnown"] = false;
+            // `verified: false` means the post-save re-read did not confirm the
+            // content. It is not evidence that the content was not written.
+            payload["verified"] = false;
+            payload["verificationUnavailable"] = true;
+            payload["retrySafe"] = false;
+            payload["retriable"] = false;
+            payload["retryable"] = false;
+
+            payload["postSaveVerification"] = new JObject
+            {
+                ["reReadConfirmed"] = false,
+                ["matches"] = JValue.CreateNull(),
+                ["readCompleted"] = false,
+                ["reason"] = afterWrite
+                    ? "The patch aborted after the SDK write call returned; no post-save read completed."
+                    : "The patch aborted while the SDK write call was running; no post-save read was performed."
+            };
+            payload["rollback"] = new JObject
+            {
+                ["attempted"] = false,
+                ["saveAttempted"] = false,
+                ["rolledBack"] = false,
+                ["verificationUnavailable"] = true,
+                ["error"] = "Rollback was not attempted because the post-write state is unknown."
+            };
+            payload["rolledBack"] = false;
+            payload["manualRecovery"] = UnknownOutcomeRecovery;
+
+            var error = payload["error"] as JObject;
+            if (error == null)
+            {
+                error = new JObject();
+                payload["error"] = error;
+            }
+            string failureDetail = error["message"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(failureDetail))
+            {
+                error["failureDetail"] = failureDetail;
+                if (payload["details"] == null) payload["details"] = failureDetail;
+            }
+            error["code"] = "PatchWriteOutcomeUnknown";
+            error["message"] = afterWrite
+                ? "The SDK write call returned, but the patch failed before persistence could be verified; the persisted state is unknown."
+                : "The patch failed while the SDK write call was running; whether the change was persisted is unknown.";
+            error["hint"] = UnknownOutcomeRecovery;
+            error["nextSteps"] = new JArray(Models.McpResponse.NextStep(
+                tool: "genexus_read",
+                args: new JObject
+                {
+                    ["name"] = string.IsNullOrWhiteSpace(target) ? "(target)" : target,
+                    ["part"] = payload["part"].DeepClone()
+                },
+                why: "Read the complete current part and decide from its actual content; this response cannot say whether the write landed."));
+            return payload.ToString();
+        }
+
+        private static string StageName(PatchWriteStage stage)
+        {
+            switch (stage)
+            {
+                case PatchWriteStage.DuringWrite: return "sdk-write";
+                case PatchWriteStage.AfterWrite: return "post-write";
+                default: return "pre-write";
+            }
+        }
+
         internal static string ObjectSaveIsolationGuard(string target, bool requireObjectSave, bool dryRun)
         {
             if (!requireObjectSave || dryRun) return null;
