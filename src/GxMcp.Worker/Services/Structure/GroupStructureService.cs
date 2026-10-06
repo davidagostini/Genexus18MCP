@@ -301,8 +301,6 @@ namespace GxMcp.Worker.Services.Structure
             }
         }
 
-        // Serializes GroupStructurePart.Members as children: [{ name, subtypeOf }] so
-        // genexus_structure get_visual gives a write-verify-read round trip.
         // Text form of a Group's members for genexus_read part=GroupStructure: one
         // "Subtype -> Supertype" line per member (just "Subtype" when it has no supertype).
         internal static string RenderMembers(System.Collections.Generic.IEnumerable<(string Subtype, string Supertype)> members)
@@ -313,6 +311,8 @@ namespace GxMcp.Worker.Services.Structure
             return string.Join(Environment.NewLine, lines);
         }
 
+        // Serializes GroupStructurePart.Members as children: [{ name, subtypeOf }] so
+        // genexus_structure get_visual gives a write-verify-read round trip.
         public string GetGroupStructure(string groupName)
         {
             try
