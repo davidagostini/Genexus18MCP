@@ -17,6 +17,8 @@
 
 - `genexus_lifecycle action=build dryRun=true` now reports how the build plan was expanded instead of only `wouldBuild`: `seeds`, `callees` (callees and `_bc` variants the real build adds ahead of the targets), `seedCount`, `calleeCount`, `totalCount`, `truncated`, `indexLoaded` and `callerGraphAvailable`. When callee expansion is requested but the index is not loaded, the caller graph is missing, or no callees were found, the preview adds a `warnings` entry instead of silently listing only the requested target. `includeCallees` still defaults to `transitive`.
 
+- **Build evidence lists every generated file of the object, not just the freshest one.** `generateEvidence.filesWritten[]` (and `upToDate[]`) now carry a `files[]` array with every generated `.cs/.aspx/.js/.html` of the object, including the `a<name>` Main-object variant, plus `bin\<name>.dll` and `bin\a<name>.dll`, each with `lastWriteUtc` and `writtenDuringBuild` (last write at or after the build start). A Main procedure with Call protocol HTTP builds `<name>.cs` (stub), `a<name>.cs` (the real program) and `bin\a<name>.dll`, but the evidence used to name only the single freshest file. The `genexus_lifecycle` help now states that `generateEvidence` is an output of the terminal build result (there is no `generateEvidence` input parameter, and it is absent from the immediate queued/running reply).
+
 ### Internal
 
 - Fixed fork-PR submission on the installed GitHub CLI by deriving the base repository from the verified GitHub PR URL instead of requesting an unsupported JSON field; clean-tree, fresh-base, preflight and explicit-ref guards remained enforced.
