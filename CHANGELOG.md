@@ -7,6 +7,8 @@
 
 ### Fixed
 
+- `genexus_run_object` no longer returns a made-up `http://localhost/portal3_desenv/...` URL. The base URL is now the `baseUrl` the user set in `preview.config.json`, else the active environment's Web Root (the generator property `WebRoot`, read from the main generator of the target model; a full URL is used as-is, a bare virtual directory is served from `http://localhost/`); the auto-generated legacy default is ignored. When neither exists it returns `BaseUrlUnresolved` with a hint. The response reports `baseUrlSource` (`config` | `environment`).
+
 - Spec-checks of never-built objects no longer blocked the Worker, and typed Transaction targets retained their type when a Table shared the name. Thanks to @danielkrueger ([#403](https://github.com/lennix1337/Genexus18MCP/pull/403)).
 
 - Write-failure traces retained method names with localized .NET UI resources, including Portuguese, without exposing source paths or arguments ([#437](https://github.com/lennix1337/Genexus18MCP/issues/437)).
@@ -21,11 +23,11 @@
 
 ### Internal
 
+- Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
+
 - Fixed fork-PR submission on the installed GitHub CLI by deriving the base repository from the verified GitHub PR URL instead of requesting an unsupported JSON field; clean-tree, fresh-base, preflight and explicit-ref guards remained enforced.
 
 - Removed trailing whitespace from the build-diagnostic regression fixture ([#438](https://github.com/lennix1337/Genexus18MCP/issues/438)).
-
-- Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
 
 ## v3.11.1 - 2026-10-05
 
