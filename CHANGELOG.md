@@ -7,6 +7,8 @@
 
 ### Fixed
 
+- `genexus_read part=GroupStructure` on a Group returned only the `IsDefault` property XML; it now returns one `Subtype -> Supertype` line per member, and a Group read without a part defaults to that part.
+
 - `genexus_run_object` no longer returns a made-up `http://localhost/portal3_desenv/...` URL. The base URL is now the `baseUrl` the user set in `preview.config.json`, else the active environment's Web Root (the generator property `WebRoot`, read from the main generator of the target model; a full URL is used as-is, a bare virtual directory is served from `http://localhost/`); the auto-generated legacy default is ignored. When neither exists it returns `BaseUrlUnresolved` with a hint. The response reports `baseUrlSource` (`config` | `environment`).
 
 - Spec-checks of never-built objects no longer blocked the Worker, and typed Transaction targets retained their type when a Table shared the name. Thanks to @danielkrueger ([#403](https://github.com/lennix1337/Genexus18MCP/pull/403)).
