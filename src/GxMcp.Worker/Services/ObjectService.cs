@@ -3508,10 +3508,11 @@ namespace GxMcp.Worker.Services
             return value.IndexOf('/') >= 0 ? value.Replace('/', '.') : value;
         }
 
-        internal KBObject FindObjectFresh(string target, string typeFilter = null)
+        internal KBObject FindObjectFresh(string target, string typeFilter = null,
+            string guid = null, string entityKey = null, string path = null)
         {
             _lastResolutionDiagnostic = null;
-            var seed = FindObject(target, typeFilter);
+            var seed = FindObject(target, typeFilter, guid, entityKey, path);
             if (seed == null) return null;
 
             if (!InvalidateCache(seed))
@@ -3532,11 +3533,12 @@ namespace GxMcp.Worker.Services
             try { (seed.Model.Objects as IKBModelObjectsCacheConfiguration)?.RemoveFromCaches(seed); }
             catch (Exception ex) { Logger.Debug("Fresh-read cache eviction failed: " + ex.GetType().Name); }
 
-            InvalidateAllReadCaches();
+            RemoveReadCacheEntries(seed.Guid, null);
+            ObjectReader.InvalidateAll();
             // Resolve through the same module-aware route as genexus_read after
             // invalidation. Loading by EntityKey here bypassed that route and could
             // expose a different Source representation from the public read.
-            var fresh = FindObject(target, typeFilter);
+            var fresh = FindObject(target, typeFilter, guid, entityKey, path);
             if (fresh == null || fresh.Guid != seed.Guid || object.ReferenceEquals(fresh, seed))
             {
                 _lastResolutionDiagnostic = new JObject
@@ -3588,6 +3590,8 @@ namespace GxMcp.Worker.Services
             var diagnostic = GetLastResolutionDiagnostic();
             if (diagnostic != null)
             {
+                if (string.Equals(diagnostic["code"]?.ToString(), "FreshReadUnavailable", StringComparison.OrdinalIgnoreCase))
+                    return McpResponse.Err(code: "FreshReadUnavailable", message: diagnostic["message"]?.ToString(), target: target);
                 return McpResponse.Err(
                     code: "IndexedObjectUnavailable",
                     message: "The search index contains the object, but the active SDK could not resolve its native identity.",
@@ -3762,10 +3766,10 @@ namespace GxMcp.Worker.Services
         }
 
         public string ReadObjectSource(string target, string partName, int? offset = null, int? limit = null, string client = "ide", bool minimize = false, string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null, ConditionalReadService.Request conditional = null)
+            string guid = null, string entityKey = null, string path = null, ConditionalReadService.Request conditional = null, bool refresh = false)
         {
             target = ResolveTargetForIdentity(target, guid, entityKey, path);
-            var obj = FindObject(target, typeFilter, guid, entityKey, path);
+            var obj = refresh ? FindObjectFresh(target, typeFilter, guid, entityKey, path) : FindObject(target, typeFilter, guid, entityKey, path);
             if (obj == null) return FormatReadNotFound(target);
 
             string resolvedPart = ResolvePartName(obj, partName);
@@ -3776,9 +3780,13 @@ namespace GxMcp.Worker.Services
             // conditional decision is delegated so the unconditional path below
             // stays exactly as it was.
             if (conditional != null)
-                return ReadObjectSourceConditional(obj, resolvedPart, offset, limit, client, minimize, conditional);
+            {
+                string body = ReadObjectSourceConditional(obj, resolvedPart, offset, limit, client, minimize, conditional);
+                return refresh ? DescribeReadFreshness(body, true) : body;
+            }
 
-            return ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize);
+            return refresh ? DescribeReadFreshness(ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize), true)
+                : ReadObjectSourceResolved(obj, resolvedPart, offset, limit, client, minimize);
         }
 
         /// <summary>
@@ -3835,10 +3843,10 @@ namespace GxMcp.Worker.Services
                 string cacheKey = BuildReadCacheKey(obj.Guid, resolvedPart, offset, limit, client, minimize);
                 if (TryGetReadCache(cacheKey, out string cachedPayload))
                 {
-                    return cachedPayload;
+                    return DescribeReadFreshness(cachedPayload, false, "worker-object-service-cache");
                 }
 
-                string payload = ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize);
+                string payload = DescribeReadFreshness(ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize), false, "sdk-object-state");
                 if (TryGetCacheablePayload(payload, out JObject parsedPayload))
                 {
                     SetReadCache(cacheKey, payload);
@@ -3861,7 +3869,53 @@ namespace GxMcp.Worker.Services
                 return payload;
             }
 
-            return ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize);
+            return DescribeReadFreshness(ReadObjectSourceInternal(obj, resolvedPart, offset, limit, client, minimize), false, "sdk-object-state");
+        }
+
+        internal static string DescribeReadFreshness(string json, bool refreshed, string origin = null)
+        {
+            try
+            {
+                var response = JObject.Parse(json);
+                if (response["error"] != null || string.Equals(response["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase)) return json;
+
+                var previous = response["readFreshness"] as JObject;
+                DateTime now = DateTime.UtcNow;
+                DateTime observedAt = now;
+                var observationToken = previous?["observedAtUtc"];
+                if (!refreshed && observationToken?.Type == JTokenType.Date)
+                {
+                    observedAt = observationToken.Value<DateTime>().ToUniversalTime();
+                }
+                else if (!refreshed && DateTimeOffset.TryParse(
+                    observationToken?.ToString(),
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                    out DateTimeOffset priorObservation))
+                {
+                    observedAt = priorObservation.UtcDateTime;
+                }
+
+                var freshness = previous == null ? new JObject() : (JObject)previous.DeepClone();
+                freshness["origin"] = refreshed ? "sdk-refresh"
+                    : !string.IsNullOrWhiteSpace(origin) ? origin
+                    : previous?["origin"]?.ToString() ?? "sdk-object-state";
+                freshness["observedAtUtc"] = observedAt.ToString("o");
+                freshness["ageMs"] = Math.Max(0L, (long)(now - observedAt).TotalMilliseconds);
+                freshness["sdkCacheRefreshConfirmed"] = refreshed;
+                response["readFreshness"] = freshness;
+                return response.ToString(Newtonsoft.Json.Formatting.None);
+            }
+            catch { return json; }
+        }
+
+        internal static string FreshReadUnsupportedResponse(string target, bool refresh, bool isComDriver)
+        {
+            if (!refresh || !isComDriver) return null;
+            return McpResponse.Err(
+                code: "FreshReadUnavailable",
+                message: "The COM driver cannot confirm an independent SDK refresh.",
+                target: target);
         }
 
         /// <summary>
@@ -3921,10 +3975,10 @@ namespace GxMcp.Worker.Services
         /// When requestedParts is null/empty the full default set is returned (backward-compatible).
         /// </summary>
         public string ReadObjectSourceParts(string target, IEnumerable<string> requestedParts, string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null)
+            string guid = null, string entityKey = null, string path = null, bool refresh = false)
         {
             target = ResolveTargetForIdentity(target, guid, entityKey, path);
-            var obj = FindObject(target, typeFilter, guid, entityKey, path);
+            var obj = refresh ? FindObjectFresh(target, typeFilter, guid, entityKey, path) : FindObject(target, typeFilter, guid, entityKey, path);
             if (obj == null) return FormatReadNotFound(target);
 
             if (DataSelectorReadService.IsDataSelector(obj))
@@ -4118,10 +4172,10 @@ namespace GxMcp.Worker.Services
         /// Eliminates the multi-roundtrip exploration loop.
         /// </summary>
         public string ReadFullObject(string target, string typeFilter = null,
-            string guid = null, string entityKey = null, string path = null)
+            string guid = null, string entityKey = null, string path = null, bool refresh = false)
         {
             target = ResolveTargetForIdentity(target, guid, entityKey, path);
-            var obj = FindObject(target, typeFilter, guid, entityKey, path);
+            var obj = refresh ? FindObjectFresh(target, typeFilter, guid, entityKey, path) : FindObject(target, typeFilter, guid, entityKey, path);
             if (obj == null) return FormatReadNotFound(target);
 
             if (obj is Artech.Packages.Patterns.Objects.PatternSettings)

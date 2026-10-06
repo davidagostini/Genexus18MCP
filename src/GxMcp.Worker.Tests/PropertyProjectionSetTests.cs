@@ -46,7 +46,7 @@ namespace GxMcp.Worker.Tests
         {
             "Name", "Description", "DescriptionValue", "Type", "DataType", "DataTypeString",
             "Length", "AttMaxLen", "Decimals", "AttDec", "Signed", "AttSign", "Picture",
-            "ATT_PICTURE", "Domain", "BasedOn", "DomainBasedOn", "DomainDefinition"
+            "ATT_PICTURE", "Domain", "BasedOn", "DomainBasedOn", "DomainDefinition", "RPT_TEXT_MODE"
         };
 
         [Fact]
@@ -76,7 +76,7 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void TheMinimalProjectionStillHoldsItsOriginalNineteen()
+        public void TheMinimalProjectionHoldsTheDocumentedNames()
         {
             // Pinned in both directions: a name added to the minimal set is a
             // published-output change too, and one removed changes every read.

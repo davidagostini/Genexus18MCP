@@ -3776,6 +3776,11 @@
             "description": "Module/folder-qualified object path…",
             "type": "string"
           },
+          "refresh": {
+            "default": false,
+            "description": "Bypass response caches, invalidate the…",
+            "type": "boolean"
+          },
           "targets": {
             "items": {
               "type": "string"

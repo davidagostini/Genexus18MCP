@@ -42,6 +42,10 @@ namespace GxMcp.Worker.Services
                 return McpResponse.Err(code: "InvalidRequest", message: "ObjectReadRequest cannot be null.");
             }
 
+            string unsupportedRefresh = ObjectService.FreshReadUnsupportedResponse(
+                request.Target, request.Refresh, GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver);
+            if (unsupportedRefresh != null) return unsupportedRefresh;
+
             // 1. Batch read delegation if multiple targets provided
             if (request.BatchTargets != null && request.BatchTargets.Count > 0)
             {
@@ -49,7 +53,7 @@ namespace GxMcp.Worker.Services
                 {
                     string partFilter = !string.IsNullOrWhiteSpace(request.PartName) ? request.PartName : "Source";
                     var partsArr = request.RequestedParts != null ? new JArray(request.RequestedParts) : null;
-                    return _batchService.BatchRead(request.BatchTargets, partFilter, partsArr);
+                    return _batchService.BatchRead(request.BatchTargets, partFilter, partsArr, request.Refresh);
                 }
             }
 
@@ -66,9 +70,9 @@ namespace GxMcp.Worker.Services
             string cacheKey = BuildCacheKey(request);
 
             // 2. Read-through cache check
-            if (!IsPatternSettingsRead(request) && TryGetCachedEntry(cacheKey, out string cachedResult))
+            if (!request.Refresh && !IsPatternSettingsRead(request) && TryGetCachedEntry(cacheKey, out string cachedResult))
             {
-                return cachedResult;
+                return ObjectService.DescribeReadFreshness(cachedResult, false, "worker-object-reader-cache");
             }
 
             if (_objectService == null)
@@ -81,11 +85,11 @@ namespace GxMcp.Worker.Services
             // 3. Full object vs Parts vs Single part read
             if (request.FullObject)
             {
-                result = _objectService.ReadFullObject(request.Target, request.TypeFilter, request.Guid, request.EntityKey, request.Path);
+                result = _objectService.ReadFullObject(request.Target, request.TypeFilter, request.Guid, request.EntityKey, request.Path, request.Refresh);
             }
             else if (request.RequestedParts != null && request.RequestedParts.Any())
             {
-                result = _objectService.ReadObjectSourceParts(request.Target, request.RequestedParts, request.TypeFilter, request.Guid, request.EntityKey, request.Path);
+                result = _objectService.ReadObjectSourceParts(request.Target, request.RequestedParts, request.TypeFilter, request.Guid, request.EntityKey, request.Path, request.Refresh);
             }
             else
             {
@@ -99,11 +103,15 @@ namespace GxMcp.Worker.Services
                     request.TypeFilter,
                     request.Guid,
                     request.EntityKey,
-                    request.Path);
+                    request.Path,
+                    refresh: request.Refresh);
             }
 
+            if (request.FullObject || (request.RequestedParts?.Any() ?? false))
+                result = ObjectService.DescribeReadFreshness(result, request.Refresh);
+
             // 4. Cache successful result
-            if (!IsPatternSettingsRead(request) && IsCacheable(result))
+            if (!request.Refresh && !IsPatternSettingsRead(request) && IsCacheable(result))
             {
                 _cache[cacheKey] = new CacheEntry
                 {

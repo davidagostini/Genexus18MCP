@@ -150,6 +150,7 @@ namespace GxMcp.Gateway.Routers
                         return new {
                             module = "Batch",
                             action = "BatchRead",
+                            refresh = args?["refresh"]?.ToObject<bool?>() ?? false,
                             items = (JArray)targetsTokRead!,
                             part = part,
                             // A batch read must preserve the same field-selection contract as
@@ -167,6 +168,7 @@ namespace GxMcp.Gateway.Routers
                         return new {
                             module = "Read",
                             action = "ExtractParts",
+                            refresh = args?["refresh"]?.ToObject<bool?>() ?? false,
                             target = target,
                             parts = (JArray)partsTok!,
                             type = args?["type"]?.ToString(),
@@ -190,6 +192,7 @@ namespace GxMcp.Gateway.Routers
                         return new {
                             module = "Read",
                             action = "ExtractFullObject",
+                            refresh = args?["refresh"]?.ToObject<bool?>() ?? false,
                             target = target,
                             type = args?["type"]?.ToString(),
                             guid = args?["guid"]?.ToString(),
@@ -200,6 +203,7 @@ namespace GxMcp.Gateway.Routers
                     return new {
                         module = "Read",
                         action = "ExtractSource",
+                        refresh = args?["refresh"]?.ToObject<bool?>() ?? false,
                         target = target,
                         part = part,
                         offset = args?["offset"]?.ToObject<int?>(),

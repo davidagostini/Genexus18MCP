@@ -18,6 +18,7 @@ namespace GxMcp.Worker.Services
         public string EntityKey { get; set; }
         public string Path { get; set; }
         public bool FullObject { get; set; }
+        public bool Refresh { get; set; }
         public JArray BatchTargets { get; set; }
     }
 

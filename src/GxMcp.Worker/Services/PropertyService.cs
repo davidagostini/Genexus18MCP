@@ -47,7 +47,8 @@ namespace GxMcp.Worker.Services
             "Domain",
             "BasedOn",
             "DomainBasedOn",
-            "DomainDefinition"
+            "DomainDefinition",
+            "RPT_TEXT_MODE"
         };
 
         /// <summary>
@@ -161,6 +162,17 @@ namespace GxMcp.Worker.Services
                     }
 
                     fullPropsResult = SerializeProperties(container, obj.Model);
+                    if (string.IsNullOrEmpty(controlName))
+                    {
+                        var reportContainer = ResolveReportPropertyContainer(obj, ReportLayoutHelper.TextModeProperty, null);
+                        var textMode = ReflectionHelper.TryGetPropertyBagValue(reportContainer, ReportLayoutHelper.TextModeProperty);
+                        if (textMode != null)
+                            ((JArray)fullPropsResult["properties"]).Add(new JObject
+                            {
+                                ["name"] = ReportLayoutHelper.TextModeProperty, ["value"] = textMode.ToString(),
+                                ["type"] = "System.Boolean", ["readOnly"] = false
+                            });
+                    }
                     lock (_propertyCacheLock)
                     {
                         _propertyCache[ck] = (DateTime.UtcNow.AddSeconds(PropertyCacheTtlSeconds), (JObject)fullPropsResult.DeepClone());
@@ -837,7 +849,9 @@ namespace GxMcp.Worker.Services
                 // name through the typed adapter below), but its read-only check runs first,
                 // so returning from the reference branch ahead of this call would make every
                 // read-only WebPanelReference property writable.
-                string propertyValidation = ValidatePropertyWrite(container, propName, value);
+                object reportContainer = ResolveReportPropertyContainer(obj, propName, controlName);
+                container = reportContainer ?? container;
+                string propertyValidation = reportContainer != null ? ValidateReportTextMode(value) : ValidatePropertyWrite(container, propName, value);
                 if (propertyValidation != null)
                     return Models.McpResponse.Err(
                         code: propertyValidation.StartsWith("PropertyReadOnly", StringComparison.Ordinal)
@@ -863,6 +877,8 @@ namespace GxMcp.Worker.Services
                         beforeVal = TryReadPropertyString(container, propName, obj.Model);
 
                         ApplyPropertyValue(container, propName, value, controlName, obj);
+                        if (ReportLayoutHelper.IsTextModeProperty(propName) && string.IsNullOrEmpty(controlName))
+                            ReportLayoutHelper.MarkLayoutDirty(GxMcp.Worker.Structure.PartAccessor.GetPart(obj, "Layout"));
 
                         string afterVal = TryReadPropertyString(container, propName, obj.Model);
                         if (!string.IsNullOrEmpty(value)
@@ -954,16 +970,20 @@ namespace GxMcp.Worker.Services
                             if (IsWebPanelReferenceType(GetPropertyTargetType(container, propName)))
                                 throw new InvalidOperationException($"'{propName}' is an object reference; set it with action=set and propertyName={propName}, not in a property batch.");
 
-                            string propertyValidation = ValidatePropertyWrite(container, propName, val);
+                            object reportContainer = ResolveReportPropertyContainer(obj, propName, controlName);
+                            dynamic propertyContainer = reportContainer ?? container;
+                            string propertyValidation = reportContainer != null ? ValidateReportTextMode(val) : ValidatePropertyWrite(propertyContainer, propName, val);
                             if (propertyValidation != null)
                                 throw new InvalidOperationException(propertyValidation);
 
-                            string before = TryReadPropertyString(container, propName, obj.Model);
+                            string before = TryReadPropertyString(propertyContainer, propName, obj.Model);
                             if (before != null) beforeValues[propName] = before;
 
-                            ApplyPropertyValue(container, propName, val, controlName, obj);
+                            ApplyPropertyValue(propertyContainer, propName, val, controlName, obj);
+                            if (ReportLayoutHelper.IsTextModeProperty(propName) && string.IsNullOrEmpty(controlName))
+                                ReportLayoutHelper.MarkLayoutDirty(GxMcp.Worker.Structure.PartAccessor.GetPart(obj, "Layout"));
 
-                            string after = TryReadPropertyString(container, propName, obj.Model);
+                            string after = TryReadPropertyString(propertyContainer, propName, obj.Model);
                             if (!string.IsNullOrEmpty(val) && !string.IsNullOrEmpty(before) && string.IsNullOrEmpty(after))
                             {
                                 throw new PropertyWipeException(propName, before);
@@ -1038,10 +1058,16 @@ namespace GxMcp.Worker.Services
             foreach (var p in properties.Properties())
             {
                 string pName = p.Name;
+                string directWriteValidation = ValidateDirectPropertyWrite(pName);
+                if (directWriteValidation != null) throw new InvalidOperationException(directWriteValidation);
                 string pVal = p.Value?.ToString();
-                string propertyValidation = ValidatePropertyWrite(targetContainer, pName, pVal);
+                object reportContainer = ResolveReportPropertyContainer(obj, pName, null);
+                dynamic propertyContainer = reportContainer ?? targetContainer;
+                string propertyValidation = reportContainer != null ? ValidateReportTextMode(pVal) : ValidatePropertyWrite(propertyContainer, pName, pVal);
                 if (propertyValidation != null) throw new InvalidOperationException(propertyValidation);
-                ApplyPropertyValue(targetContainer, pName, pVal, null, obj);
+                ApplyPropertyValue(propertyContainer, pName, pVal, null, obj);
+                if (ReportLayoutHelper.IsTextModeProperty(pName))
+                    ReportLayoutHelper.MarkLayoutDirty(GxMcp.Worker.Structure.PartAccessor.GetPart(obj, "Layout"));
             }
         }
 
@@ -1132,14 +1158,20 @@ namespace GxMcp.Worker.Services
         {
             try
             {
-                var fresh = _objectService.FindObject(target, typeFilter);
-                if (fresh == null) return null;
+                bool reportProperty = ReportLayoutHelper.IsTextModeProperty(propName) && string.IsNullOrEmpty(controlName);
+                var fresh = reportProperty
+                    ? _objectService.FindObjectFreshByIdentity(original)
+                    : _objectService.FindObject(target, typeFilter);
+                if (fresh == null) return reportProperty ? ReportPropertyVerificationUnavailable(target) : null;
+                if (reportProperty && (original == null || fresh.Guid != original.Guid))
+                    return ReportPropertyVerificationUnavailable(target);
 
                 // Circularity guard: if the SDK hands back the SAME in-memory instance we
                 // just mutated (rather than a fresh object from the KB store), a re-read
                 // trivially matches the requested value and proves nothing. Treat identity
                 // as "unverifiable" — never claim a confirmation we didn't obtain.
-                if (original != null && object.ReferenceEquals(fresh, original)) return null;
+                if (original != null && object.ReferenceEquals(fresh, original))
+                    return reportProperty ? ReportPropertyVerificationUnavailable(target) : null;
 
                 dynamic container = fresh;
                 if (!string.IsNullOrEmpty(controlName))
@@ -1148,6 +1180,7 @@ namespace GxMcp.Worker.Services
                     if (container == null) return null;
                 }
 
+                container = ResolveReportPropertyContainer(fresh, propName, controlName) ?? container;
                 string persisted = null;
                 // Nullable/ALLOWNULL family (issue #57): the property-bag entry may be named
                 // IsNullable even when the caller used Nullable — read the typed getter.
@@ -1199,8 +1232,9 @@ namespace GxMcp.Worker.Services
                     }
                     catch { }
                 }
+                if (reportProperty) persisted = ReflectionHelper.TryGetPropertyBagValue((object)container, ReportLayoutHelper.TextModeProperty)?.ToString();
                 if (persisted == null) persisted = TryReadPropertyString(container, propName, fresh.Model);
-                if (persisted == null) return null; // unverifiable
+                if (persisted == null) return reportProperty ? ReportPropertyVerificationUnavailable(target) : null; // unverifiable
 
                 if (!PersistenceVerifier.ValuesMatch(requested, persisted, IsNullablePropertyName(propName)))
                 {
@@ -1240,8 +1274,28 @@ namespace GxMcp.Worker.Services
             catch (Exception ex)
             {
                 Logger.Debug("[PROPERTY-VERIFY] " + ex.Message);
-                return null;
+                return ReportLayoutHelper.IsTextModeProperty(propName) && string.IsNullOrEmpty(controlName)
+                    ? ReportPropertyVerificationUnavailable(target) : null;
             }
+        }
+
+        private static string ValidateReportTextMode(string value)
+            => bool.TryParse(value, out _) ? null : "InvalidPropertyValue: RPT_TEXT_MODE requires True or False.";
+
+        internal static string ValidateDirectPropertyWrite(string propName)
+            => ReportLayoutHelper.IsTextModeProperty(propName)
+                ? "RPT_TEXT_MODE must be set with genexus_properties action=set so persisted state can be independently verified."
+                : null;
+
+        private static string ReportPropertyVerificationUnavailable(string target)
+            => Models.McpResponse.Err(code: "PropertyVerificationUnavailable", target: target,
+                message: "RPT_TEXT_MODE save could not be independently read back. Do not retry the write automatically.");
+
+        internal static object ResolveReportPropertyContainer(KBObject obj, string propName, string controlName)
+        {
+            if (!string.IsNullOrEmpty(controlName) || !ReportLayoutHelper.IsTextModeProperty(propName)) return null;
+            var part = GxMcp.Worker.Structure.PartAccessor.GetPart(obj, "Layout");
+            return ReportLayoutHelper.IsReportPart(part) == null ? null : ReportLayoutHelper.GetTextModeContainer(part);
         }
 
         // issue #41: structured properties the generic scalar setter can't represent —
@@ -1307,6 +1361,8 @@ namespace GxMcp.Worker.Services
                 object existing = ResolvePropertyEntry(container, propName);
                 object val = null;
                 try { val = existing == null ? null : ((dynamic)existing).Value; } catch { }
+                if (val == null && ReportLayoutHelper.IsTextModeProperty(propName))
+                    val = ReflectionHelper.TryGetPropertyBagValue((object)container, ReportLayoutHelper.TextModeProperty);
                 return val == null ? null : RenderPropertyValue(val, model);
             }
             catch { return null; }
@@ -1569,6 +1625,11 @@ namespace GxMcp.Worker.Services
         internal static void ApplyPropertyValue(dynamic container, string propName, string rawValue, string controlName, KBObject obj)
         {
             Exception lastError = null;
+            if (ReportLayoutHelper.IsTextModeProperty(propName) && string.IsNullOrEmpty(controlName))
+            {
+                ReportLayoutHelper.SetTextMode((object)container, rawValue);
+                return;
+            }
 
             // issue #179: the generic property bag accepts a Type string on an
             // Attribute but does not change the typed SDK value. Route Attributes

@@ -5,7 +5,13 @@
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
+### Added
+
+- `genexus_read refresh=true` bypasses Gateway/Worker response caches, invalidates the SDK object and independently resolves the same identity after an external IDE save. Ordinary reads now report Worker cache origin and observation age; refresh fails with `FreshReadUnavailable` if an independent read cannot be confirmed. This is not an atomic snapshot against concurrent IDE saves ([#439](https://github.com/lennix1337/Genexus18MCP/issues/439)).
+
 ### Fixed
+
+- `genexus_properties` now reads and writes report Layout `RPT_TEXT_MODE`, also projected on the Report XML root. `True`/`False` writes require independent persisted read-back; unconfirmed writes fail closed. Character-coordinate conversion remains a separate enhancement ([#407](https://github.com/lennix1337/Genexus18MCP/issues/407)).
 
 - `genexus_layout action=add_report_control` (and `move_report_control`) no longer report `ReportControlWriteVerificationFailed` for controls the SDK persisted exactly as requested: geometry is now verified against the `Left`/`Top` projection of the SDK read-back instead of `X`/`Y`, and `font`/`fontName`/`fontSize` against the read-back `FontName`/`FontSize`.
 

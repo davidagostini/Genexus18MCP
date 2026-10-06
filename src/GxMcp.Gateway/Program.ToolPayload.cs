@@ -534,6 +534,51 @@ namespace GxMcp.Gateway
                 && !string.IsNullOrWhiteSpace(token.ToString());
         }
 
+        internal static bool IsRefreshRead(string toolName, JObject? args)
+            => string.Equals(toolName, "genexus_read", StringComparison.OrdinalIgnoreCase)
+                && args?["refresh"]?.Type == JTokenType.Boolean && args["refresh"]!.Value<bool>();
+
+        internal static bool InvalidateRefreshReadScope(SemanticCacheStore cache, string kbScope, string toolName, JObject? args)
+        {
+            // An empty scope is SemanticCacheStore's explicit global-invalidation fallback;
+            // a refresh without resolved KB identity must not flush unrelated clients.
+            if (string.IsNullOrWhiteSpace(kbScope) || !IsRefreshRead(toolName, args)) return false;
+            cache.InvalidateScope(kbScope);
+            return true;
+        }
+
+        internal static void AttachGatewaySemanticCacheAge(JObject toolResult, long cacheAgeMs)
+        {
+            if (toolResult == null) return;
+            var content = toolResult["content"] as JArray;
+            if (content == null) return;
+
+            foreach (var item in content.OfType<JObject>())
+            {
+                var text = item["text"];
+                if (text == null || text.Type != JTokenType.String) continue;
+                try
+                {
+                    var payload = JObject.Parse(text.ToString());
+                    if (!(payload["readFreshness"] is JObject freshness)) continue;
+
+                    long workerAgeMs = Math.Max(0L, freshness["ageMs"]?.Value<long?>() ?? 0L);
+                    long gatewayAge = Math.Max(0L, cacheAgeMs);
+                    long totalAgeMs = workerAgeMs > long.MaxValue - gatewayAge
+                        ? long.MaxValue
+                        : workerAgeMs + gatewayAge;
+                    freshness["ageMs"] = totalAgeMs;
+                    item["text"] = payload.ToString(Newtonsoft.Json.Formatting.None);
+
+                    var metadata = toolResult["_meta"] as JObject ?? new JObject();
+                    toolResult["_meta"] = metadata;
+                    metadata["readFreshnessAgeMs"] = totalAgeMs;
+                    return;
+                }
+                catch { }
+            }
+        }
+
         // Record reads and previews are live database observations. Neither an empty
         // query nor an earlier successful mutation may bypass a fresh worker call.
         // The action classifier is also the cache safety boundary: action-dependent
@@ -545,7 +590,7 @@ namespace GxMcp.Gateway
             if (isMutating || isLiveTool
                 || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
                 || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args)
-                || IsConditionalRead(toolName, args))
+                || IsConditionalRead(toolName, args) || IsRefreshRead(toolName, args))
                 return null;
             return $"{kbScope}|{toolName}:{args?.ToString(Newtonsoft.Json.Formatting.None)}";
         }
@@ -576,7 +621,7 @@ namespace GxMcp.Gateway
             if (isMutating || isLiveTool
                 || OperationClassifier.Describe(toolName, args).Kind != OperationClassifier.OperationKind.ReadOnly
                 || IsTransactionRecordOperation(toolName, args) || IsPatternSettingsObservation(toolName, args)
-                || IsConditionalRead(toolName, args))
+                || IsConditionalRead(toolName, args) || IsRefreshRead(toolName, args))
                 return null;
 
             var canonicalArgs = CanonicalizeJson(args ?? new JObject());

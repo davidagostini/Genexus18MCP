@@ -52,6 +52,7 @@ namespace GxMcp.Worker.Services
                 return _objectReader.Read(new ObjectReadRequest
                 {
                     BatchTargets = targetsArr,
+                    Refresh = args["refresh"]?.ToObject<bool?>() ?? false,
                     PartName = partFilter,
                     RequestedParts = partsArr?.Select(p => p.ToString())
                 });
@@ -75,6 +76,7 @@ namespace GxMcp.Worker.Services
                     Target = target,
                     FullObject = true,
                     TypeFilter = typeFilter,
+                    Refresh = args["refresh"]?.ToObject<bool?>() ?? false,
                     Guid = args["guid"]?.ToString(),
                     EntityKey = args["entityKey"]?.ToString(),
                     Path = args["path"]?.ToString()
@@ -88,6 +90,7 @@ namespace GxMcp.Worker.Services
                         Target = target,
                         RequestedParts = requestedParts,
                         TypeFilter = typeFilter,
+                        Refresh = args["refresh"]?.ToObject<bool?>() ?? false,
                         Guid = args["guid"]?.ToString(),
                         EntityKey = args["entityKey"]?.ToString(),
                         Path = args["path"]?.ToString()
@@ -123,6 +126,14 @@ namespace GxMcp.Worker.Services
 
                 case InspectionDepth.Source:
                 default:
+                    if (args["parts"] is JArray sourceParts && sourceParts.Count > 0)
+                        return _objectReader.Read(new ObjectReadRequest
+                        {
+                            Target = target, RequestedParts = sourceParts.Select(p => p.ToString()),
+                            TypeFilter = typeFilter, Guid = args["guid"]?.ToString(),
+                            EntityKey = args["entityKey"]?.ToString(), Path = args["path"]?.ToString(),
+                            Refresh = args["refresh"]?.ToObject<bool?>() ?? false
+                        });
                     string part = args["part"]?.ToString();
                     int? offset = args["offset"]?.ToObject<int?>();
                     int? limit = args["limit"]?.ToObject<int?>();
@@ -142,6 +153,7 @@ namespace GxMcp.Worker.Services
                         Minimize = raw,
                         TypeFilter = typeFilter,
                         FullObject = completeRead,
+                        Refresh = args["refresh"]?.ToObject<bool?>() ?? false,
                         Guid = args["guid"]?.ToString(),
                         EntityKey = args["entityKey"]?.ToString(),
                         Path = args["path"]?.ToString()

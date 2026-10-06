@@ -59,6 +59,29 @@ for neutral MCP session selection. For a neutral config, select the KB explicitl
 through the MCP session action; do not expect `init` or `clients add` to migrate
 or rewrite a config as a side effect.
 
+## Report text mode and external-save reads
+
+`genexus_properties action=get|set propertyName=RPT_TEXT_MODE` (without
+`control`) addresses the report Layout property bag. The value also appears on
+the report XML root. Writes accept `True`/`False` and require independent
+persisted read-back; unconfirmed persistence is an error, not success. Control
+properties retain their existing routing. Converting legacy character coordinates
+to 1/100 inch is explicitly a separate enhancement, not part of this fix (#407).
+
+After an external IDE Save, use `genexus_read refresh=true` for an independent
+SDK reload, by name or native identity, for single/full/multi-part or batch reads.
+Ordinary unconditional reads remain cached and are not confirmation of external
+changes; a GUID is not a freshness guarantee. `readFreshness.origin` identifies the Worker layer (`sdk-object-state`,
+`worker-object-service-cache`, `worker-object-reader-cache`, or `sdk-refresh`); `observedAtUtc`
+and `ageMs` report age since that Worker observation, not the persisted KB
+revision time. On a Gateway replay, `ageMs` includes both Worker and Gateway age;
+`_meta.cacheSource`, `cacheAgeMs`, and `readFreshnessAgeMs` expose the Gateway
+layer and combined age. `sdkCacheRefreshConfirmed` is true only for
+`origin=sdk-refresh`. Refresh invalidates aliases, bypasses response caches and returns `FreshReadUnavailable`
+when the SDK cannot invalidate/evict and independently resolve the same object.
+This is not an atomic snapshot during concurrent saves and cannot expose unsaved
+IDE buffers (#439).
+
 ## Engineering safeguards
 
 ### Adding a mutating tool

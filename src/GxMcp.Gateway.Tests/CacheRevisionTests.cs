@@ -15,7 +15,8 @@ namespace GxMcp.Gateway.Tests
             store.Set("kb1|genexus_read:{}", new JObject { ["ok"] = true });
 
             now = 9;
-            Assert.True(store.TryGet("kb1|genexus_read:{}", out _));
+            Assert.True(store.TryGet("kb1|genexus_read:{}", out _, out long ageMs));
+            Assert.Equal(9, ageMs);
 
             now = 10;
             Assert.False(store.TryGet("kb1|genexus_read:{}", out _));

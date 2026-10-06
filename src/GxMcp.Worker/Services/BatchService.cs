@@ -381,10 +381,14 @@ namespace GxMcp.Worker.Services
             };
         }
 
-        public string BatchRead(JArray items, string defaultPart = "Source", JArray requestedParts = null)
+        public string BatchRead(JArray items, string defaultPart = "Source", JArray requestedParts = null, bool refresh = false)
         {
             try
             {
+                string unsupportedRefresh = ObjectService.FreshReadUnsupportedResponse(
+                    null, refresh, GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver);
+                if (unsupportedRefresh != null) return unsupportedRefresh;
+
                 if (items == null || items.Count == 0)
                     return McpResponse.Err(
                         code: "NoItemsProvided",
@@ -424,8 +428,8 @@ namespace GxMcp.Worker.Services
                         .ToArray();
                     bool useFieldSelection = !hasItemPart && selectedParts != null && selectedParts.Length > 0;
                     string readResult = useFieldSelection
-                        ? _objectService.ReadObjectSourceParts(name, selectedParts)
-                        : _objectService.ReadObjectSource(name, part, null, null, "mcp");
+                        ? ObjectService.DescribeReadFreshness(_objectService.ReadObjectSourceParts(name, selectedParts, refresh: refresh), refresh)
+                        : _objectService.ReadObjectSource(name, part, null, null, "mcp", refresh: refresh);
                     try {
                         var parsed = JObject.Parse(readResult);
                         parsed["object"] = name;

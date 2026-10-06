@@ -1472,7 +1472,8 @@ namespace GxMcp.Worker.Services
             if (action == "BatchRead") return _batchService.BatchRead(
                 args?["items"] as JArray,
                 args?["part"]?.ToString() ?? "Source",
-                args?["parts"] as JArray);
+                args?["parts"] as JArray,
+                args?["refresh"]?.ToObject<bool?>() ?? false);
             if (action == "BatchEdit") return _batchService.BatchEdit(target, args?["changes"] as JArray);
             if (action == "MultiEdit")
             {
@@ -1775,6 +1776,10 @@ namespace GxMcp.Worker.Services
         {
             if (GxMcp.Worker.Compatibility.DynamicSdkBridge.IsComDriver)
             {
+                string unsupportedRefresh = ObjectService.FreshReadUnsupportedResponse(
+                    target, args?["refresh"]?.ToObject<bool?>() ?? false, isComDriver: true);
+                if (unsupportedRefresh != null) return unsupportedRefresh;
+
                 string partName = args?["part"]?.ToString() ?? "Source";
                 string partContent = GxMcp.Worker.Drivers.ComGxPublicDriver.Instance.ReadObjectPart(target, partName, out string readErr);
                 if (readErr != null)
@@ -1807,7 +1812,9 @@ namespace GxMcp.Worker.Services
             {
                 string typeFilter = args?["type"]?.ToString() ?? request?["type"]?.ToString();
                 string fullJson = _objectService.ReadFullObject(target, typeFilter,
-                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(),
+                    args?["refresh"]?.ToObject<bool?>() ?? false);
+                fullJson = ObjectService.DescribeReadFreshness(fullJson, args?["refresh"]?.ToObject<bool?>() ?? false);
                 try
                 {
                     string kbPath = _kbService?.GetKbPath();
@@ -1831,7 +1838,8 @@ namespace GxMcp.Worker.Services
                 // byte-identical to before the feature existed.
                 ConditionalReadService.Request conditional = BuildConditionalReadRequest(args);
                 string readJson = _objectService.ReadObjectSource(target, args?["part"]?.ToString(), args?["offset"]?.ToObject<int?>(), args?["limit"]?.ToObject<int?>(), "mcp", false, typeFilter,
-                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), conditional);
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), conditional,
+                    args?["refresh"]?.ToObject<bool?>() ?? false);
                 // Phase 2: genexus_read piggyback. Attached here (the tool boundary),
                 // not inside ObjectService, so it (a) never pollutes the mcp read
                 // cache (which stores the pre-attach payload) and (b) doesn't burn
@@ -1857,8 +1865,9 @@ namespace GxMcp.Worker.Services
             {
                 var partsTok = args?["parts"] as JArray;
                 var requestedParts = partsTok?.Select(p => p.ToString()) ?? Enumerable.Empty<string>();
-                return _objectService.ReadObjectSourceParts(target, requestedParts, args?["type"]?.ToString(),
-                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString());
+                bool refresh = args?["refresh"]?.ToObject<bool?>() ?? false;
+                return ObjectService.DescribeReadFreshness(_objectService.ReadObjectSourceParts(target, requestedParts, args?["type"]?.ToString(),
+                    args?["guid"]?.ToString(), args?["entityKey"]?.ToString(), args?["path"]?.ToString(), refresh), refresh);
             }
             if (action == "GetVariables") return _analyzeService.GetVariables(target);
             if (action == "GetAttribute") return _analyzeService.GetAttributeMetadata(target);

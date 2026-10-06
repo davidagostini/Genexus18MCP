@@ -266,6 +266,9 @@ namespace GxMcp.Gateway
             // (guaranteed miss) and live tools never read from it, so for those
             // the key — and the expensive payload ToString for genexus_edit/write
             // — is pure waste.
+            // Refresh also discards previously cached aliases for this KB. No external
+            // IDE notification is required; unrelated KB scopes remain warm.
+            InvalidateRefreshReadScope(_semanticCache, kbScope, tName, tArgs);
             long cacheRevisionAtDispatch = _semanticCache.GetRevision(kbScope);
             string? modelScope = null;
             string? environmentScope = null;
@@ -278,7 +281,7 @@ namespace GxMcp.Gateway
             string? cKey = CreateSemanticCacheKey(
                 kbScope, tName, tArgs, isMutating, isLiveTool,
                 cacheRevisionAtDispatch, modelScope, environmentScope);
-            if (cKey != null && _semanticCache.TryGet(cKey, out var cachedResponse))
+            if (cKey != null && _semanticCache.TryGet(cKey, out var cachedResponse, out long cacheAgeMs))
             {
                 if (_verboseRequestLogs) Log($"[Cache] HIT for {tName}");
                 var cached = cachedResponse["result"] as JObject;
@@ -288,6 +291,9 @@ namespace GxMcp.Gateway
                     var hitMeta = hit["_meta"] as JObject ?? new JObject();
                     hit["_meta"] = hitMeta;
                     hitMeta["cacheOutcome"] = "hit";
+                    hitMeta["cacheSource"] = "gateway-semantic-cache";
+                    hitMeta["cacheAgeMs"] = cacheAgeMs;
+                    AttachGatewaySemanticCacheAge(hit, cacheAgeMs);
                     AttachExactReadIndexMetadata(hit, tName, tArgs);
                     _operationTracker.RecordCacheHit(tName);
                     return hit;
@@ -785,6 +791,12 @@ namespace GxMcp.Gateway
                 mcpRequestId: idToken?.ToString(),
                 mcpRequestIdToken: idToken,
                 mcpSessionId: sessionId);
+
+            // A non-refresh read can start after the pre-dispatch invalidation and
+            // populate a new-generation alias from the Worker before this SDK reload
+            // completes. Advance the generation again so in-flight cache fills cannot
+            // survive the authoritative refresh.
+            InvalidateRefreshReadScope(_semanticCache, kbScope, tName, tArgs);
 
             // apply_pattern { validate: true } — post-apply build of the
             // generated host so the LLM sees compile failures in a single

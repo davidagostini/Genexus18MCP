@@ -84,8 +84,12 @@ namespace GxMcp.Gateway
         public long MaxBytes => _maxBytes;
 
         public bool TryGet(string key, out JObject value)
+            => TryGet(key, out value, out _);
+
+        public bool TryGet(string key, out JObject value, out long ageMilliseconds)
         {
             value = null!;
+            ageMilliseconds = 0;
             if (!_entries.TryGetValue(key, out var found)) return false;
 
             if (IsExpired(key))
@@ -93,6 +97,9 @@ namespace GxMcp.Gateway
                 RemoveEntry(key);
                 return false;
             }
+
+            if (_createdAt.TryGetValue(key, out long createdAt))
+                ageMilliseconds = Math.Max(0L, _clock() - createdAt);
 
             // Touch on hit: LRU-style recency drives both expiry and cap eviction.
             _lastAccess[key] = NextStamp();

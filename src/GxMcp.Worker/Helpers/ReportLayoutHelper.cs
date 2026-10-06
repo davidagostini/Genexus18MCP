@@ -23,6 +23,35 @@ namespace GxMcp.Worker.Helpers
             return partClassFullName.Contains("ReportPart") || partClassFullName.Contains("LayoutPart");
         }
 
+        internal const string TextModeProperty = "RPT_TEXT_MODE";
+
+        internal static bool IsTextModeProperty(string name)
+            => string.Equals(name?.Trim(), TextModeProperty, StringComparison.OrdinalIgnoreCase);
+
+        internal static object GetTextModeContainer(object part)
+        {
+            var layout = ReflectionHelper.TryGetMember(part, "MyLayout") ?? ReflectionHelper.TryGetMember(part, "Layout");
+            if (ReflectionHelper.TryGetPropertyBagValue(layout, TextModeProperty) != null) return layout;
+            return ReflectionHelper.TryGetPropertyBagValue(part, TextModeProperty) != null ? part : null;
+        }
+
+        internal static void AppendTextModeProjection(XElement root, object container)
+        {
+            var value = ReflectionHelper.TryGetPropertyBagValue(container, TextModeProperty);
+            if (value != null) root.SetAttributeValue(TextModeProperty, value.ToString());
+        }
+
+        internal static void SetTextMode(object container, string value)
+        {
+            if (!bool.TryParse(value, out bool requested))
+                throw new InvalidOperationException("RPT_TEXT_MODE requires True or False.");
+            if (container == null || ReflectionHelper.TryGetPropertyBagValue(container, TextModeProperty) == null
+                || !ReflectionHelper.TrySetPropertyBagValue(container, TextModeProperty, requested)
+                || !bool.TryParse(ReflectionHelper.TryGetPropertyBagValue(container, TextModeProperty)?.ToString(), out bool actual)
+                || actual != requested)
+                throw new InvalidOperationException("RPT_TEXT_MODE could not be applied and read back.");
+        }
+
         public static string ReadLayout(KBObjectPart part)
         {
             try
@@ -41,7 +70,9 @@ namespace GxMcp.Worker.Helpers
                 var bands = bandsProp.GetValue(layout, null) as System.Collections.IEnumerable;
                 if (bands == null) return null;
 
-                return GenerateVisualXmlFromBands(bands, layout);
+                var root = XElement.Parse(GenerateVisualXmlFromBands(bands, layout));
+                AppendTextModeProjection(root, GetTextModeContainer(part));
+                return root.ToString();
             }
             catch (Exception ex)
             {
@@ -260,6 +291,13 @@ namespace GxMcp.Worker.Helpers
                 var rootXml = visualDoc.Root;
                 if (rootXml != null && string.Equals(rootXml.Name.LocalName, "Report", StringComparison.OrdinalIgnoreCase))
                 {
+                    var textMode = rootXml.Attribute(TextModeProperty);
+                    if (textMode != null && HasRootAttributeChanged(rootXml, baselineDoc, TextModeProperty))
+                    {
+                        SetTextMode(GetTextModeContainer(part), textMode.Value);
+                        appliedAssignments++;
+                        anyChange = true;
+                    }
                     foreach (var entry in PageSetupProperties)
                     {
                         var attr = rootXml.Attribute(entry.Key);
