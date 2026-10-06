@@ -37,6 +37,8 @@
 
 ### Internal
 
+- Added review tooling that failed in practice: `scripts/run-gate.ps1` runs long gates detached with a single bounded `Wait` (passed/failed/running/died), `scripts/merge-tool-definitions.py` three-way merges `tool_definitions.json` by tool and field, review worktrees link the main `node_modules` when lockfiles match, and the integration preflight stops at once when `node_modules` is missing.
+
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
 
 - Fixed fork-PR submission on the installed GitHub CLI by deriving the base repository from the verified GitHub PR URL instead of requesting an unsupported JSON field; clean-tree, fresh-base, preflight and explicit-ref guards remained enforced.

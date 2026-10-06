@@ -271,6 +271,10 @@ try {
     if ($ValidateOnly) {
         Add-SkippedPhase -Name 'test execution' -Reason 'validation-only mode'
     } else {
+        # Fail in seconds, not after the slow phases: a missing install is an environment problem.
+        if (-not $SkipNode -and -not (Test-Path -LiteralPath (Join-Path $root 'node_modules') -PathType Container)) {
+            throw "node_modules is missing in '$root'. Run 'npm ci', or use pr-review-worktrees.ps1 Prepare when its lockfiles match the main checkout, or pass -SkipNode."
+        }
         Invoke-BoundedPhase -Name 'tool-contracts' -Executable 'python' -Arguments @(
             (Join-Path $root 'scripts\validate-tool-contracts.py')
         )

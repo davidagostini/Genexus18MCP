@@ -24,7 +24,8 @@ $tests = @(
     'test-release-doctor.ps1',
     'test-warning-baseline.ps1',
     'test-line-endings.ps1',
-    'test-live-matrix.test.ps1'
+    'test-live-matrix.test.ps1',
+    'test-run-gate.ps1'
 )
 foreach ($name in $tests) {
     $path = Join-Path $PSScriptRoot $name

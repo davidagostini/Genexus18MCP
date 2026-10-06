@@ -103,6 +103,18 @@ pwsh -NoProfile -File .\scripts\integration-preflight.ps1 `
   -SummaryPath "$env:TEMP\gxmcp-pr-<number>-final.json"
 ```
 
+Gates outlive one tool call, so run them detached and check each once:
+
+```powershell
+pwsh -NoProfile -File .\scripts\run-gate.ps1 Start -Name p435 -Command 'pwsh -NoProfile -File .\scripts\integration-preflight.ps1'
+pwsh -NoProfile -File .\scripts\run-gate.ps1 Wait  -Name p435 -TimeoutSeconds 240
+```
+
+`Wait` prints one summary and exits 0 (passed), 1 (failed), 2 (still running: call `Wait`
+again) or 3 (the gate died). Never sleep in fixed steps or wait for a file the gate only
+writes at the end. `Prepare` links the main checkout's `node_modules` into each worktree
+when the lockfiles match; the preflight stops at once when `node_modules` is missing.
+
 The preflight is the evidence boundary. Keep its summary path and distinguish
 `passed`, `failed`, `skipped`, and `unavailable`; never convert a timeout or
 skipped SDK gate into green evidence. The final check ordering is intentionally
@@ -137,6 +149,19 @@ pwsh -NoProfile -File .\scripts\merge-unreleased-changelog.ps1 `
   -TheirsPath .\CHANGELOG.theirs.md `
   -OutputPath .\CHANGELOG.md -Force
 ```
+
+`src/GxMcp.Gateway/tool_definitions.json` holds one very long object per tool, so Git
+conflicts on a whole line even for unrelated fields. Merge it by tool and field from the
+three conflict stages; it exits 1 and writes nothing when both sides changed the same value:
+
+```powershell
+git show :1:src/GxMcp.Gateway/tool_definitions.json > base.json
+git show :2:src/GxMcp.Gateway/tool_definitions.json > ours.json
+git show :3:src/GxMcp.Gateway/tool_definitions.json > theirs.json
+python .\scripts\merge-tool-definitions.py base.json ours.json theirs.json -o src\GxMcp.Gateway\tool_definitions.json
+```
+
+Then regenerate the discovery golden and run the contract checks.
 
 The helper refuses conflict markers or a missing `## Unreleased`, keeps both
 sides' bullet blocks in deterministic order, deduplicates exact entries, and

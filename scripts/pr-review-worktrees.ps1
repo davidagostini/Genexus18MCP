@@ -137,6 +137,38 @@ function Get-SelectedEntries {
     return $selected
 }
 
+function Link-NodeModules {
+    # A review worktree has no dependencies, so the Node lint/test phases fail there for an
+    # environment reason. Share the main checkout's install, but only when both lockfiles are
+    # byte-identical; a differing lockfile means this PR needs its own `npm ci`.
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$Worktree
+    )
+
+    $source = Join-Path $RepositoryRoot 'node_modules'
+    $target = Join-Path $Worktree 'node_modules'
+    $sourceLock = Join-Path $RepositoryRoot 'package-lock.json'
+    $targetLock = Join-Path $Worktree 'package-lock.json'
+    if (-not (Test-Path -LiteralPath $source -PathType Container) -or (Test-Path -LiteralPath $target)) { return $false }
+    if (-not (Test-Path -LiteralPath $sourceLock) -or -not (Test-Path -LiteralPath $targetLock)) { return $false }
+    if ((Get-FileHash -LiteralPath $sourceLock).Hash -ne (Get-FileHash -LiteralPath $targetLock).Hash) { return $false }
+    [void](New-Item -ItemType Junction -Path $target -Target $source)
+    return $true
+}
+
+function Remove-NodeModulesLink {
+    # Delete only the junction itself; recursive removal could follow it into the shared install.
+    param([Parameter(Mandatory = $true)][string]$Worktree)
+
+    $target = Join-Path $Worktree 'node_modules'
+    if (-not (Test-Path -LiteralPath $target)) { return }
+    $item = Get-Item -LiteralPath $target -Force
+    if ($item.LinkType -eq 'Junction' -or $item.LinkType -eq 'SymbolicLink') {
+        [IO.Directory]::Delete($target)
+    }
+}
+
 function Remove-PreparedEntry {
     param(
         [Parameter(Mandatory = $true)]$Entry,
@@ -146,6 +178,7 @@ function Remove-PreparedEntry {
 
     $path = [string]$Entry.worktree
     if (Test-Path -LiteralPath $path -PathType Container) {
+        Remove-NodeModulesLink -Worktree $path
         if (-not $AllowDirty -and -not (Test-CleanWorktree -Path $path)) {
             throw "Review worktree '$path' is dirty; use -Force only when discarding it is intentional."
         }
@@ -234,6 +267,7 @@ try {
                     if ($actualOid -ne $headOid -or -not (Test-CleanWorktree -Path $worktree)) {
                         throw "Prepared review worktree '$worktree' did not verify clean at the requested head."
                     }
+                    [void](Link-NodeModules -RepositoryRoot $repositoryRoot -Worktree $worktree)
                     $entries += [ordered]@{
                         pullRequest = $number
                         url = [string]$pr.url
