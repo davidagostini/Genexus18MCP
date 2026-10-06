@@ -5,16 +5,17 @@
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
-### Added
-
-### Changed
-
 ### Fixed
 
 - `genexus_layout action=add_report_control` (and `move_report_control`) no longer report `ReportControlWriteVerificationFailed` for controls the SDK persisted exactly as requested: geometry is now verified against the `Left`/`Top` projection of the SDK read-back instead of `X`/`Y`, and `font`/`fontName`/`fontSize` against the read-back `FontName`/`FontSize`.
+
 - `kind=variable` now creates the control GeneXus really uses for a variable, a `ReportAttribute` bound through `AttributeReference` (`&Name`); the `ReportVariable` type does not exist in the SDK, so the control used to be cloned from another type and left unbound. `controlType=ReportVariable` is accepted as an alias. GeneXus names such a control after its reference and ignores any other name, so it is created and verified as `&Name`; the response keeps the requested name in `requestedControlName`. The requested control type is also no longer replaced by a clone of whatever control the print block already had.
+
 - `fontName`/`fontSize` are now applied to report controls (the SDK exposes a single `Font` object, which is rebuilt from the current one) and projected back as `FontName`/`FontSize`.
+
 - A report-control verification failure with `rollbackOnFailure=true` now actually restores the original layout and reports `rolledBack:true`: the rollback fence is checked against the state read right after the write (not the candidate XML, which the SDK always normalizes), and the restore uses that state as its baseline so controls added by the failed write are removed.
+
+- `genexus_layout set_property` / `set_properties` with `propertyName=Font` on a Procedure report control no longer fails with `LayoutWriteVerificationFailed` and a rollback. The Font is a `System.Drawing.Font`: the writer had no conversion for it and the read-back (`Font.ToString()`) never string-matched the request. It now accepts the `get_tree` form (`[Font: Name=Arial, Size=12, Units=3, ...]`) and the invariant `Arial, 12pt[, style=Bold]` form, and verifies by name, size and units (style when both sides state one).
 
 ### Internal
 
