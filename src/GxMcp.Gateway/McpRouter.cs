@@ -1993,7 +1993,10 @@ namespace GxMcp.Gateway
                 "did_you_mean", "noNearMatchHint",
                 // Save+specify (SpecificationFailed): the itemized spc/gen diagnostics and
                 // the stale-environment-copy warning are the whole point of the error.
-                "diagnostics", "warnings", "staleEnvironmentCopy", "timedOut", "taskId",`r`n                "persistenceState", "snapshot", "rollbackPerformed", "stateRestoredExactly",`r`n                 "commitCompleted", "transactionFinalizationError", "rollbackError", "beforeHash",`r`n                 "nativeApplySucceeded", "parentProjectionConfirmed", "generatedChildrenVerified", "projectionScope"
+                "diagnostics", "warnings", "staleEnvironmentCopy", "timedOut", "taskId",
+                "persistenceState", "snapshot", "rollbackPerformed", "stateRestoredExactly",
+                 "commitCompleted", "transactionFinalizationError", "rollbackError", "beforeHash",
+                 "nativeApplySucceeded", "parentProjectionConfirmed", "generatedChildrenVerified", "projectionScope"
             };
             foreach (var k in diagnosticKeys)
             {
