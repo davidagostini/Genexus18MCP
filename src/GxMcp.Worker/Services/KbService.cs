@@ -1804,6 +1804,49 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// "Web Root" of the active environment: the generator property "WebRoot"
+        /// (Properties.CSHARP.WebRoot), usually a full URL such as
+        /// http://localhost/SampleApp/. The main generator is read first, then the
+        /// other generators of the target model. Null when the SDK exposes none.
+        /// </summary>
+        public string GetActiveEnvironmentWebRoot()
+        {
+            lock (_kbLock)
+            {
+                if (_kb == null) return null;
+                var targetModel = TryGet(() => (object)_kb.DesignModel?.Environment?.TargetModel) as KBModel;
+                var generators = new List<object>();
+                if (targetModel != null)
+                {
+                    generators.Add(TryGet(() => (object)((dynamic)(targetModel.GetAs<GxModel>() ?? new GxModel(targetModel))).Generator));
+                    try
+                    {
+                        foreach (var p in targetModel.Parts)
+                        {
+                            if (p == null || !string.Equals(p.GetType().Name, "GeneratorsPart", StringComparison.OrdinalIgnoreCase)) continue;
+                            foreach (var g in (System.Collections.IEnumerable)((dynamic)p).Generators)
+                                generators.Add(g);
+                        }
+                    }
+                    catch (Exception ex) { Logger.Warn("Generator WebRoot probe unavailable: " + ex.Message); }
+                }
+                foreach (var generator in generators)
+                {
+                    string value = null;
+                    try
+                    {
+                        dynamic properties = ((dynamic)generator)?.Properties;
+                        if (properties != null && properties.ContainsPropertyDefinition("WebRoot"))
+                            value = properties.GetPropertyValueString("WebRoot");
+                    }
+                    catch { }
+                    if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+                }
+                return null;
+            }
+        }
+
         internal static string ResolveEnvironmentOutputMember(string kbPath, object candidate, string propertyName)
         {
             var value = TryGetMember(candidate, propertyName)?.ToString();
