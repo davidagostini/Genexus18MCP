@@ -7,6 +7,28 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Internal
+
+## v3.12.0 - 2026-10-06
+
+
+### Tracked issues
+
+- [#407](https://github.com/lennix1337/Genexus18MCP/issues/407) — [Bug] RPT_TEXT_MODE is neither readable nor writable, so GX8 text-mode reports fail to compile with CS0103
+- [#437](https://github.com/lennix1337/Genexus18MCP/issues/437) — [Bug] failureTrace retorna vazio quando os recursos de UI do .NET Framework estão localizados (prefixo "em " em vez de "at ")
+- [#438](https://github.com/lennix1337/Genexus18MCP/issues/438) — [Higiene] Linha com apenas espaços em BuildDiagnosticRecognitionTests.cs:34 é reportada por git diff --check
+- [#439](https://github.com/lennix1337/Genexus18MCP/issues/439) — [Investigação] genexus_read devolve conteúdo anterior após Save pela IDE em leituras incondicionais
+
+
+<!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
+     subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
+
+### Added
+
 - `genexus_read refresh=true` bypasses Gateway/Worker response caches, invalidates the SDK object and independently resolves the same identity after an external IDE save. Ordinary reads now report Worker cache origin and observation age; refresh fails with `FreshReadUnavailable` if an independent read cannot be confirmed. This is not an atomic snapshot against concurrent IDE saves ([#439](https://github.com/lennix1337/Genexus18MCP/issues/439)).
 
 ### Fixed
