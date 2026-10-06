@@ -9,6 +9,10 @@
 <!-- Next release: put new entries under a `### Added` / `### Changed` / `### Fixed` / `### Internal`
      subsection of THIS `## Unreleased` section, not under a published `## v...` heading. -->
 
+### Added
+
+- `genexus_wwp action=add_layout` adds declared variables, nested tables and user actions to a table through native pattern commands, with preview, expected version and persistence verification.
+
 ### Fixed
 - A resolução de variáveis baseadas em SDT usa a identidade nativa serializada pelo GeneXus; lotes inválidos falham sem persistência parcial.
 
