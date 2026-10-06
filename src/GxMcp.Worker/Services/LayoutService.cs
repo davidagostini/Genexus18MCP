@@ -479,6 +479,12 @@ namespace GxMcp.Worker.Services
                         target: target);
                 }
 
+                if (contextResult.Surface == VisualSurface.Report && FontHelper.IsFontProperty(propertyName))
+                {
+                    using (var requestedFont = FontHelper.Compose(null, propertyName, value))
+                        if (requestedFont == null) return InvalidReportFont(target, propertyName);
+                }
+
                 string attrName;
                 string previous;
                 if (IsTextPropertyName(propertyName))
@@ -544,9 +550,21 @@ namespace GxMcp.Worker.Services
                     compositionRepairToken: value);
                 if (persistError != null) return persistError;
 
-                var persistedObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target);
-                var persistedContext = LoadVisualContext(persistedObject ?? obj, target, VisualSurface.Any);
-                if (persistedContext.Error != null) return persistedContext.Error;
+                var persistedObject = contextResult.Surface == VisualSurface.Report
+                    ? _objectService.FindObjectFreshByIdentity(obj)
+                    : _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target);
+                var persistedContext = contextResult.Surface == VisualSurface.Report && persistedObject == null
+                    ? LayoutContextResult.FromError("Independent report object read returned no fresh object.")
+                    : LoadVisualContext(persistedObject ?? obj, target, VisualSurface.Any);
+                if (persistedContext.Error != null)
+                {
+                    if (contextResult.Surface == VisualSurface.Report)
+                        return ReportMutationFailure(target, "set_property", controlName, null,
+                            BoundedDiff(baselineXml, normalized), persistedContext.Error,
+                            persisted: true, rolledBack: false, rollbackRequested: true,
+                            baselineXml: baselineXml, requestedXml: normalized);
+                    return persistedContext.Error;
+                }
 
                 var persistedElement = FindControlElement(persistedContext.Document, controlName);
                 if (persistedElement == null)
@@ -559,7 +577,7 @@ namespace GxMcp.Worker.Services
                     var diff = DescribeIdentityDrift(baselineXml, persistedContext.Document);
                     bool rolledBack = false;
                     bool rollbackVerified = false;
-                    if (!string.IsNullOrEmpty(baselineXml))
+                    if (contextResult.Surface != VisualSurface.Report && !string.IsNullOrEmpty(baselineXml))
                     {
                         try
                         {
@@ -586,6 +604,13 @@ namespace GxMcp.Worker.Services
                         ["missingAfterSave"] = diff["missing"],
                         ["appearedAfterSave"] = diff["appeared"]
                     };
+                    if (contextResult.Surface == VisualSurface.Report)
+                    {
+                        extra["rollbackUnavailableReason"] = ReportRollbackUnavailableReason;
+                        extra["recoveryRequired"] = true;
+                        extra["baselineXml"] = RecoveryXml(baselineXml);
+                        extra["observedXml"] = RecoveryXml(persistedContext.Document.ToString());
+                    }
                     return Models.McpResponse.Err(
                         code: "LayoutReadBackFailed",
                         message: "Layout read-back failed: control '" + controlName + "' was not found after save."
@@ -637,9 +662,14 @@ namespace GxMcp.Worker.Services
                         for (int attempt = 0; attempt < backoffMs.Length && !match; attempt++)
                         {
                             System.Threading.Thread.Sleep(backoffMs[attempt]);
-                            var retryObject = _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
+                            var retryObject = contextResult.Surface == VisualSurface.Report
+                                ? _objectService.FindObjectFreshByIdentity(obj)
+                                : _objectService.FindObject(obj.Name, obj.TypeDescriptor?.Name) ?? _objectService.FindObject(target) ?? obj;
+                            if (retryObject == null) break;
                             var retryContext = LoadVisualContext(retryObject, target, VisualSurface.Any);
                             if (retryContext.Error != null) break;
+                            persistedObject = retryObject;
+                            persistedContext = retryContext;
 
                             var retryElement = FindControlElement(retryContext.Document, controlName);
                             if (retryElement == null) break;
@@ -654,6 +684,14 @@ namespace GxMcp.Worker.Services
                     }
                     if (!match)
                     {
+                        if (contextResult.Surface == VisualSurface.Report)
+                            return ReportMutationFailure(target, "set_property", controlName, null,
+                                BoundedDiff(baselineXml, normalized), "The requested report property could not be verified.",
+                                persisted: true, rolledBack: false, rollbackRequested: true,
+                                baselineXml: baselineXml, requestedXml: normalized,
+                                observedXml: persistedContext.Document.ToString(),
+                                observedVersion: ComputeReportVersion(persistedObject ?? obj, persistedContext));
+
                         // Roll back to baseline XML on verification failure
                         if (!string.IsNullOrEmpty(baselineXml))
                         {
@@ -1906,6 +1944,10 @@ namespace GxMcp.Worker.Services
         {
             string normalizedExpected = expected ?? string.Empty;
             string normalizedActual = actual ?? string.Empty;
+
+            // Even identical font strings must parse; unknown families/styles are not verified.
+            if (FontHelper.IsFontAttributeName(propertyName))
+                return FontHelper.AreEquivalent(normalizedExpected, normalizedActual);
 
             if (string.Equals(normalizedExpected, normalizedActual, StringComparison.Ordinal))
             {

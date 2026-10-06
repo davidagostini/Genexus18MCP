@@ -2835,7 +2835,7 @@
           },
           "rollbackOnFailure": {
             "default": true,
-            "description": "Restore the pre-write report layout…",
+            "description": "Request rollback on verification…",
             "type": "boolean"
           },
           "top": {

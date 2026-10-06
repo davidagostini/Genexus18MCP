@@ -195,6 +195,15 @@ namespace GxMcp.Worker.Helpers
                             }
                         }
 
+                        // The SDK exposes the font as a single Font object; project its parts so
+                        // callers can read and write them as FontName/FontSize.
+                        if (iType.GetProperty("Font", BindingFlags.Public | BindingFlags.Instance)?.GetValue(item, null) is System.Drawing.Font sdkFont)
+                        {
+                            el.SetAttributeValue("Font", FontHelper.Project(sdkFont));
+                            el.SetAttributeValue("FontName", sdkFont.Name);
+                            el.SetAttributeValue("FontSize", sdkFont.Size.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                        }
+
                         var currentName = AttributeTypeApplier.GetPropertyUnambiguous(iType, "Name")?.GetValue(item, null)?.ToString();
                         var ctrlName = (AttributeTypeApplier.GetPropertyUnambiguous(iType, "ControlName")?.GetValue(item, null) ?? currentName)?.ToString();
                         if (!string.IsNullOrEmpty(ctrlName)) el.SetAttributeValue("ControlName", ctrlName);
@@ -1070,6 +1079,12 @@ namespace GxMcp.Worker.Helpers
                 }
             }
 
+            if (targetType == typeof(System.Drawing.Font))
+            {
+                // Accepts the get_tree "[Font: Name=..., Size=...]" projection and the FontConverter form.
+                return FontHelper.TryParse(value, out var fontSpec) ? FontHelper.ToFont(fontSpec) : null;
+            }
+
             if (targetType == typeof(System.Drawing.Color))
             {
                 try
@@ -1227,12 +1242,26 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
+        // Both public report mutation paths share validation and preservation of unspecified parts.
+        internal static System.Drawing.Font ComposeFont(System.Drawing.Font current, string propertyName, string rawValue)
+            => FontHelper.Compose(current, propertyName, rawValue);
+
         private static bool TrySetProperty(object instance, Type instanceType, string sdkPropertyName, string rawValue)
         {
             if (instance == null || instanceType == null || string.IsNullOrWhiteSpace(sdkPropertyName))
             {
                 return false;
             }
+            var fontProp = instanceType.GetProperty("Font", BindingFlags.Public | BindingFlags.Instance);
+            if (fontProp != null && fontProp.CanWrite && fontProp.PropertyType == typeof(System.Drawing.Font)
+                && FontHelper.IsFontProperty(sdkPropertyName))
+            {
+                var composed = ComposeFont(fontProp.GetValue(instance, null) as System.Drawing.Font, sdkPropertyName, rawValue);
+                if (composed == null) return false; // Invalid font requests must not reach dynamic setters.
+                fontProp.SetValue(instance, composed);
+                return true;
+            }
+
             string normalizedForSdk = ColorHelper.IsColorAttributeName(sdkPropertyName)
                 ? ColorHelper.NormalizeColorTokenForSdkWrite(rawValue)
                 : rawValue;
@@ -1324,6 +1353,21 @@ namespace GxMcp.Worker.Helpers
                             break;
                         }
                     }
+                }
+            }
+
+            // The requested type must win over "any control in the band": cloning a
+            // different type silently produced a ReportLabel for a requested ReportAttribute.
+            if (template == null && !string.IsNullOrWhiteSpace(typeName))
+            {
+                try
+                {
+                    var exactType = FindSdkControlType(typeName);
+                    if (exactType != null) return Activator.CreateInstance(exactType);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warn($"ReportLayoutHelper.CreateBandControlClone: direct construction of '{typeName}' failed: {ex.Message}");
                 }
             }
 
@@ -1478,6 +1522,9 @@ namespace GxMcp.Worker.Helpers
         {
             if (currentValue == null && rawValue == null) return true;
             if (currentValue == null || rawValue == null) return false;
+
+            // The ToString() projection of a Font drops its style, so a string match can hide a style change.
+            if (FontHelper.IsFontAttributeName(aName) || FontHelper.IsFontAttributeName(sdkPropName)) return false;
 
             if (string.Equals(currentValue, rawValue, StringComparison.Ordinal)) return true;
 

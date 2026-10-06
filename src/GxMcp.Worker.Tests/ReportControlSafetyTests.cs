@@ -40,21 +40,38 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("v-current", response["currentVersion"]?.ToString());
         }
 
-        [Fact]
-        public void ReportRollbackFenceRejectsNewerIndependentLayout()
+        [Theory]
+        [InlineData("AddReportControl")]
+        [InlineData("MoveReportControl")]
+        [InlineData("RemoveReportControl")]
+        public void ReportFailuresCannotPerformASecondWrite(string methodName)
         {
-            var method = typeof(LayoutService).GetMethod(
-                "IsReportRollbackFenceCurrent",
-                BindingFlags.Static | BindingFlags.NonPublic);
-            Assert.NotNull(method);
+            // Covers both unsafe interleavings: IDE edit before the first post-save read,
+            // and IDE edit after a fence check but before opening the restore transaction.
+            // No SDK atomic compare-and-restore exists here; removing the second write is the guard.
+            var source = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Services", "LayoutService.ReportControls.cs");
+            var body = GxMcp.TestSupport.SourceAssert.MethodBody(source, "public string " + methodName + "(");
+            Assert.Equal(1, GxMcp.TestSupport.SourceAssert.Count(body, "PersistVisualXml("));
+            Assert.DoesNotContain("TryRestoreReportBaseline", source);
+            Assert.DoesNotContain("rolledBack: rolledBack", body);
+            Assert.Contains("baselineXml: baseline", body);
+        }
 
-            string attempted = "<Report><PrintBlock Name=\"header\"><Control ControlName=\"A\" /></PrintBlock></Report>";
-            string independent = "<Report><PrintBlock Name=\"header\"><Control ControlName=\"A\" /><Control ControlName=\"B\" /></PrintBlock></Report>";
-
-            Assert.True((bool)method.Invoke(null, new object[] { "write-v1", "write-v1", attempted, attempted })!);
-            Assert.False((bool)method.Invoke(null, new object[] { "write-v1", "write-v1", attempted, independent })!);
-            Assert.False((bool)method.Invoke(null, new object[] { "write-v1", "write-v2", attempted, independent })!);
-            Assert.False((bool)method.Invoke(null, new object[] { "write-v1", "write-v2", attempted, attempted })!);
+        [Theory]
+        [InlineData("external-edit-before-read", "<Report><Control Name='ExternalBeforeRead'/></Report>")]
+        [InlineData("external-edit-after-check", "<Report><Control Name='ExternalAfterCheck'/></Report>")]
+        public void UnownedObservationsReturnRecoveryEvidenceNotRollbackSuccess(string observedVersion, string observedXml)
+        {
+            var method = typeof(LayoutService).GetMethod("ReportMutationFailure", BindingFlags.Static | BindingFlags.NonPublic);
+            var response = JObject.Parse((string)method.Invoke(null, new object[] {
+                "Report", "add_report_control", "A", "header", "diff", "verification failed", true, false, true,
+                "<Report/>", "<Report><Control Name='A'/></Report>", observedXml, observedVersion }));
+            Assert.False((bool)response["rolledBack"]);
+            Assert.True((bool)response["recoveryRequired"]);
+            Assert.Contains("Atomic ownership-proven", (string)response["rollbackUnavailableReason"]);
+            Assert.Equal(observedXml, (string)response["recoveryEvidence"]["observedXml"]);
+            Assert.Equal(observedVersion, (string)response["recoveryEvidence"]["observedVersion"]);
+            Assert.False((bool)response["recoveryEvidence"]["observationProvesOwnership"]);
         }
 
         [Theory]
