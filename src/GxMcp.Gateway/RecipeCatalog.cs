@@ -396,6 +396,7 @@ namespace GxMcp.Gateway
                                  "Persist the narrowly scoped replacement, then reread PatternInstance and the parent WebForm."),
                             Step("genexus_read", new JObject { ["name"] = "WorkWithPlus<X>", ["part"] = "PatternInstance" },
                                  "Verify the property value and confirm adjacent structure remains unchanged.")),
+                        ["pitfalls"] = new JArray(
                             "Raw PatternInstance XML edits are limited to existing property changes. Adding or moving a node is rejected as PatternStructureChangeUnsupported — use the typed genexus_wwp action for that structure.",
                             "Use genexus_wwp action=add_layout for variables, tables and actions, after declaring variables first; preview then persist with the same expectedVersion.",
                             "Saving the instance does not regenerate the pattern's generated objects. Apply the pattern in the GeneXus IDE for that.",

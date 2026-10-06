@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Artech.Architecture.Common.Objects;
 using Artech.Genexus.Common.Objects;
 using GxMcp.Worker.Helpers;
@@ -74,6 +75,41 @@ namespace GxMcp.Worker.Services
             ObjectService.InvalidateAllReadCaches();
             ListService.InvalidateCache();
             SummarizeService.InvalidateCache();
+        }
+
+        internal static void InvalidatePatternMutationCaches(IndexCacheService index, params string[] targets)
+        {
+            InvalidateIsolatedEventsReadCaches();
+            var loaded = index?.TryGetLoadedIndex();
+            var aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string target in targets ?? Array.Empty<string>())
+            {
+                if (string.IsNullOrWhiteSpace(target)) continue;
+                aliases.Add(target);
+                foreach (var pair in loaded?.Objects ?? new System.Collections.Concurrent.ConcurrentDictionary<string, GxMcp.Worker.Models.SearchIndex.IndexEntry>())
+                {
+                    var entry = pair.Value;
+                    if (entry == null || !(string.Equals(entry.Guid, target, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(entry.Name, target, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(entry.Module + "." + entry.Name, target, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(entry.Path, target, StringComparison.OrdinalIgnoreCase))) continue;
+                    aliases.Add(entry.Name);
+                    if (!string.IsNullOrWhiteSpace(entry.Module))
+                    {
+                        aliases.Add(entry.Module + "." + entry.Name);
+                        aliases.Add(entry.Module + "/" + entry.Name);
+                    }
+                    entry.FullSource = null;
+                    entry.FullSourcePart = null;
+                    index.MarkSourceDirtyForKey(pair.Key);
+                }
+            }
+            if (loaded != null && loaded.SourceTokenIndex != null)
+            {
+                loaded.SourceTokenIndex = null;
+                index.EnsureSourceTokenIndex();
+            }
+            foreach (string alias in aliases) NotePerTargetWrite(alias);
         }
 
         // Mirrors WriteObject's outcome-based dirty tracking: refusal, verified

@@ -5,7 +5,7 @@
     "src/GxMcp.Gateway/OperationClassifier.cs"
   ],
   "toolCount": 57,
-  "actionCount": 282,
+  "actionCount": 283,
   "tools": [
     {
       "tool": "genexus_data_view",
@@ -3603,6 +3603,20 @@
         },
         {
           "action": "add_tab",
+          "kind": "mutating",
+          "effects": "kb.write",
+          "execution": "worker",
+          "retry": "operation_key",
+          "cache": "never",
+          "invalidation": [
+            "kb",
+            "dependents",
+            "collections"
+          ],
+          "previewSupported": true
+        },
+        {
+          "action": "add_layout",
           "kind": "mutating",
           "effects": "kb.write",
           "execution": "worker",

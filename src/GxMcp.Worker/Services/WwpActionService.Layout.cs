@@ -552,7 +552,7 @@ namespace GxMcp.Worker.Services
         {
             // The public read path may return a cached payload before fresh SDK lookup.
             // Clear every identity alias after either commit or rollback, never on preview.
-            if (mutationAttempted) WriteService.InvalidatePatternMutationCaches(index, targets);
+            if (mutationAttempted) WriteService.InvalidateIsolatedEventsReadCaches();
         }
 
         internal static void FinalizeLayoutReadCaches(bool mutationAttempted, JObject receipt, Action invalidate)

@@ -4896,6 +4896,7 @@
               "move_action",
               "remove_action",
               "add_tab",
+              "add_layout",
               "move_tab",
               "remove_tab",
               "set_table_type",
@@ -4945,7 +4946,7 @@
             "type": "string"
           },
           "children": {
-            "description": "add_tab controls; flat children are…",
+            "description": "add_tab controls; add_layout accepts…",
             "items": {
               "additionalProperties": false,
               "properties": {
@@ -5060,7 +5061,7 @@
             "type": "string"
           },
           "expectedVersion": {
-            "description": "Alias for baseVersion.",
+            "description": "Optimistic version token returned by a…",
             "type": "string"
           },
           "fromGroup": {
@@ -5168,7 +5169,7 @@
             "type": "string"
           },
           "tablePath": {
-            "description": "set_table_type: existing table…",
+            "description": "add_layout/set_table_type: existing…",
             "type": "string"
           },
           "tableType": {

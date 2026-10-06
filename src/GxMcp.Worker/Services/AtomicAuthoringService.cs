@@ -224,6 +224,12 @@ namespace GxMcp.Worker.Services
             EnsureSuccess(phase, "variables");
         }
 
+        private static void EnsureSuccess(JObject phase, string name)
+        {
+            if (string.Equals((string)phase?["status"], "error", StringComparison.OrdinalIgnoreCase))
+                throw new AtomicFailure(name, "One or more requested variables could not be added.", phase);
+        }
+
         private JArray Preflight(JObject args)
         {
             var errors = new JArray();
