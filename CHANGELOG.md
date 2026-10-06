@@ -17,9 +17,31 @@
 
 - `genexus_layout set_property` / `set_properties` with `propertyName=Font` on a Procedure report control no longer fails with `LayoutWriteVerificationFailed` and a rollback. The Font is a `System.Drawing.Font`: the writer had no conversion for it and the read-back (`Font.ToString()`) never string-matched the request. It now accepts the `get_tree` form (`[Font: Name=Arial, Size=12, Units=3, ...]`) and the invariant `Arial, 12pt[, style=Bold]` form, and verifies by name, size and units (style when both sides state one).
 
+- `genexus_layout` `add_printblock` / `rename_printblock` / `delete_printblock` silently edited the Procedure Source (add inserted `print <name>`) without saying so. The response now reports `result.sourceChanged` and `result.sourceChange` (`line`, `removedLines`, `addedLines`), and `add_printblock` accepts `appendPrintToSource=false` (default `true`) to leave Source untouched. Documented in the tool help and schema.
+
+- `genexus_read part=GroupStructure` on a Group returned only the `IsDefault` property XML; it now returns one `Subtype -> Supertype` line per member, and a Group read without a part defaults to that part.
+
+- `genexus_run_object` no longer returns a made-up `http://localhost/portal3_desenv/...` URL. The base URL is now the `baseUrl` the user set in `preview.config.json`, else the active environment's Web Root (the generator property `WebRoot`, read from the main generator of the target model; a full URL is used as-is, a bare virtual directory is served from `http://localhost/`); the auto-generated legacy default is ignored. When neither exists it returns `BaseUrlUnresolved` with a hint. The response reports `baseUrlSource` (`config` | `environment`).
+
+- Spec-checks of never-built objects no longer blocked the Worker, and typed Transaction targets retained their type when a Table shared the name. Thanks to @danielkrueger ([#403](https://github.com/lennix1337/Genexus18MCP/pull/403)).
+
+- Write-failure traces retained method names with localized .NET UI resources, including Portuguese, without exposing source paths or arguments ([#437](https://github.com/lennix1337/Genexus18MCP/issues/437)).
+
+- `genexus_edit validationMode="specify"` now returns the itemized diagnostics (raw line, code, object, line) in the `SpecificationFailed` error instead of only a count, because the Gateway terse error projection dropped them. The edit response (error and `_meta.specification`) also carries the specify pass warnings and `staleEnvironmentCopy: true` when GeneXus specified the environment copy that changed since the last build. Thanks to @danielkrueger ([#428](https://github.com/lennix1337/Genexus18MCP/pull/428)).
+
+- `genexus_edit` full-mode writes of an XML part (Structure, WebForm) with `verifyMode` omitted no longer fail with `WriteNotPersisted` / `reason: lineEndings` when only the line endings differ from the SDK re-read (the SDK always stores CRLF). The gateway forwards an omitted `verifyMode` as a blank string, which was resolved to a strict `exact` check for XML parts; blank now means omitted (`normalized`). An explicit `verifyMode: "exact"` is unchanged and genuine content differences still report `contentMismatch`.
+
+- `genexus_lifecycle action=build dryRun=true` now reports how the build plan was expanded instead of only `wouldBuild`: `seeds`, `callees` (callees and `_bc` variants the real build adds ahead of the targets), `seedCount`, `calleeCount`, `totalCount`, `truncated`, `indexLoaded` and `callerGraphAvailable`. When callee expansion is requested but the index is not loaded, the caller graph is missing, or no callees were found, the preview adds a `warnings` entry instead of silently listing only the requested target. `includeCallees` still defaults to `transitive`.
+
+- **Build evidence lists every generated file of the object, not just the freshest one.** `generateEvidence.filesWritten[]` (and `upToDate[]`) now carry a `files[]` array with every generated `.cs/.aspx/.js/.html` of the object, including the `a<name>` Main-object variant, plus `bin\<name>.dll` and `bin\a<name>.dll`, each with `lastWriteUtc` and `writtenDuringBuild` (last write at or after the build start). A Main procedure with Call protocol HTTP builds `<name>.cs` (stub), `a<name>.cs` (the real program) and `bin\a<name>.dll`, but the evidence used to name only the single freshest file. The `genexus_lifecycle` help now states that `generateEvidence` is an output of the terminal build result (there is no `generateEvidence` input parameter, and it is absent from the immediate queued/running reply).
+
 ### Internal
 
 - Cleared every compiler and analyzer warning in the solution (nullable annotations and flow fixes in the Gateway, nullable and xUnit analyzer fixes in both test projects), with no suppressions and no assertion weakened; the Release warning baseline is now empty (0 locations).
+
+- Fixed fork-PR submission on the installed GitHub CLI by deriving the base repository from the verified GitHub PR URL instead of requesting an unsupported JSON field; clean-tree, fresh-base, preflight and explicit-ref guards remained enforced.
+
+- Removed trailing whitespace from the build-diagnostic regression fixture ([#438](https://github.com/lennix1337/Genexus18MCP/issues/438)).
 
 ## v3.11.1 - 2026-10-05
 

@@ -994,6 +994,7 @@ namespace GxMcp.Worker.Services
                 dynamic kb = setup.KnowledgeBase;
                 string sourceSnapshot = setup.SourceSnapshot;
 
+                JObject sourceChange = null;
                 using (var tx = kb.BeginTransaction())
                 {
                     try
@@ -1047,6 +1048,7 @@ namespace GxMcp.Worker.Services
 
                         obj.EnsureSave(true);
                         tx.Commit();
+                        sourceChange = BuildSourceChange(sourceSnapshot, GetProcedureSourceSnapshot(obj));
                     }
                     catch (Exception ex)
                     {
@@ -1096,7 +1098,9 @@ namespace GxMcp.Worker.Services
                     ["name"] = obj.Name,
                     ["operation"] = "RenamePrintBlock",
                     ["currentName"] = currentName,
-                    ["newName"] = newName
+                    ["newName"] = newName,
+                    ["sourceChanged"] = (bool)sourceChange["changed"],
+                    ["sourceChange"] = sourceChange
                 });
             }
             catch (Exception ex)
@@ -1110,7 +1114,7 @@ namespace GxMcp.Worker.Services
             }
         }
 
-        public string AddPrintBlock(string target, string printBlockName, int? height)
+        public string AddPrintBlock(string target, string printBlockName, int? height, bool appendPrintToSource = true)
         {
             try
             {
@@ -1134,6 +1138,7 @@ namespace GxMcp.Worker.Services
                 dynamic kb = setup.KnowledgeBase;
                 string sourceSnapshot = setup.SourceSnapshot;
 
+                JObject sourceChange = null;
                 using (var tx = kb.BeginTransaction())
                 {
                     try
@@ -1161,7 +1166,8 @@ namespace GxMcp.Worker.Services
                                 target: target);
                         }
 
-                        if (!TryInsertPrintCommandInSourceInMemory(obj, printBlockName, out string sourcePrepareError))
+                        string sourcePrepareError = null;
+                        if (appendPrintToSource && !TryInsertPrintCommandInSourceInMemory(obj, printBlockName, out sourcePrepareError))
                         {
                             TryRestoreProcedureSource(obj, sourceSnapshot);
                             tx.Rollback();
@@ -1187,6 +1193,7 @@ namespace GxMcp.Worker.Services
 
                         obj.EnsureSave(true);
                         tx.Commit();
+                        sourceChange = BuildSourceChange(sourceSnapshot, GetProcedureSourceSnapshot(obj));
                     }
                     catch (Exception ex)
                     {
@@ -1236,7 +1243,10 @@ namespace GxMcp.Worker.Services
                     ["name"] = obj.Name,
                     ["operation"] = "AddPrintBlock",
                     ["printBlockName"] = printBlockName,
-                    ["height"] = Attr(added, "Height")
+                    ["height"] = Attr(added, "Height"),
+                    ["appendPrintToSource"] = appendPrintToSource,
+                    ["sourceChanged"] = (bool)sourceChange["changed"],
+                    ["sourceChange"] = sourceChange
                 });
             }
             catch (Exception ex)
@@ -1274,6 +1284,7 @@ namespace GxMcp.Worker.Services
                 dynamic kb = setup.KnowledgeBase;
                 string sourceSnapshot = setup.SourceSnapshot;
 
+                JObject sourceChange = null;
                 using (var tx = kb.BeginTransaction())
                 {
                     try
@@ -1315,6 +1326,7 @@ namespace GxMcp.Worker.Services
 
                         obj.EnsureSave(true);
                         tx.Commit();
+                        sourceChange = BuildSourceChange(sourceSnapshot, GetProcedureSourceSnapshot(obj));
                     }
                     catch
                     {
@@ -1344,7 +1356,9 @@ namespace GxMcp.Worker.Services
                 {
                     ["name"] = obj.Name,
                     ["operation"] = "DeletePrintBlock",
-                    ["printBlockName"] = printBlockName
+                    ["printBlockName"] = printBlockName,
+                    ["sourceChanged"] = (bool)sourceChange["changed"],
+                    ["sourceChange"] = sourceChange
                 });
             }
             catch (Exception ex)
