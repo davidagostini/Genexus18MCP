@@ -94,7 +94,8 @@ namespace GxMcp.Worker.Tests
         public void Verification_MatchesRequestedFontAgainstToStringReadBack()
         {
             Assert.True(Match("Arial, 12pt", ToStringForm));
-            Assert.True(Match("Arial, 12pt, style=Bold", ToStringForm)); // read-back carries no style
+            Assert.False(Match("Arial, 12pt, style=Bold", ToStringForm)); // absence of style is not confirmation
+            Assert.True(Match("Arial, 12pt, style=Bold", "[Font: Name=Arial, Size=12, Units=3, Style=Bold]"));
             Assert.True(Match(ToStringForm, ToStringForm));
         }
 

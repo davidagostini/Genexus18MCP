@@ -72,7 +72,7 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void FontVerificationReadsTheFontNameFontSizeProjection()
         {
-            var readBack = XElement.Parse("<Control FontName=\"Arial\" FontSize=\"12\" />");
+            var readBack = XElement.Parse("<Control FontName=\"Arial\" FontSize=\"12\" Font=\"[Font: Name=Arial, Size=12, Units=3, Style=Regular]\" />");
 
             Assert.True((bool)Call("ReportFontMatches", readBack, "fontName", "Arial"));
             Assert.True((bool)Call("ReportFontMatches", readBack, "font", "Arial"));
@@ -96,11 +96,12 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(12f, sized.Size);
 
             Assert.Null(ReportLayoutHelper.ComposeFont(current, "FontSize", "not-a-number"));
-            Assert.Null(ReportLayoutHelper.ComposeFont(current, "Font", "[Font: Name=Arial, Size=12]"));
+            using var projected = ReportLayoutHelper.ComposeFont(current, "Font", "[Font: Name=Arial, Size=12]");
+            Assert.Equal(12f, projected.Size);
             Assert.Null(ReportLayoutHelper.ComposeFont(current, "Width", "10"));
-            // A full font spec ("Arial, 12pt") is not a family name; it falls through
-            // to the generic Font conversion instead of becoming a substituted family.
-            Assert.Null(ReportLayoutHelper.ComposeFont(current, "Font", "Arial, 12pt"));
+            // Full font specs use the same validated composition as bare families.
+            using var fullSpec = ReportLayoutHelper.ComposeFont(current, "Font", "Arial, 12pt");
+            Assert.Equal(12f, fullSpec.Size);
             Assert.Equal("Arial", ReportLayoutHelper.ComposeFont(current, "Font", "Arial").Name);
         }
     }

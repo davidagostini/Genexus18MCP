@@ -199,6 +199,7 @@ namespace GxMcp.Worker.Helpers
                         // callers can read and write them as FontName/FontSize.
                         if (iType.GetProperty("Font", BindingFlags.Public | BindingFlags.Instance)?.GetValue(item, null) is System.Drawing.Font sdkFont)
                         {
+                            el.SetAttributeValue("Font", FontHelper.Project(sdkFont));
                             el.SetAttributeValue("FontName", sdkFont.Name);
                             el.SetAttributeValue("FontSize", sdkFont.Size.ToString(System.Globalization.CultureInfo.InvariantCulture));
                         }
@@ -1241,30 +1242,9 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
-        // FontName/FontSize (and a plain family name given as Font) rebuild the control's single
-        // Font object from its current one. Returns null when the request is not a font part or
-        // is unusable, so the caller falls through to the generic property path.
+        // Both public report mutation paths share validation and preservation of unspecified parts.
         internal static System.Drawing.Font ComposeFont(System.Drawing.Font current, string propertyName, string rawValue)
-        {
-            if (string.IsNullOrWhiteSpace(rawValue)) return null;
-            string name = current?.Name ?? "MS Sans Serif";
-            float size = current?.Size ?? 8f;
-            var style = current?.Style ?? System.Drawing.FontStyle.Regular;
-            var unit = current?.Unit ?? System.Drawing.GraphicsUnit.Point;
-            if (string.Equals(propertyName, "FontSize", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!float.TryParse(rawValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out size) || size <= 0) return null;
-            }
-            else if (string.Equals(propertyName, "FontName", StringComparison.OrdinalIgnoreCase)
-                || (string.Equals(propertyName, "Font", StringComparison.OrdinalIgnoreCase)
-                    && !rawValue.TrimStart().StartsWith("[", StringComparison.Ordinal)
-                    && rawValue.IndexOf(',') < 0))
-            {
-                name = rawValue.Trim();
-            }
-            else return null;
-            return new System.Drawing.Font(name, size, style, unit);
-        }
+            => FontHelper.Compose(current, propertyName, rawValue);
 
         private static bool TrySetProperty(object instance, Type instanceType, string sdkPropertyName, string rawValue)
         {
@@ -1273,14 +1253,13 @@ namespace GxMcp.Worker.Helpers
                 return false;
             }
             var fontProp = instanceType.GetProperty("Font", BindingFlags.Public | BindingFlags.Instance);
-            if (fontProp != null && fontProp.CanWrite && fontProp.PropertyType == typeof(System.Drawing.Font))
+            if (fontProp != null && fontProp.CanWrite && fontProp.PropertyType == typeof(System.Drawing.Font)
+                && FontHelper.IsFontProperty(sdkPropertyName))
             {
                 var composed = ComposeFont(fontProp.GetValue(instance, null) as System.Drawing.Font, sdkPropertyName, rawValue);
-                if (composed != null)
-                {
-                    fontProp.SetValue(instance, composed);
-                    return true;
-                }
+                if (composed == null) return false; // Invalid font requests must not reach dynamic setters.
+                fontProp.SetValue(instance, composed);
+                return true;
             }
 
             string normalizedForSdk = ColorHelper.IsColorAttributeName(sdkPropertyName)

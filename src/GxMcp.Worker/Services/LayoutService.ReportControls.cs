@@ -38,6 +38,13 @@ namespace GxMcp.Worker.Services
                 return Models.McpResponse.Err(code: "ReportPlacementConflict", message: "Use either after or below, not both.", target: target);
             var validation = ValidateReportControlRequest(target, blockName, kind, controlName, binding, caption, requestedType);
             if (validation != null) return validation;
+            foreach (string fontProperty in new[] { "font", "fontName", "fontSize" })
+            {
+                string rawFont = Text(args, fontProperty);
+                if (rawFont == null) continue;
+                using (var font = FontHelper.Compose(null, fontProperty, rawFont))
+                    if (font == null) return InvalidReportFont(target, fontProperty);
+            }
 
             var obj = _objectService.FindObject(target);
             if (obj == null) return ReportObjectNotFound(target);
@@ -91,23 +98,21 @@ namespace GxMcp.Worker.Services
                 compositionRepairToken: null, baseVersion: version);
             if (persistError != null) return persistError;
 
-            // The SDK normalizes the layout on save, so the candidate XML never matches the
-            // persisted projection. The first fresh read after our own write is the state
-            // this write owns; rollback is fenced against it.
+            // A post-save observation is evidence, not ownership: an IDE edit can occur before this read.
             string postVersion = ReadReportVersionAfterSave(target, obj, out string postXml);
             if (string.IsNullOrWhiteSpace(postVersion))
             {
                 return ReportMutationFailure(target, "add_report_control", controlName, blockName, diff,
                     "The report layout was saved but its post-save version could not be read.",
-                    persisted: true, rolledBack: false, rollbackRequested: rollback);
+                    persisted: true, rolledBack: false, rollbackRequested: rollback,
+                    baselineXml: baseline, requestedXml: requested, observedXml: postXml);
             }
             var verification = VerifyReportControl(target, obj, context, blockName, controlName, typeName, binding, caption, args);
             if (verification != null)
             {
-                bool rolledBack = rollback && TryRestoreReportBaseline(
-                    obj, target, baseline, postVersion, postXml);
                 return ReportMutationFailure(target, "add_report_control", controlName, blockName, diff, verification,
-                    persisted: true, rolledBack: rolledBack, rollbackRequested: rollback);
+                    persisted: true, rolledBack: false, rollbackRequested: rollback,
+                    baselineXml: baseline, requestedXml: requested, observedXml: postXml, observedVersion: postVersion);
             }
 
             string success = ReportMutationSuccess(target, "add_report_control", controlName, blockName, diff,
@@ -207,7 +212,8 @@ namespace GxMcp.Worker.Services
             {
                 return ReportMutationFailure(target, "move_report_control", controlName, Text(Attr(block, "Name")), diff,
                     "The report layout was saved but its post-save version could not be read.",
-                    persisted: true, rolledBack: false, rollbackRequested: rollback);
+                    persisted: true, rolledBack: false, rollbackRequested: rollback,
+                    baselineXml: baseline, requestedXml: requested, observedXml: postXml);
             }
             string originalType = Text(Attr(control, "TypeName"));
             string originalBinding = string.Equals(originalType, "ReportAttribute", StringComparison.OrdinalIgnoreCase)
@@ -217,10 +223,9 @@ namespace GxMcp.Worker.Services
                 originalType, originalBinding, Text(Attr(control, "Text")), args);
             if (verification != null)
             {
-                bool rolledBack = rollback && TryRestoreReportBaseline(
-                    obj, target, baseline, postVersion, postXml);
                 return ReportMutationFailure(target, "move_report_control", controlName, Text(Attr(block, "Name")), diff, verification,
-                    persisted: true, rolledBack: rolledBack, rollbackRequested: rollback);
+                    persisted: true, rolledBack: false, rollbackRequested: rollback,
+                    baselineXml: baseline, requestedXml: requested, observedXml: postXml, observedVersion: postVersion);
             }
             return ReportMutationSuccess(target, "move_report_control", controlName, Text(Attr(block, "Name")), diff,
                 postVersion ?? version, true);
@@ -278,32 +283,32 @@ namespace GxMcp.Worker.Services
             if (reread.Error != null)
             {
                 return ReportMutationFailure(target, "remove_report_control", controlName, actualBlock, diff, reread.Error,
-                    persisted: true, rolledBack: false, rollbackRequested: rollback);
+                    persisted: true, rolledBack: false, rollbackRequested: rollback,
+                    baselineXml: baseline, requestedXml: requested);
             }
             string rereadXml = reread.Document.ToString(SaveOptions.DisableFormatting);
             string rereadVersion = ComputeReportVersion(obj, reread);
             string removalVerification = VerifyReportControlRemoved(reread.Document, actualBlock, controlName);
             if (removalVerification != null)
             {
-                bool rolledBack = rollback && TryRestoreReportBaseline(
-                    obj, target, baseline, rereadVersion, rereadXml);
                 return ReportMutationFailure(target, "remove_report_control", controlName, actualBlock, diff, removalVerification,
-                    persisted: true, rolledBack: rolledBack, rollbackRequested: rollback);
+                    persisted: true, rolledBack: false, rollbackRequested: rollback,
+                    baselineXml: baseline, requestedXml: requested, observedXml: rereadXml, observedVersion: rereadVersion);
             }
             if (!VerifyExpectedReportOrder(FindPrintBlock(reread.Document, actualBlock), args))
             {
-                bool rolledBack = rollback && TryRestoreReportBaseline(
-                    obj, target, baseline, rereadVersion, rereadXml);
                 return ReportMutationFailure(target, "remove_report_control", controlName, actualBlock, diff,
                     "The SDK changed the requested report control order during save.",
-                    persisted: true, rolledBack: rolledBack, rollbackRequested: rollback);
+                    persisted: true, rolledBack: false, rollbackRequested: rollback,
+                    baselineXml: baseline, requestedXml: requested, observedXml: rereadXml, observedVersion: rereadVersion);
             }
             string persistedVersion = rereadVersion;
             if (string.IsNullOrWhiteSpace(persistedVersion))
             {
                 return ReportMutationFailure(target, "remove_report_control", controlName, actualBlock, diff,
                     "The report layout was saved but its post-save version could not be read.",
-                    persisted: true, rolledBack: false, rollbackRequested: rollback);
+                    persisted: true, rolledBack: false, rollbackRequested: rollback,
+                    baselineXml: baseline, requestedXml: requested, observedXml: rereadXml);
             }
             return ReportMutationSuccess(target, "remove_report_control", controlName, actualBlock, diff,
                 persistedVersion, true);
@@ -612,13 +617,15 @@ namespace GxMcp.Worker.Services
                || string.Equals(attributeName, "fontName", StringComparison.OrdinalIgnoreCase)
                || string.Equals(attributeName, "fontSize", StringComparison.OrdinalIgnoreCase);
 
-        // The SDK Font object is read back as FontName/FontSize, never as Font/FontName/FontSize
-        // attributes written by the request.
+        // Full specs must be checked against authoritative SDK Font content, not the family alone.
         internal static bool ReportFontMatches(XElement control, string attributeName, string requested)
         {
             if (string.Equals(attributeName, "fontSize", StringComparison.OrdinalIgnoreCase))
                 return VerifyReportNumber(control, new JObject { ["fontSize"] = requested }, "fontSize", "FontSize");
-            return string.Equals(requested, Attr(control, "FontName"), StringComparison.OrdinalIgnoreCase);
+            if (string.Equals(attributeName, "font", StringComparison.OrdinalIgnoreCase))
+                return FontHelper.AreEquivalent(requested, Attr(control, "Font"));
+            return FontHelper.TryParse(requested, out _)
+                && string.Equals(requested, Attr(control, "FontName"), StringComparison.OrdinalIgnoreCase);
         }
 
         internal static bool VerifyReportNumber(XElement control, JObject args, string requestName, params string[] xmlNames)
@@ -640,8 +647,7 @@ namespace GxMcp.Worker.Services
 
         private string ReadReportVersionAfterSave(string target, KBObject fallback, out string xml)
         {
-            // Observation of the persisted state right after our own write; it is both the
-            // success/readback version and the fence the rollback is checked against.
+            // Observation of persisted state; this does not prove which writer owns it.
             xml = null;
             try
             {
@@ -655,75 +661,16 @@ namespace GxMcp.Worker.Services
             catch { return null; }
         }
 
-        internal static bool IsReportRollbackFenceCurrent(
-            string attemptedVersion,
-            string currentVersion,
-            string attemptedXml,
-            string currentXml)
-        {
-            if (string.IsNullOrWhiteSpace(attemptedVersion)
-                || string.IsNullOrWhiteSpace(currentVersion)
-                || string.IsNullOrWhiteSpace(attemptedXml)
-                || string.IsNullOrWhiteSpace(currentXml))
-                return false;
-            if (!string.Equals(attemptedVersion, currentVersion, StringComparison.Ordinal))
-                return false;
-            try
-            {
-                return XmlEquivalence.AreEquivalent(attemptedXml, currentXml, out _);
-            }
-            catch
-            {
-                return false;
-            }
-        }
+        internal const string ReportRollbackUnavailableReason =
+            "Atomic ownership-proven report restore is unavailable; no second write was attempted. "
+            + "Post-save reads do not establish ownership and a version check before a transaction is not atomic.";
 
-        private bool TryRestoreReportBaseline(
-            KBObject obj,
-            string target,
-            string baseline,
-            string attemptedVersion,
-            string attemptedXml)
-        {
-            if (obj == null
-                || string.IsNullOrWhiteSpace(baseline)
-                || string.IsNullOrWhiteSpace(attemptedVersion)
-                || string.IsNullOrWhiteSpace(attemptedXml))
-                return false;
-            try
-            {
-                KBObject current = _objectService.FindObjectFreshByIdentity(obj);
-                if (current == null) return false;
-                var currentContext = LoadVisualContext(current, target, VisualSurface.Report);
-                if (currentContext.Error != null) return false;
-                string currentXml = currentContext.Document.ToString(SaveOptions.DisableFormatting);
-                if (string.Equals(currentXml, baseline, StringComparison.Ordinal)) return true;
-                string currentVersion = ComputeReportVersion(current, currentContext);
-                if (!IsReportRollbackFenceCurrent(
-                    attemptedVersion, currentVersion, attemptedXml, currentXml))
-                {
-                    Logger.Warn("[ReportControl] rollback refused: current report state is not the failed write's version.");
-                    return false;
-                }
-                // The persisted projection is the writer's baseline, so controls this
-                // write added are seen as removals when the original layout is restored.
-                if (PersistVisualXml(current, currentContext, target, baseline,
-                    currentXml, null, attemptedVersion) != null)
-                    return false;
-                KBObject restoredObject = _objectService.FindObjectFreshByIdentity(obj);
-                var restored = restoredObject == null
-                    ? LayoutContextResult.FromError("Independent report restore read returned no fresh object.")
-                    : LoadVisualContext(restoredObject, target, VisualSurface.Report);
-                return restored.Error == null
-                    && XmlEquivalence.AreEquivalent(baseline,
-                        restored.Document.ToString(SaveOptions.DisableFormatting), out _);
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn("[ReportControl] baseline restore failed: " + ex.Message);
-                return false;
-            }
-        }
+        private static string InvalidReportFont(string target, string propertyName)
+            => Models.McpResponse.Err(code: "InvalidReportFont", message: "Invalid or uninstalled report font: " + propertyName,
+                target: target, hint: "Use an installed family and a valid font specification.");
+
+        private static string RecoveryXml(string xml)
+            => xml != null && xml.Length > 12000 ? xml.Substring(0, 12000) + "\n…source truncated…" : xml;
 
         private static string BoundedDiff(string before, string after)
         {
@@ -752,7 +699,8 @@ namespace GxMcp.Worker.Services
                 ["verified"] = true, ["rereadConfirmed"] = true, ["versionToken"] = version, ["diff"] = diff } }.ToString(Newtonsoft.Json.Formatting.None);
         }
 
-        private static string ReportMutationFailure(string target, string action, string control, string block, string diff, object detail, bool persisted, bool rolledBack, bool rollbackRequested)
+        private static string ReportMutationFailure(string target, string action, string control, string block, string diff, object detail, bool persisted, bool rolledBack, bool rollbackRequested,
+            string baselineXml = null, string requestedXml = null, string observedXml = null, string observedVersion = null)
         {
             string message = detail?.ToString() ?? "Report control verification failed.";
             return Models.McpResponse.Err(code: "ReportControlWriteVerificationFailed", message: message, target: target,
@@ -760,6 +708,11 @@ namespace GxMcp.Worker.Services
                     ["action"] = action, ["controlName"] = control, ["printBlockName"] = block, ["persisted"] = persisted,
                     ["rolledBack"] = rolledBack, ["rollbackRequested"] = rollbackRequested,
                     ["rollbackDeferred"] = rollbackRequested && !rolledBack,
+                    ["rollbackUnavailableReason"] = rollbackRequested && !rolledBack ? ReportRollbackUnavailableReason : null,
+                    ["recoveryEvidence"] = new JObject {
+                        ["baselineXml"] = RecoveryXml(baselineXml), ["requestedXml"] = RecoveryXml(requestedXml),
+                        ["observedXml"] = RecoveryXml(observedXml), ["observedVersion"] = observedVersion,
+                        ["observationProvesOwnership"] = false },
                     ["recoveryRequired"] = persisted && !rolledBack,
                     ["recoveryHint"] = persisted && !rolledBack
                         ? "The write may have committed but could not be independently verified or safely restored; do not retry until a fresh read and recovery decision are recorded."

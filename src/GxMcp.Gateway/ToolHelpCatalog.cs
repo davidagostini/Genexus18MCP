@@ -399,13 +399,13 @@ namespace GxMcp.Gateway
                 "- `find_controls` — search controls by name, caption, or query string.\n" +
                 "- `list_controls` — list all controls with type and key attributes.\n" +
                 "- `set_property` — set single property on a layout control (Caption, Visible, Enabled, Class).\n" +
-                "  On a Procedure report control, `Font` takes the get_tree form (`[Font: Name=Arial, Size=12, Units=3, ...]`) or `Arial, 12pt` / `Arial, 12pt, style=Bold`; the family must be installed.\n" +
+                "  On a Procedure report control, `Font` takes the get_tree form (`[Font: Name=Arial, Size=12, Units=3, Style=Bold, ...]`) or `Arial, 12pt` / `Arial, 12pt, style=Bold`; the family must be installed. Unspecified size, style and units are preserved. Requested style must be confirmed by the SDK read-back.\n" +
                 "- `set_properties` — batch property updates via `changes: [{control, propertyName, value}]`.\n" +
                 "- `inspect_surface` — analyze layout structure, grid bindings, and responsive layout rows.\n" +
                 "- `get_preview` — get visual representation or HTML mockup preview.\n" +
                 "- `scan_mutators` — inspect potential mutations and event-binding risks.\n" +
                 "- `add_printblock` / `rename_printblock` / `delete_printblock` — manage Procedure printblocks.\n" +
-                "- `add_report_control` / `move_report_control` / `remove_report_control` - typed report-band controls with geometry, relative placement, optimistic `baseVersion` (required, including dryRun), dry-run diff, independent reread and rollback. `get_tree` includes geometry, font metadata, and the authoritative `versionToken`.\n" +
+                "- `add_report_control` / `move_report_control` / `remove_report_control` - typed report-band controls with geometry, relative placement, optimistic `baseVersion` (required, including dryRun), dry-run diff and independent reread. Report verification failures (including `set_property`) do not attempt a second write: atomic ownership-proven restore is unavailable. Inspect `recoveryEvidence` and `rollbackUnavailableReason`, read fresh state and make an explicit recovery decision before retrying. `get_tree` includes geometry, authoritative font style/units, and the `versionToken`.\n" +
                 "- `design_system` - inspect applied design system tokens and styling.\n",
 
             ["genexus_versioning"] =
