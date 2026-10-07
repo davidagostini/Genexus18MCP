@@ -4237,7 +4237,7 @@
             "type": "boolean"
           },
           "expectedVersion": {
-            "description": "Alias of baseVersion for update_visual.",
+            "description": "Alias of baseVersion for update_visual;…",
             "type": "string"
           },
           "kb": {
@@ -4260,7 +4260,7 @@
             "type": "string"
           },
           "name": {
-            "description": "Object name.…",
+            "description": "Object name. update_visual: Transaction…",
             "type": "string"
           },
           "payload": {
@@ -4730,6 +4730,10 @@
           "estimated_seconds": {
             "description": "async=true: expected duration used as…",
             "type": "integer"
+          },
+          "expectedVersion": {
+            "description": "Required for history_restore of an…",
+            "type": "string"
           },
           "filePath": {
             "description": "blame: absolute or KB-relative file…",

@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- SDT `update_visual` now previews every member omitted by replacement, requires explicit removal confirmation, and supports `mode=add` while preserving existing members. SDT revision history can read and restore `SDTStructure` with an optimistic version check, preview, native rollback source, and post-save verification.
+
 ### Internal
 
 ## v3.12.0 - 2026-10-06
