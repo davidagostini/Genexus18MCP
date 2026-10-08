@@ -7,9 +7,13 @@
 
 ### Added
 
+- **WorkWithPlus variable grids.** `genexus_wwp action=add_grid` now accepts ordered, typed variable columns without an SDT collection. Set `gridName`, `containerName` and `columns` to create a grid loaded by the panel's own events, including editable columns. [#442](https://github.com/lennix1337/Genexus18MCP/issues/442).
+
 ### Changed
 
 ### Fixed
+
+- **WorkWithPlus buttons on Empty WebPanels.** `add_user_action` now creates a missing `TableActions` under the unique `TableMain`, preserving existing content and deriving the button event from its name. Explicit missing containers and ambiguous parents remain errors. [#441](https://github.com/lennix1337/Genexus18MCP/issues/441).
 
 ### Internal
 

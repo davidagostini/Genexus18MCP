@@ -119,6 +119,8 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_generator_reference` | `list`, `dry_run_add`, `dry_run_remove` | `add`, `remove` |
 | `genexus_wwp` | `list`, `settings_templates`, `settings_read`, `list_tabs`, `tab_schema` | `add_action`, `add_user_action`, `update_action`, `move_action`, `remove_action`, `add_tab`, `move_tab`, `remove_tab`, `set_table_type`, `add_grid_attribute`, `move_grid_column`, `add_grid_variable`, `add_grid`, `replace_web_component_with_user_action`, `settings_edit` |
 
+`genexus_wwp add_grid` supports both SDT collections and basic-typed variable grids without a collection. Variable columns use `{variable, basicType, length, decimals, description, readOnly}`; `gridName` defaults to `Grid`. `add_user_action` creates a missing `TableActions` under exactly one `TableMain`, including Empty-template WebPanels. Both operations retain dry-run, optimistic version, native snapshots, independent reread, projection and rollback guards; neither runs KB lifecycle operations.
+
 Real-KB validation gate: `genexus_structure action=get_visual` with a homonymous
 target must be exercised against a KB that contains the relevant Transaction/Table
 or WebPanel collision, using `type=Transaction` (or the other intended type). The
