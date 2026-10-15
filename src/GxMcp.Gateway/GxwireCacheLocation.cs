@@ -164,11 +164,10 @@ namespace GxMcp.Gateway
         }
 
         /// <summary>
-        /// True when the directory root holds at least one file gxwire indexes.
+        /// True when the directory root holds object source rather than known KB metadata.
         ///
         /// Shallow on purpose. The point is to tell a native KB from an export of
-        /// one, and both keep their object files at the root of the tree; a deep
-        /// walk would cost exactly what this check exists to avoid.
+        /// one; a deep walk would cost exactly what this check exists to avoid.
         /// </summary>
         private static readonly HashSet<string> SourceExtensions = new HashSet<string>(
             new[] { "txt", "gxd", "xml", "gx", "prc", "trn", "wp", "sdp" },
@@ -178,6 +177,10 @@ namespace GxMcp.Gateway
         {
             foreach (var path in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
             {
+                // Match gxwire's root metadata exclusion; these are not object exports.
+                string stem = Path.GetFileNameWithoutExtension(path);
+                if (new[] { "CategoryViewConfig", "iar_objs", "nav_objs" }
+                    .Contains(stem, StringComparer.OrdinalIgnoreCase)) continue;
                 string ext = Path.GetExtension(path).TrimStart('.');
                 if (ext.Length > 0 && SourceExtensions.Contains(ext)) return true;
             }

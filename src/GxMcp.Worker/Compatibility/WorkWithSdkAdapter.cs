@@ -253,6 +253,69 @@ namespace GxMcp.Worker.Compatibility
             }
         }
 
+        internal static JArray PlanActionRemoval(JArray tabs, string tabCode, string actionName)
+        {
+            var matchingTabs = tabs.OfType<JObject>().Where(t =>
+                string.Equals(t["code"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(t["name"]?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (matchingTabs.Count != 1)
+                throw new UsageException("WorkWithTabAmbiguous", "The explicit tab must identify exactly one WorkWith tab.");
+            var actions = matchingTabs[0]["actions"] as JArray;
+            var matches = actions?.OfType<JObject>().Where(a => string.Equals(a["name"]?.ToString(), actionName, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (matches == null || matches.Count != 1)
+                throw new UsageException("WorkWithActionAmbiguous", "The action name must identify exactly one action on the selected tab.");
+            var expected = (JArray)tabs.DeepClone();
+            var expectedActions = (JArray)((JObject)expected[tabs.IndexOf(matchingTabs[0])])["actions"];
+            expectedActions.RemoveAt(actions.IndexOf(matches[0]));
+            return expected;
+        }
+
+        internal static object LoadNativeModel(KBObject instance)
+        {
+            var type = GetWorkWithAssembly()?.GetType("Artech.Patterns.WorkWith.WorkWithInstance");
+            var load = type?.GetMethod("Load", BindingFlags.Public | BindingFlags.Static);
+            return load?.Invoke(null, new object[] { instance })
+                ?? throw new UsageException("NativeWorkWithUnavailable", "The standard WorkWith SDK could not load the instance. No XML fallback is used for removal.");
+        }
+
+        internal static void RemoveNativeAction(object model, string tabCode, string actionName)
+        {
+            var tabs = new List<object>();
+            var levels = model.GetType().GetProperty("Levels")?.GetValue(model, null) as IEnumerable;
+            if (levels != null)
+                foreach (var level in levels)
+                {
+                    var view = level.GetType().GetProperty("View")?.GetValue(level, null);
+                    var collection = view?.GetType().GetProperty("Tabs")?.GetValue(view, null) as IEnumerable;
+                    if (collection == null) continue;
+                    foreach (var tab in collection)
+                        if (string.Equals(tab.GetType().GetProperty("Code")?.GetValue(tab, null)?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(tab.GetType().GetProperty("Name")?.GetValue(tab, null)?.ToString(), tabCode, StringComparison.OrdinalIgnoreCase)) tabs.Add(tab);
+                }
+            if (tabs.Count != 1) throw new UsageException("WorkWithTabAmbiguous", "The native model did not resolve exactly one tab.");
+            var actions = tabs[0].GetType().GetProperty("Actions")?.GetValue(tabs[0], null);
+            var matches = (actions as IEnumerable)?.Cast<object>().Where(a =>
+                string.Equals(a.GetType().GetProperty("Name")?.GetValue(a, null)?.ToString(), actionName, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (matches == null || matches.Count != 1) throw new UsageException("WorkWithActionAmbiguous", "The native model did not resolve exactly one action.");
+            var remove = actions.GetType().GetMethod("Remove", new[] { matches[0].GetType() });
+            if (remove == null || remove.ReturnType != typeof(bool))
+                throw new UsageException("NativeWorkWithRemoveUnavailable", "The selected SDK has no compatible typed action removal API.");
+            if (!(bool)remove.Invoke(actions, new[] { matches[0] }))
+                throw new UsageException("NativeWorkWithRemoveFailed", "The native collection refused the selected action removal.");
+        }
+
+        internal static void SaveNativeModel(object model, KBObject instance)
+        {
+            var save = model.GetType().GetMethods().SingleOrDefault(m => m.Name == "SaveTo"
+                && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsInstanceOfType(instance));
+            if (save == null) throw new UsageException("NativeWorkWithSaveUnavailable", "The selected SDK has no compatible WorkWith SaveTo API.");
+            using (var isolation = new PatternSaveIsolationScope(instance))
+            {
+                save.Invoke(model, new object[] { instance });
+                instance.Save();
+            }
+        }
+
         public static bool AddAction(
             KBObject instanceObj,
             PatternAnalysisService patterns,
@@ -306,10 +369,12 @@ namespace GxMcp.Worker.Compatibility
                 return false;
             }
 
+            result = BuildActionPlan(instanceObj.Name, tabCode, actionName, caption, procObj?.Name, condition, parameters, procObj);
+            if (!ValidateActionArity(result, out errorCode, out errorMessage)) return false;
+
             // Step 2: Handle dryRun
             if (dryRun)
             {
-                result = BuildActionPlan(instanceObj.Name, tabCode, actionName, caption, procObj?.Name, condition, parameters, procObj);
                 result["route"] = IsNativeSdkAvailable ? "native-sdk" : "xml-fallback";
                 result["defaultNormalization"] = IsNativeSdkAvailable
                     ? NativeDefaultNormalization
@@ -535,6 +600,19 @@ namespace GxMcp.Worker.Compatibility
             }
 
             return plan;
+        }
+
+        internal static bool ValidateActionArity(JObject plan, out string errorCode, out string errorMessage)
+        {
+            errorCode = null;
+            errorMessage = null;
+            var advisory = plan?["signatureAdvisory"] as JObject;
+            if (advisory?["arityMatches"]?.ToObject<bool?>() != false) return true;
+            errorCode = "ActionParameterArityMismatch";
+            errorMessage = advisory["warning"]?.ToString()
+                ?? "Supplied action parameters do not match the known Procedure arity.";
+            plan["valid"] = false;
+            return false;
         }
 
         internal static JObject TryInspectSignatureAdvisory(KBObject procObj, IReadOnlyList<string> parameters)

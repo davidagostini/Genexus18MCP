@@ -75,10 +75,12 @@ namespace GxMcp.Gateway.Tests
                 ["type"] = "Transaction",
                 ["part"] = "Structure",
                 ["mode"] = "ops",
+                ["verifyMode"] = "semantic",
                 ["ops"] = new JArray { new JObject { ["op"] = "add_attribute", ["name"] = "A", ["type"] = "Numeric(4.0)" } }
             };
             var jo = Route("genexus_edit", args);
             Assert.Equal("SemanticOps", jo["module"]!.ToString());
+            Assert.Equal("semantic", jo["verifyMode"]!.ToString());
             Assert.Equal("Transaction", jo["type"]!.ToString());
         }
 

@@ -42,7 +42,8 @@ namespace GxMcp.Gateway
         /// one, and the reason the near-miss regression test exists.
         /// </summary>
         internal const string Pattern =
-            @"(?is)(?<key>(?:[A-Za-z0-9_.\[\]-]*(?:password|passwd|pwd|token|secret|api[-_]?key|authorization|credential|connectionstring)\b|\bpass\b))\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)";
+            // Start the long prefix once per token, avoiding quadratic suffix rescans.
+            @"(?is)(?<key>(?:(?<![A-Za-z0-9_.\[\]-])[A-Za-z0-9_.\[\]-]*(?:password|passwd|pwd|token|secret|api[-_]?key|authorization|credential|connectionstring)\b|\bpass\b))\s*[""']?\s*(?<separator>\s*[:=]\s*)(?:"".*?""|'.*?'|(?:Bearer\s+)?[^\s,;}&\]]+)";
 
         /// <summary>
         /// Replaces the value that follows any <see cref="Pattern"/> key with

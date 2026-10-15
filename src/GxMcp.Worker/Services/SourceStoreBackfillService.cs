@@ -46,6 +46,8 @@ namespace GxMcp.Worker.Services
         public int ProcessedObjects { get; set; }
         public int StoredObjects { get; set; }
         public int StaleObjects { get; set; }
+        public int RemovedObjects { get; set; }
+        public string NotStartedReason { get; set; } = "waitingForIndexReady";
         public int RetryCount { get; set; }
         public int? EtaMs { get; set; }
         public DateTime? StartedAtUtc { get; set; }
@@ -65,6 +67,8 @@ namespace GxMcp.Worker.Services
                 ["processedObjects"] = ProcessedObjects,
                 ["storedObjects"] = StoredObjects,
                 ["staleObjects"] = StaleObjects,
+                ["removedObjects"] = RemovedObjects,
+                ["notStartedReason"] = NotStartedReason,
                 ["retryCount"] = RetryCount,
                 ["etaMs"] = EtaMs == null ? JValue.CreateNull() : new JValue(EtaMs.Value),
                 ["startedAtUtc"] = StartedAtUtc?.ToString("o"),
@@ -87,6 +91,8 @@ namespace GxMcp.Worker.Services
                 ProcessedObjects = json["processedObjects"]?.ToObject<int>() ?? 0,
                 StoredObjects = json["storedObjects"]?.ToObject<int>() ?? 0,
                 StaleObjects = json["staleObjects"]?.ToObject<int>() ?? 0,
+                RemovedObjects = json["removedObjects"]?.ToObject<int>() ?? 0,
+                NotStartedReason = json["notStartedReason"]?.ToString(),
                 RetryCount = json["retryCount"]?.ToObject<int>() ?? 0,
                 EtaMs = json["etaMs"]?.Type == JTokenType.Integer ? json["etaMs"].ToObject<int>() : (int?)null,
                 StartedAtUtc = ParseDate(json["startedAtUtc"]?.ToString()),
@@ -126,6 +132,7 @@ namespace GxMcp.Worker.Services
         // already fresh" (an empty result is valid) from "a stale required part
         // was dropped after a failed SDK read".
         private Func<SearchIndex.IndexEntry, IReadOnlyList<string>> _requiredPartProvider;
+        private Func<SearchIndex.IndexEntry, bool> _confirmedAbsent;
         private IReadOnlyList<SearchIndex.IndexEntry> _entries = Array.Empty<SearchIndex.IndexEntry>();
         private SourceStoreBackfillState _state = new SourceStoreBackfillState();
         private int _scheduled;
@@ -150,7 +157,16 @@ namespace GxMcp.Worker.Services
 
         public SourceStoreBackfillState GetState()
         {
-            lock (_gate) return CloneState(_state);
+            lock (_gate)
+            {
+                var state = CloneState(_state);
+                if (!_store.IsAvailable)
+                    state.NotStartedReason = _store.UnavailableReason;
+                else if (state.State == "off")
+                    state.NotStartedReason = !Configuration.SourceStoreBackfillEnabled ? "disabledByConfiguration"
+                        : "waitingForIndexReady";
+                return state;
+            }
         }
 
         public JObject GetStateJson()
@@ -169,9 +185,11 @@ namespace GxMcp.Worker.Services
             int maxObjectsPerSlice = 50,
             int sliceBudgetMs = 250,
             bool schedule = true,
-            Func<SearchIndex.IndexEntry, IReadOnlyList<string>> requiredPartProvider = null)
+            Func<SearchIndex.IndexEntry, IReadOnlyList<string>> requiredPartProvider = null,
+            Func<SearchIndex.IndexEntry, bool> confirmedAbsent = null)
         {
             if (!Configuration.SourceStoreBackfillEnabled) return false;
+            if (!_store.IsAvailable) return false;
             if (entryProvider == null || partReader == null) return false;
 
             lock (_gate)
@@ -179,6 +197,7 @@ namespace GxMcp.Worker.Services
                 _entryProvider = entryProvider;
                 _partReader = partReader;
                 _requiredPartProvider = requiredPartProvider;
+                _confirmedAbsent = confirmedAbsent;
                 _entries = (entryProvider() ?? Array.Empty<SearchIndex.IndexEntry>())
                     .Where(e => e != null && !string.IsNullOrWhiteSpace(e.Guid))
                     .OrderByDescending(e => e.LastUpdate)
@@ -195,6 +214,7 @@ namespace GxMcp.Worker.Services
                     _state.ProcessedObjects = 0;
                     _state.StoredObjects = 0;
                     _state.StaleObjects = 0;
+                    _state.RemovedObjects = 0;
                 }
                 _state.CatalogSignature = catalogSignature;
                 if (_state.StartedAtUtc == null || _state.State == "off" || _state.State == "error")
@@ -218,6 +238,7 @@ namespace GxMcp.Worker.Services
                     _state.StaleObjects = 0;
                 }
                 _state.State = _state.CursorIndex >= _entries.Count ? "complete" : "queued";
+                _state.NotStartedReason = null;
                 _state.UpdatedAtUtc = DateTime.UtcNow;
                 _state.CompletedAtUtc = _state.State == "complete" ? DateTime.UtcNow : null;
                 _startedForCurrentIndex = true;
@@ -340,6 +361,21 @@ namespace GxMcp.Worker.Services
                 {
                     if (watch.ElapsedMilliseconds >= sliceBudgetMs) break;
                     var entry = entries[i];
+                    if (_confirmedAbsent != null && _confirmedAbsent(entry))
+                    {
+                        if (!_store.RemoveObject(entry.Guid))
+                            throw new IOException("Source-store could not remove a confirmed deleted object.");
+                        processed++;
+                        lock (_gate)
+                        {
+                            _state.CursorIndex = i + 1;
+                            _state.Cursor = EntryIdentity(entry);
+                            _state.ProcessedObjects++;
+                            _state.RemovedObjects++;
+                            _state.UpdatedAtUtc = DateTime.UtcNow;
+                        }
+                        continue;
+                    }
                     IReadOnlyList<SourceStoreBackfillPart> parts = null;
                     try { parts = reader(entry); }
                     catch (Exception ex)
@@ -487,9 +523,9 @@ namespace GxMcp.Worker.Services
                     {
                         _state.CursorIndex = i + 1;
                         _state.Cursor = EntryIdentity(entry);
-                        _state.ProcessedObjects += processed;
-                        _state.StoredObjects += stored;
-                        _state.StaleObjects += stale;
+                        _state.ProcessedObjects++;
+                        if (anyStored) _state.StoredObjects++;
+                        if (anyStale) _state.StaleObjects++;
                         _state.UpdatedAtUtc = DateTime.UtcNow;
                     }
                 }
@@ -625,12 +661,8 @@ namespace GxMcp.Worker.Services
         {
             try
             {
-                Directory.CreateDirectory(_store.StoreDirectory);
-                string path = StatePath;
-                string tmp = path + ".tmp-" + Guid.NewGuid().ToString("N");
-                File.WriteAllText(tmp, _state.ToJson().ToString(Formatting.None));
-                if (File.Exists(path)) File.Delete(path);
-                File.Move(tmp, path);
+                if (!_store.WriteBackfillState(_state.ToJson().ToString(Formatting.None)))
+                    Logger.Warn("[SOURCE-STORE] Cursor persistence refused: durable catalog or cache ownership is unavailable.");
             }
             catch (Exception ex)
             {

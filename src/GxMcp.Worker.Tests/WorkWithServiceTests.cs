@@ -1,3 +1,4 @@
+using GxMcp.Worker;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -62,6 +63,118 @@ namespace GxMcp.Worker.Tests
     </view>
   </level>
 </WorkWithInstance>";
+
+        private static JArray RemovalTabs() => JArray.Parse(@"[
+            {'code':'General','name':'General','actions':[{'name':'Keep','caption':'Keep'},{'name':'Remove','caption':'Remove'},{'name':'Neighbor','parameters':['Id']}]},
+            {'code':'Detail','name':'Detail','actions':[{'name':'Remove','caption':'Different tab'}]}]");
+
+        [Fact]
+        public void RemovalPlan_DeletesOnlyExactTabActionAndLeavesInputIntact()
+        {
+            var before = RemovalTabs();
+            var expected = WorkWithSdkAdapter.PlanActionRemoval(before, "general", "remove");
+            Assert.Equal(3, ((JArray)before[0]["actions"]).Count);
+            Assert.Equal(2, ((JArray)expected[0]["actions"]).Count);
+            Assert.Equal("Keep", expected[0]["actions"][0]["name"].ToString());
+            Assert.Equal("Neighbor", expected[0]["actions"][1]["name"].ToString());
+            Assert.True(JToken.DeepEquals(before[1], expected[1]));
+        }
+
+        [Theory]
+        [InlineData("Missing", "Remove", "WorkWithTabAmbiguous")]
+        [InlineData("General", "Missing", "WorkWithActionAmbiguous")]
+        public void RemovalPlan_RefusesUnresolvedSelector(string tab, string action, string code)
+        {
+            var error = Assert.Throws<UsageException>(() => WorkWithSdkAdapter.PlanActionRemoval(RemovalTabs(), tab, action));
+            Assert.Equal(code, error.Code);
+        }
+
+        [Fact]
+        public void RemovalPlan_RefusesDuplicateTabsOrActions()
+        {
+            var before = RemovalTabs();
+            before.Add(before[0].DeepClone());
+            Assert.Throws<UsageException>(() => WorkWithSdkAdapter.PlanActionRemoval(before, "General", "Remove"));
+            before = RemovalTabs();
+            ((JArray)before[0]["actions"]).Add(before[0]["actions"][1].DeepClone());
+            Assert.Throws<UsageException>(() => WorkWithSdkAdapter.PlanActionRemoval(before, "General", "Remove"));
+        }
+
+        public sealed class NativeActionFixture { public string Name { get; set; } }
+        public sealed class NativeTabFixture
+        {
+            public string Code { get; set; }
+            public string Name { get; set; }
+            public List<NativeActionFixture> Actions { get; } = new List<NativeActionFixture>();
+        }
+        public sealed class NativeViewFixture { public List<NativeTabFixture> Tabs { get; } = new List<NativeTabFixture>(); }
+        public sealed class NativeLevelFixture { public NativeViewFixture View { get; } = new NativeViewFixture(); }
+        public sealed class NativeModelFixture { public List<NativeLevelFixture> Levels { get; } = new List<NativeLevelFixture>(); }
+
+        [Fact]
+        public void NativeRemoval_InvokesTypedCollectionRemoveAndPreservesNeighbors()
+        {
+            var model = new NativeModelFixture();
+            var level = new NativeLevelFixture();
+            model.Levels.Add(level);
+            var general = new NativeTabFixture { Code = "General" };
+            general.Actions.AddRange(new[] { new NativeActionFixture { Name = "Keep" }, new NativeActionFixture { Name = "Remove" } });
+            var detail = new NativeTabFixture { Code = "Detail" };
+            detail.Actions.Add(new NativeActionFixture { Name = "Remove" });
+            level.View.Tabs.AddRange(new[] { general, detail });
+            WorkWithSdkAdapter.RemoveNativeAction(model, "general", "remove");
+            Assert.Single(general.Actions);
+            Assert.Equal("Keep", general.Actions[0].Name);
+            Assert.Single(detail.Actions);
+            Assert.Equal("Remove", detail.Actions[0].Name);
+        }
+
+        [Fact]
+        public void RemovalRoute_RequiresConcurrencyAndFreshFullProjectionVerification()
+        {
+            var source = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Services", "WorkWithService.cs");
+            Assert.Contains("BaseVersionRequired", source);
+            Assert.Contains("FindObjectFresh(instance.Name, guid: instance.Guid.ToString())", source);
+            Assert.Contains("PlanActionRemoval(before, tab, action)", source);
+            Assert.Contains("PatternSnapshotStore.SaveSnapshot", source);
+            Assert.Contains("JToken.DeepEquals(expected, after)", source);
+            Assert.Contains("SaveNativeModel(originalModel, current)", source);
+            Assert.Contains("JToken.DeepEquals(before, restoredTabs)", source);
+            Assert.Contains("RollbackConcurrencyConflict", source);
+            int transaction = source.IndexOf("using (var transaction = instance.Model.KB.BeginTransaction())", StringComparison.Ordinal);
+            int check = source.IndexOf("string preSaveXml", transaction, StringComparison.Ordinal);
+            int save = source.IndexOf("SaveNativeModel(editedModel, instance)", transaction, StringComparison.Ordinal);
+            Assert.True(transaction >= 0 && check > transaction && save > check);
+            var adapter = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Compatibility", "WorkWithSdkAdapter.cs");
+            Assert.Contains("using (var isolation = new PatternSaveIsolationScope(instance))", adapter);
+        }
+
+        [Theory]
+        [InlineData(6, 0, false)]
+        [InlineData(6, 6, true)]
+        [InlineData(0, 1, false)]
+        public void KnownActionArity_RejectsMismatchBeforeAnySave(int expected, int supplied, bool matches)
+        {
+            var advisory = new JObject { ["expectedParameterCount"] = expected, ["suppliedParameterCount"] = supplied, ["arityMatches"] = expected == supplied, ["warning"] = "arity mismatch" };
+            var plan = new JObject { ["signatureAdvisory"] = advisory };
+            Assert.Equal(matches, WorkWithSdkAdapter.ValidateActionArity(plan, out string code, out string message));
+            Assert.Equal(expected, plan["signatureAdvisory"]["expectedParameterCount"].Value<int>());
+            Assert.Equal(supplied, plan["signatureAdvisory"]["suppliedParameterCount"].Value<int>());
+            if (!matches)
+            {
+                Assert.Equal("ActionParameterArityMismatch", code);
+                Assert.Equal("arity mismatch", message);
+                Assert.False(plan["valid"].Value<bool>());
+            }
+        }
+
+        [Fact]
+        public void UnknownActionArity_DoesNotInventAValidationFailure()
+        {
+            Assert.True(WorkWithSdkAdapter.ValidateActionArity(new JObject(), out string code, out string message));
+            Assert.Null(code);
+            Assert.Null(message);
+        }
 
         [Fact]
         public void TryAddActionToXml_AddsActionWithProcedureConditionAndParameters_Success()

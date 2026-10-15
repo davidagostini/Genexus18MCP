@@ -107,6 +107,8 @@ namespace GxMcp.Gateway
             };
             info.EnvironmentVariables["GX_PROGRAM_DIR"] = installationPath ?? string.Empty;
             info.EnvironmentVariables["GX_KB_PATH"] = kb.Path ?? string.Empty;
+            info.EnvironmentVariables["GXMCP_KB_ID"] = kb.KbId;
+            info.EnvironmentVariables["GXMCP_KB_GENERATION"] = kb.ContextGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture);
             info.EnvironmentVariables["GXMCP_DRIVER"] = driver ?? string.Empty;
             info.EnvironmentVariables["GXMCP_TARGET_MAJOR"] = major ?? string.Empty;
             info.EnvironmentVariables["GXMCP_OPERATIONAL_STATE_KEY"] = identity.Key;

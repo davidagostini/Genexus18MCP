@@ -7,11 +7,28 @@
 
 ### Added
 
+- **Native WorkWith action removal.** `genexus_workwith action=remove_action` selects one explicit instance, tab and action, requires a version token even for preview, and uses the typed SDK route with a recovery snapshot and fresh read-back of neighboring action definitions. Availability depends on the installed SDK; live removal and callback isolation still require validation on a disposable fixture. [#538](https://github.com/lennix1337/Genexus18MCP/issues/538).
+- **Attribute formulas as references.** Source search accepts the opt-in `formula` metadata field, and caller results distinguish formula attributes from executable call sites while retaining the existing caller-name list. [#533](https://github.com/lennix1337/Genexus18MCP/issues/533).
+
 ### Changed
+
+- **Events save guidance.** Tool help now distinguishes default object-level text verification from audited strict Events isolation and tells agents to re-read sibling parts and the pattern instance. [#534](https://github.com/lennix1337/Genexus18MCP/issues/534).
 
 ### Fixed
 
+- **Large diagnostic messages.** Credential masking no longer rescans every suffix of a long noncredential token. Full log text is still redacted before output is bounded, including qualified password keys and the distinct `pass` form.
+
+- **Source-store warm start and backfill.** Source records and the cursor retain their KB identity across Gateway restarts, with exclusive cache ownership between Workers. Backfill is scheduled when the index is Ready and skips a deleted object only when a refreshed current catalog confirms its absence; unresolved reads still fail without advancing. [#522](https://github.com/lennix1337/Genexus18MCP/issues/522), [#523](https://github.com/lennix1337/Genexus18MCP/issues/523), [#524](https://github.com/lennix1337/Genexus18MCP/issues/524).
+- **Transaction semantic edits.** Operations preserve multiline formulas as logical entries and forward the requested persistence verification mode end to end. Structure defaults to conservative semantic comparison for SDK-generated descriptions; explicit descriptions, types, formulas and ordering remain significant. [#525](https://github.com/lennix1337/Genexus18MCP/issues/525), [#526](https://github.com/lennix1337/Genexus18MCP/issues/526).
+- **Incoming impact and caller sites.** Upward impact recovers SDK incoming references within bounded traversal and reports incomplete coverage honestly. Canonical source parts avoid counting Source/Events aliases twice while preserving independent Rules sites. [#527](https://github.com/lennix1337/Genexus18MCP/issues/527), [#528](https://github.com/lennix1337/Genexus18MCP/issues/528).
+- **Native WorkWith preflight.** Raw pattern patch refusals now point to the native action route, and known Procedure arity mismatches are rejected before both preview and Save. [#536](https://github.com/lennix1337/Genexus18MCP/issues/536), [#537](https://github.com/lennix1337/Genexus18MCP/issues/537).
+
+- **Build watchdog diagnostics.** A termination request no longer reports a live or unobservable root process as terminated. Watchdogs and external timeouts distinguish observed exit from attempted termination. [#535](https://github.com/lennix1337/Genexus18MCP/issues/535).
+- **Native KB detection and XML source graphs.** Remote-database native KBs are rejected before file scanning even when root metadata uses XML. XML exports retain receiver targets for `.Link()`, resolve object kinds by SDK type GUID or typed directory, and expose XML formula dependencies. Cached graphs are invalidated for the parser corrections. [#529](https://github.com/lennix1337/Genexus18MCP/issues/529), [#530](https://github.com/lennix1337/Genexus18MCP/issues/530), [#531](https://github.com/lennix1337/Genexus18MCP/issues/531), [#532](https://github.com/lennix1337/Genexus18MCP/issues/532).
+
 ### Internal
+
+- **Envelope coverage documentation.** Removed duplicated schema and helper-call counts; the document points to the contract validator and static response guard. [#521](https://github.com/lennix1337/Genexus18MCP/issues/521).
 
 ## v3.15.0 - 2026-10-13
 

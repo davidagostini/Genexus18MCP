@@ -48,6 +48,31 @@ namespace GxMcp.Worker.Helpers
         /// </summary>
         internal const string FormulaMarkerPrefix = "[" + "Formula" + ":";
 
+        // Both DSL grouping and semantic replacement must ignore brackets inside
+        // either GeneXus string delimiter, including doubled delimiter escapes.
+        internal static int FindFormulaEnd(string text, int start, out int depth)
+        {
+            depth = 0;
+            char quote = '\0';
+            for (int i = start; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (quote != '\0')
+                {
+                    if (c == quote)
+                    {
+                        if (i + 1 < text.Length && text[i + 1] == quote) i++;
+                        else quote = '\0';
+                    }
+                    continue;
+                }
+                if (c == '\'' || c == '"') { quote = c; continue; }
+                if (c == '[') depth++;
+                else if (c == ']' && --depth == 0) return i;
+            }
+            return -1;
+        }
+
         /// <summary>
         /// Renders <paramref name="name"/> with its type and optional detail.
         /// </summary>

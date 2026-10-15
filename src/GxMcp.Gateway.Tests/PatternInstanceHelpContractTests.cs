@@ -107,17 +107,21 @@ namespace GxMcp.Gateway.Tests
         }
 
         /// <summary>
-        /// Issue #476: genexus_workwith contract must not promise optimistic concurrency
-        /// when it is not supported, and must document validation limits.
+        /// Standard WorkWith documents the separate add/removal concurrency contracts
+        /// and keeps validation limits explicit.
         /// </summary>
         [Fact]
-        public void WorkWith_HelpAndSchema_AgreeOnNoOptimisticConcurrency()
+        public void WorkWith_HelpAndSchema_SeparateAddAndRemovalConcurrency()
         {
             string? help = ToolHelpCatalog.Get("genexus_workwith");
             Assert.NotNull(help);
             Assert.Contains("Validation limits", help);
-            Assert.Contains("target-scoped mutex locking", help);
-            Assert.Contains("do not accept or check optimistic concurrency version tokens", help);
+            Assert.Contains("target-scoped locking", help);
+            Assert.Contains("add_action retains its existing contract without optimistic tokens", help);
+            Assert.Contains("remove_action requires and checks baseVersion against fresh PatternInstance reads", help);
+            Assert.Contains("Open-writer still permits concurrent writers", help);
+            Assert.Contains("Known parameter counts", help);
+            Assert.Contains("snapshot and guarded rollback", help);
             Assert.DoesNotContain("Supports optimistic concurrency", help, StringComparison.OrdinalIgnoreCase);
 
             var tools = Newtonsoft.Json.Linq.JArray.Parse(GxMcp.TestSupport.RepoSource.Read("src", "GxMcp.Gateway", "tool_definitions.json"));
@@ -126,6 +130,11 @@ namespace GxMcp.Gateway.Tests
             string desc = workWithTool["description"]?.ToString() ?? string.Empty;
             Assert.DoesNotContain("optimistic concurrency", desc, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Supports dryRun", desc);
+            Assert.Contains("remove_action requires explicit tab, actionName and baseVersion", desc);
+            var schema = workWithTool["inputSchema"]!;
+            Assert.NotNull(schema["properties"]!["baseVersion"]);
+            Assert.Contains("remove_action", schema["properties"]!["action"]!["enum"]!.Select(x => x.ToString()));
+            Assert.Contains("explicit tab required for remove_action", schema["properties"]!["tab"]!["description"]!.ToString());
         }
     }
 }

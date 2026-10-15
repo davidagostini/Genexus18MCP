@@ -25,6 +25,28 @@ namespace GxMcp.Worker.Tests
             "McpTst492Simples : NUMERIC(6) // [Formula: McpTst492Valor * 2;]";
 
         [Fact]
+        public void SemanticOpsVerificationMode_ReachesBothPersistenceRoutes()
+        {
+            var source = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Services", "WriteService.PatchApply.cs");
+            Assert.Contains("string verifyMode = req[\"verifyMode\"]?.ToString();", source);
+            Assert.Contains("transactionModule, verifyMode)", source);
+            Assert.Contains("verbose, validate, typeFilter, verifyMode)", source);
+            Assert.Contains("WriteObject(target, \"Structure\", newDsl, typeFilter, false, false, false, false, verifyMode: verifyMode)", source);
+            Assert.Contains("WriteObject(target, partName, newXml, typeFilter, false, false, false, false, verifyMode: verifyMode)", source);
+        }
+
+        [Theory]
+        [InlineData(null, true)]
+        [InlineData("semantic", true)]
+        [InlineData("normalized", false)]
+        [InlineData("exact", false)]
+        public void StructureWrite_DefaultToleratesOnlyGeneratedDescription(string mode, bool expected)
+        {
+            Assert.Equal(expected, WriteService.EvaluatePersistedVerification(Requested, Persisted, false, null, mode, "Structure").Matches);
+            Assert.False(WriteService.EvaluatePersistedVerification("Amount : NUMERIC(4) // \"Chosen\"", "Amount : NUMERIC(4) // \"Changed\"", false, null, mode, "Structure").Matches);
+        }
+
+        [Fact]
         public void SdkGeneratedDescription_DoesNotCauseAFalseMismatch()
         {
             var result = TextPersistenceVerifier.Evaluate(Requested, Persisted, "semantic", "Structure");

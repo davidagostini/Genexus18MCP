@@ -26,7 +26,9 @@ class ValidateToolContractsTests(unittest.TestCase):
         self.assertEqual(60, counts["tools"])
         # The published action count is a deliberate contract gate. Update it
         # together with the schema when a new public action is added.
-        self.assertEqual(278, counts["actions"])
+        self.assertEqual(279, counts["actions"])
+        workwith = next(tool for tool in document if tool["name"] == "genexus_workwith")
+        self.assertIn("remove_action", workwith["inputSchema"]["properties"]["action"]["enum"])
         capabilities = MODULE.validate_capabilities_inventory(document)
         self.assertEqual(counts["actions"], capabilities["actions"])
 

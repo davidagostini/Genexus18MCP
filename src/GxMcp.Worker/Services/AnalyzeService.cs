@@ -488,11 +488,16 @@ namespace GxMcp.Worker.Services
         }
 
         // v2.8.5: container for SDK reference-graph cross-check results.
-        private sealed class SdkRefs
+        internal sealed class SdkRefs
         {
             public readonly List<string> Callers = new List<string>();
             public readonly List<string> Callees = new List<string>();
+            public readonly JArray CallerDetails = new JArray();
+            public readonly JArray FormulaDependents = new JArray();
+            public bool CallerReferencesComplete = true;
         }
+
+        internal Func<string, SdkRefs> SdkReferenceReader { get; set; }
 
         // v2.8.5 (friction 2026-06-02): when the index reports zero edges for an
         // object, consult the live SDK reference graph (GetReferencesTo / GetReferences)
@@ -502,6 +507,7 @@ namespace GxMcp.Worker.Services
         // asserting a misleading "Low". Best-effort and bounded; never throws.
         private SdkRefs TrySdkReferenceCrossCheck(string name)
         {
+            if (SdkReferenceReader != null) return SdkReferenceReader(name);
             if (_objectService == null || string.IsNullOrEmpty(name)) return null;
             KBObject obj;
             try { obj = _objectService.FindObject(name); }
@@ -510,6 +516,7 @@ namespace GxMcp.Worker.Services
 
             dynamic kb = null;
             try { kb = _kbService?.GetKB(); } catch { kb = null; }
+            if (kb == null) return null;
 
             var refs = new SdkRefs();
             const int cap = 50;
@@ -517,16 +524,24 @@ namespace GxMcp.Worker.Services
             {
                 foreach (var r in obj.GetReferencesTo())
                 {
-                    if (refs.Callers.Count >= cap) break;
+                    if (refs.Callers.Count >= cap) { refs.CallerReferencesComplete = false; break; }
                     try
                     {
                         var s = kb?.DesignModel.Objects.Get(r.From);
-                        if (s != null && !refs.Callers.Contains(s.Name)) refs.Callers.Add(s.Name);
+                        if (s != null && !refs.Callers.Contains((string)s.Name))
+                        {
+                            refs.Callers.Add((string)s.Name);
+                            var caller = (KBObject)s;
+                            refs.CallerDetails.Add(new JObject { ["name"] = caller.Name, ["type"] = caller.TypeDescriptor?.Name });
+                            var formula = SourceSearchService.ReadAttributeFormula(caller);
+                            var dependent = DescribeFormulaDependent(caller.Name, caller.TypeDescriptor?.Name, formula);
+                            if (dependent != null) refs.FormulaDependents.Add(dependent);
+                        }
                     }
-                    catch { }
+                    catch { refs.CallerReferencesComplete = false; }
                 }
             }
-            catch { }
+            catch { refs.CallerReferencesComplete = false; }
             try
             {
                 foreach (var r in obj.GetReferences())
@@ -2557,7 +2572,7 @@ namespace GxMcp.Worker.Services
             if ((_objectService == null && _callerSourceReader == null) || callerNames == null) return sites;
             foreach (var callerName in callerNames.Distinct(StringComparer.OrdinalIgnoreCase).Take(50))
             {
-                foreach (var partName in new[] { "Source", "Events", "Rules" })
+                foreach (var partName in CallerParts(callerName))
                 {
                     string payload = null;
                     try { payload = ReadCallerSource(callerName, partName); } catch { }
@@ -2691,6 +2706,50 @@ namespace GxMcp.Worker.Services
             return _objectService?.ReadObjectSource(callerName, partName);
         }
 
+        private IEnumerable<string> CallerParts(string callerName)
+        {
+            KBObject caller = null;
+            try { caller = _objectService?.FindObject(callerName); } catch { }
+            if (caller != null)
+                return CanonicalCallerParts(GxMcp.Worker.Structure.PartAccessor.GetAvailableParts(caller));
+            var type = _indexCacheService?.GetIndex()?.FindByName(callerName).FirstOrDefault()?.Type;
+            if (string.Equals(type, "SDPanel", StringComparison.OrdinalIgnoreCase))
+                return CanonicalCallerParts(new[] { "SDEvents", "SDRules" });
+            return string.Equals(type, "Transaction", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(type, "WebPanel", StringComparison.OrdinalIgnoreCase)
+                ? new[] { "Events", "Rules" } : new[] { "Source", "Events", "Rules" };
+        }
+
+        internal static string[] CanonicalCallerParts(IEnumerable<string> parts)
+        {
+            var available = new HashSet<string>(parts ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            return new[] { "Source", "Events", "Rules", "SDEvents", "SDRules" }
+                .Where(part => available.Contains(part)
+                    && (part != "Source" || (!available.Contains("Events") && !available.Contains("SDEvents")))
+                    && (part != "Events" || !available.Contains("SDEvents"))
+                    && (part != "Rules" || !available.Contains("SDRules"))).ToArray();
+        }
+
+        internal static JObject DescribeFormulaDependent(string name, string type, string formula)
+            => string.Equals(type, "Attribute", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(formula)
+                ? new JObject { ["attribute"] = name, ["formula"] = formula } : null;
+
+        private JArray FormulaDependents(IEnumerable<string> callerNames)
+        {
+            var result = new JArray();
+            foreach (var name in callerNames.Distinct(StringComparer.OrdinalIgnoreCase).Take(50))
+            {
+                try
+                {
+                    var obj = _objectService?.FindObject(name);
+                    var dependent = DescribeFormulaDependent(obj?.Name, obj?.TypeDescriptor?.Name, SourceSearchService.ReadAttributeFormula(obj));
+                    if (dependent != null) result.Add(dependent);
+                }
+                catch { }
+            }
+            return result;
+        }
+
         /// <summary>
         /// Per-call-site detail for every recorded caller of <paramref name="targetName"/>.
         /// </summary>
@@ -2774,7 +2833,7 @@ namespace GxMcp.Worker.Services
                     var callerName = distinctCallers[callerIndex];
 
                     // Read each source part that might contain calls
-                    string[] partsToCheck = { "Source", "Events", "Rules" };
+                    var partsToCheck = CallerParts(callerName);
                     bool callerFullyScanned = true;
                     foreach (var partName in partsToCheck)
                     {
@@ -2940,7 +2999,7 @@ namespace GxMcp.Worker.Services
                         ["indexEdgesMissing"] = true,
                         ["scan"] = scanMeta
                     };
-                    if (sdk == null)
+                    if (sdk == null || (!sdk.CallerReferencesComplete && sdk.Callers.Count == 0))
                     {
                         zeroResult["verifiedZero"] = false;
                         zeroResult["hint"] = "The index holds this object but no caller edges (it may not be enriched yet). This is NOT a confirmed 'no callers' — do NOT treat it as safe to delete/rename. Cross-check with genexus_analyze(mode=impact) or genexus_inspect(include=['callers']).";
@@ -2951,6 +3010,8 @@ namespace GxMcp.Worker.Services
                         var sdkCallers = new JArray();
                         foreach (var c in sdk.Callers) sdkCallers.Add(c);
                         zeroResult["sdkCallers"] = sdkCallers;
+                        zeroResult["sdkCallerDetails"] = sdk.CallerDetails;
+                        zeroResult["formulaDependents"] = sdk.FormulaDependents;
                         var sdkSites = ScanSdkCallerSources(sdk.Callers, canonicalName, moduleQualifiedName);
                         if (sdkSites.Count > 0)
                         {
@@ -2971,6 +3032,12 @@ namespace GxMcp.Worker.Services
                     return McpResponse.Ok(target: canonicalName, code: "CallerSitesFound", result: zeroResult);
                 }
 
+                var formulaRefs = TrySdkReferenceCrossCheck(canonicalName);
+                var formulaDependents = FormulaDependents(distinctCallers);
+                if (formulaRefs != null)
+                    foreach (var dependent in formulaRefs.FormulaDependents)
+                        if (!formulaDependents.Any(existing => string.Equals((string)existing["attribute"], (string)dependent["attribute"], StringComparison.OrdinalIgnoreCase)))
+                            formulaDependents.Add(dependent.DeepClone());
                 return McpResponse.Ok(
                     target: canonicalName,
                     code: scanComplete ? "CallerSitesFound" : "CallerSitesPartial",
@@ -2978,6 +3045,8 @@ namespace GxMcp.Worker.Services
                     {
                         ["callSiteCount"] = callers.Count,
                         ["callers"] = callers,
+                        ["formulaDependents"] = formulaDependents,
+                        ["formulaDependentsCoverage"] = formulaRefs?.CallerReferencesComplete == true ? "complete" : "partial",
                         ["scan"] = scanMeta
                     });
             }

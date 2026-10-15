@@ -44,10 +44,15 @@ namespace GxMcp.Worker.Services
         }
     }
 
-    public class SourceStoreService
+    public class SourceStoreService : IDisposable
     {
         private static readonly Lazy<SourceStoreService> _instance =
-            new Lazy<SourceStoreService>(() => new SourceStoreService());
+            new Lazy<SourceStoreService>(() =>
+            {
+                var store = new SourceStoreService();
+                AppDomain.CurrentDomain.ProcessExit += (_, __) => store.Dispose();
+                return store;
+            });
 
         public static SourceStoreService Instance => _instance.Value;
 
@@ -71,6 +76,11 @@ namespace GxMcp.Worker.Services
         }
 
         private string _storeDirectory;
+        private FileStream _ownership;
+        private bool _exclusiveOwnership;
+        private bool _disposed;
+        public bool IsAvailable => _initialized && !_disposed;
+        public string UnavailableReason { get; private set; }
         private readonly ConcurrentDictionary<string, RecordSummary> _records =
             new ConcurrentDictionary<string, RecordSummary>(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, HashSet<string>> _trigramIndex =
@@ -175,22 +185,46 @@ namespace GxMcp.Worker.Services
         }
 
         public SourceStoreService()
+            : this(RuntimePaths.SourceStoreRoot, true)
         {
-            _storeDirectory = Path.Combine(RuntimePaths.StateRoot, "source-store");
+        }
+
+        internal SourceStoreService(string directory, bool exclusiveOwnership)
+        {
+            _storeDirectory = directory;
+            _exclusiveOwnership = exclusiveOwnership;
             Initialize();
+        }
+
+        public void Dispose()
+        {
+            lock (_flushGate)
+            lock (_ioGate)
+            {
+                if (_disposed) return;
+                _flushTimer?.Dispose();
+                FlushCatalog();
+                _disposed = true;
+                _ownership?.Dispose();
+                _ownership = null;
+            }
         }
 
         public void SetStoreDirectoryForTest(string dir)
         {
-            lock (_ioGate)
+            lock (_flushGate)
             {
-                lock (_flushGate)
+                lock (_ioGate)
                 {
                     _flushTimer?.Dispose();
                     _flushTimer = null;
                     _isCatalogDirty = false;
                 }
                 _storeDirectory = dir;
+                _ownership?.Dispose();
+                _ownership = null;
+                _exclusiveOwnership = false;
+                _disposed = false;
                 _records.Clear();
                 _trigramIndex.Clear();
                 // Issue #344: the per-record trigram sets describe the index that was
@@ -214,8 +248,57 @@ namespace GxMcp.Worker.Services
         public string StoreDirectory => _storeDirectory;
         public int StoredRecordCount => _records.Count;
 
+        internal bool WriteBackfillState(string json)
+        {
+            lock (_flushGate)
+            lock (_ioGate)
+            {
+                if (!IsAvailable) return false;
+                // A durable cursor must never get ahead of the durable catalog.
+                FlushCatalog();
+                if (_isCatalogDirty) return false;
+                string path = Path.Combine(_storeDirectory, "backfill-state.json");
+                string temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
+                try
+                {
+                    File.WriteAllText(temporary, json);
+                    if (File.Exists(path)) File.Replace(temporary, path, null);
+                    else File.Move(temporary, path);
+                    return true;
+                }
+                finally { if (File.Exists(temporary)) File.Delete(temporary); }
+            }
+        }
+
+        internal bool RemoveObject(string guid)
+        {
+            if (!IsAvailable || string.IsNullOrWhiteSpace(guid)) return false;
+            lock (_flushGate)
+            lock (_ioGate)
+            {
+                if (!IsAvailable) return false;
+                foreach (var pair in _records.Where(p => string.Equals(p.Value.Guid, guid, StringComparison.OrdinalIgnoreCase)).ToList())
+                {
+                    string root = Path.GetFullPath(_storeDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                    string file = Path.GetFullPath(Path.Combine(root, pair.Value.RelativeFilePath));
+                    if (!file.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return false;
+                    File.Delete(file);
+                    if (_records.TryRemove(pair.Key, out var removed))
+                    {
+                        RemoveTrigramPostings(pair.Key);
+                        _certifications.TryRemove(pair.Key, out _);
+                        ApplyAccountingDelta(-removed.FileBytes);
+                    }
+                }
+                MarkCatalogDirty();
+                FlushCatalog();
+                return true;
+            }
+        }
+
         private void Initialize()
         {
+            if (_disposed) return;
             if (_initialized) return;
             lock (_initGate)
             {
@@ -226,11 +309,16 @@ namespace GxMcp.Worker.Services
                     {
                         Directory.CreateDirectory(_storeDirectory);
                     }
+                    if (_exclusiveOwnership && _ownership == null)
+                        _ownership = new FileStream(Path.Combine(_storeDirectory, "owner.lock"),
+                            FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                    UnavailableReason = null;
                     _initialized = true;
                     LoadCatalog();
                 }
                 catch (Exception ex)
                 {
+                    UnavailableReason = ex is IOException ? "storeOwnedOrUnavailable" : "initializationFailed";
                     Logger.Error($"[SOURCE-STORE] Failed to initialize source store at {_storeDirectory}: {ex.Message}");
                 }
             }
@@ -398,12 +486,20 @@ namespace GxMcp.Worker.Services
 
         public bool Put(string guid, string partName, string source, DateTime? lastUpdate, string versionToken)
         {
+            // Ownership covers the record, catalog and postings update so
+            // Dispose cannot release the OS lock during an in-flight Put.
+            lock (_flushGate) return PutOwned(guid, partName, source, lastUpdate, versionToken);
+        }
+
+        private bool PutOwned(string guid, string partName, string source, DateTime? lastUpdate, string versionToken)
+        {
             if (string.IsNullOrWhiteSpace(guid) || string.IsNullOrWhiteSpace(partName) || source == null)
             {
                 return false;
             }
 
             Initialize();
+            if (!IsAvailable) return false;
             guid = guid.Trim().ToLowerInvariant();
             string originalPartName = partName.Trim();
             partName = ObjectService.NormalizeRawSourcePart(partName);
@@ -457,11 +553,8 @@ namespace GxMcp.Worker.Services
 
                 lock (_ioGate)
                 {
-                    if (File.Exists(fullPath))
-                    {
-                        File.Delete(fullPath);
-                    }
-                    File.Move(tmpPath, fullPath);
+                    if (File.Exists(fullPath)) File.Replace(tmpPath, fullPath, null);
+                    else File.Move(tmpPath, fullPath);
                 }
 
                 long fileBytes = new FileInfo(fullPath).Length;
@@ -1051,9 +1144,11 @@ namespace GxMcp.Worker.Services
 
         private void MarkCatalogDirty()
         {
+            if (!IsAvailable) return;
             _isCatalogDirty = true;
             lock (_flushGate)
             {
+                if (!IsAvailable) return;
                 if (_flushTimer == null)
                 {
                     _flushTimer = new Timer(_ => FlushCatalog(), null, 1500, Timeout.Infinite);
@@ -1067,10 +1162,10 @@ namespace GxMcp.Worker.Services
 
         public void FlushCatalog()
         {
-            if (!_isCatalogDirty) return;
+            if (!IsAvailable || !_isCatalogDirty) return;
             lock (_flushGate)
             {
-                if (!_isCatalogDirty) return;
+                if (!IsAvailable || !_isCatalogDirty) return;
                 try
                 {
                     string catalogPath = Path.Combine(_storeDirectory, "catalog.json.gz");
@@ -1111,8 +1206,8 @@ namespace GxMcp.Worker.Services
 
                     lock (_ioGate)
                     {
-                        if (File.Exists(catalogPath)) File.Delete(catalogPath);
-                        File.Move(tmpPath, catalogPath);
+                        if (File.Exists(catalogPath)) File.Replace(tmpPath, catalogPath, null);
+                        else File.Move(tmpPath, catalogPath);
                     }
 
                     // Issue #374: persist the derived trigram state next to the catalog it
@@ -1311,8 +1406,8 @@ namespace GxMcp.Worker.Services
                 }
                 lock (_ioGate)
                 {
-                    if (File.Exists(path)) File.Delete(path);
-                    File.Move(tmp, path);
+                    if (File.Exists(path)) File.Replace(tmp, path, null);
+                    else File.Move(tmp, path);
                 }
             }
             catch (Exception ex)

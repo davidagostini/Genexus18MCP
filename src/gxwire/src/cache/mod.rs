@@ -9,6 +9,7 @@ use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+use std::sync::LazyLock;
 use walkdir::WalkDir;
 
 const CACHE_FILE_NAME: &str = ".gxwire_cache.bin";
@@ -16,7 +17,11 @@ const CACHE_FILE_NAME: &str = ".gxwire_cache.bin";
 /// Layout marker, read before the payload so a cache written by a different
 /// gxwire build is discarded instead of being misread. The Knowledge Base is
 /// then reparsed in full, which is slow but never wrong.
-const CACHE_FORMAT_VERSION: u32 = 4;
+const CACHE_FORMAT_VERSION: u32 = 5;
+
+static RE_XML_OBJECT_TYPE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"<object\b[^>]*\btype\s*=\s*["']\{?([a-f0-9-]+)\}?["']"#).unwrap()
+});
 
 /// Parse output for one source file, together with the stat signature it was
 /// produced from. The entry is reused verbatim while both still match, which
@@ -252,6 +257,8 @@ fn assemble_graph(files: &[FileParse]) -> CsrGraph {
             .parse
             .references
             .iter()
+            .filter(|r| !matches!(r.kind, EdgeKind::Calls(_)) || !fp.formula_refs.iter().any(|f|
+                f.line == r.line && f.target_name.eq_ignore_ascii_case(&r.target_name)))
             .map(|r| (r, r.kind.clone()))
             .collect();
         edges.extend(
@@ -512,8 +519,7 @@ fn is_supported_ext(ext: &str) -> bool {
 /// because `P` alone cannot distinguish a Procedure from a Transaction named
 /// after a person, and guessing wrong is worse than reporting `Unknown`.
 ///
-/// Content detection remains authoritative for XML exports, where the element
-/// name says the real kind.
+/// Content detection remains authoritative for XML exports.
 fn kind_from_stem(file_stem: &str) -> EntityKind {
     if file_stem.starts_with("UT_") {
         return EntityKind::Test;
@@ -551,6 +557,22 @@ fn detect_entity_kind(path: &Path, file_stem: &str, ext: &str) -> EntityKind {
                 let mut reader = BufReader::new(file);
                 if let Ok(n) = reader.read(&mut buf) {
                     let head = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                    // ObjClass GUIDs from Artech.Genexus.Common; exports may use a generic Object root.
+                    if let Some(caps) = RE_XML_OBJECT_TYPE.captures(&head) {
+                        let kind = match &caps[1] {
+                            "84a12160-f59b-4ad7-a683-ea4481ac23e9" => EntityKind::Procedure,
+                            "1db606f2-af09-4cf9-a3b5-b481519d28f6" => EntityKind::Transaction,
+                            "c9584656-94b6-4ccd-890f-332d11fc2c25" => EntityKind::WebPanel,
+                            "d82625fd-5892-40b0-99c9-5c8559c197fc" => EntityKind::Panel,
+                            "adbb33c9-0906-4971-833c-998de27e0676" => EntityKind::Attribute,
+                            "00972a17-9975-449e-aab1-d26165d51393" => EntityKind::Domain,
+                            "447527b5-9210-4523-898b-5dccb17be60a" => EntityKind::Sdt,
+                            "857ca50e-7905-0000-0007-c5d9ff2975ec" => EntityKind::Table,
+                            "ffd44be7-3bb4-4d01-9e7e-d1c1a3c095af" => EntityKind::DataSelector,
+                            _ => EntityKind::Unknown,
+                        };
+                        if kind != EntityKind::Unknown { return kind; }
+                    }
                     if head.contains("<procedure") {
                         return EntityKind::Procedure;
                     } else if head.contains("<transaction") {
@@ -572,6 +594,21 @@ fn detect_entity_kind(path: &Path, file_stem: &str, ext: &str) -> EntityKind {
                     } else if head.contains("<dataselector") {
                         return EntityKind::DataSelector;
                     }
+                }
+            }
+            if let Some(folder) = path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+                match folder.to_ascii_lowercase().as_str() {
+                    "procedure" => return EntityKind::Procedure,
+                    "transaction" => return EntityKind::Transaction,
+                    "webpanel" => return EntityKind::WebPanel,
+                    "attribute" => return EntityKind::Attribute,
+                    "domain" => return EntityKind::Domain,
+                    "sdt" => return EntityKind::Sdt,
+                    "sdpanel" => return EntityKind::Panel,
+                    "table" => return EntityKind::Table,
+                    "dataselector" => return EntityKind::DataSelector,
+                    "workwithforweb" => return EntityKind::Unknown,
+                    _ => {}
                 }
             }
             kind_from_stem(file_stem)

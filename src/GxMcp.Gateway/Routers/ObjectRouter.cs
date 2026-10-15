@@ -354,7 +354,8 @@ namespace GxMcp.Gateway.Routers
                             validationMode = args?["validationMode"]?.ToString(),
                             rollbackOnFailure = args?["rollbackOnFailure"]?.ToObject<bool?>() ?? true,
                             baseVersion = args?["baseVersion"]?.ToString(),
-                            transactionModule = args?["module"]?.ToString()
+                            transactionModule = args?["module"]?.ToString(),
+                            verifyMode = args?["verifyMode"]?.ToString()
                         };
                     }
                     if (mode == "patch")

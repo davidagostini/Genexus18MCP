@@ -46,6 +46,7 @@ namespace GxMcp.Worker.Services
                     ?? req["versionToken"]?.ToString();
                 bool rollbackOnFailure = req["rollbackOnFailure"]?.ToObject<bool?>() ?? true;
                 string transactionModule = req["transactionModule"]?.ToString();
+                string verifyMode = req["verifyMode"]?.ToString();
 
                 if (string.IsNullOrEmpty(target))
                     throw new UsageException("usage_error", "target required");
@@ -59,7 +60,7 @@ namespace GxMcp.Worker.Services
                     throw new UsageException("usage_error", "object '" + target + "' not found");
 
                 return ApplySemanticOpsCore(target, partName, opsRaw, dryRun, returnPostState, verbose,
-                    validate, typeFilter, baseVersion, rollbackOnFailure, transactionModule);
+                    validate, typeFilter, baseVersion, rollbackOnFailure, transactionModule, verifyMode);
             }
             catch (UsageException ux)
             {
@@ -91,7 +92,7 @@ namespace GxMcp.Worker.Services
         private string ApplySemanticOpsCore(string target, string partName, JArray opsRaw, bool dryRun,
             bool returnPostState = true, bool verbose = false, string validate = null,
             string typeFilter = null, string baseVersion = null, bool rollbackOnFailure = true,
-            string transactionModule = null)
+            string transactionModule = null, string verifyMode = null)
         {
             var obj = _objectService.FindObject(target, typeFilter);
             if (obj == null)
@@ -130,7 +131,7 @@ namespace GxMcp.Worker.Services
                 // instead of letting it fall through to that misleading error.
                 if (ops.All(o => SemanticOpsService.IsTransactionStructureAttrOp(o.Op)))
                 {
-                    return ApplyTransactionStructureOpsViaDsl(target, obj, ops, dryRun, returnPostState, verbose, validate, typeFilter);
+                    return ApplyTransactionStructureOpsViaDsl(target, obj, ops, dryRun, returnPostState, verbose, validate, typeFilter, verifyMode);
                 }
                 var badOps = ops.Where(o => !SemanticOpsService.IsTransactionStructureAttrOp(o.Op))
                                 .Select(o => o.Op).Distinct().ToList();
@@ -199,7 +200,7 @@ namespace GxMcp.Worker.Services
                 return env.ToString(Newtonsoft.Json.Formatting.None);
             }
 
-            string writeResult = WriteObject(target, partName, newXml, typeFilter, false, false, false, false);
+            string writeResult = WriteObject(target, partName, newXml, typeFilter, false, false, false, false, verifyMode: verifyMode);
             JObject writeJson;
             try { writeJson = JObject.Parse(writeResult); }
             catch { writeJson = new JObject { ["raw"] = writeResult }; }
@@ -239,7 +240,7 @@ namespace GxMcp.Worker.Services
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         private string ApplyTransactionStructureOpsViaDsl(
             string target, global::Artech.Architecture.Common.Objects.KBObject obj,
-            IList<SemanticOp> ops, bool dryRun, bool returnPostState, bool verbose, string validate, string typeFilter)
+            IList<SemanticOp> ops, bool dryRun, bool returnPostState, bool verbose, string validate, string typeFilter, string verifyMode)
         {
             string currentDsl = GxMcp.Worker.Helpers.StructureParser.SerializeToText(obj);
 
@@ -301,7 +302,7 @@ namespace GxMcp.Worker.Services
                 return env.ToString(Newtonsoft.Json.Formatting.None);
             }
 
-            string writeResult = WriteObject(target, "Structure", newDsl, typeFilter, false, false, false, false);
+            string writeResult = WriteObject(target, "Structure", newDsl, typeFilter, false, false, false, false, verifyMode: verifyMode);
             JObject writeJson;
             try { writeJson = JObject.Parse(writeResult); }
             catch { writeJson = new JObject { ["raw"] = writeResult }; }

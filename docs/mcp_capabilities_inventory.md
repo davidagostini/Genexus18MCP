@@ -121,7 +121,7 @@ The table below is the machine-checkable action contract for every umbrella tool
 | `genexus_deploy` | `list_targets` | `deploy` |
 | `genexus_generator_reference` | `list`, `dry_run_add`, `dry_run_remove` | `add`, `remove` |
 | `genexus_wwp` | `list`, `settings_templates`, `settings_read`, `list_tabs`, `tab_schema` | `add_action`, `add_user_action`, `update_action`, `move_action`, `remove_action`, `add_tab`, `move_tab`, `remove_tab`, `set_table_type`, `add_grid_attribute`, `move_grid_column`, `add_grid_variable`, `add_grid`, `replace_web_component_with_user_action`, `settings_edit` |
-| `genexus_workwith` | `list_actions` | `add_action` |
+| `genexus_workwith` | `list_actions` | `add_action`, `remove_action` |
 
 For SDTs, `genexus_structure update_visual` accepts `payload.mode=add|replace` and requires `expectedVersion`; replacement previews omitted-member removals and requires `allowRemoval=true` to apply them. `genexus_versioning history_get` reads a revision's `SDTStructure`, and `history_restore` previews or restores it with `versionId`, `expectedVersion`, native rollback, and post-save verification.
 

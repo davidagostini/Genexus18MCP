@@ -15,12 +15,16 @@ also read [`AGENTS.md`](../AGENTS.md).
 - [Supported GeneXus versions](generated/supported-versions.md) — generated from `config/gx-versions.json`.
 - [SDK compatibility](sdk-compatibility.md) — how the Worker binds to each GeneXus major.
 - [Environment variables](environment_variables.md) — every runtime variable read by the Gateway and Worker.
+- [Durable source cache](source-store-durability.md) — KB identity, cache ownership, backfill and old-cache cleanup.
 - [Pinning the write destination](write-destination-pin.md) — fixing the target KB across restarts.
 - [Human-in-the-loop elicitation](elicitation.md) — client-side KB picker and human approval for irreversible calls.
 - [Migração para MCP 3.0](migration-3.0.md) — the 3.0 migration contract.
 - [Nexus-IDE sharing guide](SHARING_GUIDE.md) — installing the VS Code extension and pointing clients at it.
 
 ## Using the tools
+
+- [XML source graphs](gxwire-xml-export.md) — native KB detection, object types, navigation calls and formulas.
+- [Incoming references and formulas](incoming-references-and-formulas.md) — bounded impact recovery, caller sites and formula metadata.
 
 - [Capabilities inventory](mcp_capabilities_inventory.md) — the published MCP surface, tool by tool.
 - [LLM playbook: AXI CLI + MCP](llm_cli_mcp_playbook.md) — how agents should combine the CLI and MCP calls.
@@ -39,6 +43,8 @@ also read [`AGENTS.md`](../AGENTS.md).
 - [Moving objects safely](object_move.md) — `genexus_properties action=move`.
 
 ### WorkWithPlus, patterns and K2B
+
+- [Semantic structure edits and native WorkWith actions](semantic-ops-and-native-workwith.md) — multiline formulas, persistence verification, action arity and typed removal.
 
 - [Buttons and variable grids on an Empty WebPanel](wwp-empty-webpanel.md) — typed WorkWithPlus operations.
 - [WorkWithPlus template objects](wwp-template-objects.md) — templates stored outside `PatternSettingsPart`.

@@ -214,6 +214,12 @@ namespace GxMcp.Worker.Services
             // beyond the KB identity accessors and would otherwise widen the
             // constructor every other caller of ObjectService has to satisfy.
             _conditionalRead = new ConditionalReadService(kbService, this);
+            var cache = kbService?.GetIndexCache();
+            if (cache != null)
+                cache.IndexReady += index =>
+                {
+                    if (kbService.IsOpen) StartSourceStoreBackfillIfReady(index);
+                };
         }
 
         public void SetDataInsightService(DataInsightService ds) { _dataInsightService = ds; }
@@ -290,13 +296,14 @@ namespace GxMcp.Worker.Services
                 || string.Equals(SourceStoreBackfillService.Instance.GetState().State, "queued", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(SourceStoreBackfillService.Instance.GetState().State, "error", StringComparison.OrdinalIgnoreCase);
             if (!canResume) return;
+            var store = SourceStoreService.Instance;
+            if (!store.IsAvailable) return;
             lock (_sourceStoreBackfillStartGate)
             {
                 if (_sourceStoreBackfillStartAttempted != 0) return;
                 _sourceStoreBackfillStartAttempted = 1;
             }
 
-            var store = SourceStoreService.Instance;
             var entryProvider = new Func<IReadOnlyList<SearchIndex.IndexEntry>>(() =>
             {
                 var loaded = _kbService.GetIndexCache().TryGetLoadedIndex();
@@ -359,11 +366,23 @@ namespace GxMcp.Worker.Services
             bool started = SourceStoreBackfillService.Instance.Start(
                 entryProvider,
                 partReader,
-                requiredPartProvider: requiredPartProvider);
+                requiredPartProvider: requiredPartProvider,
+                confirmedAbsent: entry => IsConfirmedAbsentFromCurrentIndex(entry,
+                    _kbService.GetIndexCache().TryGetLoadedIndex(),
+                    _kbService.GetIndexCache().GetState().Freshness));
             if (!started)
             {
                 lock (_sourceStoreBackfillStartGate) _sourceStoreBackfillStartAttempted = 0;
             }
+        }
+
+        internal static bool IsConfirmedAbsentFromCurrentIndex(SearchIndex.IndexEntry entry, SearchIndex index, string freshness)
+        {
+            return entry != null && !string.IsNullOrWhiteSpace(entry.Guid)
+                && index?.Objects != null
+                && string.Equals(freshness, "current", StringComparison.OrdinalIgnoreCase)
+                && !index.Objects.Values.Any(candidate => candidate != null
+                    && string.Equals(candidate.Guid, entry.Guid, StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>

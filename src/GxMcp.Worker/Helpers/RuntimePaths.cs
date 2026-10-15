@@ -15,6 +15,26 @@ namespace GxMcp.Worker.Helpers
             "state",
             GetOperationalStateKey());
 
+        internal static string SourceStoreRoot => ResolveSourceStoreRoot(
+            Environment.GetEnvironmentVariable("GXMCP_STATE_DIR"), GetLocalAppData(),
+            Environment.GetEnvironmentVariable("GXMCP_KB_ID"),
+            Environment.GetEnvironmentVariable("GX_KB_PATH"),
+            Environment.GetEnvironmentVariable("GXMCP_KB_GENERATION") ?? "0",
+            GetOperationalStateKey());
+
+        internal static string ResolveSourceStoreRoot(string configuredRoot, string localAppData,
+            string kbId, string kbPath, string generation, string operationalKey)
+        {
+            string identity = string.IsNullOrWhiteSpace(kbId) || string.IsNullOrWhiteSpace(kbPath)
+                ? "isolated|" + operationalKey
+                : kbId + "|" + Path.GetFullPath(kbPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    .ToUpperInvariant() + "|" + generation;
+            string parent = string.IsNullOrWhiteSpace(configuredRoot)
+                ? Path.Combine(string.IsNullOrWhiteSpace(localAppData) ? Path.GetTempPath() : localAppData, "GenexusMCP")
+                : Path.GetFullPath(configuredRoot.Trim());
+            return Path.GetFullPath(Path.Combine(parent, "source-store", HashKey(identity)));
+        }
+
         internal static string LogsRoot => ResolveRoot(
             Environment.GetEnvironmentVariable("GXMCP_LOG_DIR"),
             GetLocalAppData(),

@@ -11,6 +11,21 @@ namespace GxMcp.Gateway.Tests
     public class LogRedactionTests
     {
         [Fact]
+        public void LongNonCredentialTokenIsLinearAndDoesNotHideFollowingSecrets()
+        {
+            string prefix = new string('x', KbCreateHelper.MaxFailureOutputBytes * 4);
+            string input = prefix + " Password=SYNTHETIC-CREDENTIAL x.pass=SECOND-SENTINEL";
+            // Bound the regression itself: the old prefix rescanned every suffix quadratically.
+            var regex = new System.Text.RegularExpressions.Regex(LogRedaction.Pattern,
+                System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(2));
+            string expected = prefix + " Password=<redacted> x.pass=<redacted>";
+            Assert.Equal(expected, regex.Replace(input,
+                match => match.Groups["key"].Value + match.Groups["separator"].Value + "<redacted>"));
+            Assert.Equal(expected, LogRedaction.Redact(input));
+            Assert.Equal(prefix, LogRedaction.Redact(prefix));
+        }
+
+        [Fact]
         public void RedactBodyForLog_MasksSensitiveKeys_KeepsPlainOnes()
         {
             var body = JObject.Parse(@"{

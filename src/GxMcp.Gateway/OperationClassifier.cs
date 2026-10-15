@@ -198,7 +198,7 @@ namespace GxMcp.Gateway
                         "replace_web_component_with_user_action", "settings_edit" }),
                 ["genexus_workwith"] = Contract(
                     readOnly: new[] { "list_actions" },
-                    mutating: new[] { "add_action" }),
+                    mutating: new[] { "add_action", "remove_action" }),
                 ["genexus_sandbox"] = Contract(
                     readOnly: Array.Empty<string>(),
                     mutating: new[] { "create", "remove" }),
@@ -283,6 +283,7 @@ namespace GxMcp.Gateway
             "genexus_wwp:add_grid",
             "genexus_wwp:replace_web_component_with_user_action",
             "genexus_workwith:add_action",
+            "genexus_workwith:remove_action",
             "genexus_generator_reference:add",
             "genexus_generator_reference:remove"
         };

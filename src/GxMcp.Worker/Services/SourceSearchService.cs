@@ -139,6 +139,11 @@ namespace GxMcp.Worker.Services
                 || value.Equals("code", StringComparison.OrdinalIgnoreCase);
         }
 
+        internal static string ReadAttributeFormula(KBObject obj)
+            => (obj as Artech.Genexus.Common.Objects.Attribute)?.Formula?.ToString();
+
+        internal Func<SearchIndex.IndexEntry, string> AttributeFormulaReader { get; set; }
+
         private static bool HasOnlySourceFields(List<string> fields)
         {
             if (fields == null || fields.Count == 0) return true;
@@ -1344,6 +1349,9 @@ namespace GxMcp.Worker.Services
                             string fieldValue = null;
                             if (string.Equals(field, "description", StringComparison.OrdinalIgnoreCase))
                                 fieldValue = e.Description;
+                            else if (string.Equals(field, "formula", StringComparison.OrdinalIgnoreCase))
+                                fieldValue = !string.Equals(e.Type, "Attribute", StringComparison.OrdinalIgnoreCase) ? null
+                                    : AttributeFormulaReader != null ? AttributeFormulaReader(e) : ReadAttributeFormula(metadataCache.Object);
                             else if (string.Equals(field, "caption", StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(field, "parmNames", StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(field, "webForm", StringComparison.OrdinalIgnoreCase))

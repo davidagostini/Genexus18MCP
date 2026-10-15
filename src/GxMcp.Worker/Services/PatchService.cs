@@ -593,6 +593,8 @@ namespace GxMcp.Worker.Services
                         var matchedPattern = _patternAnalysisService?.MatchInstancePattern(resolvedPatternObject ?? patchObjectForTarget);
                         string rejectionHint = matchedPattern == null || matchedPattern.IsWorkWithPlus
                             ? "genexus_wwp action=add_user_action authors a form user action through the WorkWithPlus SDK; raw PatternInstance XML is limited to existing property changes."
+                            : matchedPattern.IsWorkWith
+                            ? "genexus_workwith action=add_action authors an action through the standard WorkWith SDK; raw PatternInstance XML is limited to existing property changes."
                             : $"{matchedPattern.Name} structural pattern edits require the GeneXus IDE or a pattern-specific typed authoring action; raw PatternInstance XML is limited to existing property changes.";
 
                         return AttachTimings(

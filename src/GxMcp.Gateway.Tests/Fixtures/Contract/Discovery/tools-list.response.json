@@ -1589,8 +1589,7 @@
             "type": "boolean"
           },
           "verifyMode": {
-            "default": "normalized",
-            "description": "Post-save text comparison. Full exact…",
+            "description": "Post-save text comparison. Structure…",
             "enum": [
               "semantic",
               "normalized",
@@ -4160,7 +4159,8 @@
                 "caption",
                 "description",
                 "parmNames",
-                "webForm"
+                "webForm",
+                "formula"
               ],
               "type": "string"
             },
@@ -5061,7 +5061,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Typed authoring of actions and action parameters for standard WorkWith (WorkWith for Web) pattern instances. action=list_actions|add_action. Preserves strict boundary with WorkWithPlus (genexus_wwp). Full guidance: genexus://kb/tool-help/genexus_workwith",
+      "description": "Typed authoring of actions and action parameters for standard WorkWith (WorkWith for Web) pattern instances. action=list_actions|add_action|remove_action. Full guidance: genexus://kb/tool-help/genexus_workwith",
       "inputSchema": {
         "properties": {
           "action": {
@@ -5069,12 +5069,17 @@
             "description": "Operation to perform: list_actions…",
             "enum": [
               "list_actions",
-              "add_action"
+              "add_action",
+              "remove_action"
             ],
             "type": "string"
           },
           "actionName": {
             "description": "Unique name for the action (required…",
+            "type": "string"
+          },
+          "baseVersion": {
+            "description": "Current PatternInstance versionToken,…",
             "type": "string"
           },
           "caption": {

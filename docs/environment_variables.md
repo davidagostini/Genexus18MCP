@@ -102,7 +102,7 @@ The GeneXus model is single-threaded: only one SDK operation runs at a time on t
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `GXMCP_STATE_DIR` | Optional Worker state root (for example preview configuration and source-store files). | `%LOCALAPPDATA%\GenexusMCP\state\<operational-key-hash>` |
+| `GXMCP_STATE_DIR` | Optional Worker state root (for example preview configuration). The durable source cache uses `source-store/<KB-identity-hash>` under this override; see [cache ownership and cleanup](source-store-durability.md). | `%LOCALAPPDATA%\GenexusMCP\state\<operational-key-hash>`; durable cache: `%LOCALAPPDATA%\GenexusMCP\source-store\<KB-identity-hash>` |
 | `GXMCP_JOBS_DIR` | Optional exact directory containing the soft-reload `jobs.json`; managed Gateways set this to the same scoped jobs directory they persist. | `GXMCP_STATE_DIR` |
 | `GXMCP_LOG_DIR` | Optional Worker log root; the Gateway sets a per-operational-state directory for managed Workers. The Gateway's own debug log also honors this variable. | `%LOCALAPPDATA%\GenexusMCP\logs\<operational-key-hash>` |
 

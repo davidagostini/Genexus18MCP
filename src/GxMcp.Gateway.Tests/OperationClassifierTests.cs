@@ -6,6 +6,17 @@ namespace GxMcp.Gateway.Tests
 {
     public class OperationClassifierTests
     {
+        [Fact]
+        public void NativeWorkWithRemoval_IsMutatingWithReadOnlyPreview()
+        {
+            var write = new JObject { ["action"] = "remove_action", ["dryRun"] = false };
+            var preview = new JObject { ["action"] = "remove_action", ["dryRun"] = true };
+            Assert.True(OperationClassifier.IsMutationCandidate("genexus_workwith", write));
+            Assert.False(OperationClassifier.IsReadOnly("genexus_workwith", write));
+            Assert.True(OperationClassifier.Describe("genexus_workwith", write).PreviewSupported);
+            Assert.True(OperationClassifier.IsReadOnly("genexus_workwith", preview));
+        }
+
         [Theory]
         [InlineData("set_attribute")]
         [InlineData("set_level")]

@@ -121,6 +121,9 @@ namespace GxMcp.Worker.Tests
         [InlineData("X : NUMERIC(1) [Formula: A;]", 0)]
         [InlineData("X : NUMERIC(1) [Formula: A", 1)]
         [InlineData("X : NUMERIC(1) [Formula: A;] ", 0)]
+        [InlineData("X : NUMERIC(1) [Formula: Iif(Code = ']x', 1, 2)", 1)]
+        [InlineData("X : NUMERIC(1) [Formula: Iif(Code = 'it''s ]x', 1, 2);]", 0)]
+        [InlineData("X : NUMERIC(1) [Formula: Values[1]", 1)]
         public void BracketDepth_ReflectsOnlyTheFormulaRegion(string line, int expected)
         {
             Assert.Equal(expected, TransactionDslParser.FormulaBracketDepth(line));

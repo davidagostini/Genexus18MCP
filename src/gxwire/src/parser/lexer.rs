@@ -15,6 +15,10 @@ static RE_FORMULA: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?is)\[\s*Formula\s*:(.*?)\]").unwrap()
 });
 
+static RE_XML_FORMULA: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<Property\b[^>]*>\s*<Name\b[^>]*>\s*Formula\s*</Name>\s*<Value\b[^>]*>(.*?)</Value>\s*</Property>").unwrap()
+});
+
 static RE_CALL_FUNC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\bcall\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap()
 });
@@ -23,7 +27,7 @@ static RE_CALL_METHOD: LazyLock<Regex> = LazyLock::new(|| {
     // `.Popup(` opens a Transaction in a popup and is a real call form in
     // Events/Rules, not decoration. It was absent, so every popup invocation
     // looked like an object with no callers (#500).
-    Regex::new(r"(?i)(?:^|[\s,;(=])([&]?[a-zA-Z0-9_#]+)\s*\.\s*(?:call|popup)\s*\(").unwrap()
+    Regex::new(r"(?i)(?:^|[\s,;(=])([&]?[a-zA-Z0-9_#]+)\s*\.\s*(call|popup|link)\s*\(").unwrap()
 });
 
 /// GeneXus lets a Procedure be invoked as a function: `procName(args)`. There
@@ -56,7 +60,7 @@ static RE_SUBMIT: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\blink\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap()
+    Regex::new(r"(?i)(?:^|[\s,;(=])link\s*\(\s*([&]?[a-zA-Z0-9_#]+)").unwrap()
 });
 
 static RE_BC_METHOD: LazyLock<Regex> = LazyLock::new(|| {
@@ -255,7 +259,9 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
         if let Some(caps) = RE_CALL_METHOD.captures(line) {
             if let Some(target) = caps.get(1) {
                 let name = target.as_str();
-                let mode = if name.starts_with('&') {
+                let mode = if caps.get(2).is_some_and(|m| m.as_str().eq_ignore_ascii_case("link")) {
+                    CallMode::Link
+                } else if name.starts_with('&') {
                     CallMode::Dynamic
                 } else {
                     CallMode::Static
@@ -410,14 +416,13 @@ pub fn parse_genexus_source(source: &str) -> ParseResult {
 pub fn formula_references(source: &str) -> Vec<ParsedSymbolRef> {
     let mut out = Vec::new();
 
-    for caps in RE_FORMULA.captures_iter(source) {
+    for caps in RE_FORMULA.captures_iter(source).chain(RE_XML_FORMULA.captures_iter(source)) {
         let Some(body) = caps.get(1) else { continue };
         let formula = body.as_str();
 
         // Line the formula body starts on, so reported lines point at the
         // declaration instead of always line 1.
-        let offset = caps.get(0).map(|m| m.start()).unwrap_or(0);
-        let base_line = source[..offset].lines().count() as u32 + 1;
+        let base_line = source[..body.start()].bytes().filter(|b| *b == b'\n').count() as u32 + 1;
 
         for caps in RE_FUNCTION_CALL.captures_iter(formula) {
             let Some(name) = caps.get(1) else { continue };
@@ -427,8 +432,7 @@ pub fn formula_references(source: &str) -> Vec<ParsedSymbolRef> {
             }
 
             let within = caps.get(0).map(|m| m.start()).unwrap_or(0);
-            let consumed = formula[..within].lines().count() as u32;
-            let line = base_line + consumed - u32::from(within == 0);
+            let line = base_line + formula[..within].bytes().filter(|b| *b == b'\n').count() as u32;
 
             out.push(ParsedSymbolRef {
                 target_name: callee.to_string(),

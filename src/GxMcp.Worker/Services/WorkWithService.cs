@@ -46,7 +46,10 @@ namespace GxMcp.Worker.Services
                     target: name);
 
             var matches = _patterns.FindPatternInstances(targetObj);
-            var wwMatch = matches.FirstOrDefault(m => m.Pattern != null && m.Pattern.IsWorkWith);
+            var wwMatches = matches.Where(m => m.Pattern != null && m.Pattern.IsWorkWith).ToList();
+            if (wwMatches.Count > 1)
+                return McpResponse.Err(code: "WorkWithInstanceAmbiguous", message: "Specify a standard WorkWith PatternInstance directly; multiple instances were resolved.", target: name);
+            var wwMatch = wwMatches.SingleOrDefault();
 
             if (wwMatch == null)
             {
@@ -81,10 +84,12 @@ namespace GxMcp.Worker.Services
 
                 case "add_action":
                     return ExecuteAddAction(name, instanceObj, args);
+                case "remove_action":
+                    return ExecuteRemoveAction(name, instanceObj, args);
 
                 default:
                     return McpResponse.Err(code: "UnknownAction",
-                        message: $"Action '{action}' is not supported by genexus_workwith. Supported actions: list_actions, add_action.",
+                        message: $"Action '{action}' is not supported by genexus_workwith. Supported actions: list_actions, add_action, remove_action.",
                         nextSteps: new JArray(McpResponse.NextStep("genexus_workwith",
                             new JObject { ["action"] = "list_actions", ["name"] = name },
                             "List actions on the target WorkWith object.")),
@@ -106,6 +111,120 @@ namespace GxMcp.Worker.Services
                 ["instance"] = instanceObj.Name,
                 ["tabs"] = tabs
             });
+        }
+
+        private string ExecuteRemoveAction(string target, KBObject instance, JObject args)
+        {
+            string tab = args?["tab"]?.ToString()?.Trim();
+            string action = args?["actionName"]?.ToString()?.Trim();
+            bool dryRun = args?["dryRun"]?.ToObject<bool?>() == true;
+            if (string.IsNullOrWhiteSpace(tab) || string.IsNullOrWhiteSpace(action))
+                return McpResponse.Err(code: "MissingActionSelector", message: "remove_action requires an explicit tab and actionName.", target: target);
+            lock (WriteService.AcquirePerTargetLock(instance.Name))
+            {
+                bool saved = false;
+                string savedVersion = null;
+                object originalModel = null;
+                JArray before = null;
+                try
+                {
+                    instance = _objects.FindObjectFresh(instance.Name, guid: instance.Guid.ToString())
+                        ?? throw new UsageException("FreshReadUnavailable", "An independent instance read is required before removal.");
+                    string xml = _patterns.ReadPatternPartXml(instance, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
+                    if (string.IsNullOrWhiteSpace(xml)) throw new UsageException("PatternReadFailed", "The current WorkWith XML could not be read.");
+                    string token = WriteService.ComputeContentVersionToken(instance, xml);
+                    string expectedToken = args?["baseVersion"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(expectedToken))
+                        return McpResponse.Err(code: "BaseVersionRequired", message: "remove_action requires baseVersion, including dryRun. Read the PatternInstance first.", target: target,
+                            extra: new JObject { ["currentVersion"] = token, ["saved"] = false, ["persisted"] = false });
+                    if (!string.Equals(token, expectedToken, StringComparison.Ordinal))
+                        return McpResponse.Err(code: "StaleObject", message: "The WorkWith instance changed since the supplied baseVersion.", target: target,
+                            extra: new JObject { ["currentVersion"] = token, ["saved"] = false, ["persisted"] = false });
+                    if (!WorkWithSdkAdapter.ListActions(instance, _patterns, out before, out string listError))
+                        throw new UsageException("PatternReadFailed", listError);
+                    var expected = WorkWithSdkAdapter.PlanActionRemoval(before, tab, action);
+                    originalModel = WorkWithSdkAdapter.LoadNativeModel(instance);
+                    var editedModel = WorkWithSdkAdapter.LoadNativeModel(instance);
+                    if (ReferenceEquals(originalModel, editedModel)) throw new UsageException("NativeWorkWithSnapshotUnavailable", "The SDK did not provide an independent model for rollback.");
+                    WorkWithSdkAdapter.RemoveNativeAction(editedModel, tab, action);
+                    var plan = new JObject { ["instance"] = instance.Name, ["tab"] = tab, ["actionName"] = action,
+                        ["before"] = before, ["after"] = expected, ["baseVersion"] = token,
+                        ["route"] = "native-sdk", ["patternApplySuppression"] = "SkipApplyPattern flag is set and restored around SDK Save; callback isolation requires live validation",
+                        ["defaultNormalization"] = WorkWithSdkAdapter.NativeDefaultNormalization };
+                    if (dryRun)
+                        return McpResponse.Ok(target: target, code: "WorkWithActionRemovalPlan", result: new JObject
+                            { ["plan"] = plan, ["dryRun"] = true, ["saved"] = false, ["persisted"] = false });
+                    string snapshot = PatternSnapshotStore.SaveSnapshot(instance.Guid.ToString(), "PatternInstance", xml);
+                    if (string.IsNullOrWhiteSpace(snapshot)) throw new UsageException("SnapshotUnavailable", "A recovery snapshot is required before removing an action.");
+                    using (var transaction = instance.Model.KB.BeginTransaction())
+                    {
+                        try
+                        {
+                            var preSave = _objects.FindObjectFresh(instance.Name, guid: instance.Guid.ToString())
+                                ?? throw new UsageException("FreshReadUnavailable", "A fresh concurrency check is required before Save.");
+                            string preSaveXml = _patterns.ReadPatternPartXml(preSave, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
+                            if (!string.Equals(token, WriteService.ComputeContentVersionToken(preSave, preSaveXml), StringComparison.Ordinal))
+                                throw new UsageException("StaleObject", "The WorkWith instance changed while planning removal.");
+                            instance = preSave;
+                            WorkWithSdkAdapter.SaveNativeModel(editedModel, instance);
+                            transaction.Commit();
+                            saved = true;
+                        }
+                        catch { transaction.Rollback(); throw; }
+                    }
+                    string savedXml = _patterns.ReadPatternPartXml(instance, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
+                    savedVersion = WriteService.ComputeContentVersionToken(instance, savedXml);
+                    var persisted = _objects.FindObjectFresh(instance.Name, guid: instance.Guid.ToString());
+                    if (persisted == null || !WorkWithSdkAdapter.ListActions(persisted, _patterns, out var after, out _)
+                        || !JToken.DeepEquals(expected, after))
+                        throw new UsageException("WorkWithRemovalVerificationFailed", "The fresh persisted actions did not match the complete removal plan, including neighboring tabs/actions.");
+                    string afterXml = _patterns.ReadPatternPartXml(persisted, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
+                    return McpResponse.Ok(target: target, code: "WorkWithActionRemoved", result: new JObject
+                    {
+                        ["instance"] = instance.Name, ["tab"] = tab, ["actionName"] = action,
+                        ["saved"] = true, ["persisted"] = true, ["verified"] = true,
+                        ["versionToken"] = WriteService.ComputeContentVersionToken(persisted, afterXml),
+                        ["verificationScope"] = "fresh persisted instance: complete tabs and action definitions",
+                        ["route"] = "native-sdk", ["patternApplySuppression"] = "SkipApplyPattern flag is set and restored around SDK Save; callback isolation requires live validation",
+                        ["defaultNormalization"] = WorkWithSdkAdapter.NativeDefaultNormalization
+                    });
+                }
+                catch (Exception ex)
+                {
+                    bool restored = false;
+                    string rollbackError = null;
+                    if (saved && originalModel != null)
+                    {
+                        try
+                        {
+                            var current = _objects.FindObjectFresh(instance.Name, guid: instance.Guid.ToString())
+                                ?? throw new UsageException("FreshReadUnavailable", "Rollback needs an independent instance read.");
+                            using (var rollback = current.Model.KB.BeginTransaction())
+                            {
+                                try
+                                {
+                                    current = _objects.FindObjectFresh(instance.Name, guid: instance.Guid.ToString())
+                                        ?? throw new UsageException("FreshReadUnavailable", "Rollback needs a fresh concurrency check.");
+                                    string currentXml = _patterns.ReadPatternPartXml(current, "PatternInstance", PatternRegistry.WorkWithPatternId, out _, out _);
+                                    if (string.IsNullOrWhiteSpace(savedVersion) || !string.Equals(savedVersion, WriteService.ComputeContentVersionToken(current, currentXml), StringComparison.Ordinal))
+                                        throw new UsageException("RollbackConcurrencyConflict", "The instance changed after this Save; automatic rollback was refused to protect concurrent edits.");
+                                    WorkWithSdkAdapter.SaveNativeModel(originalModel, current);
+                                    rollback.Commit();
+                                }
+                                catch { rollback.Rollback(); throw; }
+                            }
+                            var reread = _objects.FindObjectFresh(instance.Name, guid: instance.Guid.ToString());
+                            restored = reread != null && WorkWithSdkAdapter.ListActions(reread, _patterns, out var restoredTabs, out _)
+                                && JToken.DeepEquals(before, restoredTabs);
+                        }
+                        catch (Exception rollbackEx) { rollbackError = rollbackEx.Message; }
+                    }
+                    return McpResponse.Err(code: (ex as UsageException)?.Code ?? "WorkWithActionRemovalFailed", message: ex.Message, target: target,
+                        hint: saved && !restored ? "Read the complete current instance before another edit; do not retry automatically." : null,
+                        extra: new JObject { ["saved"] = saved, ["persisted"] = saved && !restored, ["verified"] = false,
+                            ["rollbackAttempted"] = saved, ["rollbackVerified"] = restored, ["rollbackError"] = rollbackError });
+                }
+            }
         }
 
         private string ExecuteAddAction(string target, KBObject instanceObj, JObject args)
@@ -146,7 +265,8 @@ namespace GxMcp.Worker.Services
             {
                 if (!WorkWithSdkAdapter.AddAction(instanceObj, _patterns, _write, tabCode, actionName, caption, procObj, condition, parameters, dryRun: true, out var plan, out var errCode, out var errMsg))
                 {
-                    return McpResponse.Err(code: errCode ?? "AddActionPlanFailed", message: errMsg ?? "Failed to create add_action plan.", target: target);
+                    return McpResponse.Err(code: errCode ?? "AddActionPlanFailed", message: errMsg ?? "Failed to create add_action plan.", target: target,
+                        extra: new JObject { ["plan"] = plan, ["dryRun"] = true, ["saved"] = false, ["persisted"] = false });
                 }
 
                 return McpResponse.Ok(target: target, code: "WorkWithActionPlan", result: new JObject
@@ -161,7 +281,8 @@ namespace GxMcp.Worker.Services
                 KBObject freshInstance = _objects.FindObject(instanceObj.Name) ?? instanceObj;
                 if (!WorkWithSdkAdapter.AddAction(freshInstance, _patterns, _write, tabCode, actionName, caption, procObj, condition, parameters, dryRun: false, out var receipt, out var errCode, out var errMsg))
                 {
-                    return McpResponse.Err(code: errCode ?? "AddActionFailed", message: errMsg ?? "Failed to add action.", target: target);
+                    return McpResponse.Err(code: errCode ?? "AddActionFailed", message: errMsg ?? "Failed to add action.", target: target,
+                        extra: new JObject { ["plan"] = receipt });
                 }
 
                 return McpResponse.Ok(target: target, code: "WorkWithActionAdded", result: receipt);

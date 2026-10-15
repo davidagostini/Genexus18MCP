@@ -151,7 +151,7 @@ namespace GxMcp.Worker.Services
         // returns and the mode=patch path writes), then persisted through the DSL parser.
         private static readonly Regex _dslAttrLine = new Regex(
             @"^(?<indent>\s*)(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?<key>\*?)\s*:\s*(?<type>[^/]+?)\s*(?<comment>//.*)?$",
-            RegexOptions.Compiled);
+            RegexOptions.Compiled | RegexOptions.Singleline);
 
         public static bool IsTransactionStructureAttrOp(string op)
             => op == "add_attribute" || op == "set_attribute" || op == "remove_attribute";
@@ -180,8 +180,7 @@ namespace GxMcp.Worker.Services
         public OpsApplyOutcome ApplyTransactionStructureDsl(string dsl, IList<SemanticOp> ops, string validate)
         {
             string mode = NormalizeMode(validate);
-            var lines = (dsl ?? string.Empty).Replace("\r\n", "\n").Replace("\r", "\n")
-                .Split('\n').ToList();
+            var lines = GxMcp.Worker.Parsers.TransactionDslParser.SplitDslLines(dsl, preserveLayout: true);
             var results = ApplyOps(ops, mode, op => ApplyDslOp(lines, op), out bool aborted);
 
             return new OpsApplyOutcome
@@ -273,18 +272,31 @@ namespace GxMcp.Worker.Services
                     bool key = m.Groups["key"].Value == "*";
                     string desc = op.Args["description"]?.ToString();
                     string formula = op.Args["formula"]?.ToString();
-                    if (desc == null)
+                    string existingComment = m.Groups["comment"].Value;
+                    if (formula != null)
                     {
-                        // Preserve the existing inline comment when no new description is given.
-                        string existingComment = m.Groups["comment"].Value;
-                        string rebuilt = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, null, formula);
-                        if (!string.IsNullOrEmpty(existingComment)) rebuilt += " " + existingComment;
-                        lines[idx] = rebuilt;
+                        int marker = existingComment.IndexOf(GxMcp.Worker.Helpers.AttributeDeclaration.FormulaMarkerPrefix, StringComparison.OrdinalIgnoreCase);
+                        if (marker >= 0)
+                        {
+                            int close = GxMcp.Worker.Helpers.AttributeDeclaration.FindFormulaEnd(existingComment, marker, out _);
+                            if (close >= marker)
+                                existingComment = existingComment.Remove(marker, close - marker + 1).TrimEnd(' ', ',');
+                        }
                     }
-                    else
+                    if (desc != null || formula != null)
                     {
-                        lines[idx] = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, desc, formula);
+                        var description = Regex.Match(existingComment, @"^//\s*""(?<description>[^""]*)""\s*,?\s*");
+                        if (description.Success)
+                        {
+                            if (desc == null) desc = description.Groups["description"].Value;
+                            existingComment = "// " + existingComment.Substring(description.Length);
+                        }
                     }
+                    string rebuilt = m.Groups["indent"].Value + BuildDslAttrLine(name, type, key, desc, formula);
+                    string preserved = existingComment.StartsWith("//") ? existingComment.Substring(2).Trim(' ', ',') : existingComment.Trim(' ', ',');
+                    if (!string.IsNullOrEmpty(preserved))
+                        rebuilt += (!string.IsNullOrEmpty(desc) || !string.IsNullOrWhiteSpace(formula) ? ", " : " // ") + preserved;
+                    lines[idx] = rebuilt;
                     break;
                 }
                 case "remove_attribute":

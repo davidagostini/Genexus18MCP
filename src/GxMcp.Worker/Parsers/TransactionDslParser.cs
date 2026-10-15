@@ -58,7 +58,7 @@ namespace GxMcp.Worker.Parsers
         /// <see cref="Helpers.AttributeDeclaration"/> owns; the single-source
         /// guard in <c>SharedHelperSingleSourceTests</c> enforces that.
         /// </summary>
-        internal static List<string> SplitDslLines(string text)
+        internal static List<string> SplitDslLines(string text, bool preserveLayout = false)
         {
             var raw = (text ?? string.Empty)
                 .Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None)
@@ -72,7 +72,7 @@ namespace GxMcp.Worker.Parsers
             {
                 if (depth > 0)
                 {
-                    pending.Append(' ').Append(line.Trim());
+                    pending.Append(preserveLayout ? "\n" : " ").Append(preserveLayout ? line : line.Trim());
                 }
                 else
                 {
@@ -88,7 +88,7 @@ namespace GxMcp.Worker.Parsers
                     var joined = pending.ToString();
                     pending.Clear();
                     if (!string.IsNullOrWhiteSpace(joined))
-                        lines.Add(joined.Trim());
+                        lines.Add(preserveLayout ? joined : joined.Trim());
                 }
             }
 
@@ -96,7 +96,7 @@ namespace GxMcp.Worker.Parsers
             // real syntax error instead of the text silently vanishing.
             if (pending.Length > 0 && !string.IsNullOrWhiteSpace(pending.ToString()))
             {
-                var joined = pending.ToString().Trim();
+                var joined = preserveLayout ? pending.ToString() : pending.ToString().Trim();
                 if (!string.IsNullOrWhiteSpace(joined)) lines.Add(joined);
             }
 
@@ -124,20 +124,7 @@ namespace GxMcp.Worker.Parsers
             int start = line.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
             if (start < 0) return 0;
 
-            int depth = 0;
-            bool inQuote = false;
-            // Start at the marker itself: its opening bracket is at `start`, and
-            // anything before it is a quoted description we must not count.
-            for (int i = start; i < line.Length; i++)
-            {
-                char c = line[i];
-                if (c == '"') inQuote = !inQuote;
-                if (inQuote) continue;
-                if (c == '[') depth++;
-                else if (c == ']') depth--;
-            }
-            // A closed formula nets to zero; anything negative is a stray closer,
-            // which is not a reason to keep folding.
+            Helpers.AttributeDeclaration.FindFormulaEnd(line, start, out int depth);
             return depth > 0 ? depth : 0;
         }
 

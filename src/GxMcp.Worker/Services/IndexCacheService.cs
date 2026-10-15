@@ -23,6 +23,7 @@ namespace GxMcp.Worker.Services
         private const int FlushThrottleSeconds = 30;
 
         private SearchIndex _index;
+        internal event Action<SearchIndex> IndexReady;
         private string _indexPath;
 
         // ── Dirty-generation tracking (stale-index-forever fix) ─────────────────
@@ -389,6 +390,10 @@ namespace GxMcp.Worker.Services
                 _state.EtaMs = null;
             }
             SignalStateChanged();
+            // Scheduling callbacks must run outside the state lock; SDK reads
+            // remain in the queued STA slices, never in this notification.
+            try { IndexReady?.Invoke(_index); }
+            catch (Exception ex) { Logger.Warn("[SOURCE-STORE] Ready notification failed: " + ex.Message); }
         }
 
         // Fase 0: log [TIME-TO-USABLE] once per usable milestone so the SM warmup

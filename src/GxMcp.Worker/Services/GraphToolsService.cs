@@ -56,6 +56,7 @@ namespace GxMcp.Worker.Services
         private readonly ObjectService _objects;
         private readonly IndexCacheService _indexCache;
         private readonly CallerGraphService _graph;
+        internal Func<string, IReadOnlyList<string>> IncomingReferenceReader { get; set; }
 
         public GraphToolsService(KbService kb, ObjectService objects, IndexCacheService indexCache, CallerGraphService graph)
         {
@@ -63,6 +64,26 @@ namespace GxMcp.Worker.Services
             _objects = objects;
             _indexCache = indexCache;
             _graph = graph;
+        }
+
+        private IReadOnlyList<string> ReadIncomingReferences(string name, int remainingMilliseconds)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var candidates = _indexCache?.GetIndex()?.FindByName(name).ToList();
+            if (candidates != null && candidates.Count > 1) return null;
+            var obj = candidates?.Count == 1 ? _objects?.FindObject(candidates[0]) : _objects?.FindObject(name);
+            var kb = _kb?.GetKB();
+            if (obj == null || kb == null) return null;
+            var callers = new List<string>();
+            foreach (var reference in obj.GetReferencesTo())
+            {
+                if (callers.Count >= 2000 || clock.ElapsedMilliseconds >= remainingMilliseconds) return null;
+                var caller = kb.DesignModel.Objects.Get(reference.From);
+                if (caller == null) return null;
+                callers.Add(caller.Name);
+            }
+            if (clock.ElapsedMilliseconds >= remainingMilliseconds) return null;
+            return callers.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         }
 
         // ---- genexus_dfd -------------------------------------------------------------------
@@ -168,8 +189,37 @@ namespace GxMcp.Worker.Services
                 try { _indexCache.GetEnrichmentQueue()?.PromoteAsync(entry).GetAwaiter().GetResult(); } catch { }
 
             string TypeOf(string n) => index.FindByName(n).FirstOrDefault()?.Type;
+            bool incomingComplete = true;
+            var incoming = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+            var recoveredCalls = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            IReadOnlyList<string> CallersOf(string name)
+            {
+                if (incoming.TryGetValue(name, out var cached)) return cached;
+                IReadOnlyList<string> sdk = null;
+                try
+                {
+                    int remaining = (int)Math.Max(0, 5000 - clock.ElapsedMilliseconds);
+                    if (remaining > 0) sdk = IncomingReferenceReader != null
+                        ? IncomingReferenceReader(name) : ReadIncomingReferences(name, remaining);
+                }
+                catch { }
+                if (sdk == null) incomingComplete = false;
+                if (clock.ElapsedMilliseconds >= 5000) incomingComplete = false;
+                var combined = _graph.GetCallers(name).Concat(sdk ?? new string[0]).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                incoming[name] = combined;
+                foreach (var caller in combined)
+                {
+                    if (!recoveredCalls.TryGetValue(caller, out var calls)) recoveredCalls[caller] = calls = new List<string>();
+                    calls.Add(name);
+                }
+                return combined;
+            }
+            IReadOnlyList<string> CalleesOf(string name) => _graph.GetCallees(name)
+                .Concat(recoveredCalls.TryGetValue(name, out var calls) ? calls : Enumerable.Empty<string>())
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             ImpactResult impact = ImpactAnalyzer.Analyze(entry.Name, direction, maxDepth, maxNodes,
-                n => _graph.GetCallers(n), n => _graph.GetCallees(n), TypeOf, typeFilter);
+                CallersOf, CalleesOf, TypeOf, typeFilter);
 
             int enriched = 0, unenriched = 0;
             foreach (string name in impact.Order)
@@ -179,6 +229,7 @@ namespace GxMcp.Worker.Services
             }
             int total = enriched + unenriched;
             string trust = unenriched == 0 ? "complete" : "partial:" + (total == 0 ? 0 : 100 * enriched / total);
+            if (direction != ImpactAnalyzer.Down && !incomingComplete) trust = "partial";
 
             var truncatedBy = new JArray();
             if (impact.TruncatedByDepth) truncatedBy.Add("maxDepth");
@@ -204,7 +255,9 @@ namespace GxMcp.Worker.Services
                     ["truncatedBy"] = truncatedBy
                 },
                 ["fieldTrust"] = trust,
-                ["coverageNote"] = unenriched == 0 ? null
+                ["coverageNote"] = direction != ImpactAnalyzer.Down && !incomingComplete
+                    ? "Incoming SDK references could not be fully confirmed within the bounded scan. An empty set is not a confirmed absence of dependents."
+                    : unenriched == 0 ? null
                     : "Callers/callees are filled by index enrichment; " + unenriched + " of " + total
                         + " objects were not enriched, so an empty or short set is partial coverage, not a confirmed zero."
             };

@@ -103,7 +103,11 @@ namespace GxMcp.Worker.Services
         // We walk the tree via WMI's Win32_Process.ParentProcessId, kill leaves first,
         // then the parent. Tolerant of races (process already exited).
         internal static int KillProcessTree(System.Diagnostics.Process root)
+            => KillProcessTree(root, out _);
+
+        internal static int KillProcessTree(System.Diagnostics.Process root, out bool rootTerminationRequested)
         {
+            rootTerminationRequested = false;
             if (root == null) return 0;
             int killed = 0;
             try
@@ -129,7 +133,7 @@ namespace GxMcp.Worker.Services
                     }
                     catch { /* gone already */ }
                 }
-                try { if (!root.HasExited) { root.Kill(); killed++; } }
+                try { if (!root.HasExited) { root.Kill(); rootTerminationRequested = true; killed++; } }
                 catch { }
             }
             catch (Exception ex)
@@ -986,11 +990,11 @@ namespace GxMcp.Worker.Services
             try
             {
                 if (process.HasExited) return watchdogKilled ? "terminated" : "exited";
-                return watchdogKilled ? "terminated" : "running";
+                return "running";
             }
             catch
             {
-                return watchdogKilled ? "terminated" : "unknown";
+                return "unknown";
             }
         }
 
@@ -999,7 +1003,7 @@ namespace GxMcp.Worker.Services
         /// normal successful-build terminal phase (Done). The phase captured under the same
         /// lock is passed to the caller's message factory, so the envelope and text agree.
         /// </summary>
-        internal static bool TrySetWatchdogFailure(BuildTaskStatus status, Func<string, string> errorFactory, string failureOrigin = null, string watchdogType = null)
+        internal static bool TrySetWatchdogFailure(BuildTaskStatus status, Func<string, string> errorFactory, string failureOrigin = null, string watchdogType = null, bool terminationRequested = false)
         {
             if (status == null || errorFactory == null) return false;
             lock (status._lock)
@@ -1015,7 +1019,7 @@ namespace GxMcp.Worker.Services
                 status.WatchdogType = inferredWatchdogType;
                 status.FailureOrigin = failureOrigin ?? ((status.ErrorCount > 0) ? "watchdog_with_errors" : "watchdog");
                 status.ExitCode = null; // Exit code was not obtained from child process
-                status.ChildProcessState = ResolveChildProcessState(status.Process, watchdogKilled: true);
+                status.ChildProcessState = ResolveChildProcessState(status.Process, watchdogKilled: terminationRequested);
 
                 // Write available output log immediately so reconciliation doesn't depend on a finished build.
                 try
@@ -3917,13 +3921,14 @@ namespace GxMcp.Worker.Services
                     if (IsTerminalStatus(status.Status)) return;
                     Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " exceeded " + timeoutSec
                                 + "s (phase=" + status.Phase + ") — force-failing and killing any MSBuild tree.");
-                    try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
+                    bool terminationRequested = false;
+                    try { var p = status.Process; if (p != null) KillProcessTree(p, out terminationRequested); } catch { }
                     lock (status._lock)
                     {
                         if (IsTerminalStatus(status.Status)) return;
                         if (!TrySetWatchdogFailure(status, phase =>
                             "Build timed out after " + timeoutSec + "s at phase '" + phase
-                            + "' and was terminated. If this was a full deploy/reorg step (WebAppConfig, CheckAndInstallDatabase), it may still be running in the SDK; check the KB in the IDE. Raise the cap with GXMCP_BUILD_TIMEOUT_SEC if the KB legitimately needs longer."))
+                            + "'. External process termination was attempted; childProcessState reports the observed root process state. If this was a full deploy/reorg step (WebAppConfig, CheckAndInstallDatabase), it may still be running in the SDK; check the KB in the IDE. Raise the cap with GXMCP_BUILD_TIMEOUT_SEC if the KB legitimately needs longer.", terminationRequested: terminationRequested))
                             return;
                     }
                     MaybeNotifyOnFailure(status);
@@ -3961,14 +3966,15 @@ namespace GxMcp.Worker.Services
                     if ((DateTime.UtcNow - lastProgressUtc).TotalSeconds < noProgressSec) return;
                     Logger.Warn("[BUILD-NOPROGRESS] taskId=" + status.TaskId + " no progress for "
                                 + noProgressSec + "s (phase=" + status.Phase + ") — force-failing.");
-                    try { var p = status.Process; if (p != null) KillProcessTree(p); } catch { }
+                    bool terminationRequested = false;
+                    try { var p = status.Process; if (p != null) KillProcessTree(p, out terminationRequested); } catch { }
                     lock (status._lock)
                     {
                         if (IsTerminalStatus(status.Status)) return;
                         if (!TrySetWatchdogFailure(status, phase =>
                             "Build made no observable progress for " + noProgressSec + "s at phase '"
-                            + phase + "' and was terminated (no-progress watchdog). The SDK build step "
-                            + "may be wedged; check the KB in the IDE. Tune with GXMCP_BUILD_NOPROGRESS_SEC (0 disables)."))
+                            + phase + "' (no-progress watchdog). External process termination was attempted; childProcessState reports the observed root process state. The SDK build step "
+                            + "may be wedged; check the KB in the IDE. Tune with GXMCP_BUILD_NOPROGRESS_SEC (0 disables).", terminationRequested: terminationRequested))
                             return;
                     }
                     MaybeNotifyOnFailure(status);
@@ -4258,11 +4264,12 @@ namespace GxMcp.Worker.Services
                 // issue #37 items 2/3: bound the wait so a wedged MSBuild step doesn't
                 // block this thread forever. The watchdog also fires at the same cap;
                 // killing here lets us record ExitCode and terminalize cleanly.
+                bool timeoutTerminationRequested = false;
                 if (!process.WaitForExit(timeoutSec * 1000))
                 {
                     Logger.Warn("[BUILD-TIMEOUT] taskId=" + status.TaskId + " MSBuild.exe exceeded "
                                 + timeoutSec + "s — killing process tree.");
-                    KillProcessTree(process);
+                    KillProcessTree(process, out timeoutTerminationRequested);
                     try { process.WaitForExit(5000); } catch { }
                 }
 
@@ -4297,7 +4304,7 @@ namespace GxMcp.Worker.Services
                             status.Status = "Failed";
                             status.FailureOrigin = (status.ErrorCount > 0) ? "errors" : (status.ExitCode.HasValue && status.ExitCode.Value != 0 ? "process_exit" : "failed");
                         }
-                        status.ChildProcessState = process.HasExited ? "exited" : "terminated";
+                        status.ChildProcessState = ResolveChildProcessState(process, timeoutTerminationRequested);
                     }
                 }
                 FinalizeBuildAllStatus(status, fullText);

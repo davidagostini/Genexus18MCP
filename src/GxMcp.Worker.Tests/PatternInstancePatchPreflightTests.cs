@@ -49,6 +49,17 @@ namespace GxMcp.Worker.Tests
             "</attributes></filter></selection></level></instance>";
 
         [Fact]
+        public void NativeWorkWithPatchRejection_OffersNativeTypedAction()
+        {
+            var source = GxMcp.TestSupport.RepoSource.WithoutComments("src", "GxMcp.Worker", "Services", "PatchService.cs");
+            int start = source.IndexOf("string rejectionHint = matchedPattern", StringComparison.Ordinal);
+            Assert.True(start >= 0);
+            var hint = source.Substring(start, source.IndexOf("return AttachTimings", start, StringComparison.Ordinal) - start);
+            Assert.Contains("matchedPattern.IsWorkWith", hint);
+            Assert.Contains("genexus_workwith action=add_action", hint);
+        }
+
+        [Fact]
         public void The_Reported_Payload_Is_Refused_By_The_Shared_Preflight()
         {
             // This is the asymmetry the issue reported: the same bytes that the patch

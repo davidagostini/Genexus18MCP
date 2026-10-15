@@ -100,6 +100,23 @@ namespace GxMcp.Gateway.Tests
 
     public class NativeKnowledgeBaseEvidenceTests
     {
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void RemoteDatabaseMetadata_IsRefusedUnlessThereIsObjectSource(bool hasSource)
+        {
+            using var dir = NativeKb("SyntheticKb");
+            File.WriteAllText(Path.Combine(dir.Path, "knowledgebase.connection"), "synthetic");
+            foreach (var metadata in new[] { "CategoryViewConfig.xml", "IAR_OBJS.XML", "nav_objs.xml" })
+                File.WriteAllText(Path.Combine(dir.Path, metadata), "<metadata/>");
+            Directory.CreateDirectory(Path.Combine(dir.Path, "src"));
+            File.WriteAllText(Path.Combine(dir.Path, "src", "Generated.txt"), "// generated");
+            if (hasSource) File.WriteAllText(Path.Combine(dir.Path, "Sample.xml"), "<Procedure/>");
+
+            Assert.Equal(hasSource, NativeKnowledgeBaseEvidence.HasSourceText(dir.Path));
+            Assert.Equal(hasSource, NativeKnowledgeBaseEvidence.Describe(dir.Path) == null);
+        }
+
         [Fact]
         public void NativeKb_IsRefusedAndSaysWhatWasFound()
         {
