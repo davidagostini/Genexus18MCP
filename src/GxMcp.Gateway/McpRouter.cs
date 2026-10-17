@@ -1978,6 +1978,9 @@ namespace GxMcp.Gateway
                 "persistedHash", "normalizedRequestedHash", "normalizedPersistedHash",
                 "persistedMatchCount", "oldContentPresent", "verification", "rollback",
                 "rolledBack", "versionToken", "persistedVerifyError", "replacementPresent",
+                // issue #557: labels a Structure mismatch that is only the SDK-derived
+                // attribute description (the declarations landed).
+                "mismatchKind",
                 "reReadConfirmed", "commentOnly", "commentStyle", "before", "after",
                 "matchedCount", "implicitOperations", "diagnosticContext",
                 // Patch safety evidence: retain the distinction between a save attempt
