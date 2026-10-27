@@ -38,13 +38,22 @@ namespace GxMcp.Worker.Services
         /// Says what a <c>requireObjectSave</c> preview established and what it did not.
         /// The isolation audit proves the bundle, pins and callbacks are eligible; it is
         /// not a save, so <c>persistabilityVerified</c> stays false for any preview.
+        /// <paramref name="baseVersionProvided"/> defaults to false on purpose: a caller that forgets to say so
+        /// gets "cannot apply" rather than a verdict that lets an unversioned save through.
+        /// <paramref name="indentationBlocker"/> is the refusal the real write would raise for
+        /// <c>patch.indentation</c> (see <see cref="IndentationBlocker"/>), so the preview does not say "can be
+        /// applied" for a request the write itself would stop.
         /// </summary>
-        internal static void AttachObjectSavePreviewScope(JObject dryRunBody, JObject isolation, int matchCount)
+        internal static void AttachObjectSavePreviewScope(
+            JObject dryRunBody, JObject isolation, int matchCount, bool baseVersionProvided = false,
+            JObject indentationBlocker = null)
         {
             if (dryRunBody == null) throw new ArgumentNullException(nameof(dryRunBody));
+            bool patchMatch = matchCount >= 1;
+            bool isolationEligible = isolation?["verified"]?.Value<bool>() == true;
             dryRunBody["objectSaveIsolation"] = isolation;
-            dryRunBody["patchMatch"] = matchCount >= 1;
-            dryRunBody["isolationEligible"] = isolation?["verified"]?.Value<bool>() == true;
+            dryRunBody["patchMatch"] = patchMatch;
+            dryRunBody["isolationEligible"] = isolationEligible;
             dryRunBody["validationExecuted"] = false;
             dryRunBody["semanticValidation"] = new JObject
             {
@@ -55,6 +64,69 @@ namespace GxMcp.Worker.Services
             dryRunBody["persistabilityVerified"] = false;
             dryRunBody["previewScope"] = ObjectSavePreviewScope;
             if (isolation?["blocker"] != null) dryRunBody["writeBlocker"] = isolation["blocker"];
+
+            // The verdict first: status/code stay "ok"/"Applied" because the textual simulation did succeed,
+            // so these fields say whether the same request could be applied and, if not, every reason.
+            bool unchanged = dryRunBody["noContentChange"]?.Value<bool>() == true;
+            JArray blockers = PreviewApplyBlockers(isolation, patchMatch, unchanged, baseVersionProvided, indentationBlocker);
+            bool canApply = blockers.Count == 0;
+            dryRunBody["canApply"] = canApply;
+            dryRunBody["writeAttempted"] = false;
+            if (!canApply) dryRunBody["applyBlockers"] = blockers;
+            dryRunBody["previewSummary"] = BuildPreviewSummary(patchMatch, unchanged, matchCount, blockers);
+        }
+
+        private static JArray PreviewApplyBlockers(
+            JObject isolation, bool patchMatch, bool unchanged, bool baseVersionProvided, JObject indentationBlocker)
+        {
+            var blockers = new JArray();
+            if (!patchMatch && !unchanged)
+                blockers.Add(Blocker("PatchNoMatch", "patch",
+                    "The text patch matched nothing in the current Events source.",
+                    "Re-read Events and anchor the patch on text present exactly expectedCount times."));
+            if (indentationBlocker != null) blockers.Add(indentationBlocker);
+            if (!baseVersionProvided)
+                blockers.Add(Blocker("BaseVersionRequired", "concurrency",
+                    "A complete Events object save requires baseVersion; this preview was sent without one.",
+                    "Apply with the versionToken returned by this preview (or a fresh read) as baseVersion; expectedVersion is its alias."));
+            if (isolation?["verified"]?.Value<bool>() == true) return blockers;
+            if (isolation?["blockers"] is JArray reported && reported.Count > 0)
+            {
+                foreach (JToken blocker in reported) blockers.Add(blocker.DeepClone());
+                return blockers;
+            }
+            string reason = isolation?["reason"]?.ToString();
+            blockers.Add(Blocker(
+                isolation?["blocker"]?.ToString() ?? "IsolationReportUnavailable", "preflight",
+                string.IsNullOrWhiteSpace(reason) ? "The isolation preflight did not report that the save is eligible." : reason,
+                "Fix the reported blocker; nothing was written and the preview cannot establish that the save would succeed."));
+            return blockers;
+        }
+
+        private static JObject Blocker(string code, string layer, string message, string remediation)
+            => new JObject { ["code"] = code, ["layer"] = layer, ["message"] = message, ["remediation"] = remediation };
+
+        /// <summary>
+        /// The refusal <c>patch.indentation.mode=validate</c> raises on a real write (IndentationMismatch or
+        /// IndentationNotComparable), in the shape of an <c>applyBlockers[]</c> entry. A dry run reports the
+        /// evidence without failing; the verdict has to count it, because the write stops at the same check.
+        /// </summary>
+        internal static JObject IndentationBlocker(string code, string message)
+            => Blocker(code, "patch", message,
+                "Send `replace` with the same leading tabs/spaces as the matched line, or omit patch.indentation to insert the text literally.");
+
+        internal static string BuildPreviewSummary(bool patchMatch, bool unchanged, int matchCount, JArray blockers)
+        {
+            string patch = patchMatch ? "The text patch matched (" + matchCount + ")."
+                : unchanged ? "The patch leaves the Events source unchanged."
+                : "The text patch matched nothing.";
+            if (blockers == null || blockers.Count == 0)
+                return patch + " The isolation audit accepted the destination pins, SDK bundle and callbacks, so this request can be applied. "
+                    + "Nothing was written, and the SDK has not validated the Events source: only the save does.";
+            var first = (JObject)blockers[0];
+            string more = blockers.Count > 1 ? " (+" + (blockers.Count - 1) + " more in applyBlockers)" : string.Empty;
+            return patch + " Applying it is BLOCKED by " + first["code"] + ": " + first["message"] + more
+                + " Nothing was written and the SDK validated nothing.";
         }
 
         internal static bool AttachVerification(

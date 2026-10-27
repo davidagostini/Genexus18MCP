@@ -84,6 +84,43 @@ namespace GxMcp.Gateway
 
         private static string? S(JToken? t) => t?.Type == JTokenType.Null || t == null ? null : t.ToString();
 
+        private static bool IsInFlight(string? status)
+            => string.Equals(status, "queued", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(status, "running", StringComparison.OrdinalIgnoreCase);
+
+        // A preview is identified by the request, with the spellings the write gate itself accepts
+        // (Program.IsMutationPreview), or by what the response reports, so the decision does not
+        // depend on how the caller spelled it. One deliberate narrowing: a top-level dryRun next to a
+        // changeSet is not a preview, because that route is driven by changeSet.action and may still
+        // persist (OperationClassifier.IsEffectFreeDryRunPreview); its follow-ups stay.
+        private static bool IsPreviewOrBlocked(JObject args, JObject payload)
+        {
+            if (IsRequestedPreview(args)) return true;
+            JObject? body = payload["result"] as JObject;
+            return IsTrue(payload["dryRun"]) || IsTrue(body?["dryRun"])
+                || IsFalse(payload["canApply"]) || IsFalse(body?["canApply"])
+                || !string.IsNullOrEmpty(S(payload["writeBlocker"]))
+                || !string.IsNullOrEmpty(S(body?["writeBlocker"]));
+        }
+
+        private static bool IsRequestedPreview(JObject args)
+        {
+            string? changeSetAction = S((args["changeSet"] as JObject)?["action"]);
+            string? validate = S(args["validate"]);
+            return OperationClassifier.IsEffectFreeDryRunPreview("genexus_edit", args)
+                || IsText(changeSetAction, "preview") || IsText(changeSetAction, "validate")
+                || IsText(validate, "only") || IsText(validate, "validate-only");
+        }
+
+        private static bool IsText(string? value, string expected)
+            => string.Equals(value, expected, StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsTrue(JToken? token)
+            => token?.Type == JTokenType.Boolean ? token.Value<bool>()
+               : token?.Type == JTokenType.String && bool.TryParse(token.ToString(), out bool parsed) && parsed;
+
+        private static bool IsFalse(JToken? token) => token?.Type == JTokenType.Boolean && !token.Value<bool>();
+
         // 1 & 10. apply_pattern
         private static JArray? BuildForApplyPattern(JObject args, JObject payload, bool isError)
         {
@@ -222,6 +259,24 @@ namespace GxMcp.Gateway
         {
             string? name = S(args["name"]) ?? S(payload["name"]) ?? S(payload["object"]);
             if (string.IsNullOrEmpty(name)) return null;
+
+            // Build, preview and undo presuppose a persisted patch. An edit that
+            // is still in flight points at its own poll; a preview (blocked or
+            // not) has nothing to follow up, and a blocked one must never read as
+            // "apply it, then build" when the blocker is configuration.
+            string? operationId = S(payload["operationId"]);
+            if (!string.IsNullOrEmpty(operationId) && IsInFlight(S(payload["status"])))
+            {
+                return new JArray
+                {
+                    Suggest(
+                        "genexus_lifecycle",
+                        new JObject { ["action"] = "status", ["target"] = "op:" + operationId },
+                        "The edit has not finished; poll its outcome before any follow-up",
+                        "high"),
+                };
+            }
+            if (IsPreviewOrBlocked(args, payload)) return null;
 
             // Treat any non-"No change" success as a real patch worth verifying.
             bool noChange = payload["noChange"]?.Value<bool>() == true;

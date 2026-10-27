@@ -121,7 +121,12 @@ namespace GxMcp.Worker.Tests
 
         [Fact]
         public void MissingObject_IsRejectedBeforeSdkAccess()
-            => Assert.Throws<InvalidOperationException>(() => EventsSaveIsolation.Preflight(null));
+        {
+            // The refusal is an InvalidOperationException that also carries its named finding.
+            var refusal = Assert.ThrowsAny<InvalidOperationException>(() => EventsSaveIsolation.Preflight(null));
+            var typed = Assert.IsType<EventsIsolationRefusalException>(refusal);
+            Assert.Equal("IsolationTargetTypeUnsupported", Assert.Single(typed.Findings).Code);
+        }
 
         [Fact]
         public void PatternVirtualPart_IsTheOnlyCertifiedVirtualPart()

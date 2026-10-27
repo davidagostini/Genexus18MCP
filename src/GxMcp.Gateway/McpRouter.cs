@@ -1991,6 +1991,8 @@ namespace GxMcp.Gateway
                 "implicitLifecycleActions", "mutation", "partialPersistenceDetected",
                 "requireObjectSave", "objectSaved", "partPersisted", "saveContract", "metadataStampPersisted",
                 "requiredPins", "effectivePins", "profileRevision", "profileRevisionSource", "phase", "persistabilityVerified",
+                // Isolation refusal: every independent blocker with its remediation, beside the pin evidence above.
+                "blocker", "reason", "reasonCode", "blockers",
                 "isolation", "writeAttempted", "verificationCompleted", "persistenceUncertain",
                 "transactionRolledBack", "rollbackVerified", "otherPartsIntact", "otherObjectMetadataIntact",
                 // Isolated Events save failure diagnostics: where the save stopped and the
@@ -2001,7 +2003,7 @@ namespace GxMcp.Gateway
                 // Patch NoMatch diagnostics are nested in the worker's canonical
                 // error envelope; keep them at the response level named by the
                 // synthesized inspect_near_match hint.
-                "nearMatches", "nearMatchHint", "nearMatchHintDetail", "eolDiff",
+                "nearMatches", "nearMatchHint", "nearMatchHintDetail", "eolDiff", "literalEscapeSequences", "literalEscapeHint",
                 "did_you_mean", "noNearMatchHint",
                 // Save+specify (SpecificationFailed): the itemized spc/gen diagnostics and
                 // the stale-environment-copy warning are the whole point of the error.

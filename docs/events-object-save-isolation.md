@@ -42,6 +42,15 @@ the Events source and no save, so it cannot say the save will succeed:
 | `persistabilityVerified` | Always `false` for a preview; only a completed, verified save establishes persistence. |
 | `semanticValidation` | `{performed: false, reason}`: the SDK's validation of the Events source (unknown functions, syntax) runs only inside the part save, which a preview must not run. |
 | `previewScope` | The same statement in words. |
+| `canApply` | Whether this exact request could be applied now: the patch matched (or leaves the source unchanged), the isolation audit accepted the destination, bundle and callbacks, `patch.indentation` (when `mode=validate`) would not refuse it, and `baseVersion` was sent. It is the field to read first. |
+| `applyBlockers` | Present only when `canApply` is `false`: every independent reason, in the order the checks run, each as `{code, layer, message, remediation, evidence?}`. Fixing the first one does not reveal the next one later. |
+| `previewSummary` | One sentence with the verdict, the first blocker, and the statements that nothing was written and the SDK validated nothing. |
+| `writeAttempted` | Always `false` for a preview. |
+
+A preview keeps `status: ok` and `code: Applied` for compatibility: the textual
+simulation did succeed. That pair is not permission to write; `canApply` is. A
+preview carries no `next_legal_actions`, because there is nothing to build,
+preview or undo, and a blocked one never suggests an apply that cannot happen.
 
 A clean preview followed by a failed save is expected when the SDK rejects the
 source only at save time: it validates the Events source in `eventsPart.Save()`.
@@ -50,6 +59,69 @@ The failure then says where and why (see below). Checked on a disposable GeneXus
 of the object returned `false` for such a source but produced no messages, so it
 is not used; and `SkipValidation=true` of the object save does not apply to the
 earlier part save.
+
+## Why the save is refused before any write
+
+`ObjectSaveIsolationUnverified` is the envelope; `reasonCode` and `blockers[]`
+say which prerequisite failed and who owns the fix. The preflight evaluates every
+independent prerequisite before refusing, so one pass reports all of them.
+
+| Code | Layer | Meaning | Who fixes it |
+| :--- | :--- | :--- | :--- |
+| `WriteDestinationPinsMissing` | pins | Neither `GXMCP_EXPECTED_KB_PATH` nor `GXMCP_EXPECTED_KB_VERSION` reaches the Worker. The isolated save never runs unguarded. | The Gateway owner: set both in the environment that launches the Gateway (for example the `env` block of the MCP client's server entry), after confirming them with the SDK, and restart the Gateway. |
+| `WriteDestinationConfigurationIncomplete` | pins | Only one pin is set (`evidence.missing` names the other). | Same. |
+| `WriteDestinationKbMismatch` | destination | The opened KB is not the pinned one (the preflight reports identity hashes, not paths). | Correct the pin or open the right KB. |
+| `WriteDestinationVersionMismatch` | destination | The KB's active version is not the pinned version. | Restore it with `genexus_kb_version action=set_active`, `targetVersion` equal to the pin and `autoUpdate=false`, or correct the pin. |
+| `WriteDestinationVersionNotWritable` | destination | The pinned version is frozen or its writability is unknown. | Pin a writable version. |
+| `SdkBundleNotAudited` | sdk-bundle | The loaded SDK/WorkWithPlus bundle is not one of the audited ones (`evidence.loadedBundle` lists each assembly's hash prefix and file version, `evidence.auditedBundles` the audited ids). **Pins do not fix this.** | An audit of that exact bundle (see below). There is no allowlist by version number. |
+| `SdkBundleAssemblyMissing`, `SdkBundleAssemblyAmbiguous` | sdk-bundle | A required assembly is not loaded, or two implementations of one assembly are loaded (a mixed bundle). | Same. |
+| `UnverifiedObjectPart`, `UnverifiedSdkCallback`, `IsolationTargetTypeUnsupported` | object, callbacks | The object has a part type, a direct callback or a type outside the audited set. | Not fixable by configuration. |
+| `IsolationPreflightFailed` | preflight | Any other preflight failure, with its message and exception type. | Read the Worker log for that request (the response's `correlationId`, when it carries one). |
+
+When any pin is set, the destination fence that runs before the preflight refuses
+a partial, divergent or unwritable destination first, with the same
+`WriteDestination*` codes, `persisted: false` and `writeAttempted: false` (its
+envelope reports the expected and actual KB as it always has). The preflight takes
+the same decision for what the fence cannot see, such as a version that changes
+between the two, and for the case where neither pin is set.
+
+A preview adds more reasons it cannot apply, listed before the isolation ones in
+the order the request is judged: `PatchNoMatch`; `IndentationMismatch` or
+`IndentationNotComparable`, the refusal `patch.indentation.mode=validate` would
+raise on the real write (layer `patch`; the preview reports it and goes on, so
+without this entry it would say the request can be applied); and
+`BaseVersionRequired` (no `baseVersion`; `expectedVersion` is its alias).
+
+Only the audited bundles are eligible: the GeneXus 18 U16 builds listed in
+`EventsSaveIsolation` (18.0.16.189550 and 18.0.16.189595, each with the exact
+WorkWithPlus implementation when that package is loaded). An installation of
+another update level (for example GeneXus 18 U11 or U12) is refused with
+`SdkBundleNotAudited` whatever the pins say, because the audit is of the whole
+loaded bundle, not of a version string. Making another bundle eligible takes the
+same audit the U16 bundle had: inspection of the installed assemblies, their save
+callbacks and pattern handlers, and native proofs in a disposable Knowledge Base
+(rollback, unchanged sibling parts and objects, no implicit operation).
+
+## Applied versus pending configuration
+
+The pins are process environment variables: the Gateway forwards its own `GXMCP_*`
+environment to the Worker, so they are whatever the process that launched the
+Gateway declared (for example the `env` block of an MCP client's server entry). An
+edit of that entry therefore reaches a Worker only through a Gateway started after
+the edit. The isolation report says what the Worker actually has, without reading
+the process environment:
+
+- `objectSaveIsolation.effectivePins` (or the same field of the refusal) is what
+  the Worker has: `variables` says `absent`, `blank` or `present` per pin, `kbIdentity`
+  is a one-way hash of the pinned KB path (the path itself is never reported) and
+  `version` is the pinned version name, to compare with `genexus_kb_version action=list`.
+- `profileRevision` is a different fact: the revision of the Gateway configuration
+  file (`profileRevisionSource: native-config`), not of the entry that declared
+  the pins. Adding a pin to that entry does not change it.
+
+A refusal that reports `absent` for a pin the owner has already written means the
+Gateway predates the edit: restart it, with no operation in flight, and repeat the
+preview.
 
 ## Failure diagnostics
 
@@ -180,7 +252,33 @@ native_genexus_edit({name: "SampleModule.SamplePanel", type: "WebPanel",
   dryRun: true, autoDeclareVariables: false, rollbackOnFailure: false})
 ```
 
-An ineligible preview returns `writeBlocker: ObjectSaveIsolationUnverified`.
+The same request in the abbreviated form, which is the one to prefer:
+
+```javascript
+native_genexus_edit({name: "SampleModule.SamplePanel", type: "WebPanel",
+  part: "Events", mode: "patch", expectedCount: 1,
+  patch: {find: "// account caption anchor",
+          replace: "// account caption anchor\nAccountMenu.Caption = &DisplayName"},
+  baseVersion: "<read-versionToken>", requireObjectSave: true, dryRun: true})
+```
+
+What makes the arguments valid, and what is refused rather than adapted:
+
+- `requireObjectSave` takes `mode: "patch"` with `part: "Events"` (or full `Source`).
+  Full `Events` is refused with `RequireObjectSaveUnsupportedMode` and other
+  parts with `RequireObjectSaveUnsupportedPart`. That is a documented contract,
+  not a GeneXus syntax error, and nothing falls back to another mode.
+- `baseVersion` (alias `expectedVersion`) is the `versionToken` of a fresh read
+  of that part, and is required for a real write. A preview without it reports
+  `canApply: false`; a stale one is refused with `VersionConflict`; two aliases
+  that disagree are refused with `VersionAliasesConflict` before dispatch.
+- A line break in `find`, `replace` or `content` must reach the MCP as a real
+  line break (the JSON escape `\n` inside the string). A doubled backslash is
+  stored as the two characters backslash and `n`, and the MCP does not convert it.
+- `expectedCount` makes zero or several matches a refusal instead of a guess.
+
+An ineligible preview returns `canApply: false`, `applyBlockers[]` and
+`writeBlocker: ObjectSaveIsolationUnverified`.
 Repeating an ineligible patch with `dryRun:false` returns that error before
 writing, with `writeAttempted:false`, `partPersisted:false`, and
 `objectSaved:false`. An eligible candidate must still pass the checks at the

@@ -28,11 +28,7 @@ namespace GxMcp.Worker.Services
                 }
                 catch (Exception ex)
                 {
-                    var failure = EventsSaveIsolation.DescribeConfiguredPins();
-                    failure["verified"] = false;
-                    failure["blocker"] = "ObjectSaveIsolationUnverified";
-                    failure["reason"] = ex.Message;
-                    return failure;
+                    return EventsSaveIsolation.DescribeRefusal(ex);
                 }
             }
         }
@@ -128,13 +124,13 @@ namespace GxMcp.Worker.Services
                 try { isolation = EventsSaveIsolation.Preflight(seed); }
                 catch (Exception ex)
                 {
-                    var failure = EventsSaveIsolation.DescribeConfiguredPins();
+                    var failure = EventsSaveIsolation.DescribeRefusal(ex);
                     failure["writeAttempted"] = false;
                     failure["partPersisted"] = false;
                     failure["objectSaved"] = false;
                     failure["savePhase"] = IsolatedEventsSavePhase.Preflight;
                     return McpResponse.Err(code: "ObjectSaveIsolationUnverified", target: target,
-                        message: ex.Message, extra: failure);
+                        message: failure["reason"]?.ToString() ?? ex.Message, extra: failure);
                 }
                 var kb = seed.KB;
                 guid = seed.Guid;

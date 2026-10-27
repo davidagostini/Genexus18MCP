@@ -183,7 +183,12 @@ permission.
 
 Both pins survive Worker and Gateway restarts because they live in the
 environment that launches the Worker, which is why they are the right place for
-a long-lived safety rail on a shared KB.
+a long-lived safety rail on a shared KB. The isolated Events save
+(`requireObjectSave`) additionally needs both of them: with neither set it
+refuses with `WriteDestinationPinsMissing` instead of running unguarded, and
+the pins alone do not make the SDK bundle eligible
+([Events save isolation](events-object-save-isolation.md)). The refusal reports
+the state of each pin variable (`absent`, `blank` or `present`), never a value.
 
 ## Human-in-the-loop elicitation
 

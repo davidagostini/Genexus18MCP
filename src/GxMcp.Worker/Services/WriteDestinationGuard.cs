@@ -11,6 +11,7 @@ namespace GxMcp.Worker.Services
     {
         internal const string PathVariable = "GXMCP_EXPECTED_KB_PATH";
         internal const string VersionVariable = "GXMCP_EXPECTED_KB_VERSION";
+        internal const string PinsMissingCode = "WriteDestinationPinsMissing";
         internal static bool IsConfigured => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(PathVariable))
             || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(VersionVariable));
 
@@ -71,15 +72,25 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        // The single decision behind every destination refusal. With neither pin set the ordinary guard is
+        // off (documented behavior); a caller whose contract needs a guaranteed destination, such as the
+        // isolated Events save, asks for requirePins and gets WriteDestinationPinsMissing instead.
+        internal static string Classify(string expectedPath, string expectedVersion, string actualPath,
+            string actualVersion, bool? frozen, bool opening, bool requirePins = false)
+        {
+            bool noPath = string.IsNullOrWhiteSpace(expectedPath), noVersion = string.IsNullOrWhiteSpace(expectedVersion);
+            if (noPath && noVersion) return requirePins ? PinsMissingCode : null;
+            if (noPath || noVersion) return "WriteDestinationConfigurationIncomplete";
+            if (!SamePath(expectedPath, actualPath)) return "WriteDestinationKbMismatch";
+            if (!opening && !string.Equals(expectedVersion, actualVersion, StringComparison.OrdinalIgnoreCase)) return "WriteDestinationVersionMismatch";
+            if (!opening && frozen != false) return "WriteDestinationVersionNotWritable";
+            return null;
+        }
+
         internal static string Check(string expectedPath, string expectedVersion, string actualPath,
             string actualVersion, bool? frozen, bool opening)
         {
-            if (string.IsNullOrWhiteSpace(expectedPath) && string.IsNullOrWhiteSpace(expectedVersion)) return null;
-            string code = null;
-            if (string.IsNullOrWhiteSpace(expectedPath) || string.IsNullOrWhiteSpace(expectedVersion)) code = "WriteDestinationConfigurationIncomplete";
-            else if (!SamePath(expectedPath, actualPath)) code = "WriteDestinationKbMismatch";
-            else if (!opening && !string.Equals(expectedVersion, actualVersion, StringComparison.OrdinalIgnoreCase)) code = "WriteDestinationVersionMismatch";
-            else if (!opening && frozen != false) code = "WriteDestinationVersionNotWritable";
+            string code = Classify(expectedPath, expectedVersion, actualPath, actualVersion, frozen, opening);
             if (code == null) return null;
             var diagnostic = DescribePins(expectedPath, expectedVersion);
             diagnostic.Merge(new JObject { ["expectedKbPath"] = expectedPath, ["actualKbPath"] = actualPath,
@@ -91,9 +102,7 @@ namespace GxMcp.Worker.Services
 
         internal static JObject DescribePins(string path, string version)
         {
-            string identity = null;
-            try { if (!string.IsNullOrWhiteSpace(path)) identity = Helpers.SdkReflection.Sha256Hex(NormalizePath(path).ToUpperInvariant()); }
-            catch { }
+            string identity = KbIdentity(path);
             string profile = Environment.GetEnvironmentVariable("GXMCP_PROFILE_CONFIG_PATH");
             string revision = null;
             try
@@ -110,12 +119,33 @@ namespace GxMcp.Worker.Services
                 {
                     ["kbPathConfigured"] = !string.IsNullOrWhiteSpace(path),
                     ["versionConfigured"] = !string.IsNullOrWhiteSpace(version),
-                    ["kbIdentity"] = identity, ["version"] = version
+                    ["kbIdentity"] = identity, ["version"] = version,
+                    // Where the Worker read them from, and in what state: the only precedence there is.
+                    // The Gateway forwards its own GXMCP_* environment to the Worker, so the pins are whatever
+                    // the process that launched the Gateway declared (for example the env of the MCP client's
+                    // server entry). The KB path is reported only as its identity hash; the version is reported
+                    // by name, which is what the caller compares with kb_version action=list.
+                    ["source"] = "process-environment",
+                    ["variables"] = new JObject { [PathVariable] = PinState(path), [VersionVariable] = PinState(version) }
                 },
+                // profileRevision is the revision of the Gateway configuration file (native-config), not of the
+                // launcher entry that declared the pins; a pin edit there reaches a Worker only after the
+                // Gateway is restarted.
                 ["profileRevision"] = revision, ["profileRevisionSource"] = "native-config",
                 ["phase"] = "write-destination", ["persisted"] = false, ["saved"] = false,
                 ["writeAttempted"] = false, ["implicitOperations"] = new JArray()
             };
+        }
+
+        private static string PinState(string value)
+            => value == null ? "absent" : string.IsNullOrWhiteSpace(value) ? "blank" : "present";
+
+        // Same one-way identity DescribePins reports, so expected and actual destinations can be compared
+        // in a refusal without printing either path.
+        internal static string KbIdentity(string path)
+        {
+            try { return string.IsNullOrWhiteSpace(path) ? null : Helpers.SdkReflection.Sha256Hex(NormalizePath(path).ToUpperInvariant()); }
+            catch { return null; }
         }
 
         private static bool SamePath(string expected, string actual)

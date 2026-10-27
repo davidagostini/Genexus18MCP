@@ -374,6 +374,8 @@ namespace GxMcp.Worker.Services
                     }
 
                     string failure = BuildPatchResult(failedStatus, partName, normalizedOperation, expectedCount, matchCount, failedDetails);
+                    if (string.Equals(failedStatus, "NoMatch", StringComparison.OrdinalIgnoreCase))
+                        failure = AttachLiteralEscapeHint(failure, context, originalSource);
 
                     // FR#18 (friction-report 2026-05-14): attach near-match diagnostics so the
                     // agent can adjust context in one iteration instead of re-reading the whole
@@ -660,6 +662,7 @@ namespace GxMcp.Worker.Services
                 // reports the evidence so it can be reviewed without failing; a real write stops
                 // here with IndentationMismatch / IndentationNotComparable and persists nothing.
                 JObject indentationEvidence = null;
+                JObject indentationBlocker = null;
                 if (indentation != null && scopedOutcome != null && string.Equals(status, "Applied", StringComparison.OrdinalIgnoreCase))
                 {
                     string indentCode = CheckIndentation(sourceLines, scopedOutcome, workContent, out string indentMessage, out indentationEvidence);
@@ -683,6 +686,8 @@ namespace GxMcp.Worker.Services
                                     ["indentation"] = indentationEvidence
                                 });
                         }
+                        // A dry run goes on, but the verdict must count what the real write would stop at.
+                        indentationBlocker = PatchPersistenceReceipt.IndentationBlocker(indentCode, indentMessage);
                     }
                     else
                     {
@@ -731,7 +736,11 @@ namespace GxMcp.Worker.Services
                         if (requireObjectSave)
                         {
                             var isolation = _writeService.InspectEventsIsolation(target, typeFilter);
-                            PatchPersistenceReceipt.AttachObjectSavePreviewScope(dryRunBody, isolation, matchCount);
+                            PatchPersistenceReceipt.AttachObjectSavePreviewScope(
+                                dryRunBody, isolation, matchCount, !string.IsNullOrWhiteSpace(baseVersion), indentationBlocker);
+                            // "Dry-run succeeded" alone reads as permission; say what was and was not established.
+                            if (dryRunBody["canApply"]?.Value<bool>() == false)
+                                dryRunBody["details"] = "Dry-run succeeded for the text patch. Write skipped, and applying it is blocked: see canApply, applyBlockers and previewSummary.";
                         }
                         dryRunBody["requestedHash"] = dryRunEvidence.RequestedHash;
                         dryRunBody["persistedHash"] = dryRunEvidence.PersistedHash;
@@ -2363,6 +2372,37 @@ namespace GxMcp.Worker.Services
             {
                 return patchResultJson;
             }
+        }
+
+        // A patch text that carries the two characters backslash and n (or r, t) that the source itself does not
+        // contain is usually an escaped line break that a client never decoded. The MCP never converts it: the
+        // text is matched as sent. When it did not match, name the sequences so the caller fixes the escaping
+        // instead of re-reading a source that was never the problem.
+        internal static string[] LiteralEscapeSequences(string patchText, string source)
+        {
+            if (string.IsNullOrEmpty(patchText)) return Array.Empty<string>();
+            var found = new List<string>();
+            foreach (string sequence in new[] { "\\n", "\\r", "\\t" })
+                if (patchText.Contains(sequence) && (source == null || !source.Contains(sequence))) found.Add(sequence);
+            return found.ToArray();
+        }
+
+        internal static string AttachLiteralEscapeHint(string failure, string patchText, string source)
+        {
+            string[] sequences = LiteralEscapeSequences(patchText, source);
+            if (sequences.Length == 0) return failure;
+            try
+            {
+                var json = JObject.Parse(failure);
+                var node = json["error"] as JObject ?? json;
+                node["literalEscapeSequences"] = new JArray(sequences);
+                node["literalEscapeHint"] = "The patch text contains the characters " + string.Join(", ", sequences)
+                    + " (a backslash followed by a letter), and the source does not. The MCP does not convert escape sequences: "
+                    + "a real line break or tab must arrive as a single character after JSON decoding (one escape inside the JSON string, "
+                    + "not an escaped backslash). Nothing was written.";
+                return json.ToString();
+            }
+            catch { return failure; }
         }
 
         /// <summary>

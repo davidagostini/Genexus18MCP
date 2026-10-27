@@ -47,7 +47,12 @@ actual known persistence state. No compensating save or blind retry occurs.
 An unchanged patch with `requireObjectSave=true` still reaches the guarded
 ForceSave path: existing part-only persistence is not proof of a saved object.
 The exact existing Events source is preserved for this no-op, and dryRun still
-does not save. Both source-token checks also apply to this case.
+does not save. Both source-token checks also apply to this case. The receipt of
+such an applied no-op says `idempotent: true`, `sourceChanged: false` and
+`noContentChange: true`; `writeAttempted` and `objectSaveInvoked` stay `true`
+because the guarded save did run (the revision advances, the content hash does
+not). A caller that wants no save at all for an unchanged source uses `dryRun`,
+which reports `noContentChange` without writing.
 
 After any mutation attempt, including rollback or interrupted verification,
 the Worker clears its managed read and patch caches for every identity alias.

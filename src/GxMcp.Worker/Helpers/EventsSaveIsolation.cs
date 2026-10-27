@@ -54,47 +54,60 @@ namespace GxMcp.Worker.Helpers
             return report;
         }
 
+        // The ids MatchAuditedBuild can return. A refusal lists them so the bundle that is loaded can be
+        // compared with the ones that were audited, without a version-number allowlist.
+        internal static IEnumerable<string> AuditedBundleIds
+            => new[] { "18.0.16.189550", "18.0.16.189595" };
+
         internal static JObject CheckTarget(KBObject obj)
         {
             if (obj == null || obj.GetType() != typeof(WebPanel))
-                throw new InvalidOperationException("Isolated Events save supports only the exact audited SDK WebPanel type.");
-            if (!WriteDestinationGuard.IsConfigured)
-                throw new InvalidOperationException("Isolated Events save requires both profile-owned KB and version pins.");
+                throw new EventsIsolationRefusalException(EventsIsolationFindings.TargetTypeUnsupported(obj?.GetType().FullName));
             var kb = obj.KB;
-            var version = KBVersion.GetActive(kb);
-            string destinationError = WriteDestinationGuard.Check(
-                Environment.GetEnvironmentVariable(WriteDestinationGuard.PathVariable),
-                Environment.GetEnvironmentVariable(WriteDestinationGuard.VersionVariable),
-                kb.Location, version?.Name, version == null ? (bool?)null : version.IsFrozen, false);
-            if (destinationError != null) throw new InvalidOperationException(destinationError);
-            var loadedHashes = new Dictionary<string, string>();
-            foreach (var expected in AuditedAssemblies)
-            {
-                var assembly = AppDomain.CurrentDomain.GetAssemblies().SingleOrDefault(a => a.GetName().Name == expected.Key);
-                // WorkWithPlus is loaded only when the target has that package
-                // installed/attached. If loaded, its exact U16 bytes are still
-                // mandatory; an unknown loaded implementation is never trusted.
-                if (assembly == null && expected.Key == "DVelop.Patterns.WorkWithPlus") continue;
-                if (assembly == null)
-                    throw new InvalidOperationException("Unverified SDK implementation: " + expected.Key);
-                loadedHashes[expected.Key] = Hash(File.ReadAllBytes(assembly.Location));
-            }
-            string auditedBuild = MatchAuditedBuild(loadedHashes);
-            if (auditedBuild == null)
-                throw new InvalidOperationException("Unverified SDK implementation bundle; isolated Events save requires a complete audited U16 build.");
-            var partTypes = obj.Parts.Cast<KBObjectPart>().Select(p => p.GetType()).ToArray();
-            if (!partTypes.Contains(typeof(EventsPart)) || partTypes.Any(p => !Parts.Contains(p)))
-                throw new InvalidOperationException("The object contains an unverified SDK or extension part: "
-                    + string.Join(", ", partTypes.Where(p => !Parts.Contains(p)).Select(p => p.FullName)));
-            JObject report = new JObject();
             var callbacks = new JArray();
-            InspectDirectCallbacks(obj, callbacks);
-            foreach (KBObjectPart part in obj.Parts) InspectDirectCallbacks(part, callbacks);
+            // Independent prerequisites are all evaluated before refusing, each phase guarded, so fixing the pins is not
+            // how the next blocker (the SDK bundle) is first discovered and an I/O failure cannot hide the pins finding.
+            // The SDK, the environment and the file system enter only through the probe.
+            var evaluation = EventsIsolationFindings.Evaluate(new IsolationProbe
+            {
+                ExpectedPath = Environment.GetEnvironmentVariable(WriteDestinationGuard.PathVariable),
+                ExpectedVersion = Environment.GetEnvironmentVariable(WriteDestinationGuard.VersionVariable),
+                ReadDestination = () =>
+                {
+                    var active = KBVersion.GetActive(kb);
+                    return new IsolationDestination
+                    {
+                        Path = kb.Location, VersionName = active?.Name, Frozen = active == null ? (bool?)null : active.IsFrozen
+                    };
+                },
+                RequiredAssemblies = AuditedAssemblies.Keys.ToArray(),
+                OptionalAssembly = "DVelop.Patterns.WorkWithPlus",
+                LoadedLocations = name => AppDomain.CurrentDomain.GetAssemblies()
+                    .Where(a => a.GetName().Name == name).Select(a => a.Location).ToArray(),
+                HashFile = path => Hash(File.ReadAllBytes(path)),
+                FileVersion = FileVersion,
+                MatchAuditedBuild = MatchAuditedBuild,
+                AuditedBundleIds = AuditedBundleIds,
+                PartTypes = () => obj.Parts.Cast<KBObjectPart>().Select(p => p.GetType()).ToArray(),
+                IsAllowedPart = Parts.Contains,
+                RequiredPart = typeof(EventsPart),
+                InspectCallbacks = () =>
+                {
+                    InspectDirectCallbacks(obj, callbacks);
+                    foreach (KBObjectPart part in obj.Parts) InspectDirectCallbacks(part, callbacks);
+                }
+            });
+            if (evaluation.Findings.Count > 0) throw new EventsIsolationRefusalException(evaluation.Findings);
+            var version = evaluation.Destination;
+            var partTypes = evaluation.PartTypes;
+            string auditedBuild = evaluation.AuditedBuild;
+            JObject report = new JObject();
             report["directCallbacks"] = callbacks;
             report["sdkFingerprintVerified"] = true;
             report["auditedSdkBuild"] = auditedBuild;
             report["destinationPinsVerified"] = true;
-            report["effectiveVersion"] = version.Name;
+            AppendPinEvidence(report);
+            report["effectiveVersion"] = version.VersionName;
             report["effectiveKbIdentity"] = ContentHash(Path.GetFullPath(kb.Location).TrimEnd('\\', '/').ToUpperInvariant());
             report["objectGuid"] = obj.Guid.ToString();
             report["parts"] = new JArray(partTypes.Select(p => p.FullName));
@@ -125,6 +138,32 @@ namespace GxMcp.Worker.Helpers
                 Environment.GetEnvironmentVariable(WriteDestinationGuard.PathVariable),
                 Environment.GetEnvironmentVariable(WriteDestinationGuard.VersionVariable));
             report["phase"] = "isolation-preflight";
+            return report;
+        }
+
+        // The pin state the Worker actually has, in the shape a refusal reports it. An eligible preview carries it too,
+        // so that "the pins are applied" is something the report shows (state of each pin variable, identity hash and
+        // native-config revision) and not only something inferred from the absence of a refusal.
+        internal static void AppendPinEvidence(JObject report)
+        {
+            var pins = DescribeConfiguredPins();
+            foreach (string key in new[] { "effectivePins", "profileRevision", "profileRevisionSource" })
+                report[key] = pins[key];
+        }
+
+        // What a refused preflight reports, for the preview and for the real save alike. blocker and
+        // reason keep their names and meaning (the first finding); reasonCode and blockers add every
+        // independent finding with its remediation, so a client reading only status/code/blocker is unaffected.
+        internal static JObject DescribeRefusal(Exception ex)
+        {
+            IReadOnlyList<EventsIsolationFinding> findings = (ex as EventsIsolationRefusalException)?.Findings;
+            if (findings == null || findings.Count == 0) findings = new[] { EventsIsolationFindings.Unclassified(ex) };
+            var report = DescribeConfiguredPins();
+            report["verified"] = false;
+            report["blocker"] = "ObjectSaveIsolationUnverified";
+            report["reason"] = findings[0].Message;
+            report["reasonCode"] = findings[0].Code;
+            report["blockers"] = new JArray(findings.Select(f => f.ToJson()));
             return report;
         }
         internal static bool IsAllowedPartTypeName(string fullName)
@@ -220,6 +259,13 @@ namespace GxMcp.Worker.Helpers
         {
             using (var sha = SHA256.Create())
                 return BitConverter.ToString(sha.ComputeHash(value)).Replace("-", "").ToLowerInvariant();
+        }
+
+        // Diagnostic only: the assembly file version printed beside a hash prefix, never used to decide.
+        private static string FileVersion(string path)
+        {
+            try { return System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileVersion; }
+            catch { return null; }
         }
     }
 }

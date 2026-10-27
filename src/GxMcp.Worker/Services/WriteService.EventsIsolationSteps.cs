@@ -67,6 +67,10 @@ namespace GxMcp.Worker.Services
                 _original = EventsSaveIsolation.Fresh(_kb, _guid);
                 _originalSource = EventsSaveIsolation.Source(_original);
                 _receipt["sourceChanged"] = !string.Equals(_originalSource, _source, StringComparison.Ordinal);
+                // The preview reports noContentChange; the receipt of an applied no-op says it too. With
+                // requireObjectSave the guarded ForceSave still runs for an unchanged source (documented in
+                // events-save-u16-candidate.md), so writeAttempted/objectSaveInvoked stay true beside it.
+                _receipt["noContentChange"] = !_receipt["sourceChanged"].Value<bool>();
                 OriginalToken = EventsSaveIsolation.Token(_original);
                 _originalPlacement = EventsSaveIsolation.Placement(_original);
                 _revisionBefore = _original.VersionId;
