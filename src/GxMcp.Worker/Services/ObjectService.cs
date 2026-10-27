@@ -1711,6 +1711,22 @@ namespace GxMcp.Worker.Services
             }
         }
 
+        /// <summary>
+        /// True when the SDK no longer holds this object, which was deleted after the caller got hold of it. A
+        /// resolution that fails for any other reason is not "absent": the caller keeps its normal behavior.
+        /// </summary>
+        internal bool IsAbsentFromModel(KBObject obj)
+        {
+            if (obj == null) return false;
+            try
+            {
+                var kb = _kbService.GetKB();
+                if (kb == null) return false;
+                return ResolveByNativeIdentity(kb, obj.Guid, obj.TypeDescriptor?.Name).Status == NativeResolutionStatus.Absent;
+            }
+            catch { return false; }
+        }
+
         // Shared with the Structure rollback's created-global cleanup (issue #592), which
         // must answer "does anything else use this attribute" the same way delete does.
         internal static JArray CollectIncomingReferences(KBObject obj, KnowledgeBase kb, out bool truncated)
