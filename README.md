@@ -617,7 +617,7 @@ in GeneXus first.
 **Refactor, patterns & compare**
 - `genexus_refactor` — rename, extract procedure, WWP condition set
 - `genexus_apply_pattern` — apply a GeneXus pattern (WorkWith, WorkWithPlus, …); `mode=actions` manages typed WorkWithPlus grid actions and Action Groups
-- `genexus_wwp` — typed WorkWithPlus editing: Action Groups, atomic native `add_grid_attribute`, plus `add_tab`, `move_tab`, and `remove_tab` for WebPanel tabs and typed children
+- `genexus_wwp` — typed WorkWithPlus editing: Action Groups, atomic native `add_grid_attribute`, plus `add_tab`, `move_tab`, and `remove_tab` for WebPanel and Transaction tabs and typed children
 - `genexus_workwith` — typed authoring of standard WorkWith (WorkWith for Web) pattern actions on tabs (`General`, etc.), procedure calls, conditions, and parameters
 - `genexus_compare` — IDE "Compare Objects" parity (`IComparerService`)
 - `genexus_merge` — 2- or 3-way object merge (`IMergeService`)
@@ -686,7 +686,7 @@ WorkWithPlus patterns are XML documents that drive Transaction-and-Selection scr
 | Reorganize Transaction view (form layout, action row) | edit under `/instance/transaction/...` | ✅ verified live |
 | Reorganize Selection view (list/grid, filters, orders) | edit under `/instance/level/selection/...` | ✅ verified live |
 | Auto-rebuild `childrenOrderedList` from XML order | done implicitly on every write; report under `childrenOrderedListReconciliation` | ✅ verified live |
-| Add / move / remove WebPanel tabs and typed controls | `genexus_wwp` `add_tab` / `move_tab` / `remove_tab` | ✅ native Pattern SDK commands; snapshot + re-read + WebForm projection verification |
+| Add / move / remove WebPanel and Transaction tabs and typed controls | `genexus_wwp` `add_tab` / `move_tab` / `remove_tab` | ✅ native Pattern SDK commands; snapshot + re-read + WebForm projection verification |
 | Add or reconcile one grid Attribute caption | `genexus_wwp` `add_grid_attribute` | ✅ isolated dry-run, full PatternInstance/WebForm snapshots, exact rollback and no implicit lifecycle |
 
 **Recommended workflow for a screen redesign:**
