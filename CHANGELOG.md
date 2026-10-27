@@ -11,7 +11,11 @@
 
 ### Fixed
 
+- **`genexus_lifecycle` `rebuild` and targeted `build` no longer leave the SDK event broker suspended for the rest of the Worker's life.** The in-process Rebuild All and Build One tasks set `EventsSuspended`, which the SDK implements as a write to the Worker-wide broker (`Artech.MsBuild.Common.ArtechTask`) and which none of its build tasks resets. After the first such build every later SDK callback in that Worker stayed switched off, the isolated Events save preflight (it requires an active broker) refused, and whether a later build dispatched SDK build events depended on which builds had run before it. The broker is still suspended for the duration of those two tasks, so their own event behavior is unchanged; its previous state is now restored afterwards, whether the task succeeds, returns false, throws or lacks its entry point. Builds that call the SDK build services directly (explicit `Type:Name`/GUID targets, batch, compile-only) never touch the switch; they now always see the broker the Worker started with, the state they already had in a fresh Worker, instead of one an earlier Build One or Rebuild All left suspended. `build_all` already restored it ([#696](https://github.com/lennix1337/Genexus18MCP/issues/696)).
+
 ### Internal
+
+- `BuildEventBrokerRestoreTests` pins the SDK contract the Worker has to live with (the `EventsSuspended` setter writes the global broker) for Build One and Rebuild All: suspended while the task runs, restored afterwards for success, false, exception and missing entry point, from either prior state.
 
 ## v4.0.4 - 2026-10-27
 

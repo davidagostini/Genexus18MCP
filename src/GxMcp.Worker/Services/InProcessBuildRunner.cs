@@ -868,6 +868,7 @@ namespace GxMcp.Worker.Services
 
         private static bool ExecuteBuildOne(object kbHandle, string objectName, IBuildEngine engine, bool buildCalled)
         {
+            bool brokerWasSuspended = IsSdkEventBrokerSuspended();
             try
             {
                 var typeBuildOne = _typeBuildOne;
@@ -903,6 +904,36 @@ namespace GxMcp.Worker.Services
             {
                 LogExceptionChain("BuildOne(" + objectName + ")", ex);
                 return false;
+            }
+            finally
+            {
+                RestoreSdkEventBroker(brokerWasSuspended);
+            }
+        }
+
+        // ArtechTask.EventsSuspended is not a per-task option: its setter writes the process-global
+        // EventsService.Events switch, and none of BuildOne / BuildAll / IdeWebBuildAndDeploy resets it
+        // (Artech.MsBuild.Common.ArtechTask, SDK 18). A task that suspends SDK events therefore has to give
+        // the switch back itself, or this Worker keeps every later SDK callback off for the rest of its
+        // life (#696). The task still runs with events suspended; what no longer happens is that the
+        // suspension outlives it. The builds that call the build services directly (BuildWithTheseOnly,
+        // batch, compile-only) never touch the switch, so they now always see the state the Worker started
+        // with instead of the one an earlier Build One or Rebuild left behind.
+        private static bool IsSdkEventBrokerSuspended()
+            => Artech.Architecture.Common.Events.EventsService.Events?.EventsSuspended ?? false;
+
+        private static void RestoreSdkEventBroker(bool suspended)
+        {
+            try
+            {
+                var events = Artech.Architecture.Common.Events.EventsService.Events;
+                if (events != null) events.EventsSuspended = suspended;
+            }
+            catch (Exception ex)
+            {
+                // Runs in a finally: a restore that throws would replace the build's own result, and the
+                // caller would then repeat a build that already ran under MSBuild.exe.
+                Logger.Warn("[BUILD-INPROCESS] could not restore the SDK event broker (suspended=" + suspended + "): " + ex.Message);
             }
         }
 
@@ -1623,6 +1654,7 @@ namespace GxMcp.Worker.Services
 
         private static bool ExecuteIdeWebBuildAndDeploy(object kbHandle, IBuildEngine engine, bool forceRebuild)
         {
+            bool brokerWasSuspended = IsSdkEventBrokerSuspended();
             try
             {
                 object task = Activator.CreateInstance(_typeIdeWebBuildAndDeploy);
@@ -1648,6 +1680,10 @@ namespace GxMcp.Worker.Services
             {
                 LogExceptionChain("IdeWebBuildAndDeploy", ex);
                 return false;
+            }
+            finally
+            {
+                RestoreSdkEventBroker(brokerWasSuspended);
             }
         }
 
