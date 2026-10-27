@@ -160,14 +160,37 @@ namespace GxMcp.Worker.Helpers
         /// <summary>The first attribute on the element that its kind does not permit.</summary>
         internal static string FirstDisallowedAttribute(string elementName, XElement element)
         {
+            return FirstDisallowedAttribute(elementName, element, null);
+        }
+
+        /// <summary>
+        /// The first attribute on the element that neither its kind nor the pattern specification
+        /// permits. <paramref name="declared"/> is what the installed specification declares for
+        /// the element type (null when it cannot be read); it widens the static list because the
+        /// specification, not this table, says which properties a button or image of the pattern
+        /// carries. SDK-owned metadata (<c>default*</c>, <c>template*</c>, <c>childrenOrderedList</c>)
+        /// stays refused whatever the specification declares.
+        /// </summary>
+        internal static string FirstDisallowedAttribute(string elementName, XElement element, IReadOnlyCollection<string> declared)
+        {
             if (element == null || !Kinds.TryGetValue(elementName ?? "", out var kind)) return null;
             foreach (var attribute in element.Attributes())
             {
                 // A namespace declaration is structural, not layout, and never rejected.
                 if (attribute.IsNamespaceDeclaration) continue;
-                if (!kind.Allowed.Contains(attribute.Name.LocalName)) return attribute.Name.LocalName;
+                string name = attribute.Name.LocalName;
+                if (kind.Allowed.Contains(name)) continue;
+                if (declared != null && !IsSdkOwnedAttribute(name) && declared.Contains(name)) continue;
+                return name;
             }
             return null;
+        }
+
+        internal static bool IsSdkOwnedAttribute(string attributeName)
+        {
+            return attributeName.StartsWith("default", StringComparison.OrdinalIgnoreCase)
+                || attributeName.StartsWith("template", StringComparison.OrdinalIgnoreCase)
+                || attributeName.Equals("childrenOrderedList", StringComparison.OrdinalIgnoreCase);
         }
 
         internal static IEnumerable<string> AllowedAttributes(string elementName)

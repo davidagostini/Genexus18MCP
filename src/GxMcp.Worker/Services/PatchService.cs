@@ -587,7 +587,8 @@ namespace GxMcp.Worker.Services
 
                     var patchPlan = Helpers.PatternXmlEditPlan.Create(
                         patternCurrentXml, WriteService.ToSdkPatternLineEndings(updatedSource),
-                        allowGridStructure: false);
+                        allowGridStructure: false,
+                        spec: _patternAnalysisService.TryGetSpecView(resolvedPatternObject ?? patchObjectForTarget, partName));
                     if (patchPlan.ErrorCode != null)
                     {
                         var matchedPattern = _patternAnalysisService?.MatchInstancePattern(resolvedPatternObject ?? patchObjectForTarget);

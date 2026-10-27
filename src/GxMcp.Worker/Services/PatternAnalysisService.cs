@@ -636,6 +636,26 @@ namespace GxMcp.Worker.Services
             return selected.Source as KBObject;
         }
 
+        /// <summary>
+        /// The installed pattern specification behind <paramref name="partName"/> of a pattern
+        /// instance, as the structural edit preflight reads it; null when it cannot be read
+        /// (the preflight then keeps only its static allow-list).
+        /// </summary>
+        internal IPatternSpecView TryGetSpecView(KBObject instanceObj, string partName)
+        {
+            try
+            {
+                var part = FindPatternPart(instanceObj, partName) as Artech.Packages.Patterns.Objects.PatternInstancePart;
+                var specification = part?.RootElement?.Specification?.Specification;
+                return specification == null ? null : new SdkPatternSpecView(specification);
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("[PatternSpec] specification unavailable for the edit preflight: " + ex.Message);
+                return null;
+            }
+        }
+
         public KBObjectPart FindPatternPart(KBObject instanceObj, string partName)
         {
             if (instanceObj == null || string.IsNullOrWhiteSpace(partName)) return null;
