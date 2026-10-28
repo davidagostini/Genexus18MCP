@@ -18,6 +18,7 @@
 ### Fixed
 
 - **`next_legal_actions` no longer sends an agent to Build, preview or undo after an edit that wrote nothing.** A preview, a preview blocked by missing pins and an asynchronous edit that was still queued or running all received the follow-ups of a persisted patch. A preview now has none, and an edit in flight points at its own `genexus_lifecycle action=status target=op:<id>`.
+- `genexus_layout` help and `docs/mcp_capabilities_inventory.md` now name the printblock refusals added in v4.0.4 (`AddPrintBlockVerificationFailed`, `RenamePrintBlockVerificationFailed`, `DeletePrintBlockVerificationFailed`), what the refusal envelope does and does not carry, that add/rename retry and may repair Source before refusing, that delete reads once, and that a refusal does not prove the store state (#714).
 
 ### Internal
 
