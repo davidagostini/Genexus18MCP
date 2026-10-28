@@ -26,9 +26,21 @@ namespace GxMcp.Worker.Helpers
         private readonly Dictionary<string, string> _removedIdentities =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// The installed pattern specification, when the caller could read it. A leaf added by a
+        /// structural edit may then carry the attributes the specification declares for its type,
+        /// not only the ones in <see cref="StructuralLayoutRules"/>.
+        /// </summary>
+        private IPatternSpecView _spec;
+
         public static PatternXmlEditPlan Create(string currentXml, string requestedXml, bool allowGridStructure = false)
         {
-            var plan = new PatternXmlEditPlan { Xml = requestedXml };
+            return Create(currentXml, requestedXml, allowGridStructure, null);
+        }
+
+        internal static PatternXmlEditPlan Create(string currentXml, string requestedXml, bool allowGridStructure, IPatternSpecView spec)
+        {
+            var plan = new PatternXmlEditPlan { Xml = requestedXml, _spec = spec };
             XDocument current, requested;
             try { requested = XDocument.Parse(requestedXml, LoadOptions.PreserveWhitespace); }
             catch (Exception ex) { return plan.Reject("PatternInvalidXml", ex.Message); }
@@ -103,7 +115,7 @@ namespace GxMcp.Worker.Helpers
                     return;
                 // Issue #349: structural layout authoring. Insert / remove / move of a
                 // single leaf layout element inside an existing container.
-                if (TryAllowStructuralLayoutEdit(oldNodes, newNodes, path, allowGridStructure))
+                if (TryAllowStructuralLayoutEdit(oldNodes, newNodes, path, allowGridStructure, before))
                     return;
                 if (TryAllowMultipleLayoutRemovals(oldNodes, newNodes, path))
                     return;
@@ -256,6 +268,33 @@ namespace GxMcp.Worker.Helpers
             .ToList();
 
         /// <summary>
+        /// The attribute names the installed specification declares for a <paramref name="childKind"/>
+        /// element added under <paramref name="container"/>, or null when there is no specification
+        /// or it does not say (the static allow-list then decides alone).
+        /// </summary>
+        private IReadOnlyCollection<string> DeclaredAttributes(XElement container, string childKind)
+        {
+            if (_spec == null || container == null) return null;
+            try
+            {
+                string type = _spec.RootType();
+                foreach (XElement element in container.AncestorsAndSelf().Reverse().Skip(1))
+                {
+                    if (string.IsNullOrEmpty(type)) return null;
+                    type = _spec.ChildType(type, element.Name.LocalName);
+                }
+                if (string.IsNullOrEmpty(type)) return null;
+                string childType = _spec.ChildType(type, childKind);
+                return string.IsNullOrEmpty(childType) ? null : _spec.AttributeNames(childType);
+            }
+            catch (Exception)
+            {
+                // A specification that cannot be read is "not declared": the static list stays in force.
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Structural layout authoring: one leaf element added to, or removed from, an
         /// existing container.
         ///
@@ -288,7 +327,7 @@ namespace GxMcp.Worker.Helpers
         /// </para>
         /// </summary>
         private bool TryAllowStructuralLayoutEdit(
-            XNode[] oldNodes, XNode[] newNodes, string path, bool allowGridStructure)
+            XNode[] oldNodes, XNode[] newNodes, string path, bool allowGridStructure, XElement container = null)
         {
             // Exactly one node of difference, on one side only.
             if (Math.Abs(newNodes.Length - oldNodes.Length) != 1) return false;
@@ -343,13 +382,18 @@ namespace GxMcp.Worker.Helpers
                 if (!StructuralLayoutRules.IsPermittedKind(kind)) return false;
                 if (inserted.HasElements) return false;
 
-                string offender = StructuralLayoutRules.FirstDisallowedAttribute(kind, inserted);
+                var declared = DeclaredAttributes(container, kind);
+                string offender = StructuralLayoutRules.FirstDisallowedAttribute(kind, inserted, declared);
                 if (offender != null)
                 {
                     Reject("PatternStructureChangeUnsupported",
                         "Attribute '" + offender + "' is not permitted on a <" + kind + ">"
                         + " added at " + path + ". Permitted: "
-                        + string.Join(", ", StructuralLayoutRules.AllowedAttributes(kind))
+                        + string.Join(", ", StructuralLayoutRules.AllowedAttributes(kind)
+                            .Concat(declared ?? Enumerable.Empty<string>())
+                            .Where(a => !StructuralLayoutRules.IsSdkOwnedAttribute(a))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .OrderBy(a => a, StringComparer.OrdinalIgnoreCase))
                         + ".");
                     return true;
                 }

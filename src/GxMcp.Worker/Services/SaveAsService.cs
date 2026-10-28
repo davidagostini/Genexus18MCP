@@ -230,11 +230,39 @@ namespace GxMcp.Worker.Services
                     "Remove the incomplete clone before retrying."));
             }
 
+            // The reason the part was refused is the only thing that tells the caller what to fix. It used to
+            // travel only under `extra`, the envelope's top level, which the client-facing error shape drops
+            // (only the fields inside `error` are kept), so the answer said which part failed and nothing about
+            // why (#702). Keep the full detail where it was and put the reason inside `error` and in the message.
+            // The default client-facing error keeps only the first line of a message and the SDK lists one validation
+            // error per line, so the message carries them joined on one line; `error.cause` keeps the SDK's own lines.
+            string causeCode, cause;
+            SummarizeFailure(innerResult, out causeCode, out cause);
+            string reason = string.IsNullOrEmpty(cause) ? "." : ": " + JoinLines(cause).TrimEnd('.', ' ') + ".";
+
+            var errorExtra = new JObject
+            {
+                ["sourceName"] = sourceName,
+                ["newName"] = newName,
+                ["failedPart"] = failedPart,
+                ["completedSteps"] = completedSteps,
+                ["partsCloned"] = partsCloned,
+                ["partsSkipped"] = partsSkipped,
+                ["cleanup"] = new JObject
+                {
+                    ["attempted"] = true,
+                    ["removed"] = removed,
+                    ["detail"] = SafeParseOrString(cleanupResult)
+                }
+            };
+            if (!string.IsNullOrEmpty(cause)) errorExtra["cause"] = cause;
+            if (!string.IsNullOrEmpty(causeCode)) errorExtra["causeCode"] = causeCode;
+
             return McpResponse.Err(
                 code: removed ? "SaveAsPartFailed" : "PartialFailure",
                 message: removed
-                    ? "Save-as failed while cloning part '" + failedPart + "'; the incomplete target was removed."
-                    : "Save-as failed while cloning part '" + failedPart + "', and automatic cleanup also failed.",
+                    ? "Save-as failed while cloning part '" + failedPart + "'" + reason + " The incomplete target was removed."
+                    : "Save-as failed while cloning part '" + failedPart + "'" + reason + " Automatic cleanup also failed.",
                 hint: removed
                     ? "Fix the source-part validation error and retry; no partial target remains."
                     : "Delete the incomplete target before retrying.",
@@ -255,7 +283,53 @@ namespace GxMcp.Worker.Services
                         ["removed"] = removed,
                         ["detail"] = SafeParseOrString(cleanupResult)
                     }
-                });
+                },
+                errorExtra: errorExtra);
+        }
+
+        /// <summary>
+        /// The code and the message of a failed part write, from the envelope the writer answered with (an
+        /// <c>error</c> object, a bare <c>error</c> string, or a top-level <c>message</c>). The message is the SDK's
+        /// own validation text when the SDK refused the part. Bounded, so one long diagnostic cannot flood the answer.
+        /// </summary>
+        internal static void SummarizeFailure(string innerResult, out string code, out string message)
+        {
+            code = null;
+            message = null;
+            if (string.IsNullOrWhiteSpace(innerResult)) return;
+            try
+            {
+                var inner = JObject.Parse(innerResult);
+                var error = inner["error"];
+                if (error is JObject errorObject)
+                {
+                    code = errorObject["code"]?.ToString();
+                    message = errorObject["message"]?.ToString();
+                }
+                else if (error != null && error.Type != JTokenType.Null)
+                {
+                    message = error.ToString();
+                }
+                if (string.IsNullOrWhiteSpace(code)) code = inner["code"]?.ToString();
+                if (string.IsNullOrWhiteSpace(message)) message = inner["message"]?.ToString();
+            }
+            catch
+            {
+                message = innerResult;
+            }
+            if (message != null)
+            {
+                message = message.Trim();
+                if (message.Length > 1200) message = message.Substring(0, 1200) + "...";
+            }
+        }
+
+        private static string JoinLines(string text)
+        {
+            return string.Join(" | ", text
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0));
         }
 
         private static string Partial(string sourceName, string newName, JArray completedSteps, string failedStep, string innerResult)
@@ -359,8 +433,57 @@ namespace GxMcp.Worker.Services
             {
                 Name = obj.Name,
                 Type = obj.TypeDescriptor?.Name ?? typeFilter ?? "Unknown",
-                Parts = parts
+                Parts = OrderPartsForClone(parts)
             };
+        }
+
+        /// <summary>
+        /// The order the parts are cloned in, which is also the order of the dry-run plan. The parts come back
+        /// alphabetically, so a WebPanel cloned Events before Variables and WebForm. Each part is written through
+        /// the same validated path as a normal edit, and the SDK refuses code that names a control or a variable
+        /// the empty target does not have yet (<c>src0265: invalid attribute 'Ctrl'</c> on the first event that
+        /// uses one), so every clone of such a panel failed at Events and was rolled back (#702). Declarations come
+        /// first, then the layout, then the code that uses both; any other part keeps its alphabetical place at the
+        /// end. The order within a rank is the order the parts arrived in.
+        /// </summary>
+        internal static string[] OrderPartsForClone(IEnumerable<string> parts)
+        {
+            return (parts ?? Enumerable.Empty<string>())
+                .Select((name, index) => new { name, index })
+                .OrderBy(part => ClonePartRank(part.name))
+                .ThenBy(part => part.index)
+                .Select(part => part.name)
+                .ToArray();
+        }
+
+        private static int ClonePartRank(string part)
+        {
+            switch ((part ?? string.Empty).Trim().ToLowerInvariant())
+            {
+                // What the object is made of: other parts name its members.
+                case "structure":
+                case "sdtstructure":
+                case "dataselectorstructure":
+                    return 0;
+                case "variables":
+                    return 1;
+                // The layout: events and rules name its controls.
+                case "webform":
+                case "layout":
+                case "sdlayout":
+                    return 2;
+                case "rules":
+                case "conditions":
+                case "sdrules":
+                    return 3;
+                // The code that uses everything above.
+                case "events":
+                case "sdevents":
+                case "source":
+                    return 4;
+                default:
+                    return 5;
+            }
         }
 
         public bool TargetExists(string newName)
@@ -402,8 +525,10 @@ namespace GxMcp.Worker.Services
             }
 
             // Read source-part as text, write to new object via the same
-            // WriteService pipeline a normal genexus_edit goes through.
-            string readJson = _objects.ReadObjectSource(sourceName, partName, null, null, "mcp", false, typeFilter);
+            // WriteService pipeline a normal genexus_edit goes through. The read is explicitly a full one
+            // (limit 0): an "mcp" read with no limit pages at ~200 lines / 16 KB, which cut every larger part
+            // short here, so the target got a truncated source or, more often, the SDK refused it (#702).
+            string readJson = _objects.ReadObjectSource(sourceName, partName, null, 0, "mcp", false, typeFilter);
             JObject readObj;
             try { readObj = JObject.Parse(readJson); }
             catch { return readJson; }
@@ -415,8 +540,29 @@ namespace GxMcp.Worker.Services
                 return McpResponse.Ok(code: "Skipped", result: new JObject { ["skipped"] = true, ["part"] = partName });
             }
 
+            // A clone must never write a page of the source as if it were the whole part.
+            string truncated = RefuseTruncatedRead(readObj, partName);
+            if (truncated != null) return truncated;
+
             string code = srcToken.ToString();
             return _writes.WriteObject(newName, partName, code, typeFilter);
+        }
+
+        /// <summary>
+        /// The refusal for a source read that came back as a page rather than the whole part, or null when the
+        /// read is complete. Writing such a read would give the clone a truncated part.
+        /// </summary>
+        internal static string RefuseTruncatedRead(JObject readObj, string partName)
+        {
+            bool truncated = readObj?["truncated"]?.ToObject<bool?>() == true
+                || readObj?["isTruncatedByWorker"]?.ToObject<bool?>() == true;
+            if (!truncated) return null;
+            return McpResponse.Err(
+                code: "SourcePartTruncated",
+                message: "The source of part '" + partName + "' was read as a partial page (" +
+                    (readObj["limit"]?.ToString() ?? "?") + " of " + (readObj["totalLines"]?.ToString() ?? "?") +
+                    " lines), so it cannot be cloned faithfully.",
+                hint: "Nothing was written for this part. Report the object name and part: a full read of this part did not return the whole source.");
         }
 
         public string DeleteTarget(string newName, string typeFilter)

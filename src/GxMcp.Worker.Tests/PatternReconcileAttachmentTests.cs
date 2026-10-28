@@ -24,7 +24,9 @@ namespace GxMcp.Worker.Tests
             // patch preview and a full write compare the same document rather than
             // the same edit in two encodings. The ordering assertions below are
             // unchanged: the preflight still runs before the snapshot and the save.
-            Assert.Contains("PatternXmlEditPlan.Create(currentXml, ToSdkPatternLineEndings(xml), allowGridStructure)", writeSrc);
+            // The plan also receives the installed specification (trailing argument), so the
+            // structural preflight can allow the attributes it declares for an added leaf.
+            Assert.Contains("PatternXmlEditPlan.Create(currentXml, ToSdkPatternLineEndings(xml), allowGridStructure,", writeSrc);
             Assert.Contains("normalizedInput = plan.Xml;", writeSrc);
             Assert.DoesNotContain("PatternChildOrderReconciler.Reconcile", writeSrc);
             Assert.DoesNotContain("AttachReconcileReport", writeSrc);

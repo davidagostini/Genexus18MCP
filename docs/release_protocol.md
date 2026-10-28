@@ -67,6 +67,20 @@ requires `publish.zip` on the initial published event. The Worker needs the
 local primary SDK from `config/gx-versions.json`, so the release artifact must
 built on Windows with that supported GeneXus installation.
 
+The `publish/config.json` that ships in `publish.zip` must be the neutral output
+of `build.ps1`. `scripts/verify-release-manifest.py` rejects any other with
+`release-manifest: invalid: config.json is not the neutral build output;
+unexpected <keys>`: it accepts only `ConfigSchemaVersion`, `GatewayMode`,
+`GeneXus` (`InstallationPath`, `WorkerExecutable`), `Server` and `Environment`
+(`ResolutionPolicy`), so an `Engine` section, which `build.ps1
+-PreserveEngineConfig` keeps for a local run, or a KB catalog under
+`Environment` is refused. `release.ps1` runs the check on the staged `publish/`
+and again on the archive, and the release workflow runs it on the unpacked
+package, so it can first show up on a `-SkipBuild` retry, a reused preflight or
+a resumed publication. Rebuild `publish/` with `build.ps1` without
+`-PreserveEngineConfig` and run the release again; do not edit the file by hand
+([#682](https://github.com/lennix1337/Genexus18MCP/issues/682)).
+
 Before changing release metadata, `release.ps1` checks the live `origin/main`
 head and requires local main to match it. It also permits retrying the same
 version when the only local commit is `release: vX.Y.Z` directly on the current

@@ -2378,6 +2378,11 @@ namespace GxMcp.Worker.Services
                         try {
                             using (SdkGate.Enter())
                             {
+                                // This job runs after the command that queued it. A save_as that failed on a later
+                                // part is rolled back and its target deleted inside that same command, so by now the
+                                // object can be gone, and indexing it would bring back an entry that no read can
+                                // resolve (IndexedObjectUnavailable) (#702).
+                                if (_objectService.IsAbsentFromModel(objToIndex)) return;
                                 _objectService.GetKbService().GetIndexCache().UpdateEntry(objToIndex);
                             }
                         } catch (Exception ex) { Logger.Error("[DEBUG-SAVE] Background Index update failed: " + ex.Message); }

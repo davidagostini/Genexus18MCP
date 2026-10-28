@@ -91,6 +91,19 @@ refuses to start during SDK write-event isolation and restores the global
 broker's previous suspension state even if the task throws. Other operations'
 write-event isolation is unchanged.
 
+The in-process Rebuild All (`rebuild`) and Build One (targeted `build`) tasks
+still run with that broker suspended, which also keeps the SDK's configured
+pre/post-build commands from being dispatched; `build_all` is the only action
+that enables it explicitly. `ArtechTask.EventsSuspended` writes the same
+Worker-wide switch and no build task resets it, so the runner also restores the
+prior state after each of these tasks, whatever their outcome: a build no longer
+decides whether later SDK callbacks and isolated Events saves run in that
+Worker. Builds that call the build services directly (explicit `Type:Name` or
+GUID targets, batch and compile-only paths) never touch the switch; they now
+always see the state the Worker started with, not one an earlier Build One or
+Rebuild All left behind. Other process-global state a task sets, such as the
+build command factory `IdeWebBuildAndDeploy` installs, is not restored.
+
 `buildEvents.policy="sdk"` describes the event policy, not proof that a command
 ran. `buildEvents.executionVerified=null` explicitly leaves that outcome
 unverified, even when `buildAllDone=true`; compact responses preserve this

@@ -11,14 +11,52 @@ namespace GxMcp.Worker.Tests
         [Theory]
         [InlineData("Transaction", true)]
         [InlineData("WebPanel", true)]
+        [InlineData("WebComponent", true)]
+        [InlineData("MasterPage", true)]
+        [InlineData("masterpage", true)]
         [InlineData("Folder", false)]
         [InlineData("Table", false)]
         [InlineData("Module", false)]
         [InlineData("Attribute", false)]
         [InlineData("Domain", false)]
+        [InlineData("Procedure", false)]
         [InlineData(null, false)]
-        public void OnlyTransactionAndWebPanelAreParents(string type, bool expected)
+        public void OnlyObjectsWithAWebFormAreParents(string type, bool expected)
             => Assert.Equal(expected, WwpProjectionHelper.IsAcceptedParentType(type));
+
+        [Fact]
+        public void HostInAModuleTriesTheModuleQualifiedNameFirst()
+        {
+            var names = WwpProjectionHelper.ParentNameCandidates(
+                "WorkWithPlusHeader", "<instance/>", "Base.WorkWithPlusHeader");
+            Assert.Equal(new[] { "Base.Header", "Header" }, names);
+        }
+
+        [Fact]
+        public void NestedModulePrefixIsKeptWhole()
+        {
+            var names = WwpProjectionHelper.ParentNameCandidates(
+                "WorkWithPlusHeader", "<instance/>", "Base.Layout.WorkWithPlusHeader");
+            Assert.Equal(new[] { "Base.Layout.Header", "Header" }, names);
+        }
+
+        [Fact]
+        public void AlreadyQualifiedTransactionNameIsNotPrefixedAgain()
+        {
+            string xml = "<transaction transaction=\"" + Guid + "-Sales.Order\"/>";
+            var names = WwpProjectionHelper.ParentNameCandidates(
+                "WorkWithPlusOrder", xml, "Sales.WorkWithPlusOrder");
+            Assert.Equal(new[] { "Sales.Order", "Order" }, names);
+        }
+
+        [Fact]
+        public void HostInTheRootModuleKeepsTheBareCandidates()
+        {
+            Assert.Equal(new[] { "Header" }, WwpProjectionHelper.ParentNameCandidates(
+                "WorkWithPlusHeader", "<instance/>", "WorkWithPlusHeader"));
+            Assert.Equal(new[] { "Header" }, WwpProjectionHelper.ParentNameCandidates(
+                "WorkWithPlusHeader", "<instance/>", null));
+        }
 
         [Fact]
         public void NameIsReadFromTransactionAttributeFirst()

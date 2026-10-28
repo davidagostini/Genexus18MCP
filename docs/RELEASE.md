@@ -80,6 +80,10 @@ pwsh -NoProfile -File .\scripts\release-doctor.ps1 -Version <X.Y.Z> `
 
 - Build or preflight failure: keep the same untagged source commit, fix the
   cause, and rerun the same version. Do not guess `-SkipTests` from a log.
+- `release-manifest: invalid: config.json is not the neutral build output`: the
+  packaged `publish/config.json` carries an `Engine` section or a KB catalog.
+  Rebuild `publish/` with `build.ps1` without `-PreserveEngineConfig`, then rerun
+  the same version (see [`release_protocol.md`](release_protocol.md)).
 - Existing release without complete assets: rerun the same entrypoint; it
   reconciles the complete VSIX/artifact set, uploads the missing assets, and
   dispatches the workflow explicitly instead of creating a duplicate.

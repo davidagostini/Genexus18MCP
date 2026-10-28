@@ -868,8 +868,11 @@ case "genexus_kb":
         }
         case "close":
         {
-            string? alias = args?["alias"]?.ToString();
-            if (string.IsNullOrWhiteSpace(alias)) return Error("Missing 'alias' for action=close");
+            // Historical snippet: since #683/#689 `close` (like `select`, `set_session_default`,
+            // `set_persistent_default` and `set_default`) takes `kb` as an alias for `alias`, and the
+            // shipped message is "Missing 'alias' (or 'kb') for action=close." (Program.GatewayTools.cs).
+            string? alias = args?["alias"]?.ToString() ?? args?["kb"]?.ToString();
+            if (string.IsNullOrWhiteSpace(alias)) return Error("Missing 'alias' (or 'kb') for action=close");
             return new JObject { ["closed"] = pool.Close(alias) };
         }
         case "set_default":

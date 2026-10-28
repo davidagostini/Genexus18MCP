@@ -286,8 +286,11 @@ namespace GxMcp.Worker.Services
         }
 
         // Only these types can parent a WorkWithPlus instance. A Folder, Table, Module,
-        // Attribute or Domain may share the bare name and has no WebForm (#413).
-        private static readonly string[] ParentTypeNames = { "Transaction", "WebPanel" };
+        // Attribute or Domain may share the bare name and has no WebForm (#413). A
+        // MasterPage and a WebComponent are WebPanel-family objects with a WebForm of
+        // their own: the SDK lists them under their own type name, and the WorkWithPlus
+        // base hosts its header, footer and component instances on them.
+        private static readonly string[] ParentTypeNames = { "Transaction", "WebPanel", "WebComponent", "MasterPage" };
 
         internal static bool IsAcceptedParentType(string typeName)
         {
@@ -300,8 +303,12 @@ namespace GxMcp.Worker.Services
         /// Names to try for the host's parent, best first: the root <c>transaction</c>
         /// attribute (<c>&lt;type GUID&gt;-&lt;Name&gt;</c>), then the
         /// <c>WorkWithPlus&lt;X&gt;</c> convention. A WebPanel instance has no such attribute.
+        /// When the host lives in a module (<paramref name="hostQualifiedName"/> carries a
+        /// module prefix) a bare candidate is tried module-qualified first: the parent of
+        /// <c>Base.WorkWithPlusHeader</c> is <c>Base.Header</c>, and the bare name only
+        /// resolves against the root module.
         /// </summary>
-        internal static System.Collections.Generic.List<string> ParentNameCandidates(string hostName, string instanceXml)
+        internal static System.Collections.Generic.List<string> ParentNameCandidates(string hostName, string instanceXml, string hostQualifiedName = null)
         {
             var names = new System.Collections.Generic.List<string>();
             string fromInstance = null;
@@ -324,17 +331,34 @@ namespace GxMcp.Worker.Services
                 string byConvention = hostName.Substring(prefix.Length);
                 if (!names.Contains(byConvention)) names.Add(byConvention);
             }
+
+            int lastDot = hostQualifiedName == null ? -1 : hostQualifiedName.LastIndexOf('.');
+            if (lastDot > 0)
+            {
+                string modulePrefix = hostQualifiedName.Substring(0, lastDot);
+                var qualified = new System.Collections.Generic.List<string>();
+                foreach (string name in names)
+                {
+                    string withModule = name.IndexOf('.') < 0 ? modulePrefix + "." + name : null;
+                    if (withModule != null && !names.Contains(withModule) && !qualified.Contains(withModule)) qualified.Add(withModule);
+                    if (!qualified.Contains(name)) qualified.Add(name);
+                }
+                return qualified;
+            }
             return names;
         }
 
         /// <summary>
-        /// Resolve the parent KBObject for a WorkWithPlus host by type (Transaction, then
-        /// WebPanel) and never by bare name alone, so a same-named Folder/Table is not taken.
+        /// Resolve the parent KBObject for a WorkWithPlus host by type (Transaction,
+        /// WebPanel, WebComponent, MasterPage) and never by bare name alone, so a
+        /// same-named Folder/Table is not taken.
         /// </summary>
         public static KBObject ResolveHostParent(KBObject host, ObjectService objectService, string instanceXml = null)
         {
             if (host == null || objectService == null) return null;
-            foreach (string name in ParentNameCandidates(host.Name, instanceXml))
+            string hostQualifiedName = null;
+            try { hostQualifiedName = host.QualifiedName?.ToString(); } catch { }
+            foreach (string name in ParentNameCandidates(host.Name, instanceXml, hostQualifiedName))
             {
                 foreach (string type in ParentTypeNames)
                 {

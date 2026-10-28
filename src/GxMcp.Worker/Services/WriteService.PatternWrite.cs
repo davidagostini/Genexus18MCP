@@ -57,7 +57,8 @@ namespace GxMcp.Worker.Services
                 // that the SDK would never see - or miss one it would. Normalizing at
                 // the single point where the plan is built makes "the preview matches
                 // the write" true for both routes.
-                var plan = PatternXmlEditPlan.Create(currentXml, ToSdkPatternLineEndings(xml), allowGridStructure);
+                var plan = PatternXmlEditPlan.Create(currentXml, ToSdkPatternLineEndings(xml), allowGridStructure,
+                    _patternAnalysisService.TryGetSpecView(currentInstance, partName));
                 if (plan.ErrorCode != null)
                 {
                     // Issue #545: the scope sentence lives on the plan, which is what decides it.
