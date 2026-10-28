@@ -13,6 +13,7 @@
 
 - **WorkWithPlus instances whose parent is a MasterPage or a WebComponent accept new form actions.** The parent of a `WorkWithPlus<X>` host was only looked up as a Transaction or WebPanel, so `genexus_wwp add_user_action` (and the other typed WorkWithPlus actions) stopped with `WwpSnapshotRequired`, and a raw `genexus_edit` of the `PatternInstance` stopped with `PatternSnapshotUnavailable` ("The WorkWithPlus parent could not be resolved."). The parent is now also resolved as a MasterPage or a WebComponent, module-qualified first when the host lives in a module.
 - **A `userAction` (or another structural leaf) added through a raw `PatternInstance` edit can carry every attribute the installed pattern specification declares for it**, such as `imageClass`, `buttonClass`, `ControlType` or `imageType`, instead of only a short built-in list. Names the specification does not declare, and SDK-owned metadata (`default*`, `template*`, `childrenOrderedList`), are still refused, and the refusal lists the permitted names.
+- `genexus_layout` help and `docs/mcp_capabilities_inventory.md` now name the printblock refusals added in v4.0.4 (`AddPrintBlockVerificationFailed`, `RenamePrintBlockVerificationFailed`, `DeletePrintBlockVerificationFailed`), what the refusal envelope does and does not carry, that add/rename retry and may repair Source before refusing, that delete reads once, and that a refusal does not prove the store state (#714).
 
 ### Internal
 
