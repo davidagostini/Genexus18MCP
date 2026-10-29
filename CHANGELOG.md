@@ -21,6 +21,8 @@
 
 - **`genexus_recipe edit_pattern_instance` describes what each write reports and ends with a read of the instance.**
 
+- **A successful WorkWithPlus pattern edit returns the transaction receipt instead of the generic write fields.** The response no longer carries `changed`, `details`, `mutation`, `patternName`, `persistedHash` and `persistedSnippetTruncated`; confirm the write with `persisted`, `verified` and `commitCompleted`, and read the instance to see the saved content. The other keys keep their names and types.
+
 ### Fixed
 
 - `genexus_create action=save_as`: when the WebForm SDK validator refuses a cloned WebForm, the `SaveAsPartFailed` message and `error.cause` now list the validator's errors (control: message) instead of only saying that the validator found errors ([#746](https://github.com/lennix1337/Genexus18MCP/issues/746)).
