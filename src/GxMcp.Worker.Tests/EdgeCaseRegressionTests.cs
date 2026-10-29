@@ -242,7 +242,10 @@ namespace GxMcp.Worker.Tests
             Assert.Contains("code: plan.ErrorCode", writeSrc);
             Assert.Contains("code: \"PatternPartNotFound\"", writeSrc);
             Assert.Contains("code: \"PatternVerificationMismatch\"", writeSrc);
-            Assert.Contains("code: \"PatternSaveFailed\"", writeSrc);
+            Assert.Contains("code: committed ? \"PatternVerificationUnavailable\" : \"PatternSaveFailed\"", writeSrc);
+            // The pre-save property refusal reuses the code of the existing SDK attribute check.
+            Assert.Contains("obj, code: \"PatternAttributeNotInSdkSpecification\",", writeSrc);
+            Assert.DoesNotContain("PatternPropertyUnsupported", writeSrc);
         }
 
         [Fact]
@@ -268,8 +271,9 @@ namespace GxMcp.Worker.Tests
             // checkbox stays on. Surface on the response as
             // applyOnSaveReenabled so callers can verify.
             string writeSrc = System.IO.File.ReadAllText(FindWorkerServiceFile("WriteService.PatternWrite.cs"));
-            Assert.Contains("WwpApplyOnSaveHelper.TryEnable(resolvedObject)", writeSrc);
-            Assert.Contains("success[\"applyOnSaveReenabled\"] = applyOnSaveReenabled", writeSrc);
+            Assert.Contains("return WriteProjectedPatternPart(resolvedObject, resolvedPart", writeSrc);
+            string projectionSrc = System.IO.File.ReadAllText(FindWorkerServiceFile("WriteService.PatternProjection.cs"));
+            Assert.Contains("receipt[\"applyOnSaveReenabled\"] = WwpApplyOnSaveHelper.TryEnable(host)", projectionSrc);
         }
 
         // ── Stream A (FR#10) — patch safety on intentional deletes ─────────

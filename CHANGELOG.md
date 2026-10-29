@@ -7,13 +7,45 @@
 
 ### Added
 
+- **`genexus_edit part=PatternInstance` reports a re-read result for pattern writes that are not WorkWithPlus projections.** The response carries `persistenceState` (`requested`, `unchanged`, `partial` or `unknown`) from an independent read of the saved instance. If a save committed but the read is unavailable, the error is `PatternVerificationUnavailable`, which says the commit may already have happened, so the caller reads the object before retrying.
+
+- **A WorkWithPlus pattern edit reports its parent projection and restoration evidence.** A successful edit returns `commitCompleted`, `persisted`, `persistedVerified`, `saved`, `verified`, the projection of the parent WebForm and the restoration checks. `persisted` is true only when an independent re-read of the host and its parent confirmed the commit, and a failed edit does not report it as true.
+
 ### Changed
+
+- **A pattern edit that sets an attribute the installed specification does not declare is refused before the save, with a shorter response.** The refusal keeps the code `PatternAttributeNotInSdkSpecification` and names the element and the attribute, but it has no `verifyDiff` and no suggested name. Undeclared attributes that the request leaves unchanged keep the full refusal.
+
+- **Pattern rollback messages name the content.** When a pattern edit cannot be rolled back, the message says `Content restore was not attempted`. Source edits keep `Source restore was not attempted`.
+
+- **Terse errors keep the write receipt.** Errors from pattern edits keep `commitCompleted`, `persistenceState`, the projection and restoration evidence and the rollback fields, without `verbose_errors`.
+
+- **`genexus_recipe edit_pattern_instance` describes what each write reports and ends with a read of the instance.**
 
 ### Fixed
 
 - `genexus_create action=save_as`: when the WebForm SDK validator refuses a cloned WebForm, the `SaveAsPartFailed` message and `error.cause` now list the validator's errors (control: message) instead of only saying that the validator found errors ([#746](https://github.com/lennix1337/Genexus18MCP/issues/746)).
 
+- **WorkWithPlus pattern edits keep the host and its parent WebForm in one SDK transaction.** Neither object is committed until a fresh read of both confirms the edit. A failed parent save returns the SDK validation diagnostics and rolls the transaction back before commit, instead of reporting success after a parent save that was not verified.
+
+- **A failed WorkWithPlus projection no longer issues a compensating text write.** Restoration is checked by independent re-reads of the host and parent XML and of their object snapshots.
+
+- **A WorkWithPlus edit is no longer accepted when the parent WebForm cannot be read back as projected.** An existing visual part that cannot be read is an error, not a match, and a parent without a visual part is compared by its absence.
+
+- **Source searches and inspections see the saved source after a WorkWithPlus edit.** The index and cached source of the host, its parent and their names are refreshed after a projection write.
+
+- **Structural ids that the SDK recreates in native WebForms no longer make a correct projection look changed.** Ids that no layout element references are compared as the same structure.
+
 ### Internal
+
+Worker tests: the projection, receipt and edge-case classes pass (112 tests); the full Worker suite on U16 has 6902 tests (6898 passed, 4 skipped); the Gateway suite has 3524 tests (3481 passed, 43 skipped).
+
+Mutation checks cover the receipt fields and the re-read decision, the pre-save refusal and its code, the PanelType tolerance, the terse error key list, the rollback subject and the namespace exemptions.
+
+`LayoutStructuralIds` tolerates the SDK default `PanelType` (`Web`) on WebForm `detail` elements only in the projected comparison, when one side omits it. Other values and the strict comparisons are unchanged.
+
+`PatternPropertyPreflight` uses the same exemptions as `PatternSdkAttributeCheck` (namespaced attributes and the custom-properties carrier).
+
+`ConfirmReadback` sets `persisted` from the re-read result (null when no re-read ran); `persistedVerified` and `saved` follow the same result.
 
 ## v4.1.0 - 2026-10-29
 

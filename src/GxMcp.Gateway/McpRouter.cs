@@ -2084,6 +2084,19 @@ namespace GxMcp.Gateway
                     if (value != null) trimmed[key] = value;
                 }
             }
+            if (ResolveErrorField(error, "commitCompleted") != null || ResolveErrorField(error, "persistenceState") != null)
+            {
+                // PatternInstance write receipt: whether the commit happened, what an independent re-read
+                // observed, and the parent projection and restoration evidence the caller inspects before
+                // retrying. Gated on the receipt itself so unrelated errors keep their terse shape.
+                foreach (string key in new[] { "persistenceState", "commitCompleted", "snapshot", "stateRestoredExactly",
+                    "rollbackPerformed", "beforeHash", "projection", "restorationVerification",
+                    "hostHashBefore", "parentHashBefore", "transactionFinalizationError", "verificationError" })
+                {
+                    JToken? value = ResolveErrorField(error, key);
+                    if (value != null) trimmed[key] = value;
+                }
+            }
             if (code?.ToString().StartsWith("ControlConditionCarriers", StringComparison.Ordinal) == true)
             {
                 // Issue #711: a refused WebForm write that would leave a control's Conditions

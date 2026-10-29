@@ -7,6 +7,70 @@ namespace GxMcp.Gateway.Tests
 {
     public class TerseErrorTests
     {
+        // Keys of the PatternInstance write receipt that the terse projection keeps (McpRouter.TrimErrorEnvelope).
+        private static readonly string[] PatternReceiptKeys =
+        {
+            "persistenceState", "commitCompleted", "snapshot", "stateRestoredExactly", "rollbackPerformed", "beforeHash",
+            "projection", "restorationVerification", "hostHashBefore", "parentHashBefore", "transactionFinalizationError",
+            "verificationError"
+        };
+
+        [Theory]
+        [InlineData("partial", true)]
+        [InlineData("unknown", null)]
+        public void PatternReceiptRetainsPartialOrUnknownPersistence(string state, bool? persisted)
+        {
+            var input = new JObject
+            {
+                ["code"] = "PatternVerificationMismatch", ["message"] = "Read the saved state before retrying.",
+                ["saved"] = true, ["persisted"] = persisted.HasValue ? new JValue(persisted.Value) : JValue.CreateNull(),
+                ["persistenceState"] = state, ["persistedStateKnown"] = persisted.HasValue,
+                ["snapshot"] = "snapshot-id", ["partialPersistenceDetected"] = persisted == true,
+                ["rollback"] = new JObject { ["attempted"] = false, ["reason"] = "AtomicRollbackUnavailable" },
+                ["stateRestoredExactly"] = false, ["commitCompleted"] = true,
+                ["stack"] = "internal"
+            };
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            foreach (var property in input.Properties())
+                if (property.Name != "stack") Assert.True(JToken.DeepEquals(property.Value, trimmed[property.Name]), property.Name);
+            Assert.Null(trimmed["stack"]);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_PatternReceiptKeepsEveryReceiptKey()
+        {
+            var input = new JObject { ["code"] = "PatternVerificationUnavailable", ["message"] = "Read the saved state before retrying." };
+            foreach (string key in PatternReceiptKeys)
+                input[key] = "value-" + key;
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            foreach (string key in PatternReceiptKeys)
+                Assert.True(JToken.DeepEquals(input[key], trimmed[key]), key);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_PatternReceiptWithOnlyPersistenceStateKeepsEveryReceiptKey()
+        {
+            var keys = PatternReceiptKeys.Where(key => key != "commitCompleted").ToArray();
+            var input = new JObject { ["code"] = "PatternVerificationUnavailable", ["message"] = "Read the saved state before retrying." };
+            foreach (string key in keys)
+                input[key] = "value-" + key;
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            foreach (string key in keys)
+                Assert.True(JToken.DeepEquals(input[key], trimmed[key]), key);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_UnrelatedErrorWithoutReceiptMarkersDropsReceiptKeys()
+        {
+            var keys = PatternReceiptKeys.Where(key => key != "commitCompleted" && key != "persistenceState").ToArray();
+            var input = new JObject { ["code"] = "WriteNotPersisted", ["message"] = "Unrelated failure." };
+            foreach (string key in keys)
+                input[key] = "value-" + key;
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            foreach (string key in keys)
+                Assert.False(trimmed.ContainsKey(key), key);
+        }
+
         [Fact]
         public void TrimErrorEnvelope_PreservesIsolatedSavePinsAndRollbackEvidence()
         {

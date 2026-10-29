@@ -74,6 +74,18 @@ namespace GxMcp.Worker.Services
                         plan.Error + " Use the appropriate SDK pattern authoring action for structural edits; this does not certify save isolation.",
                         obj, code: plan.ErrorCode, customHint: rejectionHint);
                 }
+                var nativePart = _patternAnalysisService.FindPatternPart(currentInstance, partName);
+                var nativeRoot = nativePart?.GetType().GetProperty("RootElement")?.GetValue(nativePart)
+                    as Artech.Packages.Patterns.Objects.PatternInstanceElement;
+                string unsupportedProperty = PatternPropertyPreflight.Validate(nativeRoot,
+                    System.Xml.Linq.XElement.Parse(currentXml), System.Xml.Linq.XElement.Parse(xml));
+                // Same condition and code as RejectAttributesOutsideSdkSpecification (an attribute the
+                // specification does not declare, changed or new). It runs before any save.
+                if (unsupportedProperty != null)
+                    return CreateWriteError("Pattern edit rejected", target, partName,
+                        "The installed pattern specification does not define " + unsupportedProperty + ". No save was attempted.",
+                        obj, code: "PatternAttributeNotInSdkSpecification",
+                        customHint: "Use the attribute names the pattern specification declares.");
                 if (plan.IsNoChange)
                     return Models.McpResponse.Ok(target: target, code: "WriteNoChange", result: new JObject
                     {
@@ -130,12 +142,14 @@ namespace GxMcp.Worker.Services
 
             LogRequestedPatternPayloadIfEnabled(normalizedInput);
 
+            string snapshotPath = null;
             try
             {
                 var preXml = _patternAnalysisService.ReadPatternPartXml(obj, partName, resolvedPatternId, out _, out _);
                 if (!string.IsNullOrWhiteSpace(preXml))
                 {
                     var snap = PatternSnapshotStore.SaveSnapshot(obj.Guid.ToString(), partName, preXml);
+                    snapshotPath = snap;
                     if (!string.IsNullOrEmpty(snap)) Logger.Debug("[PatternSnapshot] Saved pre-write snapshot: " + snap);
                 }
             }
@@ -163,6 +177,12 @@ namespace GxMcp.Worker.Services
                 return CreateWriteError("KB not opened", target, partName, "Open a Knowledge Base before writing pattern metadata.", obj);
             }
 
+            // A WWP edit includes the parent projection. Commit neither object until
+            // that save and an independent read of both objects have succeeded.
+            if (string.Equals(resolvedObject.TypeDescriptor?.Name, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
+                return WriteProjectedPatternPart(resolvedObject, resolvedPart, target, partName,
+                    envelope, normalizedInput, resolvedPatternId);
+
             // Friction 2026-05-26 — the part-level Save() exception used to be
             // silently swallowed, so verification failures had no SDK trace to
             // attach. We now capture the first non-null throw and bubble it on
@@ -170,6 +190,9 @@ namespace GxMcp.Worker.Services
             // actual SDK rejection (typically a property/validator complaint)
             // instead of just "Pattern write verification failed".
             JObject sdkSaveError = null;
+            bool committed = false;
+            string observedXml = null;
+            string observedVersion = null;
             using (var transaction = kb.BeginTransaction())
             {
                 try
@@ -256,18 +279,25 @@ namespace GxMcp.Worker.Services
                     // PatternInstance case, and target is the convention the sibling
                     // partials (EventsIsolation, Variables) already follow.
                     NotePerTargetWrite(target);
+                    committed = true;
                     // Force synchronous flush so the bytes hit disk before the verification read; the default
                     // timer-based ScheduleFlush() can lose writes if the worker is recycled before it fires.
                     ScheduleFlush(force: true);
 
                     // Async follow-up (next-major item #2): ReadPatternPartXml + the XML diff below
                     // dominate wall-clock on large PatternInstance writes and are the cause of client
-                    // timeouts. validate="best-effort" (strictVerify=false) skips them; a real SDK save
-                    // error captured above is still surfaced. Commit + forced flush already ran.
+                    // timeouts. Best-effort skips this early diff, but still performs the
+                    // final independent read below to return persisted state and its token.
                     global::Artech.Architecture.Common.Objects.KBObject refreshedObject = null;
                     if (strictVerify)
                     {
-                    string persistedXml = _patternAnalysisService.ReadPatternPartXml(obj, partName, resolvedPatternId, out refreshedObject, out _);
+                    string persistedXml = _patternAnalysisService.ReadPatternPartXmlFresh(obj, partName, resolvedPatternId, out refreshedObject, out _, out var readDiagnostic);
+                    if (readDiagnostic != null || refreshedObject == null || ReferenceEquals(refreshedObject, resolvedObject)
+                        || refreshedObject.Guid != resolvedObject.Guid || string.IsNullOrWhiteSpace(persistedXml))
+                        throw new InvalidOperationException("Fresh pattern verification unavailable; the save may already have persisted. "
+                            + (readDiagnostic ?? _objectService?.GetLastResolutionDiagnostic())?.ToString(Newtonsoft.Json.Formatting.None));
+                    observedXml = persistedXml;
+                    observedVersion = ComputeContentVersionToken(refreshedObject, persistedXml);
 
                     if (!XmlEquivalence.AreEquivalent(persistedXml, normalizedInput, out var patternDiff, out var patternStructured))
                     {
@@ -302,6 +332,7 @@ namespace GxMcp.Worker.Services
                         try
                         {
                             var verifyJobj = JObject.Parse(verifyErr);
+                            PatternWriteReceipt.Apply(verifyJobj, committed, currentXml, normalizedInput, observedXml, snapshotPath, versionToken: observedVersion);
                             var errObj = verifyJobj["error"] as JObject;
                             if (errObj != null)
                             {
@@ -327,9 +358,9 @@ namespace GxMcp.Worker.Services
                                 var nsArr = verifyJobj["nextSteps"] as JArray ?? new JArray();
                                 nsArr.Add(new JObject
                                 {
-                                    ["tool"] = "genexus_versioning",
-                                    ["args"] = new JObject { ["action"] = "history_restore", ["discard"] = true, ["name"] = target, ["part"] = partName },
-                                    ["why"] = "Restore to the pre-write snapshot to undo the failed pattern write."
+                                    ["tool"] = "genexus_read",
+                                    ["args"] = new JObject { ["name"] = target, ["part"] = partName, ["limit"] = 0 },
+                                    ["why"] = "The write committed. Read the current state and version before planning recovery; do not retry or restore blindly."
                                 });
                                 verifyJobj["nextSteps"] = nsArr;
                             }
@@ -355,14 +386,15 @@ namespace GxMcp.Worker.Services
                         try
                         {
                             var sdkErrJobj = JObject.Parse(sdkErr);
+                            PatternWriteReceipt.Apply(sdkErrJobj, committed, currentXml, normalizedInput, null, snapshotPath);
                             var errObj = sdkErrJobj["error"] as JObject ?? sdkErrJobj;
                             errObj["sdkSaveError"] = sdkSaveError;
                             var nsArr = sdkErrJobj["nextSteps"] as JArray ?? new JArray();
                             nsArr.Add(new JObject
                             {
-                                ["tool"] = "genexus_versioning",
-                                ["args"] = new JObject { ["action"] = "history_restore", ["discard"] = true, ["name"] = target, ["part"] = partName },
-                                ["why"] = "Restore to the pre-write snapshot to undo the failed pattern write."
+                                ["tool"] = "genexus_read",
+                                ["args"] = new JObject { ["name"] = target, ["part"] = partName, ["limit"] = 0 },
+                                ["why"] = "Save committed but verification was skipped. Read current state and version before recovery."
                             });
                             sdkErrJobj["nextSteps"] = nsArr;
                             return sdkErrJobj.ToString();
@@ -423,91 +455,46 @@ namespace GxMcp.Worker.Services
                             + "apply the pattern in the GeneXus IDE to regenerate them.";
                     }
 
-                    // Friction 2026-05-26 — re-assert "Apply this pattern on
-                    // save" on the WorkWithPlus host. The raw obj.Save(prefs)
-                    // path above (ForceSave=true, SkipValidation=true) clears
-                    // the flag the IDE renders as a checkbox, so every MCP edit
-                    // used to leave the next IDE session with the checkbox
-                    // unchecked. PatternApplyService does this on first apply /
-                    // reapply via the same helper; mirror it here so edits via
-                    // genexus_edit part=PatternInstance keep the IDE state
-                    // intact. Best-effort: missing WWP package, foreign host
-                    // types, or SDK miss → flag left as-is, logged at info.
-                    bool applyOnSaveReenabled = false;
-                    if (string.Equals(resolvedObject.TypeDescriptor?.Name, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
+                    // Apply-on-save/projection hooks may advance the host after initial
+                    // verification. Return the token from the final independent XML read.
                     {
-                        try
+                        // Even best-effort writes need independent persistence evidence.
+                        observedXml = _patternAnalysisService.ReadPatternPartXmlFresh(obj, partName, resolvedPatternId,
+                            out var finalHost, out _, out var finalDiagnostic);
+                        if (finalDiagnostic != null || finalHost == null || ReferenceEquals(finalHost, resolvedObject)
+                            || finalHost.Guid != resolvedObject.Guid || string.IsNullOrWhiteSpace(observedXml))
+                            throw new InvalidOperationException("Final fresh pattern verification unavailable after projection. "
+                                + (finalDiagnostic ?? _objectService?.GetLastResolutionDiagnostic())?.ToString(Newtonsoft.Json.Formatting.None));
+                        observedVersion = ComputeContentVersionToken(finalHost, observedXml);
+                        if (strictVerify && !XmlEquivalence.AreEquivalent(observedXml, normalizedInput, out _))
                         {
-                            applyOnSaveReenabled = GxMcp.Worker.Helpers.WwpApplyOnSaveHelper.TryEnable(resolvedObject);
-                        }
-                        catch (Exception aosEx)
-                        {
-                            Logger.Debug("[APPLY-ON-SAVE] WritePatternPart post-save helper threw: " + aosEx.Message);
-                        }
-                        success["applyOnSaveReenabled"] = applyOnSaveReenabled;
-                    }
-
-                    // F18 (auto-project): when we just wrote a PatternInstance on a
-                    // WorkWithPlus host, run the IDE's projection step so the bound
-                    // parent's WebForm reflects the edit. Without this, the edit
-                    // persists but the WebPanel layout never updates until the next
-                    // explicit apply_pattern call. Best-effort — projection failures
-                    // don't roll back the edit (the part is already saved).
-                    if (string.Equals(resolvedObject.TypeDescriptor?.Name, "WorkWithPlus", StringComparison.OrdinalIgnoreCase))
-                    {
-                        try
-                        {
-                            var parentForProjection = WwpProjectionHelper.ResolveHostParent(resolvedObject, _objectService);
-                            if (parentForProjection != null)
-                            {
-                                bool projected = WwpProjectionHelper.TryProjectHostOntoParent(parentForProjection, resolvedObject);
-                                if (projected)
-                                {
-                                    success["projection"] = new JObject
-                                    {
-                                        ["projectionStatus"] = "Projected",
-                                        ["parent"] = parentForProjection.Name,
-                                        ["parentType"] = parentForProjection.TypeDescriptor?.Name,
-                                        ["note"] = "PatternInstance edit was auto-projected onto the parent's WebForm via IPatternBuildProcess.UpdateParentObject."
-                                    };
-
-                                    // F21: refresh index cache so list_objects/inspect/query
-                                    // see the parent's new state immediately (avoid the
-                                    // stale-index window that bit us in F9). Best-effort.
-                                    try
-                                    {
-                                        var idx = _objectService?.GetKbService()?.GetIndexCache();
-                                        if (idx != null)
-                                        {
-                                            var refreshed = _objectService.FindObject(parentForProjection.Name);
-                                            if (refreshed != null) idx.UpdateEntry(refreshed);
-                                        }
-                                    }
-                                    catch (Exception idxEx) { Logger.Debug("[WWP-PROJECT] post-project index sync skipped: " + idxEx.Message); }
-                                }
-                                else
-                                {
-                                    success["projection"] = new JObject
-                                    {
-                                        ["projectionStatus"] = "Skipped",
-                                        ["parent"] = parentForProjection.Name,
-                                        ["note"] = "Projection helper declined — see worker log for details. Edit was persisted; WebForm may need a manual apply_pattern to refresh."
-                                    };
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.Debug("[WWP-PROJECT] auto-project on edit skipped: " + ex.Message);
+                            var failure = JObject.Parse(CreateWriteError("Pattern changed after projection", target,
+                                partName, "Final pattern XML does not match the request; read the current state before recovery.",
+                                finalHost, code: "PatternVerificationMismatch"));
+                            PatternWriteReceipt.Apply(failure, committed, currentXml, normalizedInput, observedXml,
+                                snapshotPath, versionToken: observedVersion);
+                            return failure.ToString();
                         }
                     }
-
-                    return Models.McpResponse.Ok(target: target, code: "WriteApplied", result: success);
+                    PatternWriteReceipt.Apply(success, committed, currentXml, normalizedInput, observedXml,
+                        snapshotPath, versionToken: observedVersion);
+                    return PatternWriteReceipt.Complete(target, success);
                 }
                 catch (Exception ex)
                 {
-                    transaction.Rollback();
-                    return CreateWriteError("Pattern write failed", target, partName, ex.Message, resolvedObject ?? obj, code: "PatternSaveFailed");
+                    bool rollbackAttempted = !committed;
+                    string rollbackError = null;
+                    if (rollbackAttempted)
+                    {
+                        try { transaction.Rollback(); }
+                        catch (Exception rollbackEx) { rollbackError = rollbackEx.Message; }
+                    }
+                    // Never compensate a committed save with an unconditional second write.
+                    var failure = JObject.Parse(CreateWriteError("Pattern write failed", target, partName,
+                        ex.Message, resolvedObject ?? obj, code: committed ? "PatternVerificationUnavailable" : "PatternSaveFailed"));
+                    PatternWriteReceipt.Apply(failure, committed, currentXml, normalizedInput, null,
+                        snapshotPath, rollbackAttempted, rollbackError);
+                    return failure.ToString();
                 }
             }
         }
