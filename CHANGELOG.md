@@ -7,6 +7,8 @@
 
 ### Added
 
+- **`genexus_wwp action=add_layout`** adds native nested WorkWithPlus form controls (tables, variables and buttons) under a `tablePath` of a WebPanel or WebComponent instance, through the pattern's own commands. It requires the PatternInstance `expectedVersion` (also for `dryRun`), checks every declared variable before creating any child, keeps existing metadata, declarations and Events, and verifies the saved PatternInstance and the projected parent WebForm. A failure before the commit aborts the transaction and verifies the restored state; a failure after the commit never issues a compensating write, so inspect the returned receipt (`commitCompleted`, `rollbackPerformed`, `restorationVerification`), which stays visible in terse error responses.
+
 ### Changed
 
 ### Fixed
@@ -14,6 +16,8 @@
 - `genexus_create action=save_as`: when the WebForm SDK validator refuses a cloned WebForm, the `SaveAsPartFailed` message and `error.cause` now list the validator's errors (control: message) instead of only saying that the validator found errors ([#746](https://github.com/lennix1337/Genexus18MCP/issues/746)).
 
 ### Internal
+
+- The `genexus_wwp add_layout` action adds one public action (the contract tests now expect 289 actions) and one description sentence to `tool_definitions.json`. The schema budget in `ToolSchemaSizeTests` goes from 39850 to 39900 (the schema measures about 39879 by the test's approximation). The discovery fixture, `docs/operation-contract-inventory.json` (312 operation rows) and `docs/engine_backend.md` are regenerated to match, and `WwpLayoutTests` (38 cases) passes on the GeneXus 18 U11, U12, U15 and U16 SDKs.
 
 ## v4.1.0 - 2026-10-29
 
