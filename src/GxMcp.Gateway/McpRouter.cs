@@ -2000,6 +2000,13 @@ namespace GxMcp.Gateway
                 "savePhase", "verificationPhase", "innerMessages", "innerExceptionTypes", "sdkMessages",
                 "sourceValidationErrors", "originalError", "sdkMessagesTruncated", "sdkMessagesError",
                 "verificationFailure", "saveFailureMessage",
+                // Other objects that differ between the save's inventories: the ones it cannot clear
+                // (unexpectedChangedObjects/Details), the ones another process wrote outside the save
+                // window (concurrentChanges), the window itself and the verdict on the target alone.
+                // Without them the caller knows that something else changed, not what.
+                "unexpectedChangedObjects", "unexpectedChangedObjectDetails", "unexpectedChangedObjectDetailsTruncated",
+                "concurrentChanges", "concurrentChangeCount", "concurrentChangesTruncated",
+                "saveWindow", "writeVerifiedForTarget", "retrySafe",
                 // Patch NoMatch diagnostics are nested in the worker's canonical
                 // error envelope; keep them at the response level named by the
                 // synthesized inspect_near_match hint.
