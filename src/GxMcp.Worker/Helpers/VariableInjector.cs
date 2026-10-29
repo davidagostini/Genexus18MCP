@@ -1471,6 +1471,17 @@ namespace GxMcp.Worker.Helpers
                 object custom = getProperty("ATTCUSTOMTYPE");
                 if (custom != null)
                 {
+                    // After save the SDK serializes SDT references as StructureTypeReference
+                    // XML, not as a GUID or display name. Decode its native entity key with the
+                    // SDK's own deserializer. A present native key is authoritative even when
+                    // dangling: never reinterpret a failed key lookup as a same-named SDT/BC
+                    // reference.
+                    if (TryGetStructuralReferenceKey(custom, out Guid objectType, out int objectId))
+                    {
+                        var native = lookups.FromEntityKey(objectType, objectId);
+                        if (native != null) resolutionPath = ResolutionPathNativeReference;
+                        return native;
+                    }
                     string token = custom.GetType().GetProperty("Guid")?.GetValue(custom) as string
                         ?? custom.GetType().GetField("m_guid", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(custom) as string;
                     var resolved = lookups.FromKey(token);
@@ -1515,6 +1526,7 @@ namespace GxMcp.Worker.Helpers
             // GX18 U16 persists modular BC variables as GX_BUSCOMP plus DataTypeString;
             // ATTCUSTOMTYPE intentionally has no object key. Resolve the name in the
             // variable owner's module, which is the same native scope used by GeneXus.
+            if (!string.Equals(variableType, "GX_BUSCOMP", StringComparison.OrdinalIgnoreCase)) return null;
             try
             {
                 string typeName = getProperty("DataTypeString") as string;
@@ -1533,6 +1545,24 @@ namespace GxMcp.Worker.Helpers
             }
             catch { }
             return null;
+        }
+
+        internal static bool TryGetStructuralReferenceKey(object customType, out Guid objectType, out int objectId)
+        {
+            objectType = Guid.Empty;
+            objectId = 0;
+            if (!(customType is global::Artech.Genexus.Common.CustomTypes.AttCustomType nativeType)
+                || !global::Artech.Genexus.Common.Types.StructureTypeReference.ValidSerializatedData(nativeType.Guid))
+                return false;
+            try
+            {
+                var reference = global::Artech.Genexus.Common.Types.StructureTypeReference.Deserialize(nativeType);
+                if (reference == null || reference.Type == Guid.Empty || reference.Id <= 0) return false;
+                objectType = reference.Type;
+                objectId = reference.Id;
+                return true;
+            }
+            catch { return false; }
         }
 
         public static bool TryParseDbType(string typeStr, out global::Artech.Genexus.Common.eDBType type)

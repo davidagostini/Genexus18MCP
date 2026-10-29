@@ -12,8 +12,12 @@
 ### Fixed
 
 - `genexus_create action=save_as`: when the WebForm SDK validator refuses a cloned WebForm, the `SaveAsPartFailed` message and `error.cause` now list the validator's errors (control: message) instead of only saying that the validator found errors ([#746](https://github.com/lennix1337/Genexus18MCP/issues/746)).
+- **A variable batch is all-or-nothing.** When one item of a `genexus_variable` batch, or of the `variables` of `genexus_create action=object_atomic`, fails validation (an unknown type, a missing domain or attribute, dimensions that cannot be saved), none of the batch is added, so a later save cannot persist the items that came before the failing one. A failed `genexus_variable` batch answers `VariableBatchValidationFailed` with `saved: false` and the outcome of each item. An `object_atomic` whose variables fail stops with an error and is compensated like any other failed phase, instead of reporting a partial result.
+- **A variable whose SDT or Business Component is gone no longer binds to a same-named object.** The reference the SDK saves is decoded with the SDK's own reader and is authoritative: when the object it points to no longer exists, the variable stays unresolved. The by-name fallback for Business Components applies only to `GX_BUSCOMP` variables.
 
 ### Internal
+
+- Variables: `VariableInjector.TryGetStructuralReferenceKey` checks the SDK's `ValidSerializatedData` and decodes the `StructureTypeReference` form with `StructureTypeReference.Deserialize`; a present native key is authoritative (no fallback by name), and the Business Component name fallback is limited to `GX_BUSCOMP`. Tests: `AtomicVariablePhaseTests` (4 cases) and `VariableSdtPersistenceTests` (13 cases).
 
 ## v4.1.0 - 2026-10-29
 
