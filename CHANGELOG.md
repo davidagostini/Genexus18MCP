@@ -11,7 +11,13 @@
 
 ### Fixed
 
+- **A failed `genexus_properties set` batch now puts the previous property values back and reads each one again.** The rollback restored the object snapshot and its parts but left the batch's properties as written, so a value that could not be confirmed stayed on the object while the answer said the restoration could not be verified. Each written property now goes back to its previous value through the same path the write used, and only the values that read back as the previous ones are listed in `propertiesRestored`; the rest are listed in `propertiesNotRestored` (names only). Source text that could not be written back is listed in `partsNotRestored`. `rollbackVerified` stays a strict comparison of the whole object, so it can remain `false` after a rolled-back batch: read the object again before writing it again.
+
+- **A failed property batch no longer empties the code of a Procedure or the events of a WebPanel.** The rollback restored those source parts from their binary form, which did not bring the text back, so after a rolled-back write they were empty. The captured text is now written back as well.
+
 ### Internal
+
+- The property rollback is decided by `PropertyRollbackRestore` (no SDK types): `WriteBack` inside the rollback transaction and `Confirm` on the fresh copy after the commit, which reads each property back with the function that reads the previous values. `RestoreSourceTexts` writes the captured text of source parts back and reports the parts it could not write, and only the property rollback calls `ObjectMoveSnapshot.RestoreSourceTexts`. `PropertyRollbackRestoreTests` pins both steps and the source texts, and `TerseErrorTests` pins the three lists through the terse projection. Measured on a synthetic Procedure and a synthetic WebPanel with event code and a variable: the previous rollback emptied the source of the Procedure and the events of the WebPanel, while the variables and the layout skeleton survived; with the change the text came back, and the other parts either stayed identical or gained only default entries. Parts with user controls and other object types were not measured. `rollbackVerified` stays a strict comparison of the whole object.
 
 ## v4.1.0 - 2026-10-29
 
