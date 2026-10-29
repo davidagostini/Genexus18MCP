@@ -139,12 +139,12 @@ namespace GxMcp.Worker.Tests
         [Fact]
         public void TheReportsFollowTheRequestOrderAndCarryNamesOnly()
         {
-            const string secret = "value-that-must-not-leak";
+            const string sentinelValue = "sentinel-value-not-in-reports";
             // The dictionary holds the names in the reverse of the request order.
             var previous = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["SOAP"] = "True",
-                ["Description"] = secret
+                ["Description"] = sentinelValue
             };
 
             var report = PropertyRollbackRestore.Confirm(
@@ -153,7 +153,7 @@ namespace GxMcp.Worker.Tests
 
             Assert.Equal(new[] { "SOAP" }, report.Restored);
             Assert.Equal(new[] { "Description" }, report.NotRestored);
-            Assert.DoesNotContain(secret, report.Restored.Concat(report.NotRestored));
+            Assert.DoesNotContain(sentinelValue, report.Restored.Concat(report.NotRestored));
         }
 
         [Fact]
