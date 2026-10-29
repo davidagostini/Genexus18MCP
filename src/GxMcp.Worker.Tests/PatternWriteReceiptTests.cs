@@ -9,6 +9,7 @@ namespace GxMcp.Worker.Tests
     {
         private const string Before = "<instance caption='Old'/>";
         private const string Requested = "<instance caption='New' includeInExportImportCsv='true'/>";
+        private const string Fresh = "fresh-version";
 
         [Theory]
         [InlineData("<instance caption='New'/>", "partial", true, false)]
@@ -35,13 +36,13 @@ namespace GxMcp.Worker.Tests
         public void BestEffortCompletionKeepsObservedSourceAndTokenWithoutClaimingUnverifiedSuccess(string observed, string status, string code)
         {
             var receipt = new JObject();
-            PatternWriteReceipt.Apply(receipt, true, Before, Requested, observed, "snapshot.xml", versionToken: "fresh-version");
+            PatternWriteReceipt.Apply(receipt, true, Before, Requested, observed, "snapshot.xml", versionToken: Fresh);
             var response = JObject.Parse(PatternWriteReceipt.Complete("Panel", receipt));
             PatternWriteReceipt.Promote(response, "Panel", "PatternInstance");
             Assert.Equal(status, (string)response["status"]);
             Assert.Equal(code, (string)response["code"]);
             Assert.Equal(observed, (string)response["source"]);
-            Assert.Equal("fresh-version", (string)response["versionToken"]);
+            Assert.Equal(Fresh, (string)response["versionToken"]);
             Assert.True((bool)response["postSaveVerification"]["reReadConfirmed"]);
         }
 
@@ -52,7 +53,7 @@ namespace GxMcp.Worker.Tests
         public void CallerRollbackCannotCompensateCommittedPatternSave(string observed)
         {
             var receipt = new JObject { ["status"] = "error", ["code"] = "PatternVerificationMismatch" };
-            PatternWriteReceipt.Apply(receipt, true, Before, Requested, observed, "snapshot.xml", versionToken: "fresh-version");
+            PatternWriteReceipt.Apply(receipt, true, Before, Requested, observed, "snapshot.xml", versionToken: Fresh);
             var writer = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(GxMcp.Worker.Services.WriteService));
             var rollback = writer.GetType().GetMethod("RollbackFullWriteFailure",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
@@ -94,15 +95,15 @@ namespace GxMcp.Worker.Tests
         public void SuccessfulNestedReceiptRetainsCanonicalVersionAndVerification()
         {
             var inner = new JObject();
-            PatternWriteReceipt.Apply(inner, true, Before, Requested, Requested, "snapshot.xml", versionToken: "fresh-version");
+            PatternWriteReceipt.Apply(inner, true, Before, Requested, Requested, "snapshot.xml", versionToken: Fresh);
             var response = new JObject { ["status"] = "ok", ["code"] = "WriteApplied", ["result"] = inner };
             var writer = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(GxMcp.Worker.Services.WriteService));
             var wrap = writer.GetType().GetMethod("WrapWithPersistedState",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
             var result = JObject.Parse((string)wrap.Invoke(writer, new object[]
                 { response.ToString(), "Panel", "PatternInstance", null, Before, Requested, null, null, false }));
-            Assert.Equal("fresh-version", (string)result["versionToken"]);
-            Assert.Equal("fresh-version", (string)result["postSaveVerification"]["versionToken"]);
+            Assert.Equal(Fresh, (string)result["versionToken"]);
+            Assert.Equal(Fresh, (string)result["postSaveVerification"]["versionToken"]);
             Assert.True((bool)result["postSaveVerification"]["reReadConfirmed"]);
             Assert.True((bool)result["verified"]);
             Assert.True((bool)result["saveAttempted"]);
@@ -146,7 +147,7 @@ namespace GxMcp.Worker.Tests
                 ["commitCompleted"] = false, ["transactionRolledBack"] = false
             };
             GxMcp.Worker.Services.PatternProjectionWriteFlow.Run(receipt, () => { }, () => { }, () => { }, () => { });
-            string freshVersion = "fresh-version";
+            string freshVersion = Fresh;
             receipt["versionToken"] = freshVersion;
             GxMcp.Worker.Services.PatternProjectionWriteFlow.ConfirmReadback(receipt, false, false, true, true, true);
             var envelope = new JObject { ["status"] = "ok", ["code"] = "WriteApplied", ["target"] = "Panel", ["result"] = receipt };
