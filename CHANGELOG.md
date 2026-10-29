@@ -11,6 +11,8 @@
 
 ### Fixed
 
+- `genexus_create action=save_as`: when the WebForm SDK validator refuses a cloned WebForm, the `SaveAsPartFailed` message and `error.cause` now list the validator's errors (control: message) instead of only saying that the validator found errors ([#746](https://github.com/lennix1337/Genexus18MCP/issues/746)).
+
 - **A failed `genexus_properties set` batch now puts the previous property values back and reads each one again.** The rollback restored the object snapshot and its parts but left the batch's properties as written, so a value that could not be confirmed stayed on the object while the answer said the restoration could not be verified. Each written property now goes back to its previous value through the same path the write used, and only the values that read back as the previous ones are listed in `propertiesRestored`; the rest are listed in `propertiesNotRestored` (names only). If the source text of a part cannot be written back, the answer's message says so. `rollbackVerified` stays a strict comparison of the whole object, so it can remain `false` after a rolled-back batch: read the object again before writing it again.
 
 - **A failed property batch no longer empties the code of a Procedure or the events of a WebPanel.** The rollback restored those source parts from their binary form, which did not bring the text back, so after a rolled-back write they were empty. The captured text is now written back as well.
