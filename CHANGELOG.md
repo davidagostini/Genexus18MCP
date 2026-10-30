@@ -41,7 +41,7 @@
 
 ### Internal
 
-- Worker tests: the projection, receipt, edge-case and dirty-outcome classes pass; the full Worker suite on U16 has 6916 tests (6912 passed, 4 skipped); the Gateway suite has 3529 tests (3486 passed, 43 skipped).
+- Worker tests: the projection, receipt, edge-case and dirty-outcome classes pass; the full Worker suite on U16 has 6919 tests (6915 passed, 4 skipped); the Gateway suite has 3529 tests (3486 passed, 43 skipped).
 - Mutation checks cover the receipt fields and the re-read decision, the pre-save refusal and its code, the PanelType tolerance, the terse error key list and gate, the rollback subject, the transaction rollback kept in the receipt, the dirty classification of receipts with an unknown state, the `saved` field and the namespace exemptions.
 - `LayoutStructuralIds` tolerates the SDK default `PanelType` (`Web`) on WebForm `detail` elements only in the projected comparison, when one side omits it. Other values and the strict comparisons are unchanged.
 - `PatternPropertyPreflight` uses the same exemptions as `PatternSdkAttributeCheck` (namespaced attributes and the custom-properties carrier).
