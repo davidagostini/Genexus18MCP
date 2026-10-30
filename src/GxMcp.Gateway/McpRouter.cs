@@ -2099,6 +2099,27 @@ namespace GxMcp.Gateway
                     if (value != null) trimmed[key] = value;
                 }
             }
+            if (code?.ToString().StartsWith("Pattern", StringComparison.Ordinal) == true
+                && (ResolveErrorField(error, "commitCompleted") != null || ResolveErrorField(error, "persistenceState") != null))
+            {
+                // PatternInstance write receipt: whether the commit happened, what an independent re-read
+                // observed, and the parent projection and restoration evidence the caller inspects before
+                // retrying. Gated on the receipt itself so unrelated errors keep their terse shape.
+                // Patch, visual-write, WebForm and TransactionRecords errors report persistenceState too;
+                // the Pattern* code keeps their snapshot path and hashes out of the terse shape.
+                foreach (string key in new[] { "persistenceState", "commitCompleted", "snapshot", "stateRestoredExactly",
+                    "rollbackPerformed", "beforeHash", "projection", "restorationVerification",
+                    "hostHashBefore", "parentHashBefore", "transactionFinalizationError", "verificationError",
+                    "flushError", "readCacheInvalidationError", "applyOnSaveReenabled" })
+                {
+                    JToken? value = ResolveErrorField(error, key);
+                    if (value != null) trimmed[key] = value;
+                }
+                // The WorkWithPlus flow records the cause of a part save it swallowed as one sanitized line;
+                // the generic writer keeps the raw exception text in an object, which stays verbose-only.
+                if (ResolveErrorField(error, "sdkSaveError") is { Type: JTokenType.String } sdkSaveError)
+                    trimmed["sdkSaveError"] = sdkSaveError;
+            }
             if (code?.ToString().StartsWith("ControlConditionCarriers", StringComparison.Ordinal) == true)
             {
                 // Issue #711: a refused WebForm write that would leave a control's Conditions
