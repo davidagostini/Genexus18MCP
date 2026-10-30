@@ -2010,6 +2010,9 @@ namespace GxMcp.Gateway
                 "diagnostics", "warnings", "staleEnvironmentCopy", "timedOut", "taskId",
                 // object_atomic pre-flight: the hint tells the caller to read fieldErrors.
                 "fieldErrors",
+                // Results per item of a variable batch that failed (VariableBatchValidationFailed,
+                // VariableNotPersisted), with the counts: which item to fix.
+                "outcomes", "counts",
                 // Optimistic-concurrency retry contract: a refused token is only useful if the
                 // caller can see the token that is current.
                 "currentVersion", "expectedVersion",

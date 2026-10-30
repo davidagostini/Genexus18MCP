@@ -1006,6 +1006,21 @@ namespace GxMcp.Worker.Services
                     continue;
                 }
 
+                // The SDK refuses a plain variable under a name it reserves for its standard variables.
+                // Name every such item of the batch here, not only the first one at the commit.
+                if (VariableBatchSupport.IsSdkStandardName(vName))
+                {
+                    failed++;
+                    outcomes.Add(new JObject
+                    {
+                        ["name"] = vName,
+                        ["status"] = "Failed",
+                        ["reason"] = "StandardVariableName",
+                        ["details"] = "'" + vName + "' is a name the SDK reserves for its standard variables; use another name."
+                    });
+                    continue;
+                }
+
                 // Type resolution
                 GxMcp.Worker.Helpers.TypeResolution res = null;
                 string rSdk = vType;
@@ -1158,6 +1173,17 @@ namespace GxMcp.Worker.Services
                     outcomes.Add(new JObject { ["name"] = vName, ["status"] = "Failed", ["reason"] = exItem.Message });
                 }
             }
+
+            // Commit, and only a batch in which no item failed. The SDK checks each item once more as it adds
+            // it, so it can still refuse one here: TryAddAll then removes the items it had added, the part is
+            // as it was, and the refused item is the failure of the batch, discarded below like any other.
+            if (failed == 0 && !VariableBatchSupport.TryAddAll(stagedVariables,
+                    staged => varPart.Variables.Add(staged), staged => varPart.Variables.Remove(staged),
+                    out int refusedIndex, out Exception refusal))
+            {
+                failed++;
+                VariableBatchSupport.MarkRefused(outcomes, stagedVariables[refusedIndex].Name, ExceptionRoot.Message(refusal));
+            }
             if (failed > 0)
             {
                 foreach (var outcome in outcomes.OfType<JObject>().Where(o => (string)o["status"] == "Added"))
@@ -1169,7 +1195,6 @@ namespace GxMcp.Worker.Services
                 objectBound.Clear();
                 return;
             }
-            foreach (var variable in stagedVariables) varPart.Variables.Add(variable);
         }
 
         public string AddVariable(string target, string varName, string typeName = null, bool dryRun = false,

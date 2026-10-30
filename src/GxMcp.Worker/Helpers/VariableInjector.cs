@@ -1392,9 +1392,11 @@ namespace GxMcp.Worker.Helpers
             return true;
         }
 
-        // issue #543: how ResolveBoundTypeObject found the object. Every path keeps the
-        // verdict it had (a by-name hit is still accepted), but a name is weaker evidence
-        // than a native key, so the post-save receipt reports which one it was.
+        // issue #543: how ResolveBoundTypeObject found the object. A name is weaker evidence
+        // than a native key, so the post-save receipt reports which one it was: a by-name hit
+        // is still accepted when the variable carries no native key, but a native key that is
+        // present is authoritative, and a dangling one answers none instead of falling back
+        // to a same-named object.
         public const string ResolutionPathNativeReference = "native-reference";
         public const string ResolutionPathCustomTypeName = "custom-type-name";
         public const string ResolutionPathDataTypeName = "data-type-name";
@@ -1449,9 +1451,12 @@ namespace GxMcp.Worker.Helpers
             public Func<string, string, T> BusinessComponentByName { get; set; }
         }
 
-        // Resolution order, from the strongest evidence down: entity-key properties, the
-        // ATTCUSTOMTYPE token as a key, the persisted EntityKey pair inside ATTCUSTOMTYPE,
-        // the ATTCUSTOMTYPE token as a name, then DataTypeString by name.
+        // Resolution order, from the strongest evidence down: entity-key properties; the
+        // StructureTypeReference the SDK saved in ATTCUSTOMTYPE, decoded with its own reader
+        // (authoritative: it ends the resolution, found or dangling); the ATTCUSTOMTYPE token
+        // as a key; the EntityKey pair parsed from it; the token as a name; then DataTypeString
+        // by name, as an SDT for GX_SDT and as a Business Component (in the owner's module)
+        // for GX_BUSCOMP only.
         internal static T ResolveBoundTypeObjectCore<T>(Func<string, object> getProperty, string variableType,
             string ownerModule, BoundTypeLookups<T> lookups, out string resolutionPath) where T : class
         {
