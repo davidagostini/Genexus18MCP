@@ -221,6 +221,32 @@ namespace GxMcp.Worker.Helpers
             }
         }
 
+        /// <summary>
+        /// Writes the captured text back into every source part, after the binary restore of the parts. That restore does not
+        /// bring a source part's text back (a Procedure's Source comes back empty), so the text the snapshot already holds is set
+        /// and saved here. Only the property rollback calls this; the move, SDT and variables rollbacks do not. Returns the names
+        /// of the source parts whose text could not be written; the others still get theirs.
+        /// </summary>
+        public IReadOnlyList<string> RestoreSourceTexts(KBObject obj)
+        {
+            if (obj == null) throw new ArgumentNullException(nameof(obj));
+
+            var current = obj.Parts.Cast<KBObjectPart>()
+                .ToDictionary(PartSnapshot.GetKey, StringComparer.OrdinalIgnoreCase);
+            var sourceTexts = _parts.Values.Where(p => p.VerificationFormat == "source")
+                .Select(p => new KeyValuePair<string, string>(p.Key, Encoding.UTF8.GetString(p.VerificationData)));
+            var failedKeys = PropertyRollbackRestore.RestoreSourceTexts(sourceTexts, (key, text) =>
+            {
+                KBObjectPart part;
+                if (!current.TryGetValue(key, out part) || !(part is ISource source))
+                    throw new InvalidOperationException("The source part is not in the restored object.");
+                source.Source = text;
+                part.Dirty = true;
+                part.Save();
+            });
+            return failedKeys.Select(key => _parts[key].Name).ToList();
+        }
+
         public void RestoreObject(KBObject obj)
         {
             if (obj == null) throw new ArgumentNullException(nameof(obj));

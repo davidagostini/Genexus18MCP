@@ -1981,6 +1981,8 @@ namespace GxMcp.Gateway
                 // issue #542: Structure writer rollback evidence (which members the SDK
                 // refused, whether a revert was attempted, and why it could not be verified).
                 "unappliedMembers", "rollbackAttempted", "rollbackError",
+                // genexus_properties set: which written properties the rollback put back (names only).
+                "propertiesRestored", "propertiesNotRestored",
                 "reReadConfirmed", "commentOnly", "commentStyle", "before", "after",
                 "matchedCount", "implicitOperations", "diagnosticContext",
                 // Patch safety evidence: retain the distinction between a save attempt
@@ -2000,6 +2002,16 @@ namespace GxMcp.Gateway
                 "savePhase", "verificationPhase", "innerMessages", "innerExceptionTypes", "sdkMessages",
                 "sourceValidationErrors", "originalError", "sdkMessagesTruncated", "sdkMessagesError",
                 "verificationFailure", "saveFailureMessage",
+                // Other objects that differ between the save's inventories: the ones it cannot clear
+                // (unexpectedChangedObjects/Details), the ones the pre-commit inventory showed before a
+                // rollback undid them (preCommitUnexpectedChangedObjects/Details), the ones another process
+                // wrote outside the save window (concurrentChanges), the window itself and the verdict on
+                // the target alone. Without them the caller knows that something else changed, not what.
+                "unexpectedChangedObjects", "unexpectedChangedObjectDetails", "unexpectedChangedObjectDetailsTruncated",
+                "preCommitUnexpectedChangedObjects", "preCommitUnexpectedChangedObjectDetails",
+                "preCommitUnexpectedChangedObjectDetailsTruncated",
+                "concurrentChanges", "concurrentChangeCount", "concurrentChangesTruncated",
+                "saveWindow", "writeVerifiedForTarget", "retrySafe",
                 // Patch NoMatch diagnostics are nested in the worker's canonical
                 // error envelope; keep them at the response level named by the
                 // synthesized inspect_near_match hint.
