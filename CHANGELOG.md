@@ -9,7 +9,7 @@
 
 - **`genexus_edit part=PatternInstance` reports a re-read result for pattern writes that are not WorkWithPlus projections.** The response carries `persistenceState` (`requested`, `unchanged`, `partial` or `unknown`) from an independent read of the saved instance. If a save committed but the read is unavailable, the error is `PatternVerificationUnavailable`, which says the commit may already have happened, so the caller reads the object before retrying.
 
-- **A WorkWithPlus pattern edit reports its parent projection and restoration evidence.** A successful edit returns `commitCompleted`, `persisted`, `persistedVerified`, `saved`, `verified`, the projection of the parent WebForm and the restoration checks. `persisted` is true only when an independent re-read of the host and its parent confirmed the commit, and a failed edit does not report it as true. `saved` reports the commit itself, so an edit that committed but whose re-read did not confirm it keeps `saved: true` beside `persisted: false`.
+- **A WorkWithPlus pattern edit reports its parent projection and restoration evidence.** A successful edit returns `commitCompleted`, `persisted`, `persistedVerified`, `saved`, `verified`, the projection of the parent WebForm and the restoration checks. `persisted` is true only when an independent re-read of the host and its parent confirmed the commit, and a failed edit does not report it as true. `saved` reports the commit itself, so an edit that committed but whose re-read did not confirm it keeps `saved: true` beside `persisted: false` (`null` when no re-read ran).
 
 ### Changed
 
@@ -41,7 +41,7 @@
 
 ### Internal
 
-- Worker tests: the projection, receipt and edge-case classes pass (112 tests); the full Worker suite on U16 has 6902 tests (6898 passed, 4 skipped); the Gateway suite has 3524 tests (3481 passed, 43 skipped).
+- Worker tests: the projection, receipt, edge-case and dirty-outcome classes pass; the full Worker suite on U16 has 6916 tests (6912 passed, 4 skipped); the Gateway suite has 3529 tests (3486 passed, 43 skipped).
 - Mutation checks cover the receipt fields and the re-read decision, the pre-save refusal and its code, the PanelType tolerance, the terse error key list and gate, the rollback subject, the transaction rollback kept in the receipt, the dirty classification of receipts with an unknown state, the `saved` field and the namespace exemptions.
 - `LayoutStructuralIds` tolerates the SDK default `PanelType` (`Web`) on WebForm `detail` elements only in the projected comparison, when one side omits it. Other values and the strict comparisons are unchanged.
 - `PatternPropertyPreflight` uses the same exemptions as `PatternSdkAttributeCheck` (namespaced attributes and the custom-properties carrier).
