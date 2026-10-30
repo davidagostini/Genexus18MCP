@@ -121,6 +121,24 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void TrimErrorEnvelope_KeepsThePropertyNamesTheRollbackPutBack()
+        {
+            // genexus_properties set: a failed batch names the properties the rollback put back and the ones it could not.
+            // Only names travel in these lists; no property value is in the envelope to project.
+            var input = JObject.Parse(@"{
+                ""code"":""PropertyVerificationFailed"",
+                ""message"":""The saved property could not be confirmed. Snapshot restoration could not be verified; inspect the object before writing again."",
+                ""rollbackAttempted"":true,""rollbackVerified"":true,
+                ""propertiesRestored"":[""A""],""propertiesNotRestored"":[""B""]
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            Assert.Equal(new[] { "A" }, trimmed["propertiesRestored"]!.ToObject<string[]>());
+            Assert.Equal(new[] { "B" }, trimmed["propertiesNotRestored"]!.ToObject<string[]>());
+        }
+
+        [Fact]
         public void TrimErrorEnvelope_PreservesIsolatedSaveFailureDiagnostics()
         {
             // The envelope the Worker builds for a failed isolated Events save: the terse
