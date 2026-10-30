@@ -149,6 +149,55 @@ namespace GxMcp.Worker.Tests
             Assert.True(receipt["partialPersistenceDetected"].Value<bool>());
         }
 
+        [Fact]
+        public void CommittedProjectionKeepsSavedTrueWhenTheReReadDiverges()
+        {
+            // saved/sdkSaveCompleted describe the physical save independently of the verification outcome.
+            var receipt = Receipt();
+            Assert.Null(PatternProjectionWriteFlow.Run(receipt,
+                () => { receipt["sdkSaveCompleted"] = true; }, () => { }, () => { }, () => { }));
+            Assert.False(PatternProjectionWriteFlow.ConfirmReadback(receipt, false, false, true, false, true));
+            Assert.True(receipt["commitCompleted"].Value<bool>());
+            Assert.True(receipt["saved"].Value<bool>());
+            Assert.False(receipt["persisted"].Value<bool>());
+            Assert.False(receipt["verified"].Value<bool>());
+            Assert.True(receipt["partialPersistenceDetected"].Value<bool>());
+        }
+
+        [Fact]
+        public void RolledBackProjectionNeverReportsSaved()
+        {
+            // The SDK save ran inside the transaction, but the commit never happened.
+            var receipt = Receipt();
+            Assert.NotNull(PatternProjectionWriteFlow.Run(receipt,
+                () => { receipt["sdkSaveCompleted"] = true; throw new Exception("parent save refused"); },
+                () => { }, () => { }, () => { }));
+            Assert.False(PatternProjectionWriteFlow.ConfirmReadback(receipt, true, true, null, null, false));
+            Assert.False(receipt["commitCompleted"].Value<bool>());
+            Assert.False(receipt["saved"].Value<bool>());
+        }
+
+        [Theory]
+        [InlineData(true, true)]
+        [InlineData(false, false)]
+        public void ProjectionReceiptWithoutAReReadIsClassifiedWithoutLosingTheCommit(bool saves, bool dirty)
+        {
+            var receipt = Receipt();
+            Exception failure = PatternProjectionWriteFlow.Run(receipt,
+                () => { if (saves) receipt["sdkSaveCompleted"] = true; else throw new Exception("boundary changed"); },
+                () => { }, () => { }, () => { });
+            Assert.Equal(!saves, failure != null);
+            Assert.False(PatternProjectionWriteFlow.ConfirmReadback(receipt, null, null, null, null, null));
+            string error = GxMcp.Worker.Models.McpResponse.Err(code: "PatternProjectionFailed", message: "no re-read",
+                target: "Panel", extra: receipt);
+            var writer = FormatterServices.GetUninitializedObject(typeof(WriteService));
+            var wrap = typeof(WriteService).GetMethod("WrapWithPersistedState", BindingFlags.Instance | BindingFlags.NonPublic);
+            string wrapped = (string)wrap.Invoke(writer, new object[]
+                { error, "Panel", "PatternInstance", null, "before", "after", null, null, false });
+            Assert.Equal(JTokenType.Null, JObject.Parse(wrapped)["persisted"].Type);
+            Assert.Equal(dirty, WriteService.ShouldMarkTargetDirty(wrapped));
+        }
+
         [Theory]
         [InlineData(true)]
         [InlineData(false)]

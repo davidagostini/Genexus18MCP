@@ -407,7 +407,7 @@ namespace GxMcp.Worker.Services
                         ["part"] = partName,
                         ["details"] = strictVerify
                             ? "Pattern XML updated and verified."
-                            : "Pattern XML updated (post-write verify skipped: validate=best-effort). Build to confirm generation."
+                            : "Pattern XML updated (early comparison with the request skipped: validate=best-effort; the saved instance was still re-read). Build to confirm generation."
                     };
 
                     if (resolvedObject.Guid != obj.Guid)
@@ -455,8 +455,10 @@ namespace GxMcp.Worker.Services
                             + "apply the pattern in the GeneXus IDE to regenerate them.";
                     }
 
-                    // Apply-on-save/projection hooks may advance the host after initial
-                    // verification. Return the token from the final independent XML read.
+                    // The receipt reports the state of one independent read made after the commit.
+                    // validate=best-effort skipped the early comparison above, so this is its only
+                    // read; the strict path already read and compared the same saved state and
+                    // reads it once more here.
                     {
                         // Even best-effort writes need independent persistence evidence.
                         observedXml = _patternAnalysisService.ReadPatternPartXmlFresh(obj, partName, resolvedPatternId,

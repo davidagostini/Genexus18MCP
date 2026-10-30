@@ -71,6 +71,46 @@ namespace GxMcp.Gateway.Tests
                 Assert.False(trimmed.ContainsKey(key), key);
         }
 
+        // Patch, visual-write, WebForm and TransactionRecords errors report persistenceState too. They are not pattern
+        // receipts: forwarding their snapshot (a local path) and hashes would widen their terse shape.
+        [Theory]
+        [InlineData("WriteNotPersisted", "CommittedUnverified")]
+        [InlineData("WebFormWriteVerificationFailed", "Divergent")]
+        [InlineData("CommitOutcomeUnknown", "Indeterminate")]
+        public void TrimErrorEnvelope_OtherFamiliesThatReportPersistenceStateKeepTheirTerseShape(string code, string persistenceState)
+        {
+            var input = new JObject { ["code"] = code, ["message"] = "Unrelated failure.", ["persistenceState"] = persistenceState };
+            foreach (string key in PatternReceiptKeys.Where(key => key != "persistenceState"))
+                input[key] = key == "snapshot" ? new JObject { ["path"] = "C:\\kb\\.gx\\snapshots\\Sample.bak" } : (JToken)("value-" + key);
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            foreach (string key in PatternReceiptKeys)
+                Assert.False(trimmed.ContainsKey(key), key);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_PatternReceiptKeepsTheCauseOfEachSwallowedStep()
+        {
+            // The WorkWithPlus flow records the sanitized cause of a part save it swallowed, of a failed cache
+            // invalidation and of a failed flush, and whether apply-on-save was switched back on.
+            var input = JObject.Parse("{status:'error',error:{code:'PatternProjectionFailed',message:'The committed projection could not be confirmed.'},"
+                + "commitCompleted:true,sdkSaveError:'part save refused',flushError:'flush refused',"
+                + "readCacheInvalidationError:'cache refused',applyOnSaveReenabled:false}");
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            foreach (string key in new[] { "sdkSaveError", "flushError", "readCacheInvalidationError", "applyOnSaveReenabled" })
+                Assert.True(JToken.DeepEquals(input[key], trimmed[key]), key);
+        }
+
+        [Fact]
+        public void TrimErrorEnvelope_RawSdkSaveErrorObjectOfTheGenericWriterIsNotForwarded()
+        {
+            // The generic writer keeps the raw exception text in an object; only the one-line sanitized string is terse-safe.
+            var input = JObject.Parse("{status:'error',error:{code:'PatternVerificationMismatch',message:'mismatch',"
+                + "sdkSaveError:{type:'System.Exception',message:'raw text',where:'resolvedPart.Save()'}},persistenceState:'partial'}");
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+            Assert.Equal("partial", (string)trimmed["persistenceState"]!);
+            Assert.False(trimmed.ContainsKey("sdkSaveError"));
+        }
+
         [Fact]
         public void TrimErrorEnvelope_PreservesIsolatedSavePinsAndRollbackEvidence()
         {

@@ -67,6 +67,44 @@ namespace GxMcp.Worker.Tests
             Assert.Equal(receipt["versionToken"], response["versionToken"]);
         }
 
+        [Theory]
+        [InlineData(null)]
+        [InlineData("rollback refused")]
+        public void CallerRollbackKeepsTheTransactionRollbackTheReceiptRecorded(string rollbackError)
+        {
+            // The write failed before its commit and the SDK transaction rollback was attempted (it may itself have failed).
+            var receipt = JObject.Parse(GxMcp.Worker.Models.McpResponse.Err(code: "PatternSaveFailed", message: "save refused", target: "Panel"));
+            PatternWriteReceipt.Apply(receipt, false, Before, Requested, null, "snapshot.xml", true, rollbackError);
+            var writer = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(GxMcp.Worker.Services.WriteService));
+            var rollback = writer.GetType().GetMethod("RollbackFullWriteFailure",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var response = JObject.Parse((string)rollback.Invoke(writer,
+                new object[] { receipt.ToString(), "Panel", "PatternInstance", null, Before }));
+            var recorded = (JObject)response["rollback"];
+            Assert.True((bool)recorded["attempted"]);
+            Assert.Equal(rollbackError, (string)recorded["error"]);
+            Assert.StartsWith("Content restore was not attempted", (string)recorded["restoreNotAttempted"]);
+        }
+
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, true)]
+        public void ReceiptWithoutAReReadIsClassifiedWithoutLosingTheCommit(bool committed, bool dirty)
+        {
+            string code = committed ? "PatternVerificationUnavailable" : "PatternSaveFailed";
+            var failure = JObject.Parse(GxMcp.Worker.Models.McpResponse.Err(code: code, message: "the read failed", target: "Panel"));
+            PatternWriteReceipt.Apply(failure, committed, Before, Requested, null, "snapshot.xml", rollbackAttempted: !committed);
+            var writer = System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(GxMcp.Worker.Services.WriteService));
+            var wrap = writer.GetType().GetMethod("WrapWithPersistedState",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            string wrapped = (string)wrap.Invoke(writer, new object[]
+                { failure.ToString(), "Panel", "PatternInstance", null, Before, Requested, null, null, false });
+            var result = JObject.Parse(wrapped);
+            Assert.Equal(JTokenType.Null, result["persisted"].Type);
+            Assert.Equal(committed, (bool?)result["sdkSaveCompleted"] == true);
+            Assert.Equal(dirty, GxMcp.Worker.Services.WriteService.ShouldMarkTargetDirty(wrapped));
+        }
+
         [Fact]
         public void PatternMutationInvalidatesIndexedSourceAndEveryKnownInspectionAlias()
         {

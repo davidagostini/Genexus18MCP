@@ -55,7 +55,8 @@ namespace GxMcp.Worker.Services
             receipt["persistedStateKnown"] = known;
             receipt["persisted"] = known ? (JToken)confirmed : JValue.CreateNull();
             receipt["persistedVerified"] = confirmed;
-            receipt["saved"] = confirmed;
+            // saved is the physical save (the commit), as in every other write receipt; the re-read decides verified.
+            receipt["saved"] = committed;
             receipt["verified"] = confirmed;
             receipt["postSaveVerification"] = PostSaveVerification(receipt, committed, known, confirmed);
             receipt["rollbackVerified"] = receipt["transactionRolledBack"]?.Value<bool>() == true && restored;

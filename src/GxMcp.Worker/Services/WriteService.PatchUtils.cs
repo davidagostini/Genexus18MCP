@@ -863,11 +863,20 @@ namespace GxMcp.Worker.Services
         // The message names what was not restored: "Source" for a Source write, "Content" for a pattern part.
         internal static void MarkSourceRollbackUnavailable(JObject response, string subject = "Source")
         {
+            string message = subject + " restore was not attempted: the SDK path does not establish an atomic version-conditional restore. Re-read the current content and version before an explicit recovery edit.";
+            // A pattern write that failed before its commit already recorded the SDK transaction rollback it
+            // attempted and the error of that rollback. Keep that evidence and put the notice beside it.
+            if (response["rollback"] is JObject recorded && recorded["attempted"]?.Value<bool?>() == true)
+            {
+                recorded["requested"] = true;
+                recorded["restoreNotAttempted"] = message;
+                return;
+            }
             response["rollback"] = new JObject
             {
                 ["requested"] = true, ["rolledBack"] = false, ["attempted"] = false,
                 ["reason"] = "AtomicRollbackUnavailable",
-                ["message"] = subject + " restore was not attempted: the SDK path does not establish an atomic version-conditional restore. Re-read the current content and version before an explicit recovery edit."
+                ["message"] = message
             };
         }
 

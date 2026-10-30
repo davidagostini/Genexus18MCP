@@ -9,17 +9,19 @@
 
 - **`genexus_edit part=PatternInstance` reports a re-read result for pattern writes that are not WorkWithPlus projections.** The response carries `persistenceState` (`requested`, `unchanged`, `partial` or `unknown`) from an independent read of the saved instance. If a save committed but the read is unavailable, the error is `PatternVerificationUnavailable`, which says the commit may already have happened, so the caller reads the object before retrying.
 
-- **A WorkWithPlus pattern edit reports its parent projection and restoration evidence.** A successful edit returns `commitCompleted`, `persisted`, `persistedVerified`, `saved`, `verified`, the projection of the parent WebForm and the restoration checks. `persisted` is true only when an independent re-read of the host and its parent confirmed the commit, and a failed edit does not report it as true.
+- **A WorkWithPlus pattern edit reports its parent projection and restoration evidence.** A successful edit returns `commitCompleted`, `persisted`, `persistedVerified`, `saved`, `verified`, the projection of the parent WebForm and the restoration checks. `persisted` is true only when an independent re-read of the host and its parent confirmed the commit, and a failed edit does not report it as true. `saved` reports the commit itself, so an edit that committed but whose re-read did not confirm it keeps `saved: true` beside `persisted: false`.
 
 ### Changed
 
 - **A pattern edit that sets an attribute the installed specification does not declare is refused before the save, with a shorter response.** The refusal keeps the code `PatternAttributeNotInSdkSpecification` and names the element and the attribute, but it has no `verifyDiff` and no suggested name. Undeclared attributes that the request leaves unchanged keep the full refusal.
 
-- **Pattern rollback messages name the content.** When a pattern edit cannot be rolled back, the message says `Content restore was not attempted`. Source edits keep `Source restore was not attempted`.
+- **Pattern rollback messages name the content.** When a pattern edit cannot be rolled back, the message says `Content restore was not attempted`. Source edits keep `Source restore was not attempted`. A pattern edit that failed before its commit keeps the SDK transaction rollback it attempted (`rollback.attempted` and `rollback.error`) and reports that message as `rollback.restoreNotAttempted`.
 
-- **Terse errors keep the write receipt.** Errors from pattern edits keep `commitCompleted`, `persistenceState`, the projection and restoration evidence and the rollback fields, without `verbose_errors`.
+- **Terse errors keep the write receipt.** Errors from pattern edits keep `commitCompleted`, `persistenceState`, the projection and restoration evidence and the rollback fields, without `verbose_errors`. A WorkWithPlus edit also keeps the cause of a part save, a cache refresh or a flush that failed along the way (`sdkSaveError`, `readCacheInvalidationError`, `flushError`) and `applyOnSaveReenabled`.
 
 - **`genexus_recipe edit_pattern_instance` describes what each write reports and ends with a read of the instance.**
+
+- **`validate: best-effort` no longer skips the confirming read of a PatternInstance write.** It still skips the early comparison with the request, but the write ends with an independent read of the saved instance that sets `persistenceState` and `versionToken`. A saved instance that differs from the request now returns `status: partial` with `PatternVerificationMismatch` where it used to return `WriteApplied`. A WorkWithPlus edit is verified before its commit whatever `validate` says.
 
 - **A successful WorkWithPlus pattern edit returns the transaction receipt instead of the generic write fields.** The response no longer carries `changed`, `details`, `mutation`, `patternName`, `persistedHash` and `persistedSnippetTruncated`; confirm the write with `persisted`, `verified` and `commitCompleted`, and read the instance to see the saved content. The other keys keep their names and types.
 
@@ -39,15 +41,13 @@
 
 ### Internal
 
-Worker tests: the projection, receipt and edge-case classes pass (112 tests); the full Worker suite on U16 has 6902 tests (6898 passed, 4 skipped); the Gateway suite has 3524 tests (3481 passed, 43 skipped).
-
-Mutation checks cover the receipt fields and the re-read decision, the pre-save refusal and its code, the PanelType tolerance, the terse error key list, the rollback subject and the namespace exemptions.
-
-`LayoutStructuralIds` tolerates the SDK default `PanelType` (`Web`) on WebForm `detail` elements only in the projected comparison, when one side omits it. Other values and the strict comparisons are unchanged.
-
-`PatternPropertyPreflight` uses the same exemptions as `PatternSdkAttributeCheck` (namespaced attributes and the custom-properties carrier).
-
-`ConfirmReadback` sets `persisted` from the re-read result (null when no re-read ran); `persistedVerified` and `saved` follow the same result.
+- Worker tests: the projection, receipt and edge-case classes pass (112 tests); the full Worker suite on U16 has 6902 tests (6898 passed, 4 skipped); the Gateway suite has 3524 tests (3481 passed, 43 skipped).
+- Mutation checks cover the receipt fields and the re-read decision, the pre-save refusal and its code, the PanelType tolerance, the terse error key list and gate, the rollback subject, the transaction rollback kept in the receipt, the dirty classification of receipts with an unknown state, the `saved` field and the namespace exemptions.
+- `LayoutStructuralIds` tolerates the SDK default `PanelType` (`Web`) on WebForm `detail` elements only in the projected comparison, when one side omits it. Other values and the strict comparisons are unchanged.
+- `PatternPropertyPreflight` uses the same exemptions as `PatternSdkAttributeCheck` (namespaced attributes and the custom-properties carrier).
+- `ConfirmReadback` sets `persisted` from the re-read result (null when no re-read ran) and `persistedVerified` and `verified` from the same result; `saved` follows the commit.
+- `ShouldMarkTargetDirty` reads every receipt flag as nullable, because the pattern receipts report an unknown state with a JSON null in `persisted`, and keeps the target dirty when a commit has no confirming read.
+- The terse projection of pattern receipts is gated on a `Pattern*` error code that carries `commitCompleted` or `persistenceState`: patch, visual-write, WebForm and TransactionRecords errors also report `persistenceState` and keep their previous terse shape.
 
 ## v4.1.0 - 2026-10-29
 
