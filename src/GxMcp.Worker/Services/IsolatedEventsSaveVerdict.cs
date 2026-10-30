@@ -25,9 +25,28 @@ namespace GxMcp.Worker.Services
         internal const string OtherObjectsChangedCode = "OtherObjectsChangedDuringSave";
 
         /// <summary>
+        /// Records what the pre-commit inventory showed about the other objects, in fields of their own. A refusal at
+        /// this stage rolls the transaction back, and when the change belonged to the transaction the rollback undoes
+        /// it: the inventory read afterwards is clean, and <see cref="Apply"/> rewrites <c>unexpectedChangedObjects</c>
+        /// from it. The <c>preCommit</c> fields are never rewritten, so the refusal keeps naming the object that caused
+        /// it; <c>unexpectedChangedObjects</c> is set here too only for a save that ends before the verdict runs.
+        /// </summary>
+        internal static void RecordPreCommitOthers(JObject receipt, EventsOtherObjectChanges others)
+        {
+            receipt["unexpectedChangedObjects"] = others.BlockingGuids();
+            receipt["preCommitUnexpectedChangedObjects"] = others.BlockingGuids();
+            if (others.Blocking.Count == 0) return;
+            receipt["preCommitUnexpectedChangedObjectDetails"] = others.BlockingDetails();
+            if (others.Blocking.Count > EventsOtherObjectChanges.MaxDescribed)
+                receipt["preCommitUnexpectedChangedObjectDetailsTruncated"] = true;
+        }
+
+        /// <summary>
         /// Writes the verdict into the receipt and returns whether the isolated save is verified. A change another
         /// process made to another object outside the save window is reported (<c>concurrentChanges</c>) and does not
-        /// fail the save; any other change to another object still does, and is then described in full.
+        /// fail the save; any other change to another object still does, and is then described in full. The fields
+        /// written here describe the final inventory only; what the pre-commit inventory showed stays where
+        /// <see cref="RecordPreCommitOthers"/> put it.
         /// <paramref name="unconfirmedMessage"/> is the one-line reason when the target is verified and only other
         /// objects could not be cleared, and null otherwise.
         /// </summary>
@@ -42,12 +61,7 @@ namespace GxMcp.Worker.Services
             receipt["unexpectedChangedObjects"] = others.BlockingGuids();
             receipt["otherObjectMetadataIntact"] = othersIntact;
             receipt["saveWindow"] = window.Describe();
-            if (othersIntact)
-            {
-                // The pre-commit check may have described a change that the final inventory no longer shows.
-                receipt.Remove("unexpectedChangedObjectDetails");
-            }
-            else
+            if (!othersIntact)
             {
                 receipt["unexpectedChangedObjectDetails"] = others.BlockingDetails();
                 if (others.Blocking.Count > EventsOtherObjectChanges.MaxDescribed) receipt["unexpectedChangedObjectDetailsTruncated"] = true;

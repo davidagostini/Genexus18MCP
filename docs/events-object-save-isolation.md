@@ -320,6 +320,14 @@ other parts are intact, the revision advanced), `reasonCode` is `OtherObjectsCha
 `false`, and the message says so in one line instead of the generic one. Do not repeat the edit; compare the listed
 objects with the IDE.
 
+A refusal before the commit rolls the transaction back, and when the other object's change belonged to the transaction
+the rollback undoes it, so the inventory read afterwards shows nothing. The receipt therefore keeps what the pre-commit
+inventory showed in fields the final verdict never rewrites: `preCommitUnexpectedChangedObjects` (GUIDs) and
+`preCommitUnexpectedChangedObjectDetails[]` (the same members as `unexpectedChangedObjectDetails[]`, plus
+`preCommitUnexpectedChangedObjectDetailsTruncated` when more than 50 were found). `unexpectedChangedObjects` and
+`unexpectedChangedObjectDetails[]` describe the final inventory only: a refusal whose rollback was verified reports
+them empty and still names its cause in the `preCommit` ones. The default (terse) error projection keeps both sets.
+
 `otherObjectMetadataIntact` now means that no object is blocking. `rollbackVerified` follows the same rule, so an
 edit by another process outside the window no longer turns a verified rollback into an unverified one.
 

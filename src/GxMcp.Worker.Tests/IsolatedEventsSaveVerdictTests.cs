@@ -23,6 +23,10 @@ namespace GxMcp.Worker.Tests
         private static EventsSaveWindow Closed()
             => EventsSaveWindow.Calibrate(At(100), At(160), At(101), At(103), At(102), TimeSpan.FromHours(-3).Ticks);
 
+        // The window as the pre-commit inventory sees it: the transaction is still open.
+        private static EventsSaveWindow Open()
+            => EventsSaveWindow.Calibrate(At(100), null, At(101), At(103), At(102), TimeSpan.FromHours(-3).Ticks);
+
         private static EventsOtherObjectChanges OtherEditedAt(double seconds, EventsSaveWindow window)
             => EventsOtherObjectChanges.Classify(
                 new Dictionary<Guid, EventsInventoryEntry> { [Other] = Entry(3, At(10)) },
@@ -182,13 +186,70 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void ABlockingChangeDescribedBeforeTheCommit_IsDroppedWhenTheFinalInventoryNoLongerShowsIt()
+        public void WhatThePreCommitInventoryShowed_SurvivesAFinalInventoryThatNoLongerShowsIt()
         {
-            var receipt = new JObject { ["unexpectedChangedObjectDetails"] = new JArray(new JObject { ["guid"] = Other.ToString() }) };
+            // The refusal rolled the transaction back and the rollback undid the change: the final inventory is clean.
+            var receipt = new JObject();
+            IsolatedEventsSaveVerdict.RecordPreCommitOthers(receipt, OtherEditedAt(130, Open()));
 
-            IsolatedEventsSaveVerdict.Apply(receipt, Committed(), NothingChanged(), Closed(), out _);
+            IsolatedEventsSaveVerdict.Apply(receipt, RolledBack(), NothingChanged(), Closed(), out _);
 
+            Assert.Empty((JArray)receipt["unexpectedChangedObjects"]!);
             Assert.Null(receipt["unexpectedChangedObjectDetails"]);
+            Assert.True(receipt["otherObjectMetadataIntact"]!.Value<bool>());
+            Assert.True(receipt["rollbackVerified"]!.Value<bool>());
+            Assert.Equal(new[] { Other.ToString() }, receipt["preCommitUnexpectedChangedObjects"]!.ToObject<string[]>());
+            var detail = (JObject)Assert.Single((JArray)receipt["preCommitUnexpectedChangedObjectDetails"]!);
+            Assert.Equal(Other.ToString(), detail["guid"]!.ToString());
+            Assert.Equal("Procedure01", detail["name"]!.ToString());
+            Assert.Equal("InsideSaveWindow", detail["reason"]!.ToString());
+        }
+
+        [Fact]
+        public void TheVerdict_ReportsTheFinalInventoryBesideThePreCommitOne_WithoutRewritingEither()
+        {
+            var receipt = new JObject();
+            IsolatedEventsSaveVerdict.RecordPreCommitOthers(receipt, OtherEditedAt(130, Open()));
+
+            IsolatedEventsSaveVerdict.Apply(receipt, Committed(), OtherEditedAt(131, Closed()), Closed(), out _);
+
+            var preCommit = (JObject)Assert.Single((JArray)receipt["preCommitUnexpectedChangedObjectDetails"]!);
+            var final = (JObject)Assert.Single((JArray)receipt["unexpectedChangedObjectDetails"]!);
+            Assert.Equal(EventsSaveWindow.Iso(At(130)), preCommit["lastUpdateAfter"]!.ToString());
+            Assert.Equal(EventsSaveWindow.Iso(At(131)), final["lastUpdateAfter"]!.ToString());
+        }
+
+        [Fact]
+        public void RecordPreCommitOthers_WithNothingInDoubt_ListsNoObjectAndDescribesNone()
+        {
+            var receipt = new JObject();
+
+            IsolatedEventsSaveVerdict.RecordPreCommitOthers(receipt, NothingChanged());
+
+            Assert.Empty((JArray)receipt["unexpectedChangedObjects"]!);
+            Assert.Empty((JArray)receipt["preCommitUnexpectedChangedObjects"]!);
+            Assert.Null(receipt["preCommitUnexpectedChangedObjectDetails"]);
+            Assert.Null(receipt["preCommitUnexpectedChangedObjectDetailsTruncated"]);
+        }
+
+        [Fact]
+        public void RecordPreCommitOthers_SaysWhenItDescribesFewerChangesThanItFound()
+        {
+            var before = new Dictionary<Guid, EventsInventoryEntry>();
+            var after = new Dictionary<Guid, EventsInventoryEntry>();
+            for (int i = 0; i < EventsOtherObjectChanges.MaxDescribed + 3; i++)
+            {
+                var id = Guid.NewGuid();
+                before[id] = Entry(1, At(10));
+                after[id] = Entry(2, At(130));
+            }
+            var receipt = new JObject();
+
+            IsolatedEventsSaveVerdict.RecordPreCommitOthers(receipt, EventsOtherObjectChanges.Classify(before, after, Target, Open()));
+
+            Assert.Equal(EventsOtherObjectChanges.MaxDescribed + 3, ((JArray)receipt["preCommitUnexpectedChangedObjects"]!).Count);
+            Assert.Equal(EventsOtherObjectChanges.MaxDescribed, ((JArray)receipt["preCommitUnexpectedChangedObjectDetails"]!).Count);
+            Assert.True(receipt["preCommitUnexpectedChangedObjectDetailsTruncated"]!.Value<bool>());
         }
 
         [Fact]

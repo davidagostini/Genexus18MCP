@@ -25,6 +25,22 @@ namespace GxMcp.Gateway.Tests
             ""saveWindow"":{""calibrated"":true,""stampClockOffsetSeconds"":0.0,""seconds"":66.0}
         }");
 
+        // The save was refused before the commit and its rollback undid the other object's change: the final fields are
+        // clean, and only the pre-commit ones still name the object that caused the refusal.
+        private static JObject RefusedBeforeTheCommitAndRolledBack() => JObject.Parse(@"{
+            ""code"":""ObjectSaveIncomplete"",
+            ""message"":""Isolated Events save failed during pre-commit-verification: The pre-commit SDK object state did not match the requested isolated change: 1 other object(s) in the Knowledge Base changed (see preCommitUnexpectedChangedObjectDetails)."",
+            ""savePhase"":""pre-commit-verification"",
+            ""objectSaved"":false,""persisted"":false,""verified"":false,
+            ""transactionRolledBack"":true,""rollbackVerified"":true,
+            ""otherPartsIntact"":true,""otherObjectMetadataIntact"":true,
+            ""unexpectedChangedObjects"":[],
+            ""preCommitUnexpectedChangedObjects"":[""00000000-0000-0000-0000-0000000000b2""],
+            ""preCommitUnexpectedChangedObjectDetails"":[{""guid"":""00000000-0000-0000-0000-0000000000b2"",""name"":""Procedure01"",""type"":""Procedure"",""change"":""modified"",""verdict"":""blocking"",""reason"":""InsideSaveWindow"",""versionBefore"":3,""versionAfter"":4}],
+            ""preCommitUnexpectedChangedObjectDetailsTruncated"":true,
+            ""saveWindow"":{""calibrated"":true,""stampClockOffsetSeconds"":0.0,""seconds"":66.0}
+        }");
+
         [Fact]
         public void TrimErrorEnvelope_KeepsWhichObjectsChanged_TheSaveWindowAndTheVerdictOnTheTarget()
         {
@@ -45,6 +61,24 @@ namespace GxMcp.Gateway.Tests
         }
 
         [Fact]
+        public void TrimErrorEnvelope_KeepsTheObjectThatCausedARefusalBeforeTheCommit_EvenWhenTheRollbackUndidIt()
+        {
+            var input = RefusedBeforeTheCommitAndRolledBack();
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            foreach (string key in new[]
+            {
+                "savePhase", "transactionRolledBack", "rollbackVerified", "otherObjectMetadataIntact", "unexpectedChangedObjects",
+                "preCommitUnexpectedChangedObjects", "preCommitUnexpectedChangedObjectDetails",
+                "preCommitUnexpectedChangedObjectDetailsTruncated", "saveWindow"
+            })
+                Assert.True(JToken.DeepEquals(input[key], trimmed[key]), key);
+            Assert.Empty((JArray)trimmed["unexpectedChangedObjects"]!);
+            Assert.Equal("00000000-0000-0000-0000-0000000000b2", (string)trimmed["preCommitUnexpectedChangedObjectDetails"]![0]!["guid"]!);
+        }
+
+        [Fact]
         public void TrimErrorEnvelope_VerboseMode_PassesTheEnvelopeThrough()
         {
             var input = CommittedButAnotherObjectChanged();
@@ -60,7 +94,11 @@ namespace GxMcp.Gateway.Tests
             var trimmed = McpRouter.TrimErrorEnvelope(
                 JObject.Parse("{code:'ObjectSaveIncomplete',message:'verification failed',otherObjectMetadataIntact:true}"), verbose: false);
 
-            foreach (string key in new[] { "unexpectedChangedObjects", "concurrentChanges", "saveWindow", "writeVerifiedForTarget" })
+            foreach (string key in new[]
+            {
+                "unexpectedChangedObjects", "preCommitUnexpectedChangedObjects", "preCommitUnexpectedChangedObjectDetails",
+                "concurrentChanges", "saveWindow", "writeVerifiedForTarget"
+            })
                 Assert.False(trimmed.ContainsKey(key), key);
         }
     }

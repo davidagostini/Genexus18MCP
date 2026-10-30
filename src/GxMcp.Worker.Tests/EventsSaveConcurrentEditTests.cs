@@ -92,7 +92,7 @@ namespace GxMcp.Worker.Tests
             {
                 Calls.Add("VerifyPreCommit");
                 var others = EventsOtherObjectChanges.Classify(_baseline, _preCommit, Target, _preCommitWindow);
-                _receipt["unexpectedChangedObjects"] = others.BlockingGuids();
+                IsolatedEventsSaveVerdict.RecordPreCommitOthers(_receipt, others);
                 string mismatch = IsolatedEventsSaveDiagnostics.DescribePreCommitMismatch(
                     eventsSourceMatches: true, changedParts: null, partChangesAllowed: true,
                     otherObjectsChanged: others.Blocking.Count, placementMatches: true);
@@ -157,6 +157,8 @@ namespace GxMcp.Worker.Tests
             Assert.True(run.Receipt["verified"]!.Value<bool>());
             Assert.True(run.Receipt["otherObjectMetadataIntact"]!.Value<bool>());
             Assert.Null(run.Receipt["concurrentChanges"]);
+            Assert.Empty((JArray)run.Receipt["preCommitUnexpectedChangedObjects"]!);
+            Assert.Null(run.Receipt["preCommitUnexpectedChangedObjectDetails"]);
             Assert.Contains("Commit", run.Steps.Calls);
             Assert.DoesNotContain("Rollback", run.Steps.Calls);
         }
@@ -202,7 +204,7 @@ namespace GxMcp.Worker.Tests
             Assert.Equal("pre-commit-verification", run.Outcome.Phase);
             Assert.Equal(
                 "Isolated Events save failed during pre-commit-verification: The pre-commit SDK object state did not match "
-                + "the requested isolated change: 1 other object(s) in the Knowledge Base changed.",
+                + "the requested isolated change: 1 other object(s) in the Knowledge Base changed (see preCommitUnexpectedChangedObjectDetails).",
                 run.Outcome.Message);
             Assert.DoesNotContain("Commit", run.Steps.Calls);
             Assert.Contains("Rollback", run.Steps.Calls);
@@ -210,6 +212,43 @@ namespace GxMcp.Worker.Tests
             Assert.False(run.Receipt["persisted"]!.Value<bool>());
             Assert.False(run.Receipt["rollbackVerified"]!.Value<bool>());
             Assert.True(WriteService.ShouldMarkIsolatedEventsDirty(run.Receipt));
+            // The change is still there after the rollback: the final fields and the pre-commit ones agree.
+            Assert.Equal(new[] { Other.ToString() }, run.Receipt["unexpectedChangedObjects"]!.ToObject<string[]>());
+            Assert.Equal(new[] { Other.ToString() }, run.Receipt["preCommitUnexpectedChangedObjects"]!.ToObject<string[]>());
+            Assert.Equal(Other.ToString(), run.Receipt["unexpectedChangedObjectDetails"]![0]!["guid"]!.ToString());
+            Assert.Equal(Other.ToString(), run.Receipt["preCommitUnexpectedChangedObjectDetails"]![0]!["guid"]!.ToString());
+        }
+
+        [Fact]
+        public void EditInsideTheTransactionUndoneByTheRollback_StillNamesTheObjectThatCausedTheRefusal()
+        {
+            // The other object's change belonged to the transaction: the rollback removed it, so the inventory read
+            // after the rollback is clean. The refusal must still say which object it was and what changed in it.
+            var run = new Run(Entry(4, At(130)), OtherUntouched, OpenWindow(), ClosedWindow());
+
+            Assert.Equal(IsolatedEventsSaveOutcomeKind.NotConfirmed, run.Outcome.Kind);
+            Assert.Equal("pre-commit-verification", run.Outcome.Phase);
+            Assert.DoesNotContain("Commit", run.Steps.Calls);
+            Assert.Contains("Rollback", run.Steps.Calls);
+            Assert.Contains("preCommitUnexpectedChangedObjectDetails", run.Outcome.Message);
+
+            // What the final inventory proves keeps its meaning.
+            Assert.True(run.Receipt["rollbackVerified"]!.Value<bool>());
+            Assert.True(run.Receipt["otherObjectMetadataIntact"]!.Value<bool>());
+            Assert.Empty((JArray)run.Receipt["unexpectedChangedObjects"]!);
+            Assert.Null(run.Receipt["unexpectedChangedObjectDetails"]);
+            Assert.False(WriteService.ShouldMarkIsolatedEventsDirty(run.Receipt));
+
+            // What the pre-commit inventory showed survives it.
+            Assert.Equal(new[] { Other.ToString() }, run.Receipt["preCommitUnexpectedChangedObjects"]!.ToObject<string[]>());
+            var cause = (JObject)Assert.Single((JArray)run.Receipt["preCommitUnexpectedChangedObjectDetails"]!);
+            Assert.Equal(Other.ToString(), cause["guid"]!.ToString());
+            Assert.Equal("Procedure01", cause["name"]!.ToString());
+            Assert.Equal("modified", cause["change"]!.ToString());
+            Assert.Equal("blocking", cause["verdict"]!.ToString());
+            Assert.Equal("InsideSaveWindow", cause["reason"]!.ToString());
+            Assert.Equal(3, cause["versionBefore"]!.Value<int>());
+            Assert.Equal(4, cause["versionAfter"]!.Value<int>());
         }
 
         [Fact]

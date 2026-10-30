@@ -2001,10 +2001,13 @@ namespace GxMcp.Gateway
                 "sourceValidationErrors", "originalError", "sdkMessagesTruncated", "sdkMessagesError",
                 "verificationFailure", "saveFailureMessage",
                 // Other objects that differ between the save's inventories: the ones it cannot clear
-                // (unexpectedChangedObjects/Details), the ones another process wrote outside the save
-                // window (concurrentChanges), the window itself and the verdict on the target alone.
-                // Without them the caller knows that something else changed, not what.
+                // (unexpectedChangedObjects/Details), the ones the pre-commit inventory showed before a
+                // rollback undid them (preCommitUnexpectedChangedObjects/Details), the ones another process
+                // wrote outside the save window (concurrentChanges), the window itself and the verdict on
+                // the target alone. Without them the caller knows that something else changed, not what.
                 "unexpectedChangedObjects", "unexpectedChangedObjectDetails", "unexpectedChangedObjectDetailsTruncated",
+                "preCommitUnexpectedChangedObjects", "preCommitUnexpectedChangedObjectDetails",
+                "preCommitUnexpectedChangedObjectDetailsTruncated",
                 "concurrentChanges", "concurrentChangeCount", "concurrentChangesTruncated",
                 "saveWindow", "writeVerifiedForTarget", "retrySafe",
                 // Patch NoMatch diagnostics are nested in the worker's canonical

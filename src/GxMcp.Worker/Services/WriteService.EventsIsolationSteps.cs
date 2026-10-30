@@ -215,8 +215,8 @@ namespace GxMcp.Worker.Services
                 _receipt["preCommitChangedPartKeys"] = new JArray(comparison.ChangedPartKeys);
                 _receipt["preCommitChangedPartDeltas"] = _snapshot.DescribeDifferences(_current, "Events");
                 _receipt["unexpectedChangedParts"] = comparison.ChangedParts;
-                _receipt["unexpectedChangedObjects"] = changedOthers.BlockingGuids();
-                if (changedOthers.Blocking.Count > 0) _receipt["unexpectedChangedObjectDetails"] = changedOthers.BlockingDetails();
+                // Apart from the final verdict: the rollback this refusal triggers can undo the change it names.
+                IsolatedEventsSaveVerdict.RecordPreCommitOthers(_receipt, changedOthers);
                 string changedParts = comparison.ChangedParts is JArray changedList
                     ? string.Join(", ", changedList.Select(part => part.ToString()))
                     : comparison.ChangedParts?.ToString();
