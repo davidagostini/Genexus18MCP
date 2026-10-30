@@ -64,5 +64,43 @@ namespace GxMcp.Gateway.Tests
             foreach (string key in new[] { "commitCompleted", "transactionFinalizationError", "verificationError", "stateRestoredExactly" })
                 Assert.True(JToken.DeepEquals(input[key], trimmed[key]), key);
         }
+
+        [Theory]
+        [InlineData("WwpLayoutNotVerified")]
+        [InlineData("WwpLayoutSaveFailed")]
+        [InlineData("WwpProjectionFailed")]
+        [InlineData("WwpProjectionNotConfirmed")]
+        public void EveryAddLayoutFailureFamilyOpensTheReceiptBlock(string code)
+        {
+            var input = JObject.Parse(@"{
+                ""status"":""error"",
+                ""error"":{""code"":""" + code + @""",""message"":""Inspect the saved PatternInstance before retrying.""},
+                ""commitCompleted"":true,""persistenceState"":""partial"",
+                ""snapshot"":""snapshot-path"",""beforeHash"":""h0"",""rollbackPerformed"":false
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            foreach (string key in new[] { "commitCompleted", "persistenceState", "snapshot", "beforeHash", "rollbackPerformed" })
+                Assert.True(JToken.DeepEquals(input[key], trimmed[key]), key);
+        }
+
+        [Fact]
+        public void AnUnrelatedErrorThatReportsPersistenceStateKeepsItsTerseShape()
+        {
+            // Patch, WebForm and TransactionRecords errors report persistenceState without being a pattern write
+            // receipt: their snapshot path and hashes must not travel in the terse error.
+            var input = JObject.Parse(@"{
+                ""status"":""error"",
+                ""error"":{""code"":""WriteNotPersisted"",""message"":""The write was not persisted.""},
+                ""persistenceState"":""unchanged"",
+                ""snapshot"":""snapshot-path"",""beforeHash"":""h0"",""projection"":{""confirmed"":false}
+            }");
+
+            var trimmed = McpRouter.TrimErrorEnvelope(input, verbose: false);
+
+            foreach (string key in new[] { "persistenceState", "snapshot", "beforeHash", "projection" })
+                Assert.Null(trimmed[key]);
+        }
     }
 }

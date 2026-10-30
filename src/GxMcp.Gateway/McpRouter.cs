@@ -2087,18 +2087,30 @@ namespace GxMcp.Gateway
                     if (value != null) trimmed[key] = value;
                 }
             }
-            if (ResolveErrorField(error, "commitCompleted") != null || ResolveErrorField(error, "persistenceState") != null)
+            string receiptCode = code?.ToString() ?? string.Empty;
+            if ((receiptCode.StartsWith("Pattern", StringComparison.Ordinal)
+                    || receiptCode.StartsWith("WwpLayout", StringComparison.Ordinal)
+                    || receiptCode.StartsWith("WwpProjection", StringComparison.Ordinal))
+                && (ResolveErrorField(error, "commitCompleted") != null || ResolveErrorField(error, "persistenceState") != null))
             {
                 // PatternInstance write receipt: whether the commit happened, what an independent re-read
                 // observed, and the parent projection and restoration evidence the caller inspects before
                 // retrying. Gated on the receipt itself so unrelated errors keep their terse shape.
+                // Patch, visual-write, WebForm and TransactionRecords errors report persistenceState too; the
+                // Pattern* codes of the pattern writers and the WwpLayout*/WwpProjection* codes of add_layout
+                // keep their snapshot path and hashes out of the terse shape.
                 foreach (string key in new[] { "persistenceState", "commitCompleted", "snapshot", "stateRestoredExactly",
                     "rollbackPerformed", "beforeHash", "projection", "restorationVerification",
-                    "hostHashBefore", "parentHashBefore", "transactionFinalizationError", "verificationError" })
+                    "hostHashBefore", "parentHashBefore", "transactionFinalizationError", "verificationError",
+                    "flushError", "readCacheInvalidationError", "applyOnSaveReenabled" })
                 {
                     JToken? value = ResolveErrorField(error, key);
                     if (value != null) trimmed[key] = value;
                 }
+                // The WorkWithPlus flow records the cause of a part save it swallowed as one sanitized line;
+                // the generic writer keeps the raw exception text in an object, which stays verbose-only.
+                if (ResolveErrorField(error, "sdkSaveError") is { Type: JTokenType.String } sdkSaveError)
+                    trimmed["sdkSaveError"] = sdkSaveError;
             }
             if (code?.ToString().StartsWith("ControlConditionCarriers", StringComparison.Ordinal) == true)
             {
