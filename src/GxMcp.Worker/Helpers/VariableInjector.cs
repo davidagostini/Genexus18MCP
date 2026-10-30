@@ -1392,9 +1392,11 @@ namespace GxMcp.Worker.Helpers
             return true;
         }
 
-        // issue #543: how ResolveBoundTypeObject found the object. Every path keeps the
-        // verdict it had (a by-name hit is still accepted), but a name is weaker evidence
-        // than a native key, so the post-save receipt reports which one it was.
+        // issue #543: how ResolveBoundTypeObject found the object. A name is weaker evidence
+        // than a native key, so the post-save receipt reports which one it was: a by-name hit
+        // is still accepted when the variable carries no native key, but a native key that is
+        // present is authoritative, and a dangling one answers none instead of falling back
+        // to a same-named object.
         public const string ResolutionPathNativeReference = "native-reference";
         public const string ResolutionPathCustomTypeName = "custom-type-name";
         public const string ResolutionPathDataTypeName = "data-type-name";
@@ -1449,9 +1451,12 @@ namespace GxMcp.Worker.Helpers
             public Func<string, string, T> BusinessComponentByName { get; set; }
         }
 
-        // Resolution order, from the strongest evidence down: entity-key properties, the
-        // ATTCUSTOMTYPE token as a key, the persisted EntityKey pair inside ATTCUSTOMTYPE,
-        // the ATTCUSTOMTYPE token as a name, then DataTypeString by name.
+        // Resolution order, from the strongest evidence down: entity-key properties; the
+        // StructureTypeReference the SDK saved in ATTCUSTOMTYPE, decoded with its own reader
+        // (authoritative: it ends the resolution, found or dangling); the ATTCUSTOMTYPE token
+        // as a key; the EntityKey pair parsed from it; the token as a name; then DataTypeString
+        // by name, as an SDT for GX_SDT and as a Business Component (in the owner's module)
+        // for GX_BUSCOMP only.
         internal static T ResolveBoundTypeObjectCore<T>(Func<string, object> getProperty, string variableType,
             string ownerModule, BoundTypeLookups<T> lookups, out string resolutionPath) where T : class
         {
@@ -1471,6 +1476,17 @@ namespace GxMcp.Worker.Helpers
                 object custom = getProperty("ATTCUSTOMTYPE");
                 if (custom != null)
                 {
+                    // After save the SDK serializes SDT references as StructureTypeReference
+                    // XML, not as a GUID or display name. Decode its native entity key with the
+                    // SDK's own deserializer. A present native key is authoritative even when
+                    // dangling: never reinterpret a failed key lookup as a same-named SDT/BC
+                    // reference.
+                    if (TryGetStructuralReferenceKey(custom, out Guid objectType, out int objectId))
+                    {
+                        var native = lookups.FromEntityKey(objectType, objectId);
+                        if (native != null) resolutionPath = ResolutionPathNativeReference;
+                        return native;
+                    }
                     string token = custom.GetType().GetProperty("Guid")?.GetValue(custom) as string
                         ?? custom.GetType().GetField("m_guid", BindingFlags.NonPublic | BindingFlags.Instance)?.GetValue(custom) as string;
                     var resolved = lookups.FromKey(token);
@@ -1515,6 +1531,7 @@ namespace GxMcp.Worker.Helpers
             // GX18 U16 persists modular BC variables as GX_BUSCOMP plus DataTypeString;
             // ATTCUSTOMTYPE intentionally has no object key. Resolve the name in the
             // variable owner's module, which is the same native scope used by GeneXus.
+            if (!string.Equals(variableType, "GX_BUSCOMP", StringComparison.OrdinalIgnoreCase)) return null;
             try
             {
                 string typeName = getProperty("DataTypeString") as string;
@@ -1533,6 +1550,24 @@ namespace GxMcp.Worker.Helpers
             }
             catch { }
             return null;
+        }
+
+        internal static bool TryGetStructuralReferenceKey(object customType, out Guid objectType, out int objectId)
+        {
+            objectType = Guid.Empty;
+            objectId = 0;
+            if (!(customType is global::Artech.Genexus.Common.CustomTypes.AttCustomType nativeType)
+                || !global::Artech.Genexus.Common.Types.StructureTypeReference.ValidSerializatedData(nativeType.Guid))
+                return false;
+            try
+            {
+                var reference = global::Artech.Genexus.Common.Types.StructureTypeReference.Deserialize(nativeType);
+                if (reference == null || reference.Type == Guid.Empty || reference.Id <= 0) return false;
+                objectType = reference.Type;
+                objectId = reference.Id;
+                return true;
+            }
+            catch { return false; }
         }
 
         public static bool TryParseDbType(string typeStr, out global::Artech.Genexus.Common.eDBType type)
