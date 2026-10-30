@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Helpers
 {
@@ -26,6 +28,30 @@ namespace GxMcp.Worker.Helpers
 
             /// <summary>Properties left as written: not read before, not written, or not confirmed by the read-back.</summary>
             internal IReadOnlyList<string> NotRestored { get; }
+
+            /// <summary>The two lists as the receipt carries them: names only, never a value.</summary>
+            internal void AddTo(JObject receipt)
+            {
+                receipt["propertiesRestored"] = new JArray(Restored.ToArray());
+                receipt["propertiesNotRestored"] = new JArray(NotRestored.ToArray());
+            }
+        }
+
+        /// <summary>
+        /// The report for a rollback that restored nothing: it was refused, or its transaction never committed, so every
+        /// requested property is still as the batch wrote it.
+        /// </summary>
+        internal static Report NothingRestored(IEnumerable<string> requestedNames)
+            => new Report(new string[0], (requestedNames ?? Enumerable.Empty<string>()).ToList());
+
+        /// <summary>
+        /// The parenthesis the "unrelated part changed" reason adds: the names of the parts that differ, never their content.
+        /// Empty when no name is known, so the reason reads as it did before.
+        /// </summary>
+        internal static string DescribeChangedParts(IEnumerable<string> changedParts)
+        {
+            string[] names = (changedParts ?? Enumerable.Empty<string>()).Where(name => !string.IsNullOrWhiteSpace(name)).ToArray();
+            return names.Length == 0 ? string.Empty : " (" + string.Join(", ", names) + ")";
         }
 
         /// <summary>
@@ -113,13 +139,13 @@ namespace GxMcp.Worker.Helpers
         }
 
         /// <summary>
-        /// The sentence the rollback message adds when the source text of some parts could not be written back. Empty when every
-        /// part got its text back, so a clean rollback reads as before.
+        /// The sentence the rollback message adds when the source text of some parts could not be written back; it names the
+        /// parts. Empty when every part got its text back, so a clean rollback reads as before.
         /// </summary>
         internal static string DescribeSourceFailures(IReadOnlyList<string> failed)
         {
             if (failed == null || failed.Count == 0) return string.Empty;
-            return " The source text of " + failed.Count + " part(s) could not be written back; check the code of the object.";
+            return " The source text of " + string.Join(", ", failed) + " could not be written back; check the code of the object.";
         }
     }
 }

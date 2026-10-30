@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using GxMcp.TestSupport;
 using GxMcp.Worker.Helpers;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace GxMcp.Worker.Tests
@@ -211,12 +213,75 @@ namespace GxMcp.Worker.Tests
         }
 
         [Fact]
-        public void SourceFailuresAreCountedInTheMessage()
+        public void SourceFailuresAreNamedInTheMessage()
         {
-            var sentence = PropertyRollbackRestore.DescribeSourceFailures(new[] { "source-a", "source-b" });
+            var sentence = PropertyRollbackRestore.DescribeSourceFailures(new[] { "Events", "Rules" });
 
-            Assert.Contains("2", sentence);
+            Assert.Contains("Events, Rules", sentence);
             Assert.Contains("could not be written back", sentence);
+        }
+
+        [Fact]
+        public void TheChangedPartsAreNamedInTheReason_AndNothingIsAddedWhenNoneIsKnown()
+        {
+            Assert.Equal(" (Rules, Events)", PropertyRollbackRestore.DescribeChangedParts(new[] { "Rules", "Events" }));
+            Assert.Equal(string.Empty, PropertyRollbackRestore.DescribeChangedParts(new string[0]));
+            Assert.Equal(string.Empty, PropertyRollbackRestore.DescribeChangedParts(null));
+            Assert.Equal(string.Empty, PropertyRollbackRestore.DescribeChangedParts(new[] { " ", null }));
+        }
+
+        [Fact]
+        public void ARollbackThatRestoredNothingListsEveryRequestedPropertyAsNotRestored()
+        {
+            var receipt = new JObject();
+
+            PropertyRollbackRestore.NothingRestored(new[] { "Description", "SOAP" }).AddTo(receipt);
+
+            Assert.Empty((JArray)receipt["propertiesRestored"]);
+            Assert.Equal(new[] { "Description", "SOAP" }, receipt["propertiesNotRestored"].ToObject<string[]>());
+        }
+
+        [Fact]
+        public void TheReportCarriesOnlyNamesIntoTheReceipt()
+        {
+            var report = PropertyRollbackRestore.Confirm(
+                new[] { "Description", "SOAP" },
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Description"] = "Before", ["SOAP"] = "True" },
+                new[] { "Description" }, name => "Before");
+            var receipt = new JObject();
+
+            report.AddTo(receipt);
+
+            Assert.Equal(new[] { "Description" }, receipt["propertiesRestored"].ToObject<string[]>());
+            Assert.Equal(new[] { "SOAP" }, receipt["propertiesNotRestored"].ToObject<string[]>());
+            Assert.DoesNotContain("Before", receipt.ToString());
+        }
+
+        [Fact]
+        public void TheBatchWriteNeverOverwritesThePreviousValuesTheRollbackRestores()
+        {
+            // An earlier property of a batch can change a later one (an attribute's type rewrites its length): what the
+            // rollback restores is the value read before the first write, so the write transaction must not touch it.
+            string body = SourceAssert.MethodBody(
+                RepoSource.WithoutComments(RepoSource.Read("src", "GxMcp.Worker", "Services", "PropertyService.cs")),
+                "public string SetProperties(string target, JObject properties,");
+            int transaction = body.IndexOf("BeginTransaction()", StringComparison.Ordinal);
+
+            Assert.True(transaction > 0, "the batch write transaction was not found");
+            Assert.Contains("previousValues[propName] =", body.Substring(0, transaction));
+            Assert.DoesNotContain("previousValues[", body.Substring(transaction));
+        }
+
+        [Fact]
+        public void EveryRollbackThatRestoresNothingReportsThatInsteadOfOmittingTheLists()
+        {
+            string src = RepoSource.WithoutComments(RepoSource.Read("src", "GxMcp.Worker", "Services", "PropertyService.cs"));
+            string rollback = SourceAssert.MethodBody(src, "private string RollbackPropertySnapshot(");
+
+            // The refused rollback and the one whose restoring transaction never committed both say nothing was restored.
+            Assert.Equal(2, SourceAssert.Count(rollback, "PropertyRollbackRestore.NothingRestored(rollback.RequestedNames)"));
+            Assert.Contains("if (!restoreCommitted) PropertyRollbackRestore.NothingRestored(", rollback);
+            Assert.Contains("restoreCommitted = true;", rollback);
         }
 
         [Fact]

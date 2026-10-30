@@ -1161,12 +1161,10 @@ namespace GxMcp.Worker.Services
                             if (propertyValidation != null)
                                 throw new InvalidOperationException(propertyValidation);
 
+                            // beforeValues follows the transaction object, which already carries the writes of the earlier properties of this
+                            // batch. previousValues, what the rollback restores, keeps the value read before the first write.
                             string before = TryReadPropertyString(propertyContainer, nativeName, obj.Model);
-                            if (before != null)
-                            {
-                                beforeValues[propName] = before;
-                                previousValues[propName] = before;
-                            }
+                            if (before != null) beforeValues[propName] = before;
 
                             if (references.TryGetValue(propName, out object reference))
                                 propertyContainer.SetPropertyValue(nativeName, reference);
@@ -1218,7 +1216,7 @@ namespace GxMcp.Worker.Services
                         controlName, typeFilter, before, obj);
                     if (verification == null)
                         return RollbackPropertySnapshot(target, obj, snapshot, rollback,
-                            "The saved property could not be independently read back.");
+                            $"The saved property '{propName}' could not be independently read back.");
 
                     var verificationEnvelope = JObject.Parse(verification);
                     if (string.Equals(verificationEnvelope["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase))
@@ -1228,16 +1226,19 @@ namespace GxMcp.Worker.Services
                     var diff = verificationEnvelope["result"] as JObject;
                     if (diff == null || diff["persistedVerified"]?.ToObject<bool>() != true)
                         return RollbackPropertySnapshot(target, obj, snapshot, rollback,
-                            "The saved property could not be confirmed.");
+                            $"The saved property '{propName}' could not be confirmed.");
                     verifiedBefore[propName] = diff["before"]?.ToString() ?? string.Empty;
                     verifiedRequested[propName] = diff["requested"]?.ToString() ?? requested;
                     verifiedPersisted[propName] = diff["persisted"]?.ToString() ?? string.Empty;
                 }
 
                 var fresh = _objectService.FindObjectFreshByIdentity(obj);
-                if (fresh == null || !snapshot.CompareParts(fresh).Equal)
+                var partsComparison = fresh == null ? null : snapshot.CompareParts(fresh);
+                if (partsComparison == null || !partsComparison.Equal)
                     return RollbackPropertySnapshot(target, obj, snapshot, rollback,
-                        "The property save changed an unrelated object part or the parts could not be verified.");
+                        "The property save changed an unrelated object part"
+                        + PropertyRollbackRestore.DescribeChangedParts(partsComparison?.ChangedParts.Values<string>())
+                        + " or the parts could not be verified.");
 
                 var result = new JObject { ["properties"] = properties };
                 if (verifiedPersisted.Count == properties.Count)
@@ -1283,13 +1284,20 @@ namespace GxMcp.Worker.Services
 
         private string RollbackPropertySnapshot(string target, KBObject written, ObjectMoveSnapshot snapshot, PropertyRollbackContext rollback, string reason)
         {
+            bool restoreCommitted = false;
             try
             {
                 var current = _objectService.FindObjectFreshByIdentity(written);
                 if (current == null || !string.Equals(WriteService.ComputeVersionToken(current),
                     WriteService.ComputeVersionToken(written), StringComparison.Ordinal))
+                {
+                    // Nothing was attempted: every property is still as the batch wrote it.
+                    var refused = new JObject();
+                    PropertyRollbackRestore.NothingRestored(rollback.RequestedNames).AddTo(refused);
                     return Models.McpResponse.Err(code: "PropertyRollbackUnsafe", target: target,
-                        message: reason + " The persisted version could not be tied to this write; automatic rollback was refused.");
+                        message: reason + " The persisted version could not be tied to this write; automatic rollback was refused.",
+                        extra: refused);
+                }
                 IReadOnlyList<string> writtenBack = new string[0];
                 IReadOnlyList<string> sourceFailures = new string[0];
                 using (var tx = written.Model.KB.BeginTransaction())
@@ -1308,6 +1316,7 @@ namespace GxMcp.Worker.Services
                         sourceFailures = snapshot.RestoreSourceTexts(current);
                         tx.Commit();
                         committed = true;
+                        restoreCommitted = true;
                     }
                     finally { if (!committed) try { tx.Rollback(); } catch { } }
                 }
@@ -1315,23 +1324,25 @@ namespace GxMcp.Worker.Services
                 var restored = _objectService.FindObjectFreshByIdentity(current);
                 var report = PropertyRollbackRestore.Confirm(rollback.RequestedNames, rollback.PreviousValues, writtenBack,
                     name => restored == null ? null : ReadPropertyValueAt(restored, rollback.NativeNames[name], rollback.ControlName));
-                bool verified = restored != null && snapshot.Compare(restored).Equal;
+                var restoredComparison = restored == null ? null : snapshot.Compare(restored);
+                bool verified = restoredComparison != null && restoredComparison.Equal;
+                var outcome = new JObject { ["rollbackAttempted"] = true, ["rollbackVerified"] = verified };
+                report.AddTo(outcome);
+                // The parts that still differ from the snapshot, by name only: without them an unverified rollback cannot be told from damage.
+                if (restoredComparison != null && !restoredComparison.Equal) outcome["changedParts"] = restoredComparison.ChangedParts;
                 return Models.McpResponse.Err(code: "PropertyVerificationFailed", target: target,
                     message: reason + PropertyRollbackRestore.DescribeSourceFailures(sourceFailures) + (verified ? " The complete object snapshot was restored and verified."
                         : " Snapshot restoration could not be verified; inspect the object before writing again."),
-                    extra: new JObject
-                    {
-                        ["rollbackAttempted"] = true,
-                        ["rollbackVerified"] = verified,
-                        ["propertiesRestored"] = new JArray(report.Restored.ToArray()),
-                        ["propertiesNotRestored"] = new JArray(report.NotRestored.ToArray())
-                    });
+                    extra: outcome);
             }
             catch (Exception ex)
             {
+                var failed = new JObject { ["rollbackAttempted"] = true, ["rollbackVerified"] = false };
+                // Until the restoring transaction commits every property is still as written; after that the state is unknown, so no list is offered.
+                if (!restoreCommitted) PropertyRollbackRestore.NothingRestored(rollback.RequestedNames).AddTo(failed);
                 return Models.McpResponse.Err(code: "PropertyRollbackFailed", target: target,
                     message: reason + " Snapshot restoration failed: " + ex.Message,
-                    extra: new JObject { ["rollbackAttempted"] = true, ["rollbackVerified"] = false });
+                    extra: failed);
             }
         }
 
