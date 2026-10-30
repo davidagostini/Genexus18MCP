@@ -1981,6 +1981,8 @@ namespace GxMcp.Gateway
                 // issue #542: Structure writer rollback evidence (which members the SDK
                 // refused, whether a revert was attempted, and why it could not be verified).
                 "unappliedMembers", "rollbackAttempted", "rollbackError",
+                // genexus_properties set: which written properties the rollback put back (names only).
+                "propertiesRestored", "propertiesNotRestored",
                 "reReadConfirmed", "commentOnly", "commentStyle", "before", "after",
                 "matchedCount", "implicitOperations", "diagnosticContext",
                 // Patch safety evidence: retain the distinction between a save attempt

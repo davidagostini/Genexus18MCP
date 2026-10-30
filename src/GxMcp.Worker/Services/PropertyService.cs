@@ -1053,6 +1053,8 @@ namespace GxMcp.Worker.Services
                 }
 
                 var beforeValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                // Unlike beforeValues, keeps null for a value that could not be read: the rollback never writes back an unread value.
+                var previousValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 string beforeVersion = WriteService.ComputeVersionToken(obj);
                 if (!string.IsNullOrWhiteSpace(expectedVersion)
                     && !string.Equals(expectedVersion, beforeVersion, StringComparison.Ordinal))
@@ -1084,19 +1086,15 @@ namespace GxMcp.Worker.Services
                         return Models.McpResponse.Err(code: "InvalidPropertyValue", target: target, message: validation);
                     if (IsWebPanelReferenceType(GetPropertyTargetType((dynamic)propertyContainer, nativeName)))
                     {
-                        if (string.IsNullOrWhiteSpace(val))
-                            references[propName] = global::Artech.Genexus.Common.CustomTypes.WebPanelReference.NoneRef;
-                        else
-                        {
-                            var referenced = _objectService.FindObject(val.Trim(), "MasterPage")
-                                ?? _objectService.FindObject(val.Trim(), "WebPanel");
-                            if (referenced == null)
-                                return Models.McpResponse.Err(code: "ReferencedObjectNotFound", target: target,
-                                    message: $"No MasterPage or WebPanel named '{val}' was found.");
-                            references[propName] = new global::Artech.Genexus.Common.CustomTypes.WebPanelReference(referenced.Key);
-                        }
+                        object reference = ResolveWebPanelReference(_objectService, val);
+                        if (reference == null)
+                            return Models.McpResponse.Err(code: "ReferencedObjectNotFound", target: target,
+                                message: $"No MasterPage or WebPanel named '{val}' was found.");
+                        references[propName] = reference;
                     }
-                    beforeValues[propName] = TryReadPropertyString((dynamic)propertyContainer, nativeName, obj.Model) ?? string.Empty;
+                    string previousValue = ReadPropertyValueAt(obj, nativeName, controlName);
+                    previousValues[propName] = previousValue;
+                    beforeValues[propName] = previousValue ?? string.Empty;
                 }
 
                 ObjectMoveSnapshot snapshot;
@@ -1163,6 +1161,8 @@ namespace GxMcp.Worker.Services
                             if (propertyValidation != null)
                                 throw new InvalidOperationException(propertyValidation);
 
+                            // beforeValues follows the transaction object, which already carries the writes of the earlier properties of this
+                            // batch. previousValues, what the rollback restores, keeps the value read before the first write.
                             string before = TryReadPropertyString(propertyContainer, nativeName, obj.Model);
                             if (before != null) beforeValues[propName] = before;
 
@@ -1197,6 +1197,13 @@ namespace GxMcp.Worker.Services
                     }
                 }
 
+                var rollback = new PropertyRollbackContext
+                {
+                    ControlName = controlName,
+                    RequestedNames = properties.Properties().Select(p => p.Name).ToList(),
+                    PreviousValues = previousValues,
+                    NativeNames = nativeNames
+                };
                 var verifiedBefore = new JObject();
                 var verifiedRequested = new JObject();
                 var verifiedPersisted = new JObject();
@@ -1208,27 +1215,30 @@ namespace GxMcp.Worker.Services
                     string verification = VerifyPropertyPersisted(target, nativeNames[propName], requested,
                         controlName, typeFilter, before, obj);
                     if (verification == null)
-                        return RollbackPropertySnapshot(target, obj, snapshot,
-                            "The saved property could not be independently read back.");
+                        return RollbackPropertySnapshot(target, obj, snapshot, rollback,
+                            $"The saved property '{propName}' could not be independently read back.");
 
                     var verificationEnvelope = JObject.Parse(verification);
                     if (string.Equals(verificationEnvelope["status"]?.ToString(), "error", StringComparison.OrdinalIgnoreCase))
-                        return RollbackPropertySnapshot(target, obj, snapshot,
+                        return RollbackPropertySnapshot(target, obj, snapshot, rollback,
                             verificationEnvelope["error"]?["message"]?.ToString() ?? "Property verification failed.");
 
                     var diff = verificationEnvelope["result"] as JObject;
                     if (diff == null || diff["persistedVerified"]?.ToObject<bool>() != true)
-                        return RollbackPropertySnapshot(target, obj, snapshot,
-                            "The saved property could not be confirmed.");
+                        return RollbackPropertySnapshot(target, obj, snapshot, rollback,
+                            $"The saved property '{propName}' could not be confirmed.");
                     verifiedBefore[propName] = diff["before"]?.ToString() ?? string.Empty;
                     verifiedRequested[propName] = diff["requested"]?.ToString() ?? requested;
                     verifiedPersisted[propName] = diff["persisted"]?.ToString() ?? string.Empty;
                 }
 
                 var fresh = _objectService.FindObjectFreshByIdentity(obj);
-                if (fresh == null || !snapshot.CompareParts(fresh).Equal)
-                    return RollbackPropertySnapshot(target, obj, snapshot,
-                        "The property save changed an unrelated object part or the parts could not be verified.");
+                var partsComparison = fresh == null ? null : snapshot.CompareParts(fresh);
+                if (partsComparison == null || !partsComparison.Equal)
+                    return RollbackPropertySnapshot(target, obj, snapshot, rollback,
+                        "The property save changed an unrelated object part"
+                        + PropertyRollbackRestore.DescribeChangedParts(partsComparison?.ChangedParts.Values<string>())
+                        + " or the parts could not be verified.");
 
                 var result = new JObject { ["properties"] = properties };
                 if (verifiedPersisted.Count == properties.Count)
@@ -1272,42 +1282,133 @@ namespace GxMcp.Worker.Services
                 errorExtra: diagnostic);
         }
 
-        private string RollbackPropertySnapshot(string target, KBObject written, ObjectMoveSnapshot snapshot, string reason)
+        private string RollbackPropertySnapshot(string target, KBObject written, ObjectMoveSnapshot snapshot, PropertyRollbackContext rollback, string reason)
         {
+            bool restoreCommitted = false;
             try
             {
                 var current = _objectService.FindObjectFreshByIdentity(written);
                 if (current == null || !string.Equals(WriteService.ComputeVersionToken(current),
                     WriteService.ComputeVersionToken(written), StringComparison.Ordinal))
+                {
+                    // Nothing was attempted: every property is still as the batch wrote it.
+                    var refused = new JObject();
+                    PropertyRollbackRestore.NothingRestored(rollback.RequestedNames).AddTo(refused);
                     return Models.McpResponse.Err(code: "PropertyRollbackUnsafe", target: target,
-                        message: reason + " The persisted version could not be tied to this write; automatic rollback was refused.");
+                        message: reason + " The persisted version could not be tied to this write; automatic rollback was refused.",
+                        extra: refused);
+                }
+                IReadOnlyList<string> writtenBack = new string[0];
+                IReadOnlyList<string> sourceFailures = new string[0];
                 using (var tx = written.Model.KB.BeginTransaction())
                 {
                     bool committed = false;
                     try
                     {
                         snapshot.RestoreObject(current);
+                        // The object snapshot does not carry the properties back: each written property goes back to its
+                        // previous value through the write path, before the save.
+                        writtenBack = PropertyRollbackRestore.WriteBack(rollback.RequestedNames, rollback.PreviousValues,
+                            (name, previous) => RestorePropertyValue(current, rollback.NativeNames[name], previous, rollback.ControlName));
                         current.Dirty = true;
                         current.Save();
                         snapshot.RestoreParts(current);
+                        sourceFailures = snapshot.RestoreSourceTexts(current);
                         tx.Commit();
                         committed = true;
+                        restoreCommitted = true;
                     }
                     finally { if (!committed) try { tx.Rollback(); } catch { } }
                 }
+                // Each property counts as restored only when reading it again on this fresh copy gives its previous value.
                 var restored = _objectService.FindObjectFreshByIdentity(current);
-                bool verified = restored != null && snapshot.Compare(restored).Equal;
+                var report = PropertyRollbackRestore.Confirm(rollback.RequestedNames, rollback.PreviousValues, writtenBack,
+                    name => restored == null ? null : ReadPropertyValueAt(restored, rollback.NativeNames[name], rollback.ControlName));
+                var restoredComparison = restored == null ? null : snapshot.Compare(restored);
+                bool verified = restoredComparison != null && restoredComparison.Equal;
+                var outcome = new JObject { ["rollbackAttempted"] = true, ["rollbackVerified"] = verified };
+                report.AddTo(outcome);
+                // The parts that still differ from the snapshot, by name only: without them an unverified rollback cannot be told from damage.
+                if (restoredComparison != null && !restoredComparison.Equal) outcome["changedParts"] = restoredComparison.ChangedParts;
                 return Models.McpResponse.Err(code: "PropertyVerificationFailed", target: target,
-                    message: reason + (verified ? " The complete object snapshot was restored and verified."
+                    message: reason + PropertyRollbackRestore.DescribeSourceFailures(sourceFailures) + (verified ? " The complete object snapshot was restored and verified."
                         : " Snapshot restoration could not be verified; inspect the object before writing again."),
-                    extra: new JObject { ["rollbackAttempted"] = true, ["rollbackVerified"] = verified });
+                    extra: outcome);
             }
             catch (Exception ex)
             {
+                var failed = new JObject { ["rollbackAttempted"] = true, ["rollbackVerified"] = false };
+                // Until the restoring transaction commits every property is still as written; after that the state is unknown, so no list is offered.
+                if (!restoreCommitted) PropertyRollbackRestore.NothingRestored(rollback.RequestedNames).AddTo(failed);
                 return Models.McpResponse.Err(code: "PropertyRollbackFailed", target: target,
                     message: reason + " Snapshot restoration failed: " + ex.Message,
-                    extra: new JObject { ["rollbackAttempted"] = true, ["rollbackVerified"] = false });
+                    extra: failed);
             }
+        }
+
+        // What a batch rollback needs from the write it undoes: the requested names in request order, the value each
+        // property had before the write (null when it was not read) and the native name each one was written under.
+        private sealed class PropertyRollbackContext
+        {
+            internal string ControlName { get; set; }
+            internal IReadOnlyList<string> RequestedNames { get; set; }
+            internal IDictionary<string, string> PreviousValues { get; set; }
+            internal IDictionary<string, string> NativeNames { get; set; }
+        }
+
+        // The value a property has on an object, read the way the batch write reads it: through its control when one is named,
+        // through the report-text container for a report text property, and through the object otherwise. Null when the value
+        // cannot be read. The batch write reads the previous values with it, and the rollback reads them back with it.
+        private string ReadPropertyValueAt(KBObject obj, string nativeName, string controlName)
+        {
+            dynamic container = obj;
+            if (!string.IsNullOrEmpty(controlName))
+            {
+                container = FindControl(obj, controlName);
+                if (container == null) return null;
+            }
+            object reportContainer = ResolveReportPropertyContainer(obj, nativeName, controlName);
+            dynamic propertyContainer = reportContainer ?? container;
+            return TryReadPropertyString(propertyContainer, nativeName, obj.Model);
+        }
+
+        // Writes one property of the restored object back to its previous value through the path the write used: the
+        // same control and report-text containers, the same reference conversion and the same text-mode handling.
+        // Throws when the control or the referenced object is gone, or when the value cannot be applied.
+        private void RestorePropertyValue(KBObject current, string nativeName, string previous, string controlName)
+        {
+            dynamic container = current;
+            if (!string.IsNullOrEmpty(controlName))
+            {
+                container = FindControl(current, controlName);
+                if (container == null) throw new InvalidOperationException("The control is not in the restored object.");
+            }
+            object reportContainer = ResolveReportPropertyContainer(current, nativeName, controlName);
+            dynamic propertyContainer = reportContainer ?? container;
+            if (IsWebPanelReferenceType(GetPropertyTargetType(propertyContainer, nativeName)))
+            {
+                object reference = ResolveWebPanelReference(_objectService, previous)
+                    ?? throw new InvalidOperationException("The object of the previous reference is not in the Knowledge Base.");
+                propertyContainer.SetPropertyValue(nativeName, reference);
+            }
+            else
+            {
+                ApplyPropertyValue(propertyContainer, nativeName, previous, controlName, current);
+            }
+            if (ReportLayoutHelper.IsTextModeProperty(nativeName) && string.IsNullOrEmpty(controlName))
+                ReportLayoutHelper.MarkLayoutDirty(GxMcp.Worker.Structure.PartAccessor.GetPart(current, "Layout"));
+        }
+
+        // The WebPanelReference that a MasterPage or WebPanel property holds for an object name: the none reference for an
+        // empty name, otherwise the reference to the MasterPage or WebPanel with that name. Null when there is no such object.
+        // The batch write and its rollback both resolve references this way.
+        internal static object ResolveWebPanelReference(ObjectService objects, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return global::Artech.Genexus.Common.CustomTypes.WebPanelReference.NoneRef;
+            string name = value.Trim();
+            var referenced = objects.FindObject(name, "MasterPage") ?? objects.FindObject(name, "WebPanel");
+            return referenced == null ? null : new global::Artech.Genexus.Common.CustomTypes.WebPanelReference(referenced.Key);
         }
 
         internal static void ApplyPropertiesDirect(KBObject obj, JObject properties, dynamic container = null)
