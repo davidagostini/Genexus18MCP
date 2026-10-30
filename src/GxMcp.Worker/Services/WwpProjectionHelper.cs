@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using Artech.Architecture.Common.Objects;
 using GxMcp.Worker.Helpers;
+using Newtonsoft.Json.Linq;
 
 namespace GxMcp.Worker.Services
 {
@@ -27,6 +30,7 @@ namespace GxMcp.Worker.Services
             internal bool AfterEndBuild;
             internal bool ParentSaved;
             internal string Failure;
+            internal JArray SaveFailures = new JArray();
 
             internal bool LifecycleExecuted => LifecycleAttempted
                 && ShouldBuild
@@ -35,6 +39,16 @@ namespace GxMcp.Worker.Services
                 && UpdateParentObject
                 && AfterEndBuild
                 && ParentSaved;
+
+            internal JObject ToJson() => new JObject
+            {
+                ["projectionStatus"] = LifecycleExecuted ? "Projected" : "Failed",
+                ["lifecycleAttempted"] = LifecycleAttempted, ["shouldBuild"] = ShouldBuild,
+                ["beforeStartBuild"] = BeforeStartBuild, ["afterImportResources"] = AfterImportResources,
+                ["updateParentObject"] = UpdateParentObject, ["afterEndBuild"] = AfterEndBuild,
+                ["parentSaved"] = ParentSaved, ["confirmed"] = LifecycleExecuted,
+                ["failure"] = IsolatedEventsSaveDiagnostics.Sanitize(Failure), ["saveFailures"] = SaveFailures
+            };
         }
 
         /// <summary>
@@ -43,8 +57,8 @@ namespace GxMcp.Worker.Services
         /// Saves the parent with ForceSave + SkipValidation so the projected
         /// WebForm persists even if it would fail WebPanel-level semantic checks.
         ///
-        /// Errors are logged and swallowed — the edit that triggered this call
-        /// already succeeded; projection is best-effort.
+        /// Returns false with the failed stage and SDK diagnostics. The caller
+        /// decides whether to commit or roll back its enclosing transaction.
         /// </summary>
         public static bool TryProjectHostOntoParent(KBObject parent, KBObject host)
         {
@@ -196,6 +210,7 @@ namespace GxMcp.Worker.Services
                 }
                 catch (Exception saveEx)
                 {
+                    RecordSaveFailure(result, saveEx, "parent-save", parent);
                     Logger.Info("[WWP-PROJECT] ForceSave parent threw: " + saveEx.Message + " — falling back to EnsureSave.");
                     try
                     {
@@ -204,10 +219,11 @@ namespace GxMcp.Worker.Services
                         // the same parent, so it owes the same mark.
                         WriteService.NotePerTargetWrite(parent.Name);
                         result.ParentSaved = true;
+                        result.Failure = null;
                     }
                     catch (Exception ex2)
                     {
-                        result.Failure = "Both ForceSave and EnsureSave failed: " + ex2.Message;
+                        RecordSaveFailure(result, ex2, "parent-ensure-save", parent);
                         Logger.Info("[WWP-PROJECT] EnsureSave fallback failed: " + ex2.Message);
                     }
                 }
@@ -226,6 +242,26 @@ namespace GxMcp.Worker.Services
                 Logger.Warn("[WWP-PROJECT] failed: " + ex.Message);
                 return false;
             }
+        }
+
+        internal static void RecordSaveFailure(ProjectionResult result, Exception error, string phase, KBObject parent)
+        {
+            var failure = IsolatedEventsSaveDiagnostics.Describe(error, phase, () =>
+            {
+                var sources = new List<KeyValuePair<string, object>>();
+                if (parent != null)
+                {
+                    sources.Add(new KeyValuePair<string, object>("Object", parent));
+                    sources.AddRange(parent.Parts.Cast<KBObjectPart>()
+                        .Select(p => new KeyValuePair<string, object>(p.Name, p)));
+                }
+                return sources;
+            }, parent?.Name);
+            var diagnostic = new JObject();
+            failure.WriteTo(diagnostic);
+            result.SaveFailures.Add(diagnostic);
+            // Keep a detailed exception message even when its SDK Output is empty.
+            result.Failure = (result.Failure == null ? string.Empty : result.Failure + "; ") + phase + ": " + failure.Detail;
         }
 
         private static void RefreshHostStateForProjection(KBObject host)

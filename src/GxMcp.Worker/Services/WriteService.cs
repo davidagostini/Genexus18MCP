@@ -547,16 +547,18 @@ namespace GxMcp.Worker.Services
             try { response = JObject.Parse(responseJson); }
             catch { return true; }
 
+            // Pattern write receipts report an unknown persisted state with an explicit JSON null (persisted,
+            // changed, ...). JToken.Value<bool>() throws on that null, so every flag below is read as bool?.
             var rollback = response["rollback"] as JObject;
-            if (rollback?["rolledBack"]?.Value<bool>() == true
-                && rollback["reReadConfirmed"]?.Value<bool>() == true)
+            if (rollback?["rolledBack"]?.Value<bool?>() == true
+                && rollback["reReadConfirmed"]?.Value<bool?>() == true)
                 return false;
 
             string status = response["status"]?.ToString();
             string code = response["code"]?.ToString() ?? response["error"]?["code"]?.ToString();
-            bool conservativePersistenceEvidence = response["partialPersistenceDetected"]?.Value<bool>() == true
-                || response["rollbackFailed"]?.Value<bool>() == true
-                || response["error"]?["partialPersistenceDetected"]?.Value<bool>() == true;
+            bool conservativePersistenceEvidence = response["partialPersistenceDetected"]?.Value<bool?>() == true
+                || response["rollbackFailed"]?.Value<bool?>() == true
+                || response["error"]?["partialPersistenceDetected"]?.Value<bool?>() == true;
             if (conservativePersistenceEvidence) return true;
 
             if (string.Equals(code, "WriteNoChange", StringComparison.OrdinalIgnoreCase)
@@ -569,15 +571,23 @@ namespace GxMcp.Worker.Services
             if (string.Equals(code, "WriteVerificationUnavailable", StringComparison.OrdinalIgnoreCase))
                 return true;
 
+            // A pattern write that saved (its commit completed, or the SDK save did) but could not read the
+            // result back leaves the persisted state unknown. Like WriteVerificationUnavailable above, that
+            // keeps the target dirty. A failure before any save carries no such evidence and stays clean.
+            if (response["persisted"]?.Type == JTokenType.Null
+                && (response["commitCompleted"]?.Value<bool?>() == true
+                    || response["sdkSaveCompleted"]?.Value<bool?>() == true))
+                return true;
+
             if (string.Equals(status, "ok", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
                 return string.Equals(code, "WriteApplied", StringComparison.OrdinalIgnoreCase)
-                    && response["persisted"]?.Value<bool>() == true
+                    && response["persisted"]?.Value<bool?>() == true
                     && response["changed"]?.Value<bool?>() != false;
 
             // Preserve a conservative dirty mark for other post-save envelopes that carry
             // persisted evidence. Pre-mutation errors have none of these fields and remain clean.
-            return response["persisted"]?.Value<bool>() == true;
+            return response["persisted"]?.Value<bool?>() == true;
         }
 
         // Resolved lazily via the WriteService instance ctor so the static

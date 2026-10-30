@@ -393,7 +393,9 @@ namespace GxMcp.Gateway
                             Step("genexus_edit", new JObject { ["name"] = "WorkWithPlus<X>", ["part"] = "PatternInstance", ["mode"] = "patch", ["context"] = "<anchor line>", ["operation"] = "Replace", ["content"] = "<anchor line with one existing property value changed>", ["dryRun"] = true },
                                  "ALWAYS dryRun first to see the projected diff. Change an existing property value; do not add or move nodes."),
                             Step("genexus_edit", new JObject { ["same as above without dryRun"] = true },
-                                 "Persist the same property change. The response reports the persisted PatternInstance and its versionToken. It does not include a child-order reconciliation report: this build does not reconcile child order on save.")
+                                 "Persist the same property change. The response reports the persisted PatternInstance and its versionToken. A WorkWithPlus write reports `commitCompleted`, `persisted`, `verified` and the rollback evidence after an independent re-read of the host and its parent WebForm; other patterns report `persistenceState` (`requested`, `unchanged`, `partial` or `unknown`) from an independent re-read. It does not include a child-order reconciliation report: this build does not reconcile child order on save."),
+                            Step("genexus_read", new JObject { ["name"] = "WorkWithPlus<X>", ["part"] = "PatternInstance" },
+                                 "Verify the property value and confirm adjacent structure remains unchanged.")
                         ),
                         ["pitfalls"] = new JArray(
                             "Do NOT touch `childrenOrderedList` attributes by hand. It is SDK-owned metadata and a change to it is rejected as PatternMetadataChangeUnsupported; the MCP does not rebuild it from your XML child order on save. To reorder, move the child elements themselves and leave the attribute as it is.",
