@@ -14,7 +14,9 @@ namespace GxMcp.Worker.Services
         private string WriteProjectedPatternPart(KBObject host, KBObjectPart part, string target, string partName,
             string envelope, string requestedXml, Guid? patternId)
         {
-            KBObject parent = WwpProjectionHelper.ResolveHostParent(host, _objectService);
+            // The instance XML names its parent in the transaction attribute; without it only the WorkWithPlus<Name> naming
+            // convention finds the parent, and an instance whose host was not named that way would refuse the whole edit.
+            KBObject parent = WwpProjectionHelper.ResolveHostParent(host, _objectService, requestedXml);
             ObjectMoveSnapshot originalHost, originalParent;
             string originalPattern, originalWebForm;
             try
