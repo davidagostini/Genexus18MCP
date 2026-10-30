@@ -17,6 +17,10 @@ namespace GxMcp.Worker.Services
     {
         private string RunLayoutOperation(string target, KBObject instance, JObject args)
         {
+            string unsupportedPlacement = UnsupportedLayoutPlacement(args);
+            if (unsupportedPlacement != null)
+                return McpResponse.Err(code: "WwpLayoutPlacementUnsupported", target: target,
+                    message: "add_layout appends the new children after the existing ones of tablePath and does not support " + unsupportedPlacement + "; nothing was changed.");
             string expected = (string)(args["expectedVersion"] ?? args["baseVersion"] ?? args["versionToken"]);
             if (string.IsNullOrWhiteSpace(expected))
                 return McpResponse.Err(code: "ExpectedVersionRequired", target: target,
@@ -77,7 +81,7 @@ namespace GxMcp.Worker.Services
                 receipt["snapshot"]["parentHash"] = parentSnapshot.Hash;
                 string parentName = parent.Name, hostName = host.Name;
                 IndexCacheService readIndex = _objects.GetKbService()?.GetIndexCache();
-                bool committed = false, rolledBack = false, mutationAttempted = false;
+                bool committed = false, rolledBack = false, rollbackAttempted = false, mutationAttempted = false;
                 string failure = null;
                 try
                 {
@@ -85,6 +89,7 @@ namespace GxMcp.Worker.Services
                     {
                         try
                         {
+                            LayoutStage.Enter(receipt, LayoutStage.Boundary);
                             host = (PatternInstance)EventsSaveIsolation.Fresh(kb, hostId);
                             parent = EventsSaveIsolation.Fresh(kb, parentId);
                             bool identityMatches = host.KBObject?.Guid == parentId;
@@ -105,25 +110,31 @@ namespace GxMcp.Worker.Services
                             foreach (JObject child in (JArray)args["children"])
                                 AttachLayoutChild(table, child, variables, receipt);
                             WriteService.ForcePatternPartDirty(part);
-                            receipt["nativeOperation"] = new JObject { ["stage"] = "save" };
+                            // nativeOperation.stage is the stage a failure is attributed to: its savePhase
+                            // and, for an exception this operation does not type, its code come from it.
+                            LayoutStage.Enter(receipt, LayoutStage.Save);
                             receipt["saveAttempted"] = true;
                             // Save the native instance, then project it through the supported
                             // WWP callback inside this transaction. Save alone does not project.
                             host.Save(new KBObjectSavePreferences());
                             receipt["objectSaveReturned"] = true;
+                            LayoutStage.Enter(receipt, LayoutStage.Project);
                             host = (PatternInstance)EventsSaveIsolation.Fresh(kb, hostId);
                             parent = EventsSaveIsolation.Fresh(kb, parentId);
-                            receipt["nativeOperation"] = new JObject { ["stage"] = "project" };
                             bool projected = WwpProjectionHelper.TryProjectHostOntoParent(parent, host, out var projection);
                             receipt["projection"] = LayoutProjectionReceipt(projection);
                             if (!projected)
                                 throw new WwpTabException("WwpProjectionFailed", "The WorkWithPlus projection callback did not complete; transaction aborted.");
+                            LayoutStage.Enter(receipt, LayoutStage.Verify);
                             host = (PatternInstance)EventsSaveIsolation.Fresh(kb, hostId);
                             parent = EventsSaveIsolation.Fresh(kb, parentId);
                             JObject verification = VerifyLayoutState(before, host, parent, args, variables, formBefore, eventsBefore, hostSnapshot, parentSnapshot);
                             receipt["preCommitVerification"] = verification;
                             if (verification["confirmed"]?.Value<bool>() != true)
                             {
+                                // The cause stays reachable in the terse error: the failed checks go in the
+                                // message and in two small fields, the full receipt stays in verbose_errors.
+                                NoteLayoutVerificationFailure(receipt, verification);
                                 try
                                 {
                                     var attemptedForm = EditSnapshotStore.SaveSnapshot(snapshotRoot, parentId.ToString(),
@@ -140,26 +151,36 @@ namespace GxMcp.Worker.Services
                                     Logger.Error("[WWP-LAYOUT] Failed to snapshot attempted projection: " + diagnosticError);
                                     receipt["attemptedStateSnapshotsUnavailable"] = true;
                                 }
-                                throw new WwpTabException("WwpLayoutNotVerified", "The native save did not preserve and project the requested state; transaction aborted.");
+                                throw new WwpTabException("WwpLayoutNotVerified",
+                                    "The native save did not preserve and project the requested state; transaction aborted" + LayoutFailedChecksSuffix(verification) + ".");
                             }
+                            LayoutStage.Enter(receipt, LayoutStage.Commit);
                             transaction.Commit();
                             committed = true;
                         }
                         catch (Exception ex)
                         {
                             Logger.Error("[WWP-LAYOUT] Native mutation/save failed: " + ex);
+                            string failedStage = LayoutStage.Of(receipt);
                             // The SDK keeps the reasons on the instance and the exception: read them before the rollback.
                             string sdkDetail = AddLayoutSaveDiagnostics(receipt, ex,
                                 () => new[] { new KeyValuePair<string, object>("PatternInstance", host), new KeyValuePair<string, object>("WebForm", parent) },
-                                hostName);
+                                hostName, LayoutStage.Phase(failedStage));
                             failure = ex is WwpTabException ? ex.Message : sdkDetail;
-                            receipt["failureCode"] = (ex as WwpTabException)?.Code ?? "WwpLayoutSaveFailed";
+                            receipt["failureCode"] = (ex as WwpTabException)?.Code ?? LayoutStage.FailureCode(failedStage);
+                            rollbackAttempted = true;
                             try { transaction.Rollback(); rolledBack = true; }
-                            catch (Exception rollbackError) { receipt["rollbackError"] = rollbackError.Message; }
+                            catch (Exception rollbackError) { receipt["rollbackError"] = LayoutErrorText(rollbackError); }
                         }
                     }
                 }
-                catch (Exception ex) { failure = ex.Message; receipt["transactionFinalizationError"] = ex.Message; }
+                catch (Exception ex)
+                {
+                    // The transaction's own end (its disposal) is reported beside the cause, never instead of it.
+                    string finalization = LayoutErrorText(ex);
+                    receipt["transactionFinalizationError"] = finalization;
+                    failure = KeepFirstFailure(failure, finalization);
+                }
                 finally
                 {
                     FinalizeLayoutReadCaches(mutationAttempted, receipt, () =>
@@ -168,43 +189,224 @@ namespace GxMcp.Worker.Services
                 }
                 receipt["commitCompleted"] = committed;
                 receipt["rollbackPerformed"] = rolledBack;
+                bool? restored = null, confirmed = null;
+                JObject postSaveVerification = null;
                 try
                 {
                     host = (PatternInstance)EventsSaveIsolation.Fresh(kb, hostId);
                     parent = EventsSaveIsolation.Fresh(kb, parentId);
                     receipt["versionToken"] = WriteService.ComputeContentVersionToken(host, LayoutPatternText(host));
-                    var restoredHost = CompareLayoutSnapshot(hostSnapshot, host);
-                    var restoredParent = CompareLayoutSnapshot(parentSnapshot, parent);
-                    bool restored = restoredHost.Equal && restoredParent.Equal;
-                    receipt["restorationVerification"] = new JObject
-                    {
-                        ["host"] = LayoutComparisonReceipt(restoredHost), ["parent"] = LayoutComparisonReceipt(restoredParent)
-                    };
-                    receipt["stateRestoredExactly"] = restored;
-                    receipt["rollbackVerified"] = rolledBack && restored;
+                    restored = NoteLayoutRestoration(receipt, rollbackAttempted, rolledBack,
+                        CompareLayoutSnapshot(hostSnapshot, host), CompareLayoutSnapshot(parentSnapshot, parent));
                     if (committed)
                     {
-                        JObject verification = VerifyLayoutState(before, host, parent, args, variables, formBefore, eventsBefore, hostSnapshot, parentSnapshot);
-                        receipt["postSaveVerification"] = verification;
-                        if (verification["confirmed"]?.Value<bool>() == true)
+                        postSaveVerification = VerifyLayoutState(before, host, parent, args, variables, formBefore, eventsBefore, hostSnapshot, parentSnapshot);
+                        receipt["postSaveVerification"] = postSaveVerification;
+                        confirmed = postSaveVerification["confirmed"]?.Value<bool>() == true;
+                        if (confirmed != true)
                         {
-                            receipt["persisted"] = true;
-                            WriteService.NotePerTargetWrite(target);
-                            return McpResponse.Ok(code: "WwpLayoutUpdated", target: target, result: receipt);
+                            receipt["savePhase"] = IsolatedEventsSavePhase.PostCommitVerification;
+                            NoteLayoutVerificationFailure(receipt, postSaveVerification);
                         }
                     }
-                    receipt["partialPersistenceDetected"] = !restored;
-                    receipt["persisted"] = restored ? (JToken)false : JValue.CreateNull();
                 }
-                catch (Exception ex)
-                {
-                    receipt["persisted"] = JValue.CreateNull();
-                    receipt["persistedStateKnown"] = false;
-                    receipt["verificationError"] = ex.Message;
-                }
-                return McpResponse.Err(code: (string)receipt["failureCode"] ?? "WwpLayoutNotVerified", target: target,
-                    message: failure ?? "Post-save verification failed. Inspect saved state before retrying; no compensating write was attempted.", extra: receipt);
+                catch (Exception ex) { receipt["verificationError"] = LayoutErrorText(ex); }
+                LayoutOutcome outcome = ClassifyLayoutOutcome(mutationAttempted, committed, restored, confirmed);
+                // A commit, or a state that could not be proven restored, must send the next build down the full path.
+                if (outcome.MarkTargetDirty) WriteService.NotePerTargetWrite(target);
+                receipt["persisted"] = outcome.Persisted.HasValue ? (JToken)outcome.Persisted.Value : JValue.CreateNull();
+                receipt["persistedStateKnown"] = outcome.PersistedStateKnown;
+                if (outcome.Success)
+                    return McpResponse.Ok(code: "WwpLayoutUpdated", target: target, result: receipt);
+                if (outcome.PartialPersistenceDetected.HasValue)
+                    receipt["partialPersistenceDetected"] = outcome.PartialPersistenceDetected.Value;
+                return McpResponse.Err(code: LayoutFailureCodeFor(receipt, committed), target: target,
+                    message: committed ? LayoutPostSaveFailureMessage(postSaveVerification)
+                        : failure ?? LayoutPostSaveFailureMessage(null), extra: receipt);
             }
+        }
+
+        // ---- failure vocabulary of add_layout ---------------------------------------------------------------
+
+        // The stages of add_layout, in the order a write goes through them. nativeOperation.stage in the receipt is
+        // the current one (AttachLayoutChild refines the native edit as create / set:<attribute> / attach). A
+        // failure's savePhase and, for an exception the operation did not type itself, its code are derived from
+        // the stage, so neither claims a save that never started.
+        internal static class LayoutStage
+        {
+            internal const string Boundary = "boundary";
+            internal const string Save = "save";
+            internal const string Project = "project";
+            internal const string Verify = "verify";
+            internal const string Commit = "commit";
+
+            internal const string NativeMutationPhase = "native-mutation";
+            internal const string ProjectionPhase = "projection";
+
+            internal static void Enter(JObject receipt, string stage) =>
+                receipt["nativeOperation"] = new JObject { ["stage"] = stage };
+
+            internal static string Of(JObject receipt) => (string)receipt?["nativeOperation"]?["stage"];
+
+            // savePhase uses the Events save vocabulary wherever a stage means the same thing.
+            internal static string Phase(string stage)
+            {
+                switch (stage)
+                {
+                    case null:
+                    case "":
+                    case Boundary: return IsolatedEventsSavePhase.TransactionFreshRead;
+                    case Save: return IsolatedEventsSavePhase.ObjectSave;
+                    case Project: return ProjectionPhase;
+                    case Verify: return IsolatedEventsSavePhase.PreCommitVerification;
+                    case Commit: return IsolatedEventsSavePhase.Commit;
+                    default: return NativeMutationPhase;
+                }
+            }
+
+            // The code of an exception the operation did not type: only the save stage may say the save failed.
+            internal static string FailureCode(string stage)
+            {
+                switch (stage)
+                {
+                    case Save: return "WwpLayoutSaveFailed";
+                    case Project: return "WwpProjectionFailed";
+                    case Verify: return "WwpLayoutNotVerified";
+                    case Commit: return "WwpLayoutCommitFailed";
+                    default: return "WwpLayoutPreSaveFailed";
+                }
+            }
+        }
+
+        // What the write amounted to, from facts only: whether a native edit was attempted, whether the transaction
+        // committed, whether the state read back equals the baseline (null: it could not be read) and whether the
+        // post-commit verification confirmed the request (null: it did not run to the end).
+        internal sealed class LayoutOutcome
+        {
+            internal bool Success { get; set; }
+            // true: written and confirmed; false: nothing of this call is in the instance; null: it cannot be told.
+            internal bool? Persisted { get; set; }
+            internal bool PersistedStateKnown { get; set; }
+            // null while the comparison with the baseline is unavailable.
+            internal bool? PartialPersistenceDetected { get; set; }
+            internal bool MarkTargetDirty { get; set; }
+        }
+
+        internal static LayoutOutcome ClassifyLayoutOutcome(bool mutationAttempted, bool committed, bool? restored, bool? postCommitConfirmed)
+        {
+            bool success = committed && postCommitConfirmed == true;
+            var outcome = new LayoutOutcome
+            {
+                Success = success,
+                // The next build takes the full path after a commit and after any attempt whose restoration is not
+                // proven: the same rule ShouldMarkIsolatedEventsDirty applies to the Events save.
+                MarkTargetDirty = committed || (mutationAttempted && restored != true),
+                PersistedStateKnown = success || !mutationAttempted
+                    || (restored.HasValue && (!committed || postCommitConfirmed.HasValue))
+            };
+            if (success)
+            {
+                outcome.Persisted = true;
+                outcome.PartialPersistenceDetected = false;
+            }
+            else if (!mutationAttempted || restored == true)
+            {
+                // Before the native edit began, a state that differs from the baseline is somebody else's change
+                // (a concurrent edit that the boundary check refused), never a partial write of this call.
+                outcome.Persisted = false;
+                outcome.PartialPersistenceDetected = false;
+            }
+            else
+            {
+                outcome.PartialPersistenceDetected = restored.HasValue ? (bool?)true : null;
+            }
+            return outcome;
+        }
+
+        // The comparison with the baseline is a restoration only after a rollback: after a commit the state
+        // differs from it by design, so the receipt does not call it a restoration. Returns whether the state
+        // equals the baseline.
+        internal static bool NoteLayoutRestoration(JObject receipt, bool rollbackAttempted, bool rolledBack,
+            ObjectMoveSnapshot.Comparison host, ObjectMoveSnapshot.Comparison parent)
+        {
+            bool restored = host.Equal && parent.Equal;
+            if (rollbackAttempted)
+            {
+                receipt["restorationVerification"] = new JObject
+                {
+                    ["host"] = LayoutComparisonReceipt(host), ["parent"] = LayoutComparisonReceipt(parent)
+                };
+                receipt["stateRestoredExactly"] = restored;
+                receipt["rollbackVerified"] = rolledBack && restored;
+            }
+            return restored;
+        }
+
+        // The checks VerifyLayoutState makes, in the order it makes them. A failure names them, never their values.
+        internal static readonly string[] LayoutVerificationChecks =
+        {
+            "patternReReadConfirmed", "projection", "unrelatedStatePreserved", "eventsPreserved",
+            "nativeVariableBindingsConfirmed", "identityConfirmed"
+        };
+
+        internal static string[] FailedLayoutChecks(JObject verification)
+        {
+            if (verification == null) return new string[0];
+            return LayoutVerificationChecks.Where(check => check == "projection"
+                ? verification["projection"]?["confirmed"]?.Value<bool>() != true
+                : verification[check]?.Value<bool>() != true).ToArray();
+        }
+
+        internal static string DescribeLayoutVerificationFailure(JObject verification)
+        {
+            return string.Join(", ", FailedLayoutChecks(verification).Select(check =>
+            {
+                if (check != "projection") return check;
+                // The projection check says which of its own steps failed: a short fixed name.
+                string detail = (string)verification["projection"]?["failureStage"] ?? (string)verification["projection"]?["code"];
+                return string.IsNullOrEmpty(detail) ? check : check + " (" + detail + ")";
+            }));
+        }
+
+        internal static string LayoutFailedChecksSuffix(JObject verification)
+        {
+            string checks = DescribeLayoutVerificationFailure(verification);
+            return checks.Length == 0 ? string.Empty : " (failed checks: " + checks + ")";
+        }
+
+        internal static string LayoutPostSaveFailureMessage(JObject verification) =>
+            "Post-save verification failed" + LayoutFailedChecksSuffix(verification)
+            + ". Inspect saved state before retrying; no compensating write was attempted.";
+
+        // Two small fields beside the full verification receipt: the terse error projection keeps them, while the
+        // receipt itself (preCommitVerification, postSaveVerification) is only in verbose_errors.
+        internal static void NoteLayoutVerificationFailure(JObject receipt, JObject verification)
+        {
+            receipt["failedChecks"] = new JArray(FailedLayoutChecks(verification));
+            string stage = (string)verification?["projection"]?["failureStage"];
+            if (!string.IsNullOrEmpty(stage)) receipt["failureStage"] = stage;
+        }
+
+        // An exception's message as it may appear in a receipt: no local path, credential or connection part.
+        internal static string LayoutErrorText(Exception ex) => IsolatedEventsSaveDiagnostics.Sanitize(ex?.Message);
+
+        // The first failure is the cause; a later one (the end of the transaction) is reported beside it.
+        internal static string KeepFirstFailure(string first, string later) => string.IsNullOrEmpty(first) ? later : first;
+
+        internal static string LayoutFailureCodeFor(JObject receipt, bool committed)
+        {
+            string recorded = (string)receipt?["failureCode"];
+            if (!string.IsNullOrEmpty(recorded)) return recorded;
+            return committed ? "WwpLayoutNotVerified" : LayoutStage.FailureCode(LayoutStage.Of(receipt));
+        }
+
+        // add_layout only appends after the existing children. The schema's placement arguments belong to
+        // add_table and move_control: they are refused rather than ignored.
+        internal static string UnsupportedLayoutPlacement(JObject args)
+        {
+            var present = new[] { "position", "before", "after" }
+                .Where(name => args?[name] != null && args[name].Type != JTokenType.Null).ToList();
+            return present.Count == 0 ? null : string.Join(", ", present);
         }
 
         // SourcePart.SerializeData consumes its lazy m_Source field before the getter
@@ -227,28 +429,36 @@ namespace GxMcp.Worker.Services
             return snapshot.Compare(obj, ignoredParts);
         }
 
-        private static JObject LayoutComparisonReceipt(ObjectMoveSnapshot.Comparison comparison) => new JObject
+        internal static JObject LayoutComparisonReceipt(ObjectMoveSnapshot.Comparison comparison) => new JObject
         {
-            ["equal"] = comparison.Equal, ["changedParts"] = comparison.ChangedParts.DeepClone(),
+            ["equal"] = comparison.Equal,
+            ["changedParts"] = new JArray(comparison.ChangedParts.Select(part => SanitizeSnapshotFailure(part.ToString())).ToArray()),
             ["changedPartKeys"] = new JArray(comparison.ChangedPartKeys), ["persistedHash"] = comparison.PersistedHash
         };
 
+        // A snapshot that could not be read reports the exception's own message in place of a part name.
+        private static string SanitizeSnapshotFailure(string changedPart) =>
+            changedPart.StartsWith("SnapshotReadFailed:", StringComparison.Ordinal)
+                ? IsolatedEventsSaveDiagnostics.Sanitize(changedPart) : changedPart;
+
         // Why the native save was refused, in the Events save diagnostics format: the SDK's own validation
         // messages (a ValidationException keeps them in Output), the inner exception types and messages,
-        // sanitized and truncated. Returns the one-line cause that the error text reports.
+        // sanitized and truncated. Returns the one-line cause that the error text reports. The phase is the
+        // stage the failure is attributed to (LayoutStage.Phase), the save stage unless the caller knows better.
         internal static string AddLayoutSaveDiagnostics(JObject receipt, Exception ex,
-            Func<IEnumerable<KeyValuePair<string, object>>> sdkSources, string target)
+            Func<IEnumerable<KeyValuePair<string, object>>> sdkSources, string target,
+            string phase = IsolatedEventsSavePhase.ObjectSave)
         {
             try
             {
-                IsolatedEventsFailure failure = IsolatedEventsSaveDiagnostics.Describe(ex, IsolatedEventsSavePhase.ObjectSave, sdkSources, target);
+                IsolatedEventsFailure failure = IsolatedEventsSaveDiagnostics.Describe(ex, phase, sdkSources, target);
                 failure.WriteTo(receipt);
                 return failure.Detail;
             }
             catch (Exception diagnosticError)
             {
-                receipt["sdkDiagnosticsError"] = IsolatedEventsSaveDiagnostics.Sanitize(diagnosticError.Message);
-                return ex.Message;
+                receipt["sdkDiagnosticsError"] = LayoutErrorText(diagnosticError);
+                return LayoutErrorText(ex);
             }
         }
 
@@ -258,7 +468,8 @@ namespace GxMcp.Worker.Services
             ["beforeStartBuild"] = result.BeforeStartBuild, ["afterImportResources"] = result.AfterImportResources,
             ["updateParentObject"] = result.UpdateParentObject, ["afterEndBuild"] = result.AfterEndBuild,
             ["parentSaved"] = result.ParentSaved, ["confirmed"] = result.LifecycleExecuted,
-            ["failure"] = result.Failure
+            // The projection's failure text is an exception message: sanitized like every other one in the receipt.
+            ["failure"] = result.Failure == null ? null : IsolatedEventsSaveDiagnostics.Sanitize(result.Failure)
         };
 
         private string LayoutPatternText(KBObject host)
@@ -443,8 +654,10 @@ namespace GxMcp.Worker.Services
                 else bindings &= NativeAttribute(nativeMatches[0], "dataType") == "Basic"
                     && NativeAttribute(nativeMatches[0], "basicType") == LayoutBasicType(pair.Value);
             }
-            return new JObject { ["confirmed"] = pattern && projection["confirmed"]?.Value<bool>() == true && preserved && events && bindings && host.KBObject?.Guid == parent.Guid,
-                ["patternReReadConfirmed"] = pattern, ["projection"] = projection, ["unrelatedStatePreserved"] = preserved, ["eventsPreserved"] = events, ["nativeVariableBindingsConfirmed"] = bindings };
+            bool identity = host.KBObject?.Guid == parent.Guid;
+            return new JObject { ["confirmed"] = pattern && projection["confirmed"]?.Value<bool>() == true && preserved && events && bindings && identity,
+                ["patternReReadConfirmed"] = pattern, ["projection"] = projection, ["unrelatedStatePreserved"] = preserved, ["eventsPreserved"] = events, ["nativeVariableBindingsConfirmed"] = bindings,
+                ["identityConfirmed"] = identity };
         }
 
         private static string LayoutEvents(KBObject parent)
@@ -580,17 +793,19 @@ namespace GxMcp.Worker.Services
             if (mutationAttempted) WriteService.InvalidateIsolatedEventsReadCaches();
         }
 
-        internal static void FinalizeLayoutReadCaches(bool mutationAttempted, JObject receipt, Action invalidate)
+        internal static void FinalizeLayoutReadCaches(bool mutationAttempted, JObject receipt, Action invalidate,
+            Action managedFallback = null)
         {
             if (!mutationAttempted) return;
             try { invalidate(); }
             catch (Exception ex)
             {
-                receipt["readCacheInvalidationError"] = ex.Message;
+                receipt["readCacheInvalidationError"] = LayoutErrorText(ex);
                 // Preserve the native persistence receipt even when indexed invalidation
                 // fails, and still attempt the existing managed-only cache clear.
-                try { WriteService.InvalidateIsolatedEventsReadCaches(); }
-                catch (Exception fallback) { receipt["managedReadCacheInvalidationError"] = fallback.Message; }
+                Action managedClear = managedFallback ?? (() => WriteService.InvalidateIsolatedEventsReadCaches());
+                try { managedClear(); }
+                catch (Exception fallback) { receipt["managedReadCacheInvalidationError"] = LayoutErrorText(fallback); }
             }
         }
 

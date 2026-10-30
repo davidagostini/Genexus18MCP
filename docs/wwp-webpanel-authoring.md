@@ -55,10 +55,39 @@ version, the action:
 5. re-reads the saved instance and the parent WebForm to confirm the commit.
 
 A failure before the commit aborts the transaction and independently verifies the
-restored state. A failure after the commit does not perform a compensating write;
-inspect the returned receipt (`commitCompleted`, `rollbackPerformed`,
-`restorationVerification`, `projection`, `snapshot`, `stateRestoredExactly`).
+restored state (`restorationVerification`, `stateRestoredExactly` and `rollbackVerified`
+appear only after a rollback). A failure after the commit does not perform a
+compensating write; inspect the returned receipt (`commitCompleted`,
+`rollbackPerformed`, `postSaveVerification`, `projection`, `snapshot`).
 No build or generate step runs implicitly.
+
+## Failures
+
+A failed call says where it stopped. `savePhase` names the stage and the error code
+follows it, unless the action raised a typed one (`StaleObject`, `WwpTableNotFound`,
+`WwpAttributeRejected`, ...):
+
+| `savePhase` | Stage | Code of an untyped exception |
+| --- | --- | --- |
+| `transaction-fresh-read` | fresh read and boundary check | `WwpLayoutPreSaveFailed` |
+| `native-mutation` | creating and attaching the children | `WwpLayoutPreSaveFailed` |
+| `object-save` | the native save of the instance | `WwpLayoutSaveFailed` |
+| `projection` | the WorkWithPlus projection callback | `WwpProjectionFailed` |
+| `pre-commit-verification` | the checks inside the transaction | `WwpLayoutNotVerified` |
+| `commit` | the transaction commit | `WwpLayoutCommitFailed` |
+| `post-commit-verification` | the checks after the commit | `WwpLayoutNotVerified` |
+
+`nativeOperation` carries the same stage (and the child being edited). A refused
+verification lists the checks it failed in the message and in `failedChecks`, with the
+projection step in `failureStage`; the full `preCommitVerification` and
+`postSaveVerification` receipts are in `verbose_errors`. `persisted` is `false` when the
+call wrote nothing (a concurrent change refused at the boundary is not a partial write),
+`null` with `partialPersistenceDetected: true` when the state could not be proven
+restored, and the target is marked for the next full build after a commit or in that
+case.
+
+`position`, `before` and `after` are refused with `WwpLayoutPlacementUnsupported`: the
+action only appends after the existing children of `tablePath`.
 
 ## Limits
 

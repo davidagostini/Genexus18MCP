@@ -2013,6 +2013,9 @@ namespace GxMcp.Gateway
                 // Optimistic-concurrency retry contract: a refused token is only useful if the
                 // caller can see the token that is current.
                 "currentVersion", "expectedVersion",
+                // genexus_wwp add_layout: the stage a failure stopped at and the verification checks it failed.
+                // Small on purpose; the full verification receipts stay in verbose_errors.
+                "nativeOperation", "failureStage", "failedChecks",
                 // genexus_wwp regenerate_derived: which objects were stale or missing a token, the
                 // paste-ready token map, and the evidence of the unit's rollback.
                 "staleObjects", "expectedVersions", "missing",
