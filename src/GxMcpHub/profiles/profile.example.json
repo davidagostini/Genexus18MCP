@@ -1,0 +1,37 @@
+{
+  "profileName": "minha-kb",
+  "workspaceRoot": "../../../..",
+  "knowledgeBasePath": "C:\\KBs\\MinhaKB",
+  "connectTimeoutSeconds": 5,
+  "callTimeoutSeconds": 900,
+  "writePolicy": {
+    "mode": "open-writer",
+    "writerBackend": "native",
+    "hideBlockedTools": true
+  },
+  "backends": [
+    {
+      "id": "native",
+      "displayName": "Genexus18MCP",
+      "kind": "fixed",
+      "enabled": true,
+      "toolPrefix": "native_",
+      "protocolVersion": "2025-11-25",
+      "endpoint": "http://127.0.0.1:5021/mcp",
+      "useRemoteReadOnlyAnnotations": true,
+      "readOnlyTools": [],
+      "startup": {
+        "command": "${WORKSPACE_ROOT}\\publish\\GxMcp.Gateway.exe",
+        "arguments": "",
+        "workingDirectory": "${WORKSPACE_ROOT}\\publish",
+        "startupTimeoutSeconds": 30,
+        "environment": {
+          "GX_CONFIG_PATH": "${CONFIG_DIR}\\gateway.example.json",
+          "GX_MCP_PORT": "5021",
+          "GXMCP_LOG_DIR": "${WORKSPACE_ROOT}\\.gxmcp-hub\\minha-kb\\logs",
+          "GENEXUS_MCP_NO_UPDATE_CHECK": "1"
+        }
+      }
+    }
+  ]
+}

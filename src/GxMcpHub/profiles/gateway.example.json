@@ -1,0 +1,21 @@
+{
+  "GeneXus": {
+    "InstallationPath": "C:\\GeneXus\\GeneXus18U16",
+    "WorkerExecutable": "C:\\Repos\\Genexus18MCP\\publish\\worker\\GxMcp.Worker.exe"
+  },
+  "Server": {
+    "HttpPort": 5021,
+    "McpStdio": false,
+    "BindAddress": "127.0.0.1",
+    "MaxOpenKbs": 1
+  },
+  "Logging": {
+    "Level": "Information",
+    "Path": "C:\\Repos\\Genexus18MCP\\.gxmcp-hub\\minha-kb\\logs"
+  },
+  "Environment": {
+    "KBPath": "C:\\KBs\\MinhaKB",
+    "GX_SHADOW_PATH": "C:\\Repos\\Genexus18MCP\\.gxmcp-hub\\minha-kb\\gx_mirror",
+    "ResolutionPolicy": "legacy"
+  }
+}
