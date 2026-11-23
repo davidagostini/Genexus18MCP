@@ -7,6 +7,8 @@
 
 ### Added
 
+- **GxMcpHub (optional local layer, `src/GxMcpHub`).** A Windows executable that sits between an MCP client and the Gateway and serves one KB per profile: it applies the write policy (`read-only`, `single-writer`, `open-writer`) before the client sees any tool, starts the Gateway on demand, shares it between sessions and scripts, reloads an edited profile without restarting the session, can start the Gateway outside the client's Windows job, and can leave the Gateway and the Worker running between calls (`GXMCP_HUB_KEEP_GATEWAY_WHEN_ALONE`). `scripts/call.ps1` runs one-off calls through it. The Gateway, the Worker, the CLI and CI are unchanged; see `src/GxMcpHub/README.md`.
+
 - `genexus_doctor` / `gx doctor` ([#965](https://github.com/lennix1337/Genexus18MCP/issues/965)): `issueReportBlock` with the data a GX9/GXPublic crash report needs (PE bitness of the gateway, worker and GeneXus install, IDE running or closed, worker exit code named as NTSTATUS), ready to paste into the issue.
 
 ### Changed
@@ -21,6 +23,8 @@
 - `genexus_list_objects` / `genexus_query` (GXPublic/GX9, [#965](https://github.com/lennix1337/Genexus18MCP/issues/965)): route `list` and `search` (`Query`) to the STA lane when `GXMCP_DRIVER=com-gxpublic` instead of the MTA thread pool, open the OLE DB connection with `Mode=Read` (falling back when rejected) via a single connection-string builder, and log open-vs-query apartment state, thread IDs, provider ProgId and `InprocServer32` path category on `ComListError`/`AccessViolationException`. Verified by classifier and driver contract tests; not run against a real GX9/GXPublic installation.
 
 ### Internal
+
+- GxMcpHub: `GxMcpHub.exe --self-test` runs 98 checks without a KB or the GeneXus SDK (real processes, Windows jobs and WMI launchers, cleaned up by PID, creation time and path; an EDR may log them). It is not wired into CI yet.
 
 ## v4.7.3 - 2026-11-21
 
